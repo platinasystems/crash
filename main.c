@@ -1,6 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,43 +27,134 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.64 $ $Date: 2002/01/30 19:28:34 $
+ * CVS: $Revision: 1.44 $ $Date: 2004/11/22 23:07:24 $
  */
 
 #include "defs.h"
 #include <curses.h>
+#include <getopt.h>
 
-static void setup_environment(char *);
+static void setup_environment(int, char **);
 static int is_external_command(void);
 static int is_builtin_command(void);
 static int is_input_file(void);
 
+static struct option long_options[] = {
+        {"memory_module", 1, 0, 0},
+        {"memory_device", 1, 0, 0},
+        {"no_kallsyms", 0, 0, 0},
+        {"no_modules", 0, 0, 0},
+        {"no_namelist_gzip", 0, 0, 0},
+        {"help", 0, 0, 0},
+	{"data_debug", 0, 0, 0},
+	{"no_data_debug", 0, 0, 0},
+	{"no_crashrc", 0, 0, 0},
+	{"no_kmem_cache", 0, 0, 0},
+	{"readnow", 0, 0, 0},
+	{"smp", 0, 0, 0},
+	{"machdep", 1, 0, 0},
+	{"version", 0, 0, 0},
+	{"buildinfo", 0, 0, 0},
+        {0, 0, 0, 0}
+};
+
 int
 main(int argc, char **argv)
 {
-	int c;
+	int c, option_index;
 
-	setup_environment(argv[0]);
+	setup_environment(argc, argv);
 
 	/* 
 	 *  Get and verify command line options.
 	 */
+	opterr = 0;
 	optind = 0;
-	while ((c = getopt(argc, argv, "n:gh:e:i:s:vc:d:t")) > 0) {
+	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tf",
+       		long_options, &option_index)) != -1) {
 		switch (c)
 		{
+		case 0:
+		        if (STREQ(long_options[option_index].name, 
+			    "memory_module")) 
+				pc->memory_module = optarg;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "memory_device")) 
+				pc->memory_device = optarg;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_kallsyms")) 
+				kt->flags |= NO_KALLSYMS;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_modules")) 
+				kt->flags |= NO_MODULE_ACCESS;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_namelist_gzip")) 
+				pc->flags |= NAMELIST_NO_GZIP;
+
+		        if (STREQ(long_options[option_index].name, "help")) {
+				program_usage(LONG_FORM);
+				clean_exit(0);
+			}
+
+		        if (STREQ(long_options[option_index].name, 
+			    "data_debug")) 
+				pc->flags |= DATADEBUG;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_data_debug")) 
+				pc->flags &= ~DATADEBUG;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_kmem_cache")) 
+				vt->flags |= KMEM_CACHE_UNAVAIL;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "readnow")) 
+				pc->flags |= READNOW;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "smp")) 
+				kt->flags |= SMP;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "machdep")) 
+				machdep->cmdline_arg = optarg;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "version")) { 
+				pc->flags |= VERSION_QUERY;
+                        	display_version();
+                        	display_gdb_banner();
+                        	clean_exit(0);
+			}
+
+		        if (STREQ(long_options[option_index].name, 
+			    "buildinfo")) {
+				dump_build_data();
+				clean_exit(0);
+			}
+
+			break;
+
+		case 'f':
+			st->flags |= FORCE_DEBUGINFO;
+			break;
+
 		case 'g':
 			pc->flags |= KERNEL_DEBUG_QUERY;
 			break;
 
-		case 'n':
-			if (strstr(optarg, "z"))
-				pc->flags |= NAMELIST_NO_GZIP;
-			break;
+		case 'H':
+			cmd_usage(optarg, COMPLETE_HELP);
+			clean_exit(0);
 
 		case 'h':
-			cmd_usage(optarg, COMPLETE_HELP);
-			exit(0);
+			cmd_usage(optarg, COMPLETE_HELP|PIPE_TO_LESS);
+			clean_exit(0);
 			
 		case 'e':
 			if (STREQ(optarg, "vi"))
@@ -82,17 +175,28 @@ main(int argc, char **argv)
 			break;
 
 		case 'v':
+			pc->flags |= VERSION_QUERY;
 			display_version();
 			display_gdb_banner();
-			exit(0);
+			clean_exit(0);
 
 		case 's':
-			if (STREQ(optarg, "ilent")) {
-				pc->flags |= SILENT;
-				pc->flags &= ~SCROLL;
-				pc->scroll_command = SCROLL_NONE;
-			}
+			pc->flags |= SILENT;
+			pc->flags &= ~SCROLL;
+			pc->scroll_command = SCROLL_NONE;
 			break;
+
+		case 'L':
+			if (mlockall(MCL_CURRENT|MCL_FUTURE) == -1)
+				perror("mlockall");
+			break;
+
+		case 'S':
+			if (is_system_map("/boot/System.map")) {
+                                pc->system_map = "/boot/System.map";
+                                pc->flags |= (SYSMAP|SYSMAP_ARG);
+			}
+			break;	
 
 		case 'c':
 			create_console_device(optarg);
@@ -105,9 +209,16 @@ main(int argc, char **argv)
 			break;
 
 		default:
-			program_usage();
+			if (STREQ(argv[optind-1], "-h"))
+				program_usage(LONG_FORM);
+			else {
+				error(INFO, "invalid option: %s\n",
+					argv[optind-1]);
+				program_usage(SHORT_FORM);
+			}
 		}
 	}
+	opterr = 1;
 
 	display_version();
 
@@ -117,60 +228,88 @@ main(int argc, char **argv)
 	while (argv[optind]) {
 
 		if (is_remote_daemon(argv[optind])) {
-                	if (pc->flags & (MCLXCD|LKCD|S390D|S390XD)) {
+                	if (pc->flags & DUMPFILE_TYPES) {
 				error(INFO, 
 				      "too many dumpfile/memory arguments\n");
-				program_usage();
+				program_usage(SHORT_FORM);
 			}
-			pc->flags |= DAEMON;
+			pc->flags |= REMOTE_DAEMON;
 			optind++;
 			continue;
 		}
 
        		if (!file_exists(argv[optind], NULL)) {
                 	error(INFO, "%s: %s\n", argv[optind], strerror(ENOENT));
-                	program_usage();
-        	}
+                	program_usage(SHORT_FORM);
+        	} else if (!is_readable(argv[optind])) 
+			program_usage(SHORT_FORM);
 
 		if (is_elf_file(argv[optind])) {
-			if (pc->namelist) {
-                               	error(INFO, "too many namelist arguments\n");
-                               	program_usage();
-			}
-			pc->namelist = argv[optind];
+			if (pc->namelist || pc->server_namelist) {
+				if (!select_namelist(argv[optind])) {
+                               		error(INFO, 
+					    "too many namelist arguments\n");
+                               		program_usage(SHORT_FORM);
+				}
+			} else
+				pc->namelist = argv[optind];
 
 		} else if (!(pc->flags & KERNEL_DEBUG_QUERY)) {
 
 			if (STREQ(argv[optind], "/dev/mem")) {
-                        	if (pc->flags & 
-				    (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+                        	if (pc->flags & MEMORY_SOURCES) {
                                 	error(INFO, 
                                             "too many dumpfile arguments\n");
-                                	program_usage();
+                                	program_usage(SHORT_FORM);
                         	}
 				pc->flags |= DEVMEM;
 				pc->dumpfile = NULL;
 				pc->readmem = read_dev_mem;
 				pc->writemem = write_dev_mem;
+				pc->live_memsrc = argv[optind];
 
-			} else if (is_lkcd_compressed_dump(argv[optind])) {
-				if (pc->flags & 
-				    (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+			} else if (is_netdump(argv[optind], NETDUMP_LOCAL)) {
+                                if (pc->flags & MEMORY_SOURCES) {
                                         error(INFO,
                                             "too many dumpfile arguments\n");
-                                        program_usage();
+                                        program_usage(SHORT_FORM);
+                                }
+                                pc->flags |= NETDUMP;
+                                pc->dumpfile = argv[optind];
+                                pc->readmem = read_netdump;
+                                pc->writemem = write_netdump;
+
+			} else if (is_diskdump(argv[optind])) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+                                pc->flags |= DISKDUMP;
+                                pc->dumpfile = argv[optind];
+                                pc->readmem = read_diskdump;
+                                pc->writemem = write_diskdump;
+
+			} else if (is_lkcd_compressed_dump(argv[optind])) {
+				if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
                                 }
                                 pc->flags |= LKCD;
                                 pc->dumpfile = argv[optind];
 				pc->readmem = read_lkcd_dumpfile;
 				pc->writemem = write_lkcd_dumpfile;
 
+                        } else if (is_system_map(argv[optind])) {
+                                pc->system_map = argv[optind];
+                                pc->flags |= (SYSMAP|SYSMAP_ARG);
+
 			} else if (is_mclx_compressed_dump(argv[optind])) {
-				if (pc->flags & 
-				    (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+				if (pc->flags & MEMORY_SOURCES) {
 					error(INFO,
                                             "too many dumpfile arguments\n");
-                                        program_usage();
+                                        program_usage(SHORT_FORM);
                                 }
 				pc->flags |= MCLXCD;
 				pc->dumpfile = argv[optind];
@@ -178,11 +317,10 @@ main(int argc, char **argv)
 				pc->writemem = write_mclx_dumpfile;
 
                         } else if (is_s390_dump(argv[optind])) {
-                                if (pc->flags &
-                                    (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+                                if (pc->flags & MEMORY_SOURCES) {
                                         error(INFO,
                                             "too many dumpfile arguments\n");
-                                        program_usage();
+                                        program_usage(SHORT_FORM);
                                 }
                                 pc->flags |= S390D;
                                 pc->dumpfile = argv[optind];
@@ -190,11 +328,10 @@ main(int argc, char **argv)
                                 pc->writemem = write_s390_dumpfile;
 
                         } else if (is_s390x_dump(argv[optind])) {
-                                if (pc->flags &
-                                    (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+                                if (pc->flags & MEMORY_SOURCES) {
                                         error(INFO,
                                             "too many dumpfile arguments\n");
-                                        program_usage();
+                                        program_usage(SHORT_FORM);
                                 }
                                 pc->flags |= S390XD;
                                 pc->dumpfile = argv[optind];
@@ -202,18 +339,17 @@ main(int argc, char **argv)
                                 pc->writemem = write_s390x_dumpfile;
 
 			} else { 
-				error(INFO, "%s: not a supported dumpfile\n",
+				error(INFO, 
+				    "%s: not a supported file format\n",
 					argv[optind]);
-				error(INFO, "%s: not an uncompressed kernel\n",
-                                        argv[optind]);
-				error(FATAL, NULL);
+				program_usage(SHORT_FORM);
 			}
 		}
 		optind++;
 	}
 	
         if (setjmp(pc->main_loop_env))
-                exit(1);
+                clean_exit(1);
 
 	/*
 	 *  Initialize various subsystems.
@@ -236,7 +372,8 @@ main(int argc, char **argv)
 	 */
 	gdb_main_loop(argc, argv);   
 
-	exit(0);  
+	clean_exit(0);
+	exit(0); 
 }
 
 /*
@@ -253,9 +390,9 @@ main_loop(void)
 		kernel_init(POST_GDB);
 		machdep_init(POST_GDB);
         	vm_init();
+        	hq_init();
         	module_init();
         	help_init();
-        	hq_init();
         	task_init();
         	vfs_init();
 		net_init();
@@ -269,7 +406,7 @@ main_loop(void)
          */
         if (!(pc->flags & SILENT) && !(pc->flags & RUNTIME)) {
                 display_sys_stats();
-                show_context(CURRENT_CONTEXT(), 5, TRUE);
+                show_context(CURRENT_CONTEXT());
                 fprintf(fp, "\n");
         }
 
@@ -314,11 +451,14 @@ reattempt:
 	optind = argerrs = 0;
 
 	if ((ct = get_command_table_entry(args[0]))) {
-                if (ct->flags & REFRESH_TASK_TABLE)
+                if (ct->flags & REFRESH_TASK_TABLE) {
                         tt->refresh_task_table();
+			sort_context_array();
+		}
                 if (!STREQ(pc->curcmd, pc->program_name))
                         pc->lastcmd = pc->curcmd;
                 pc->curcmd = ct->name;
+		pc->cmdgencur++;
                 (*ct->func)();
                 pc->lastcmd = pc->curcmd;
                 pc->curcmd = pc->program_name;
@@ -461,7 +601,7 @@ cmd_quit(void)
 	if (REMOTE())
 		remote_exit();
 
-	exit(0);
+	clean_exit(0);
 }
 
 void
@@ -471,21 +611,16 @@ cmd_mach(void)
 }
 
 
-void
-program_usage(void)
-{
-	fprintf(fp, 
-    "usage: %s [-v][-silent][-i inputfile][-d num] [namelist] [dumpfile]\n\n", 
-		pc->program_name);
-	exit(1);
-}
-
 static void
-setup_environment(char *program)
+setup_environment(int argc, char **argv)
 {
+	int i;
 	char *p1;
 	char buf[BUFSIZE];
 	FILE *afp;
+	char *program;
+
+	program = argv[0];
 
 	/*
 	 *  Program output typically goes via "fprintf(fp, ...)", but the 
@@ -500,15 +635,23 @@ setup_environment(char *program)
 	 *  "program_context" structure.
 	 */
         pc->program_name = (char *)basename(program);
+	pc->program_path = program;
         pc->program_version = build_version;
 	pc->program_pid = (ulong)getpid();
         pc->curcmd = pc->program_name;
         pc->flags = (HASH|SCROLL);
+	pc->flags |= DATADEBUG;          /* default until unnecessary */
 	pc->confd = -2;
 	pc->machine_type = MACHINE_TYPE;
 	pc->readmem = read_dev_mem;      /* defaults until argv[] is parsed */
 	pc->writemem = write_dev_mem;
+	pc->memory_module = NULL;
+	pc->memory_device = MEMORY_DRIVER_DEVICE;
 	machdep->bits = sizeof(long) * 8;
+	machdep->verify_paddr = generic_verify_paddr;
+	pc->redhat_debug_loc = DEFAULT_REDHAT_DEBUG_LOCATION;
+	pc->cmdgencur = 0;
+	pc->cmdgenspec = ~pc->cmdgencur;
 
 	/*
 	 *  Get gdb version before initializing it since this might be one 
@@ -555,7 +698,11 @@ setup_environment(char *program)
 	 *  Resolve $HOME .rc file first, then the one in the local directory.
          *  Note that only "set" and "alias" commands are done at this time.
 	 */
-	alias_init();
+	for (i = 1; i < argc; i++)
+		if (STREQ(argv[i], "--no_crashrc"))
+			pc->flags |= NOCRASHRC; 
+
+	alias_init(NULL);
 
 	if ((p1 = getenv("HOME"))) {
 		if ((pc->home = (char *)malloc(strlen(p1)+1)) == NULL) {
@@ -565,7 +712,7 @@ setup_environment(char *program)
 		} else
 			strcpy(pc->home, p1);
 	        sprintf(buf, "%s/.%src", pc->home, pc->program_name);
-	        if (file_exists(buf, NULL)) {
+	        if (!(pc->flags & NOCRASHRC) && file_exists(buf, NULL)) {
 	                if ((afp = fopen(buf, "r")) == NULL)
 	                        error(INFO, "cannot open %s: %s\n",
 	                                buf, strerror(errno));
@@ -578,7 +725,7 @@ setup_environment(char *program)
 	}
 
         sprintf(buf, ".%src", pc->program_name);
-	if (file_exists(buf, NULL)) {
+	if (!(pc->flags & NOCRASHRC) && file_exists(buf, NULL)) {
 		if ((afp = fopen(buf, "r")) == NULL)
                         error(INFO, "cannot open %s: %s\n",
 				buf, strerror(errno));
@@ -606,6 +753,7 @@ dump_program_context(void)
 	char buf2[BUFSIZE];
 
 	fprintf(fp, "     program_name: %s\n", pc->program_name);
+	fprintf(fp, "     program_path: %s\n", pc->program_path);
 	fprintf(fp, "  program_version: %s\n", pc->program_version);
 	fprintf(fp, "      gdb_version: %s\n", pc->gdb_version);
 	fprintf(fp, "      program_pid: %ld\n", pc->program_pid);
@@ -625,8 +773,6 @@ dump_program_context(void)
                 sprintf(&buf[strlen(buf)], "%sIN_FOREACH", others++ ? "|" : "");
         if (pc->flags & MFD_RDWR)
                 sprintf(&buf[strlen(buf)], "%sMFD_RDWR", others++ ? "|" : "");
-        if (pc->flags & KFD_RDWR)
-                sprintf(&buf[strlen(buf)], "%sKFD_RDWR", others++ ? "|" : "");
         if (pc->flags & DFD_RDWR)
                 sprintf(&buf[strlen(buf)], "%sDFD_RDWR", others++ ? "|" : "");
         if (pc->flags & SILENT)
@@ -649,8 +795,9 @@ dump_program_context(void)
                 sprintf(&buf[strlen(buf)], "%sDROP_CORE", others++ ? "|" : "");
         if (pc->flags & LKCD)
                 sprintf(&buf[strlen(buf)], "%sLKCD", others++ ? "|" : "");
-        if (pc->flags & DAEMON)
-                sprintf(&buf[strlen(buf)], "%sDAEMON", others++ ? "|" : "");
+        if (pc->flags & REMOTE_DAEMON)
+                sprintf(&buf[strlen(buf)], "%sREMOTE_DAEMON", 
+			others++ ? "|" : "");
         if (pc->flags & GDB_INIT)
                 sprintf(&buf[strlen(buf)], "%sGDB_INIT", others++ ? "|" : "");
         if (pc->flags & IN_GDB)
@@ -674,6 +821,12 @@ dump_program_context(void)
         if (pc->flags & DEVMEM)
                 sprintf(&buf[strlen(buf)], 
 			"%sDEVMEM", others++ ? "|" : "");
+        if (pc->flags & MEMMOD)
+                sprintf(&buf[strlen(buf)], 
+			"%sMEMMOD", others++ ? "|" : "");
+        if (pc->flags & MODPRELOAD)
+                sprintf(&buf[strlen(buf)], 
+			"%sMODPRELOAD", others++ ? "|" : "");
         if (pc->flags & REM_LIVE_SYSTEM)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_LIVE_SYSTEM", others++ ? "|" : "");
@@ -719,12 +872,42 @@ dump_program_context(void)
         if (pc->flags & REM_S390XD)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_S390XD", others++ ? "|" : "");
+       if (pc->flags & NETDUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sNETDUMP", others++ ? "|" : "");
+        if (pc->flags & REM_NETDUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sREM_NETDUMP", others++ ? "|" : "");
+       if (pc->flags & DISKDUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sDISKDUMP", others++ ? "|" : "");
+        if (pc->flags & SYSMAP)
+                sprintf(&buf[strlen(buf)],
+                        "%sSYSMAP", others++ ? "|" : "");
+        if (pc->flags & SYSMAP_ARG)
+                sprintf(&buf[strlen(buf)],
+                        "%sSYSMAP_ARG", others++ ? "|" : "");
+       if (pc->flags & DATADEBUG)
+                sprintf(&buf[strlen(buf)],
+                        "%sDATADEBUG", others++ ? "|" : "");
+       if (pc->flags & FINDKERNEL)
+                sprintf(&buf[strlen(buf)],
+                        "%sFINDKERNEL", others++ ? "|" : "");
+       if (pc->flags & VERSION_QUERY)
+                sprintf(&buf[strlen(buf)],
+                        "%sVERSION_QUERY", others++ ? "|" : "");
+       if (pc->flags & READNOW)
+                sprintf(&buf[strlen(buf)],
+                        "%sREADNOW", others++ ? "|" : "");
+       if (pc->flags & NOCRASHRC)
+                sprintf(&buf[strlen(buf)],
+                        "%sNOCRASHRC", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");
 
 	if (strlen(buf)) {
-		if (strlen(buf) > 54) {
+		if (strlen(buf) > 46) {
 			sprintf(buf2, "\n%s\n", 
 				mkstring(buf, 80, CENTER|LJUST, NULL));
 			if (strlen(buf2) <= 82) 
@@ -746,19 +929,19 @@ dump_program_context(void)
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
 	fprintf(fp, "         dumpfile: %s\n", pc->dumpfile);
+	fprintf(fp, "      live_memsrc: %s\n", pc->live_memsrc);
+	fprintf(fp, "       system_map: %s\n", pc->system_map);
+	fprintf(fp, "   namelist_debug: %s\n", pc->namelist_debug);
+	fprintf(fp, "   debuginfo_file: %s\n", pc->debuginfo_file);
+	fprintf(fp, "    memory_module: %s\n", pc->memory_module);
+	fprintf(fp, "    memory_device: %s\n", pc->memory_device);
 	fprintf(fp, "     machine_type: %s\n", pc->machine_type);
 	fprintf(fp, "     editing_mode: %s\n", pc->editing_mode);
 	fprintf(fp, "              nfd: %d\n", pc->nfd);
-	fprintf(fp, "              kfd: %d\n", pc->kfd);
 	fprintf(fp, "              mfd: %d\n", pc->mfd);
+	fprintf(fp, "              kfd: %d\n", pc->kfd);
 	fprintf(fp, "              dfd: %d\n", pc->dfd);
 	fprintf(fp, "            confd: %d\n", pc->confd);
-#ifdef USE_MMAP
-	fprintf(fp, "        mmap_addr: %lx\n", pc->mmap_addr);
-	fprintf(fp, "        mmap_phys: %lx\n", pc->mmap_phys);
-	fprintf(fp, "           remaps: %lu\n", pc->remaps);
-	fprintf(fp, "          maphits: %lu\n", pc->maphits);
-#endif
 	fprintf(fp, "             home: %s\n", pc->home);
 	fprintf(fp, "     command_line: ");
 	if (STRNEQ(pc->command_line, args[0]))
@@ -770,7 +953,9 @@ dump_program_context(void)
 	fprintf(fp, "         readline: %lx\n", (ulong)pc->readline);
 	fprintf(fp, "           my_tty: %s\n", pc->my_tty);
 	fprintf(fp, "            debug: %ld\n", pc->debug);
+	fprintf(fp, "       debug_save: %ld\n", pc->debug_save);
 	fprintf(fp, "          console: %s\n", pc->console);
+	fprintf(fp, " redhat_debug_loc: %s\n", pc->redhat_debug_loc);
 	fprintf(fp, "        pipefd[2]: %d,%d\n", pc->pipefd[0], pc->pipefd[1]);
 	fprintf(fp, "           nullfp: %lx\n", (ulong)pc->nullfp);
 	fprintf(fp, "          stdpipe: %lx\n", (ulong)pc->stdpipe);
@@ -785,6 +970,7 @@ dump_program_context(void)
 		    pc->scroll_command == SCROLL_LESS ? 
 			"/usr/bin/less" : "/bin/more");
 
+	buf[0] = NULLCHAR;
 	fprintf(fp, "         redirect: %lx ", pc->redirect);
 	if (pc->redirect)
 		sprintf(buf, "(");
@@ -836,8 +1022,9 @@ dump_program_context(void)
 	if (!pc->redirect)
 		fprintf(fp, "\n");
 
-	fprintf(fp, "         pipe_pid: %d\n", pc->pipe_pid);
 	fprintf(fp, "      stdpipe_pid: %d\n", pc->stdpipe_pid);
+	fprintf(fp, "         pipe_pid: %d\n", pc->pipe_pid);
+	fprintf(fp, "   pipe_shell_pid: %d\n", pc->pipe_shell_pid);
 	fprintf(fp, "     pipe_command: %s\n", pc->pipe_command);
 	if (pc->symfile && pc->symfile2) {
 		fprintf(fp, "          symfile: %lx  (%ld)\n", 
@@ -852,8 +1039,6 @@ dump_program_context(void)
 	fprintf(fp, "         saved_fp: %lx\n", (ulong)pc->saved_fp);
 	fprintf(fp, "           tmp_fp: %lx\n", (ulong)pc->tmp_fp);
 	fprintf(fp, "         tmpfile2: %lx\n", (ulong)pc->tmpfile2);
-	fprintf(fp, "      symbol_file: %s\n", pc->symbol_file);
-	fprintf(fp, "      sym_maxline: %d\n", pc->sym_maxline);
 
 	fprintf(fp, "           curcmd: %s\n", pc->curcmd);
 	fprintf(fp, "          lastcmd: %s\n", pc->lastcmd);
@@ -862,6 +1047,8 @@ dump_program_context(void)
 	fprintf(fp, "     last_gdb_cmd: %d  %s\n", pc->last_gdb_cmd,
 		gdb_command_string(pc->last_gdb_cmd, buf, FALSE));
 	fprintf(fp, "          cur_req: %lx\n", (ulong)pc->cur_req);
+	fprintf(fp, "        cmdgencur: %ld\n", pc->cmdgencur); 
+	fprintf(fp, "       cmdgenspec: %ld\n", pc->cmdgenspec); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);
 	fprintf(fp, "    gdb_sigaction: %lx\n", (ulong)&pc->gdb_sigaction);
@@ -894,6 +1081,10 @@ dump_program_context(void)
 		fprintf(fp, "          readmem: read_lkcd_dumpfile()\n");
 	else if (pc->readmem == read_daemon)
 		fprintf(fp, "          readmem: read_daemon()\n");
+	else if (pc->readmem == read_netdump)
+		fprintf(fp, "          readmem: read_netdump()\n");
+	else if (pc->readmem == read_memory_device)
+		fprintf(fp, "          readmem: read_memory_device()\n");
 	else
 		fprintf(fp, "          readmem: %lx\n", (ulong)pc->readmem);
         if (pc->writemem == write_dev_mem)
@@ -904,6 +1095,10 @@ dump_program_context(void)
                 fprintf(fp, "         writemem: write_lkcd_dumpfile()\n");
         else if (pc->writemem == write_daemon)
                 fprintf(fp, "         writemem: write_daemon()\n");
+        else if (pc->writemem == write_netdump)
+                fprintf(fp, "         writemem: write_netdump()\n");
+        else if (pc->writemem == write_memory_device)
+                fprintf(fp, "         writemem: write_memory_device()\n");
         else
                 fprintf(fp, "         writemem: %lx\n", (ulong)pc->writemem);
 
@@ -919,7 +1114,21 @@ dump_program_context(void)
 void
 dump_build_data(void)
 {
-        fprintf(fp, "build_command: %s\n", build_command);
-        fprintf(fp, "   build_data: %s\n", build_data);
-        fprintf(fp, "build_version: %s\n", build_version);
+        fprintf(fp, "   build_command: %s\n", build_command);
+        fprintf(fp, "      build_data: %s\n", build_data);
+        fprintf(fp, "    build_target: %s\n", build_target);
+        fprintf(fp, "   build_version: %s\n", build_version);
+        fprintf(fp, "compiler version: %s\n", compiler_version);
+}
+
+/*
+ *  Perform any cleanup activity here.
+ */
+int 
+clean_exit(int status)
+{
+	if (pc->flags & MEMMOD)
+		cleanup_memory_driver();
+
+	exit(status);
 }

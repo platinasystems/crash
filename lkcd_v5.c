@@ -1,6 +1,8 @@
 /* lkcd_v5.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,7 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.3 $ $Date: 2002/01/30 19:28:33 $
+ * CVS: $Revision: 1.4 $ $Date: 2004/10/14 15:56:02 $
  */
 
 #define LKCD_COMMON
@@ -61,14 +63,18 @@ lkcd_dump_init_v5(FILE *fp, int fd)
 	lkcd->bits = sizeof(long) * 8;
         lkcd->benchmark_pages = (dh->dh_num_pages/LKCD_PAGES_PER_MEGABYTE())+1;
 	lkcd->total_pages = dh->dh_num_pages;
-        if ((lkcd->mb_hdr_offsets = (off_t *)malloc
-            (lkcd->benchmark_pages * sizeof(off_t))) == NULL)
-                return FALSE;
+
+	lkcd->zone_shift = ffs(ZONE_SIZE) - 1;
+	lkcd->zone_mask = ~(ZONE_SIZE - 1);
+	lkcd->num_zones = 0;
+	lkcd->max_zones = 0;
+	lkcd->zoned_offsets = 0;
+
 	lkcd->get_dp_flags = get_dp_flags_v5;
 	lkcd->get_dp_address = get_dp_address_v5;
    	lkcd->compression = dh->dh_dump_compress; 
         lkcd->page_header_size = sizeof(dump_page_t);
-	BZERO(lkcd->mb_hdr_offsets, lkcd->benchmark_pages * sizeof(off_t));
+	lkcd->get_dp_size = get_dp_size_v5;
 
         lseek(lkcd->fd, LKCD_OFFSET_TO_FIRST_PAGE, SEEK_SET);
 
@@ -138,7 +144,6 @@ lkcd_dump_init_v5(FILE *fp, int fd)
 		pgcnt : dh->dh_num_pages;
 	lkcd->panic_task = (ulong)dh->dh_current_task;
 	lkcd->panic_string = (char *)&dh->dh_panic_string[0];
-	lkcd->get_dp_size = get_dp_size_v5;
 
 	if (dh->dh_version & LKCD_DUMP_MCLX_V1) 
 		mclx_cache_page_headers_v5();

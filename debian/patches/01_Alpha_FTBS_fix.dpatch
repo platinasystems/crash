@@ -1,0 +1,19 @@
+#! /bin/sh /usr/share/dpatch/dpatch-run
+## 01_Alpha_FTBS_fix.dpatch by  <troyhebe@me>
+##
+## All lines beginning with `## DP:' are a description of the patch.
+## DP: No description.
+
+@DPATCH@
+diff -urNad crash/alpha.c /tmp/dpep.uw4TcQ/crash/alpha.c
+--- crash/alpha.c	2005-03-03 07:25:18.729059491 -0700
++++ /tmp/dpep.uw4TcQ/crash/alpha.c	2005-03-03 11:01:01.255494848 -0700
+@@ -2602,6 +2602,8 @@
+ int
+ alpha_get_smp_cpus(void)
+ {
++	int cpus; 
++
+         if ((cpus = get_cpus_online()))
+                 return cpus;
+         else

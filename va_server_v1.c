@@ -1,6 +1,8 @@
 /* va_server_v1.c - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,7 +20,7 @@
  *
  * 09/28/00  Transition to CVS version control
  *
- * CVS: $Revision: 1.7 $ $Date: 2002/01/15 21:22:31 $
+ * CVS: $Revision: 1.7 $ $Date: 2004/06/22 16:45:33 $
  */
 #include <zlib.h>
 #include <sys/types.h>
@@ -171,22 +173,22 @@ void load_data_v1(struct map_hdr_v1 *hdr, u_long index, u_long *buf, u_long *len
 
 	if(ret == -1) {
 		printf("load_data: unable to fseek, errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 	compr_buf =  (char *)malloc(2*hdr->va_per_entry);
 	if(!compr_buf) {
 		printf("load_data: bad ret from malloc, errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 	items = fread((void *)compr_buf, sizeof(char), hdr->map[index].num_blks * hdr->blk_size, vas_file_p);
 	if(items != hdr->map[index].num_blks * hdr->blk_size) {
 		printf("unable to read blocks from errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 	hdr->map[index].exp_data = exp_buf =  (char *)malloc(hdr->va_per_entry);
 	if(!exp_buf) {
 		printf("load_data: bad ret from malloc, errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 	destLen = (uLongf)(2*hdr->va_per_entry);
 	ret = uncompress((Bytef *)exp_buf, &destLen, (const Bytef *)compr_buf, (uLong)items);
@@ -205,7 +207,7 @@ void load_data_v1(struct map_hdr_v1 *hdr, u_long index, u_long *buf, u_long *len
 		else
 			printf("load_data, bad ret %d from uncompress\n", ret);
 		
-		exit(1);
+		clean_exit(1);
 	}
 	free((void *)compr_buf);
   out:
@@ -263,13 +265,13 @@ int read_maps_v1(char *crash_file)
 	cur_entry_p = (int *)malloc(Page_Size);
 	if(!cur_entry_p) {
 		printf("read_maps: bad ret from malloc, errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 	bzero((void *)cur_entry_p, Page_Size);
 
 	vas_file_p = fopen(crash_file, "r");
 	if(vas_file_p == (FILE *)0) {
-		printf("read_maps: bad ret from fopen for %s, errno = %d\n", crash_file, ferror(vas_file_p));
+		printf("read_maps: bad ret from fopen for %s: %s\n", crash_file, strerror(errno));
 		return -1;
 	}
 	ret = fseek(vas_file_p, (long)0, SEEK_SET);
@@ -282,11 +284,14 @@ int read_maps_v1(char *crash_file)
 		printf("read_maps: unable to read header from %s, errno = %d\n", crash_file, ferror(vas_file_p));
 		return -1;
 	}
-	while ((blk_pos = *cur_entry_p++))
+	ret = -1;
+	while ((blk_pos = *cur_entry_p++)) {
 		if (read_map_v1(blk_pos))
 			return -1;
+		ret = 0;
+	}
 
-	return 0;
+	return ret;
 }
 
 
@@ -297,6 +302,7 @@ int read_map_v1(int blk_pos)
 	struct crash_map_hdr_v1 *disk_hdr;
 	int ret, items;
 	struct map_hdr_v1 *hdr, *hdr1;
+	extern int console(char *, ...);
 
 	hdr = (struct map_hdr_v1 *)malloc(sizeof(struct map_hdr_v1));
 	if(!hdr) {
@@ -307,16 +313,15 @@ int read_map_v1(int blk_pos)
 	disk_hdr = (struct crash_map_hdr_v1 *)malloc(Page_Size);
 	ret = fseek(vas_file_p, (long)(blk_pos*Page_Size), SEEK_SET);
 	if(ret == -1) {
-		printf("va_server: unable to fseek, err = %d\n", ferror(vas_file_p));
+		console("va_server: unable to fseek, err = %d\n", ferror(vas_file_p));
 		return -1;
 	}
 	items = fread((void *)disk_hdr, 1, Page_Size, vas_file_p);
 	if(items != Page_Size) {
-		printf("unable to read header,  err = %d\n", ferror(vas_file_p));
 		return -1;
 	}
 	if(disk_hdr->magic[0] != CRASH_MAGIC) {
-		printf("va_server: bad magic 0x%lx\n", disk_hdr->magic[0]);
+		console("va_server: bad magic 0x%lx\n", disk_hdr->magic[0]);
 		return -1;
 	}
 	ret = fseek(vas_file_p, (long)((blk_pos + disk_hdr->map_block) * disk_hdr->blk_size), SEEK_SET);

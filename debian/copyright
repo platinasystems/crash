@@ -1,8 +1,12 @@
-This package was debianized by Josh Huber <huber@mclx.com> on
-Tue, 10 Oct 2000 18:00:20 -0400.
+This package was debianized by Josh Huber <huber@mclx.com> on Tue, 10 Oct 2000
+18:00:20 -0400, the package is maintained by Troy Heber <troy.heber@hp.com> and
+Micha Anderson <micah@debian.org>.
 
-It was downloaded from http://www.mclx.com/downloads/
+It was downloaded from http://people.redhat.com/~anderson/
 
 Upstream Author: Dave Anderson <anderson@mclx.com>
 
 Copyright: GNU GPL
+
+On Debian GNU/Linux systems, the complete text of the GNU General
+Public License can be found in `/usr/share/common-licenses/GPL'.

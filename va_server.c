@@ -1,6 +1,8 @@
 /* va_server.c - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +22,7 @@
  *
  * 09/28/00  Transition to CVS version control
  *
- * CVS: $Revision: 1.11 $ $Date: 2002/01/15 21:24:31 $
+ * CVS: $Revision: 1.5 $ $Date: 2004/06/22 16:45:33 $
  */
 #include <zlib.h>
 #include <sys/types.h>
@@ -248,7 +250,7 @@ void load_data(struct crash_map_entry *m)
 
 	if(ret == -1) {
 		printf("load_data: unable to fseek, errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 
 	retries = 0;
@@ -261,12 +263,12 @@ load_data_retry1:
 			goto load_data_retry1;
 		}
 		fprintf(stderr, "FATAL ERROR: malloc failure: out of memory\n");
-		exit(1);
+		clean_exit(1);
 	}
 	items = fread((void *)compr_buf, sizeof(char), m->num_blks * Page_Size, vas_file_p);
 	if(items != m->num_blks * Page_Size) {
 		printf("unable to read blocks from errno = %d\n", ferror(vas_file_p));
-		exit(1);
+		clean_exit(1);
 	}
 load_data_retry2:
 	m->exp_data = exp_buf =
@@ -277,7 +279,7 @@ load_data_retry2:
                         goto load_data_retry2;
                 }
                 fprintf(stderr, "FATAL ERROR: malloc failure: out of memory\n");
-		exit(1);
+		clean_exit(1);
 	}
 	destLen = (uLongf)((CRASH_SOURCE_PAGES+CRASH_SUB_MAP_PAGES) * Page_Size);
 	ret = uncompress((Bytef *)exp_buf, &destLen, (const Bytef *)compr_buf, (uLong)items);
@@ -292,7 +294,7 @@ load_data_retry2:
 		else
 			printf("load_data, bad ret %d from uncompress\n", ret);
 		
-		exit(1);
+		clean_exit(1);
 	}
 	free((void *)compr_buf);
   out:
@@ -308,7 +310,7 @@ int read_map(char *crash_file)
 
 	vas_file_p = fopen(crash_file, "r");
 	if(vas_file_p == (FILE *)0) {
-		printf("read_maps: bad ret from fopen for %s, errno = %d\n", crash_file, ferror(vas_file_p));
+		printf("read_maps: bad ret from fopen for %s: %s\n", crash_file, strerror(errno));
 		return -1;
 	}
 
@@ -326,7 +328,6 @@ int read_map(char *crash_file)
 	}
 	items = fread((void *)disk_hdr, 1, Page_Size, vas_file_p);
 	if(items != Page_Size) {
-		printf("unable to read header,  err = %d\n", ferror(vas_file_p));
 		return -1;
 	}
 	if(disk_hdr->magic[0] != CRASH_MAGIC) {

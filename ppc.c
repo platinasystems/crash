@@ -1,6 +1,8 @@
 /* ppc.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,23 +21,21 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.61 $ $Date: 2002/01/23 17:44:07 $
+ * CVS: $Revision: 1.28 $ $Date: 2004/09/02 21:13:01 $
  */ 
 #ifdef PPC
 #include "defs.h"
 
-static int ppc_kvtop(struct task_context *, ulong, ulong *, int);
-static int ppc_uvtop(struct task_context *, ulong, ulong *, int);
+static int ppc_kvtop(struct task_context *, ulong, physaddr_t *, int);
+static int ppc_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong ppc_vmalloc_start(void);
 static int ppc_is_task_addr(ulong);
-static int ppc_verify_symbol(const char *, ulong);
+static int ppc_verify_symbol(const char *, ulong, char);
 static ulong ppc_get_task_pgd(ulong);
-static int ppc_translate_pte(ulong, ulong *);
-static ulong ppc_SWP_TYPE(ulong);
-static ulong ppc_SWP_OFFSET(ulong);
+static int ppc_translate_pte(ulong, void *, ulonglong);
 
 static ulong ppc_processor_speed(void);
-static void ppc_eframe_search(struct bt_info *);
+static int ppc_eframe_search(struct bt_info *);
 static void ppc_back_trace_cmd(struct bt_info *);
 static void ppc_back_trace(struct gnu_request *, struct bt_info *);
 static void get_ppc_frame(struct bt_info *, ulong *, ulong *);
@@ -43,7 +43,6 @@ static void ppc_print_stack_entry(int,struct gnu_request *,
 	ulong, char *, struct bt_info *);
 static void ppc_exception_frame(ulong, struct bt_info *, struct gnu_request *);
 static void ppc_dump_irq(int);
-static int ppc_nr_irqs(void);
 static ulong ppc_get_pc(struct bt_info *);
 static ulong ppc_get_sp(struct bt_info *);
 static void ppc_get_stack_frame(struct bt_info *, ulong *, ulong *);
@@ -52,6 +51,7 @@ static void ppc_cmd_mach(void);
 static int ppc_get_smp_cpus(void);
 static void ppc_display_machine_stats(void);
 static void ppc_dump_line_number(ulong);
+static struct line_number_hook ppc_line_number_hooks[];
 
 /*
  *  Do all necessary machine-specific setup here.  This is called twice,
@@ -69,7 +69,7 @@ ppc_init(int when)
                 machdep->pagesize = memory_page_size();
                 machdep->pageshift = ffs(machdep->pagesize) - 1;
                 machdep->pageoffset = machdep->pagesize - 1;
-                machdep->pagemask = ~(machdep->pageoffset);
+                machdep->pagemask = ~((ulonglong)machdep->pageoffset);
 		machdep->stacksize = machdep->pagesize * 2;
                 if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
                         error(FATAL, "cannot malloc pgd space.");
@@ -79,6 +79,8 @@ ppc_init(int when)
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = generic_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		break;
 
 	case PRE_GDB:
@@ -92,56 +94,59 @@ ppc_init(int when)
 	        machdep->uvtop = ppc_uvtop;
 	        machdep->kvtop = ppc_kvtop;
 	        machdep->get_task_pgd = ppc_get_task_pgd;
-		machdep->nr_irqs = ppc_nr_irqs;
 		machdep->get_stack_frame = ppc_get_stack_frame;
 		machdep->get_stackbase = generic_get_stackbase;
 		machdep->get_stacktop = generic_get_stacktop;
 		machdep->translate_pte = ppc_translate_pte;
 		machdep->memory_size = generic_memory_size;
-		machdep->SWP_TYPE = ppc_SWP_TYPE;
-		machdep->SWP_OFFSET = ppc_SWP_OFFSET;
 		machdep->is_task_addr = ppc_is_task_addr;
 		machdep->dis_filter = ppc_dis_filter;
 		machdep->cmd_mach = ppc_cmd_mach;
 		machdep->get_smp_cpus = ppc_get_smp_cpus;
+		machdep->line_number_hooks = ppc_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+                machdep->init_kernel_pgd = NULL;
 		break;
 
 	case POST_GDB:
 		machdep->vmalloc_start = ppc_vmalloc_start;
-		OFFSET(thread_struct_pg_tables) = 
- 			MEMBER_OFFSET("thread_struct", "pg_tables");
-		SIZE(pt_regs) = STRUCT_SIZE("pt_regs");
+		MEMBER_OFFSET_INIT(thread_struct_pg_tables, 
+ 			"thread_struct", "pg_tables");
 
+                STRUCT_SIZE_INIT(irqdesc, "irqdesc");
+        	STRUCT_SIZE_INIT(irq_desc_t, "irq_desc_t");
                	/* as of 2.3.x PPC uses the generic irq handlers */
-        	if (STRUCT_SIZE("irq_desc_t") > 0) 
+        	if (VALID_SIZE(irq_desc_t)) 
                 	machdep->dump_irq = generic_dump_irq;
-		else
+		else {
 			machdep->dump_irq = ppc_dump_irq;
+                	MEMBER_OFFSET_INIT(irqdesc_action, "irqdesc", "action");
+                	MEMBER_OFFSET_INIT(irqdesc_ctl, "irqdesc", "ctl");
+                	MEMBER_OFFSET_INIT(irqdesc_level, "irqdesc", "level");
+		}
 
-                SIZE(irqdesc) = STRUCT_SIZE("irqdesc");
-                OFFSET(irqdesc_action) = MEMBER_OFFSET("irqdesc", "action");
-                OFFSET(irqdesc_ctl) = MEMBER_OFFSET("irqdesc", "ctl");
-                OFFSET(irqdesc_level) = MEMBER_OFFSET("irqdesc", "level");
- 
-                OFFSET(irqaction_handler) =
-                        MEMBER_OFFSET("irqaction", "handler");
-                OFFSET(irqaction_flags) = MEMBER_OFFSET("irqaction", "flags");
-                OFFSET(irqaction_mask) = MEMBER_OFFSET("irqaction", "mask");
-                OFFSET(irqaction_name) = MEMBER_OFFSET("irqaction", "name");
-                OFFSET(irqaction_dev_id) = MEMBER_OFFSET("irqaction", "dev_id");
-                OFFSET(irqaction_next) = MEMBER_OFFSET("irqaction", "next");
-
-                OFFSET(hw_interrupt_type_typename) =
-                        MEMBER_OFFSET("hw_interrupt_type", "typename");
-                OFFSET(hw_interrupt_type_startup) =
-                        MEMBER_OFFSET("hw_interrupt_type", "startup");
-                OFFSET(hw_interrupt_type_shutdown) =
-                        MEMBER_OFFSET("hw_interrupt_type", "shutdown");
-                OFFSET(hw_interrupt_type_enable) =
-                        MEMBER_OFFSET("hw_interrupt_type", "enable");
-                OFFSET(hw_interrupt_type_disable) =
-                        MEMBER_OFFSET("hw_interrupt_type", "disable");
+                MEMBER_OFFSET_INIT(device_node_type, "device_node", "type");
+                MEMBER_OFFSET_INIT(device_node_allnext,  
+			"device_node", "allnext");
+                MEMBER_OFFSET_INIT(device_node_properties,  
+			"device_node", "properties");
+		MEMBER_OFFSET_INIT(property_name, "property", "name");
+		MEMBER_OFFSET_INIT(property_value, "property", "value");
+		MEMBER_OFFSET_INIT(property_next, "property", "next");
+		MEMBER_OFFSET_INIT(machdep_calls_setup_residual, 
+                        "machdep_calls", "setup_residual");
+		MEMBER_OFFSET_INIT(RESIDUAL_VitalProductData, 
+                        "RESIDUAL", "VitalProductData");
+		MEMBER_OFFSET_INIT(VPD_ProcessorHz, "VPD", "ProcessorHz");
+		MEMBER_OFFSET_INIT(bd_info_bi_intfreq, "bd_info", "bi_intfreq");
+		if (symbol_exists("irq_desc"))
+			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
+				"irq_desc", NULL, 0);
+		else
+			machdep->nr_irqs = 0;
 		machdep->hz = HZ;
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+			machdep->hz = 1000;
 		break;
 
 	case POST_INIT:
@@ -150,7 +155,7 @@ ppc_init(int when)
 }
 
 void
-ppc_dump_machdep_table(void)
+ppc_dump_machdep_table(ulong arg)
 {
         int others; 
  
@@ -166,7 +171,7 @@ ppc_dump_machdep_table(void)
 	fprintf(fp, "  identity_map_base: %lx\n", machdep->identity_map_base);
         fprintf(fp, "           pagesize: %d\n", machdep->pagesize);
         fprintf(fp, "          pageshift: %d\n", machdep->pageshift);
-        fprintf(fp, "           pagemask: %lx\n", machdep->pagemask);
+        fprintf(fp, "           pagemask: %llx\n", machdep->pagemask);
         fprintf(fp, "         pageoffset: %lx\n", machdep->pageoffset);
 	fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
         fprintf(fp, "                 hz: %d\n", machdep->hz);
@@ -174,6 +179,7 @@ ppc_dump_machdep_table(void)
         fprintf(fp, "            memsize: %lld (0x%llx)\n", 
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
+	fprintf(fp, "            nr_irqs: %d\n", machdep->nr_irqs);
         fprintf(fp, "      eframe_search: ppc_eframe_search()   [TBD]\n");
         fprintf(fp, "         back_trace: ppc_back_trace_cmd()\n");
         fprintf(fp, "    processor_speed: ppc_processor_speed()\n");
@@ -184,15 +190,12 @@ ppc_dump_machdep_table(void)
 		fprintf(fp, "           dump_irq: generic_dump_irq()\n");
 	else
 		fprintf(fp, "           dump_irq: ppc_dump_irq()\n");
-	fprintf(fp, "            nr_irqs: ppc_nr_irqs()\n");
         fprintf(fp, "    get_stack_frame: ppc_get_stack_frame()\n");
         fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
         fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
         fprintf(fp, "      translate_pte: ppc_translate_pte()\n");
 	fprintf(fp, "        memory_size: generic_memory_size()\n");
 	fprintf(fp, "      vmalloc_start: ppc_vmalloc_start()\n");
-	fprintf(fp, "           SWP_TYPE: ppc_SWP_TYPE()\n");
-	fprintf(fp, "         SWP_OFFSET: ppc_SWP_OFFSET()\n");
 	fprintf(fp, "       is_task_addr: ppc_is_task_addr()\n");
 	fprintf(fp, "      verify_symbol: ppc_verify_symbol()\n");
 	fprintf(fp, "         dis_filter: ppc_dis_filter()\n");
@@ -200,12 +203,17 @@ ppc_dump_machdep_table(void)
 	fprintf(fp, "       get_smp_cpus: ppc_get_smp_cpus()\n");
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
+        fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+	fprintf(fp, "    init_kernel_pgd: NULL\n");
+	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+        fprintf(fp, "  line_number_hooks: ppc_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
         fprintf(fp, "                pgd: %lx\n", (ulong)machdep->pgd);
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
+	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
@@ -221,7 +229,7 @@ ppc_dump_machdep_table(void)
  */
 
 static int
-ppc_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
+ppc_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 {
 	ulong mm, active_mm;
 	ulong *pgd;
@@ -237,10 +245,10 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
 	*paddr = 0;
 
         if (is_kernel_thread(tc->task) && IS_KVADDR(vaddr)) { 
-	    	if (VALID_OFFSET(thread_struct_pg_tables)) 
+	    	if (VALID_MEMBER(thread_struct_pg_tables)) 
                 	pgd = (ulong *)machdep->get_task_pgd(tc->task);
 		else {
-			if (OFFSET(task_struct_active_mm) < 0)
+			if (INVALID_MEMBER(task_struct_active_mm))
 				error(FATAL, "no pg_tables or active_mm?\n");
 
                 	readmem(tc->task + OFFSET(task_struct_active_mm), 
@@ -297,7 +305,7 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
 		*paddr = pte;
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			ppc_translate_pte(pte, 0);
+			ppc_translate_pte(pte, 0, 0);
 		}
 		goto no_upage;
 	}
@@ -309,7 +317,7 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
 
         if (verbose) {
                 fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(pte));
-		ppc_translate_pte(pte, 0);
+		ppc_translate_pte(pte, 0, 0);
 	}
 
 	return TRUE;
@@ -324,7 +332,7 @@ no_upage:
  * other callers quietly accept the translation.
  */
 static int
-ppc_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
+ppc_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 {
 	ulong *pgd;
 	ulong *page_dir;
@@ -347,7 +355,7 @@ ppc_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 			return TRUE;
 	}
 
-	pgd = (ulong *)vt->kernel_pgd;
+	pgd = (ulong *)vt->kernel_pgd[0];
 
 	if (verbose) 
 		fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)pgd);
@@ -380,14 +388,14 @@ ppc_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 	if (!(pte & _PAGE_PRESENT)) { 
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			ppc_translate_pte(pte, 0);
+			ppc_translate_pte(pte, 0, 0);
 		}
 		goto no_kpage;
 	}
 
 	if (verbose) {
 		fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(pte));
-		ppc_translate_pte(pte, 0);
+		ppc_translate_pte(pte, 0, 0);
 	}
 
 	*paddr = PAGEBASE(pte) + PAGEOFFSET(kvaddr);
@@ -462,7 +470,7 @@ ppc_processor_speed(void)
 		
 		get_symbol_data("allnodes", sizeof(void *), &node);
 		while(node) {
-			readmem(node+MEMBER_OFFSET("device_node", "type"),
+			readmem(node+OFFSET(device_node_type),
 				KVADDR, &type, sizeof(ulong), "node type",
 				FAULT_ON_ERROR);
 			
@@ -474,20 +482,20 @@ ppc_processor_speed(void)
 					break;
 			}
 			
-			readmem(node+MEMBER_OFFSET("device_node", "allnext"),
+			readmem(node+OFFSET(device_node_allnext),
 				KVADDR, &node, sizeof(ulong), "node allnext",
 				FAULT_ON_ERROR);
 		}
 
 		/* now, if we found a CPU node, get the speed property */
 		if(node) {
-			readmem(node+MEMBER_OFFSET("device_node", "properties"),
+			readmem(node+OFFSET(device_node_properties),
 				KVADDR, &properties, sizeof(ulong), 
 				"node properties", FAULT_ON_ERROR);
 			
 			while(properties) {
-				readmem(properties+MEMBER_OFFSET("property", 
-					"name"), KVADDR, &name, 
+				readmem(properties+OFFSET(property_name), 
+					KVADDR, &name, 
 					sizeof(ulong), "property name",
 					FAULT_ON_ERROR);
 				
@@ -499,7 +507,7 @@ ppc_processor_speed(void)
 					/* found the right cpu property */
 
 					readmem(properties+
-					    MEMBER_OFFSET("property", "value"),
+					    OFFSET(property_value),
 					    KVADDR, &value, sizeof(ulong), 
 					    "clock freqency pointer",
 					    FAULT_ON_ERROR);
@@ -514,7 +522,7 @@ ppc_processor_speed(void)
 				/* keep looking */
 				
 				readmem(properties+
-				    MEMBER_OFFSET("property", "next"),
+				    OFFSET(property_next),
 				    KVADDR, &properties, sizeof(ulong), 
 				    "property next", FAULT_ON_ERROR);
 			}
@@ -536,17 +544,16 @@ ppc_processor_speed(void)
 				get_symbol_data("ppc_md", sizeof(void *), 
 					&ppc_md);
 				readmem(ppc_md + 
-			 	    MEMBER_OFFSET("machdep_calls", 
-				    "setup_residual"), KVADDR, &md_setup_res, 
+			 	    OFFSET(machdep_calls_setup_residual), 
+				    KVADDR, &md_setup_res, 
 				    sizeof(ulong), "ppc_md setup_residual",
 				    FAULT_ON_ERROR);
 				
 				if(prep_setup_res == md_setup_res) {
 				/* PREP machine */
 					readmem(res+
-					    MEMBER_OFFSET("RESIDUAL", 
-					    "VitalProductData")+
-					    MEMBER_OFFSET("VPD", "ProcessorHz"),
+					    OFFSET(RESIDUAL_VitalProductData)+
+					    OFFSET(VPD_ProcessorHz),
 					    KVADDR, &mhz, sizeof(ulong), 
 					    "res VitalProductData", 
 					    FAULT_ON_ERROR);
@@ -558,7 +565,7 @@ ppc_processor_speed(void)
 			if(!mhz) {
 			  /* everything else seems to do this the same way... */
 				readmem(res + 
-				    MEMBER_OFFSET("bd_info", "bi_intfreq"),
+				    OFFSET(bd_info_bi_intfreq),
 				    KVADDR, &mhz, sizeof(ulong), 
 				    "bd_info bi_intfreq", FAULT_ON_ERROR);
 				
@@ -577,9 +584,9 @@ ppc_processor_speed(void)
  *  Accept or reject a symbol from the kernel namelist.
  */
 static int
-ppc_verify_symbol(const char *name, ulong value)
+ppc_verify_symbol(const char *name, ulong value, char type)
 {
-	if (MCLXDEBUG(8) && name && strlen(name))
+	if (CRASHDEBUG(8) && name && strlen(name))
 		fprintf(fp, "%08lx %s\n", value, name);
 
 	if (STREQ(name, "_start"))
@@ -599,10 +606,10 @@ ppc_get_task_pgd(ulong task)
 	long offset;
 	ulong pg_tables;
 
-        offset = VALID_OFFSET(task_struct_thread) ?
+        offset = VALID_MEMBER(task_struct_thread) ?
                 OFFSET(task_struct_thread) : OFFSET(task_struct_tss);
 
-	if (OFFSET(thread_struct_pg_tables) < 0)
+	if (INVALID_MEMBER(thread_struct_pg_tables))
 		error(FATAL, 
 		   "pg_tables does not exist in this kernel's thread_struct\n"); 
 	offset += OFFSET(thread_struct_pg_tables);
@@ -618,7 +625,7 @@ ppc_get_task_pgd(ulong task)
  *  If a physaddr pointer is passed in, don't print anything.
  */
 static int
-ppc_translate_pte(ulong pte, ulong *physaddr)
+ppc_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 {
 	int c, len1, len2, len3, others, page_present;
 	char buf[BUFSIZE];
@@ -633,7 +640,7 @@ ppc_translate_pte(ulong pte, ulong *physaddr)
 	page_present = (pte & _PAGE_PRESENT);
 
 	if (physaddr) {
-		*physaddr = paddr;
+		*((ulong *)physaddr) = paddr;
 		return page_present;
 	}
 
@@ -704,24 +711,6 @@ ppc_translate_pte(ulong pte, ulong *physaddr)
 	return page_present;
 }
 
-/*
- * Break out the swap type and offset from a pte.
- */
-
-#define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
-#define SWP_OFFSET(entry) ((entry) >> 8)
-
-static ulong
-ppc_SWP_TYPE(ulong pte)
-{
-        return SWP_TYPE(pte);
-}
-
-static ulong
-ppc_SWP_OFFSET(ulong pte)
-{
-        return SWP_OFFSET(pte);
-}
 
 /*
  *  Look for likely exception frames in a stack.
@@ -748,10 +737,10 @@ struct ppc_pt_regs {
         long result;         /* Result of a system call */
 };
 
-static void 
+static int 
 ppc_eframe_search(struct bt_info *bt)
 {
-	error(FATAL, "ppc_eframe_search: function not written yet!\n");
+	return (error(FATAL, "ppc_eframe_search: function not written yet!\n"));
 }
 
 /*
@@ -765,7 +754,7 @@ ppc_back_trace_cmd(struct bt_info *bt)
 
         bt->flags |= BT_EXCEPTION_FRAME;
 
-        if (MCLXDEBUG(1) || bt->debug)
+        if (CRASHDEBUG(1) || bt->debug)
                 fprintf(fp, " => PC: %lx (%s) FP: %lx \n",
                         bt->instptr, value_to_symstr(bt->instptr, buf, 0),
 			bt->stkptr);
@@ -811,7 +800,7 @@ ppc_back_trace(struct gnu_request *req, struct bt_info *bt)
 
 		bt->flags |= BT_SAVE_LASTSP;
 		ppc_print_stack_entry(frame, req, req->pc, req->name, bt);
-		bt->flags &= ~BT_SAVE_LASTSP;
+		bt->flags &= ~(ulonglong)BT_SAVE_LASTSP;
 		
 		if (BT_REFERENCE_FOUND(bt))
 			return;
@@ -1027,7 +1016,11 @@ get_ppc_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	task = bt->task;
 	stack = (ulong *)bt->stackbuf;
 
-        if (OFFSET(task_struct_tss_ksp) > 0) 
+        if ((tt->flags & THREAD_INFO) && VALID_MEMBER(task_struct_thread_ksp)) 
+                readmem(task + OFFSET(task_struct_thread_ksp), KVADDR,
+                        &sp, sizeof(void *),
+                        "thread_struct ksp", FAULT_ON_ERROR);
+	else if (VALID_MEMBER(task_struct_tss_ksp)) 
                 sp = stack[OFFSET(task_struct_tss_ksp)/sizeof(long)];
 	else 
                 sp = stack[OFFSET(task_struct_thread_ksp)/sizeof(long)];
@@ -1072,13 +1065,11 @@ static void ppc_dump_irq(int irq)
 {
 	struct datatype_member datatype_member, *dm;
         ulong irq_desc_addr, addr;
-        char *buf;
         int level, others;
         ulong action, ctl, value;
 	char typename[32];
 
         dm = &datatype_member;
-        buf = GETBUF(pc->sym_maxline);
 
         irq_desc_addr = symbol_value("irq_desc") + (SIZE(irqdesc) * irq);
 	
@@ -1129,7 +1120,7 @@ static void ppc_dump_irq(int irq)
 		} else
 			fprintf(fp, "%lx\n", addr);
 
-		if (VALID_OFFSET(hw_interrupt_type_handle)) {
+		if (VALID_MEMBER(hw_interrupt_type_handle)) {
 	                /* handle */
 	                readmem(ctl + OFFSET(hw_interrupt_type_handle), 
 				KVADDR, &addr, sizeof(ulong), 
@@ -1240,22 +1231,6 @@ static void ppc_dump_irq(int irq)
 	}
 
 	fprintf(fp, "  DEPTH: %x\n\n", level);
-}
-
-/*
- *  Return the number of IRQs on this platform.
- */
-static int 
-ppc_nr_irqs(void)
-{
-        int nr_irqs;
-
-        if (symbol_exists("irq_desc"))
-		nr_irqs = get_array_length("irq_desc", NULL);
-	else
-	        error(FATAL, "cannot determine number of IRQs\n");
-
-	return nr_irqs;
 }
 
 /*
@@ -1377,42 +1352,114 @@ ppc_display_machine_stats(void)
         fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
 }
 
+
+static const char *hook_files[] = {
+        "arch/ppc/kernel/entry.S",
+        "arch/ppc/kernel/head.S",
+};
+
+#define ENTRY_S      ((char **)&hook_files[0])
+#define HEAD_S       ((char **)&hook_files[1])
+
+static struct line_number_hook ppc_line_number_hooks[] = {
+	{"DoSyscall", ENTRY_S},
+	{"_switch", ENTRY_S},
+	{"ret_from_syscall_1", ENTRY_S},
+	{"ret_from_syscall_2", ENTRY_S},
+	{"ret_from_fork", ENTRY_S},
+	{"ret_from_intercept", ENTRY_S},
+	{"ret_from_except", ENTRY_S},
+	{"do_signal_ret", ENTRY_S},
+	{"ret_to_user_hook", ENTRY_S},
+	{"enter_rtas", ENTRY_S},
+	{"restore", ENTRY_S},
+	{"fake_interrupt", ENTRY_S},
+	{"lost_irq_ret", ENTRY_S},
+	{"do_bottom_half_ret", ENTRY_S},
+	{"ret_to_user_hook", ENTRY_S},
+	{"signal_return", ENTRY_S},
+
+	{"_stext", HEAD_S},
+	{"_start", HEAD_S},
+	{"__start", HEAD_S},
+	{"__after_mmu_off", HEAD_S},
+	{"turn_on_mmu", HEAD_S},
+	{"__secondary_hold", HEAD_S},
+	{"DataAccessCont", HEAD_S},
+	{"DataAccess", HEAD_S},
+	{"i0x300", HEAD_S},
+	{"DataSegmentCont", HEAD_S},
+	{"InstructionAccessCont", HEAD_S},
+	{"InstructionAccess", HEAD_S},
+	{"i0x400", HEAD_S},
+	{"InstructionSegmentCont", HEAD_S},
+	{"HardwareInterrupt", HEAD_S},
+	{"do_IRQ_intercept", HEAD_S},
+	{"i0x600", HEAD_S},
+	{"ProgramCheck", HEAD_S},
+	{"i0x700", HEAD_S},
+	{"FPUnavailable", HEAD_S},
+	{"i0x800", HEAD_S},
+	{"Decrementer", HEAD_S},
+	{"timer_interrupt_intercept", HEAD_S},
+	{"SystemCall", HEAD_S},
+	{"trap_0f_cont", HEAD_S},
+	{"Trap_0f", HEAD_S},
+	{"InstructionTLBMiss", HEAD_S},
+	{"InstructionAddressInvalid", HEAD_S},
+	{"DataLoadTLBMiss", HEAD_S},
+	{"DataAddressInvalid", HEAD_S},
+	{"DataStoreTLBMiss", HEAD_S},
+	{"AltiVecUnavailable", HEAD_S},
+	{"DataAccess", HEAD_S},
+	{"InstructionAccess", HEAD_S},
+	{"DataSegment", HEAD_S},
+	{"InstructionSegment", HEAD_S},
+	{"transfer_to_handler", HEAD_S},
+	{"stack_ovf", HEAD_S},
+	{"load_up_fpu", HEAD_S},
+	{"KernelFP", HEAD_S},
+	{"load_up_altivec", HEAD_S},
+	{"KernelAltiVec", HEAD_S},
+	{"giveup_altivec", HEAD_S},
+	{"giveup_fpu", HEAD_S},
+	{"relocate_kernel", HEAD_S},
+	{"copy_and_flush", HEAD_S},
+	{"fix_mem_constants", HEAD_S},
+	{"apus_interrupt_entry", HEAD_S},
+	{"__secondary_start_gemini", HEAD_S},
+	{"__secondary_start_psurge", HEAD_S},
+	{"__secondary_start_psurge2", HEAD_S},
+	{"__secondary_start_psurge3", HEAD_S},
+	{"__secondary_start_psurge99", HEAD_S},
+	{"__secondary_start", HEAD_S},
+	{"setup_common_caches", HEAD_S},
+	{"setup_604_hid0", HEAD_S},
+	{"setup_750_7400_hid0", HEAD_S},
+	{"load_up_mmu", HEAD_S},
+	{"start_here", HEAD_S},
+	{"clear_bats", HEAD_S},
+	{"flush_tlbs", HEAD_S},
+	{"mmu_off", HEAD_S},
+	{"initial_bats", HEAD_S},
+	{"setup_disp_bat", HEAD_S},
+	{"m8260_gorom", HEAD_S},
+	{"sdata", HEAD_S},
+	{"empty_zero_page", HEAD_S},
+	{"swapper_pg_dir", HEAD_S},
+	{"cmd_line", HEAD_S},
+	{"intercept_table", HEAD_S},
+	{"set_context", HEAD_S},
+
+        {NULL, NULL}    /* list must be NULL-terminated */
+};
+
+
 static void
 ppc_dump_line_number(ulong callpc)
 {
         int retries;
         char buf[BUFSIZE], *p;
-        char *name;
-
-        name = closest_symbol(callpc);
-
-        /*
-         *  gdb-related kludge for routines in entry.S, head.S and initfunc
-         *  (fix this...)
-         */
-        if (STREQ(name, "DoSyscall") ||
-            STREQ(name, "_switch") ||
-            STREQ(name, "fake_interrupt") ||
-            STREQ(name, "ret_from_syscall_2") ||
-            STREQ(name, "ret_from_fork") ||
-            STREQ(name, "ret_from_intercept") ||
-            STREQ(name, "ret_from_except") ||
-            STREQ(name, "lost_irq_ret") ||
-            STREQ(name, "do_bottom_half_ret") ||
-            STREQ(name, "ret_to_user_hook") ||
-            STREQ(name, "do_signal_ret") ||
-            STREQ(name, "restore") ||
-            STREQ(name, "signal_return") ||
-            STREQ(name, "ret_from_syscall_1")) {
-                fprintf(fp, "    %s/arch/ppc/kernel/entry.S\n",
-                        get_build_directory(buf) ? buf : "..");
-                return;
-        }
-        if (STREQ(name, "set_context")) {
-                fprintf(fp, "    %s/arch/ppc/kernel/head.S\n",
-                        get_build_directory(buf) ? buf : "..");
-                return;
-        }
 
         retries = 0;
 
@@ -1422,13 +1469,14 @@ try_closest:
         if (strlen(buf)) {
                 if (retries) {
                         p = strstr(buf, ": ");
-                        *p = NULLCHAR;
+			if (p)
+                        	*p = NULLCHAR;
                 }
                 fprintf(fp, "    %s\n", buf);
         } else {
                 if (retries)
-                        fprintf(fp,
-                            "    (cannot determine file and line number)\n");
+                        fprintf(fp, GDB_PATCHED() ? 
+			  "" : "    (cannot determine file and line number)\n");
                 else {
                         retries++;
                         callpc = closest_symbol_value(callpc);

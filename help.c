@@ -1,6 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +27,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.118 $ $Date: 2002/02/18 18:48:01 $
+ * CVS: $Revision: 1.68 $ $Date: 2005/01/28 20:26:13 $
  */
 
 #include "defs.h"
@@ -44,6 +46,111 @@ static char *version_info[];
 static char *output_info[];
 static char *input_info[];
 static char *README[];
+
+static
+char *program_usage_info[] = {
+    "\nUsage:\n  %s [-h [opt]][-v][-s][-i file][-d num] [-S] [mapfile] [namelist] [dumpfile]\n",
+    "  [namelist]",
+    "    The [namelist] argument is a pathname to an uncompressed kernel image",
+    "    (a vmlinux file) that has been compiled with the \"-g\" switch, or",
+    "    that has an accessible, associated, debuginfo file.  If the [dumpfile]",
+    "    argument is entered, then the [namelist] argument must be entered",
+    "    If the [namelist] argument is not entered when running on a live",
+    "    system, a search will be made in several typical directories for",
+    "    for a kernel namelist file that matches the live system.",
+    " ",
+    "  [dumpfile]",
+    "    The [dumpfile] argument is a pathname to a kernel memory core dump",
+    "    file.  If the [dumpfile] argument is not entered, the session will be",
+    "    invoked on the live system using /dev/mem, which usually requires root",
+    "    privileges.",
+    " ",
+    "  [mapfile]",
+    "    If the live system kernel, or the kernel from which the [dumpfile] ",
+    "    was derived, was not compiled with the -g switch, then the additional",
+    "    [mapfile] argument is required.  The [mapfile] argument may consist",
+    "    of either the associated System.map file, or the non-debug kernel",
+    "    namelist.  However, if the [mapfile] argument is used, then the",
+    "    [namelist] argument must be a kernel namelist of a similar kernel",
+    "    version that was built with the -g switch.", 
+    " ",
+    "  [-S]",
+    "    Use \"/boot/System.map\" as the [mapfile].",
+    " ",
+    "    Examples when running on a live system:",
+    " ",
+    "      $ crash",
+    "      $ crash /usr/tmp/vmlinux",
+    "      $ crash /boot/System.map vmlinux.dbg",
+    "      $ crash -S vmlinux.dbg",
+    "      $ crash vmlinux vmlinux.dbg",
+    " ",
+    "    Examples when running on a dumpfile:",
+    " ",
+    "      $ crash vmlinux vmcore",
+    "      $ crash /boot/System.map vmlinux.dbg vmcore",
+    "      $ crash -S vmlinux.dbg vmcore",
+    "      $ crash vmlinux vmlinux.dbg vmcore",
+    " ",
+    "  [-h [opt]]",
+    "    The -h option alone displays this message.  If the [opt] argument is",
+    "    a %s command name, the help page for that command is displayed.  If",
+    "    the string \"input\" is entered, a page describing the various %s",
+    "    command line input options is displayed.  If the string \"output\" is",
+    "    entered, a page describing command line output options is displayed.",
+    " ",
+    "  [-v]",
+    "    Display the versions of %s and gdb making up this executable.",
+    " ",
+    "  [-s]",
+    "    Do not display any version, GPL, or %s initialization data; proceed",
+    "    directly to the \"%s>\" prompt.",
+    " ",
+    "  [-i file]",
+    "    Execute the %s command(s) in [file] prior to accepting any user",
+    "    input from the \"%s>\" prompt.",
+    " ",
+    "  [-d num]",
+    "    Set %s debug level [num].  The higher the number, the more debug data",
+    "    will be printed during %s runtime.",
+    " ",
+NULL
+};
+
+
+void
+program_usage(int form)
+{
+	int i;
+	char **p;
+	FILE *less;
+
+	if (form == LONG_FORM)
+		less = popen("/usr/bin/less", "w");
+	else
+		less = NULL;
+
+	p = program_usage_info;
+
+	if (form == LONG_FORM) {
+		if (less)
+			fp = less;
+        	for (i = 0; program_usage_info[i]; i++, p++) {
+                	fprintf(fp, *p, pc->program_name);
+			fprintf(fp, "\n");
+		}
+	} else {
+               	fprintf(fp, *p, pc->program_name);
+		fprintf(fp, "\nEnter \"%s -h\" for details.\n",
+			pc->program_name);
+	}
+	fflush(fp);
+	if (less)
+		pclose(less);
+
+	clean_exit(1);
+}
+
 
 /*
  *  Get an updated count of commands for subsequent help menu display,
@@ -146,7 +253,8 @@ cmd_help(void)
 
 	oflag = 0;
 
-        while ((c = getopt(argcnt, args, "efDdmngcaBbHhksvVoptTzLx")) != EOF) {
+        while ((c = getopt(argcnt, args, 
+	        "efNDdmM:ngcaBbHhksvVoptTzLxO")) != EOF) {
                 switch(c)
                 {
 		case 'e':
@@ -157,6 +265,7 @@ cmd_help(void)
 			dump_filesys_table(VERBOSE);
 			return;
 
+		case 'n':
 		case 'D':
 			dumpfile_memory(DUMPFILE_MEM_DUMP);
 			return;
@@ -169,15 +278,18 @@ cmd_help(void)
 			dump_dev_table();
 			return;
 
+		case 'M':
+			dump_machdep_table(stol(optarg, FAULT_ON_ERROR, NULL));
+			return;
 		case 'm':
-			dump_machdep_table();
+			dump_machdep_table(0);
 			return;
 
 		case 'g':
 			dump_gdb_data();
 			return;
 
-		case 'n':
+		case 'N':
 			dump_net_table();
 			return;
 
@@ -221,6 +333,10 @@ cmd_help(void)
 			dump_vm_table(!VERBOSE);
 			return;
 
+		case 'O':
+			dump_offset_table(NULL, TRUE);
+			return;
+
 		case 'o':
 			oflag = TRUE;
 			break;
@@ -248,6 +364,7 @@ cmd_help(void)
 			fprintf(fp, " -D - dumpfile memory usage\n");
 			fprintf(fp, " -f - filesys table\n");
 			fprintf(fp, " -k - kernel_table\n");
+			fprintf(fp, " -M <num> machine specific\n");
 			fprintf(fp, " -m - machdep_table\n");
 			fprintf(fp, " -s - symbol table data\n");
 			fprintf(fp, " -v - vm_table\n");
@@ -277,7 +394,7 @@ cmd_help(void)
 
 	if (!args[optind]) {
 		if (oflag) 
-			dump_offset_table(NULL);
+			dump_offset_table(NULL, FALSE);
 		else 
 			display_help_screen("");
 		return;
@@ -285,7 +402,7 @@ cmd_help(void)
 
         do {
 		if (oflag) 
-			dump_offset_table(args[optind]);
+			dump_offset_table(args[optind], FALSE);
 		else	
         		cmd_usage(args[optind], COMPLETE_HELP);
 		optind++;
@@ -328,8 +445,12 @@ display_help_screen(char *indent)
 		indent);
 	fprintf(fp, "%sFor help on output options, enter \"help output\".\n",
 		indent);
+#ifdef NO_LONGER_TRUE
 	fprintf(fp, "%sFor the most recent version: "
 		    "http://www.missioncriticallinux.com/download\n\n", indent);
+#else
+	fprintf(fp, "\n");
+#endif
 }
 
 /*
@@ -389,8 +510,8 @@ char *help_foreach[] = {
 "display command data for multiple tasks in the system",
 "[[pid | taskp | name | [kernel | user]] ...] command [flag] [argument]",
 "  This command allows for a an examination of various kernel data associated",
-"  with any, or all, active tasks in the system, without having to set the",
-"  context to each targeted task.\n",
+"  with any, or all, tasks in the system, without having to set the context",
+"  to each targeted task.\n",
 "      pid  perform the command(s) on this PID.",
 "    taskp  perform the command(s) on task referenced by this hexadecimal", 
 "           task_struct pointer.",
@@ -399,12 +520,12 @@ char *help_foreach[] = {
 "           precede the name string with a \"\\\".",
 "     user  perform the command(s) on all user (non-kernel) threads.",
 "   kernel  perform the command(s) on all kernel threads.",
-"   active  perform the command(s) on all active threads.\n",
+"   active  perform the command(s) on the active thread on each CPU.\n",
 "  If none of the task-identifying arguments above are entered, the command",
 "  will be performed on all tasks.\n",
 "  command  select one or more of the following commands on the tasks",
 "           selected, or on all tasks:\n",
-"             bt  same as the \"bt\" command  (optional flags: -r -t -l -e -R)",
+"             bt  same as the \"bt\" command  (optional flags: -r -t -l -e -R -f)",
 "             vm  same as the \"vm\" command  (optional flags: -p -v -m -R)",
 "           task  same as the \"task\" command  (optional flag: -R)",
 "          files  same as the \"files\" command  (optional flag: -R)",
@@ -528,7 +649,7 @@ NULL
 char *help_set[] = {
 "set",
 "set a process context or internal %s variable",
-"[pid | taskp | [-c cpu] | -p] | [%s_variable [setting]] ...",
+"[pid | taskp | [-c cpu] | -p] | [%s_variable [setting]] | -v",
 "  This command either sets a new context, or gets the current context for",
 "  display.  The context can be set by the use of:\n",
 "      pid  a process PID.",
@@ -536,6 +657,7 @@ char *help_set[] = {
 "   -c cpu  sets the context to the active task on a cpu (dumpfiles only).",
 "       -p  sets the context to the panic task, or back to the %s task on",
 "           a live system.",
+"       -v  display the current state of internal %s variables.",
 "",
 "  If no argument is entered, the current context is displayed.  The context",
 "  consists of the PID, the task pointer, the CPU, and task state.",
@@ -543,19 +665,22 @@ char *help_set[] = {
 "  This command may also be used to set internal %s variables.  If no value",
 "  argument is entered, the current value of the %s variable is shown.  These",
 "  are the %s variables, acceptable arguments, and purpose:\n",
-"       scroll  on | off     controls output scrolling.",
-"       silent  on | off     controls %s prompt (and scrolling if off).",
-"        radix  10 | 16      sets output radix to 10 or 16.",
-"      refresh  on | off     controls internal task list refresh.",
-"         hash  on | off     controls internal list verification.",
-"           vi  (no arg)     set editing mode to vi (from .%src file only).",
-"        emacs  (no arg)     set editing mode to emacs (from .%src file only).",
-"     namelist  filename     name of kernel (from .%src file only).",
-"     dumpfile  filename     name of core dumpfile (from .%src file only).",
-"      console  device-name  sets debug console device.",
-"        debug  number       sets %s debug level.",
-"         core  (no arg)     toggles core flag -- if on, drops core when the",
-"                            next non-fatal error message is printed.\n",
+"          scroll  on | off     controls output scrolling.",
+"           radix  10 | 16      sets output radix to 10 or 16.",
+"         refresh  on | off     controls internal task list refresh.",
+"       print_max  number       set maximum number of array elements to print.",
+"         console  device-name  sets debug console device.",
+"           debug  number       sets %s debug level.",
+"            core  on | off     if on, drops core when the next error message",
+"                               is displayed.",
+"            hash  on | off     controls internal list verification.",
+"          silent  on | off     turns off initialization messages; turns off",
+"                               %s prompt during input file execution. ",
+"                               (scrolling is turned off if silent is on)",
+"            edit  vi | emacs   set line editing mode (from .%src file only).",
+"        namelist  filename     name of kernel (from .%src file only).",
+"        dumpfile  filename     name of core dumpfile (from .%src file only).",
+" ",
 "  Internal variables may be set in four manners:\n",
 "    1. entering the set command in $HOME/.%src.",
 "    2. entering the set command in .%src in the current directory.",
@@ -575,13 +700,6 @@ char *help_set[] = {
 "        TASK: c2fe8000  ",
 "         CPU: 0",
 "       STATE: TASK_INTERRUPTIBLE\n",
-"  Show the current context:\n",
-"    %s> set",
-"         PID: 1525",
-"     COMMAND: \"bash\"",
-"        TASK: c1ede000",
-"         CPU: 0",
-"       STATE: TASK_INTERRUPTIBLE\n",
 "  Set the context back to the panicking task:\n",
 "    %s> set -p",
 "         PID: 698",
@@ -592,6 +710,29 @@ char *help_set[] = {
 "  Turn off output scrolling:\n",
 "    %s> set scroll off",
 "    scroll: off",
+" ",
+"  Show the current state of %s internal variables:\n", 
+"    %s> set -v",
+"            scroll: on",
+"             radix: 10 (decimal)",
+"           refresh: on",
+"         print_max: 256",
+"           console: /dev/pts/2",
+"             debug: 0",
+"              core: off",
+"              hash: on",
+"            silent: off",
+"              edit: vi",
+"          namelist: vmlinux",
+"          dumpfile: vmcore",
+" ",
+"  Show the current context:\n",
+"    %s> set",
+"         PID: 1525",
+"     COMMAND: \"bash\"",
+"        TASK: c1ede000",
+"         CPU: 0",
+"       STATE: TASK_INTERRUPTIBLE\n",
 NULL               
 };
 
@@ -661,7 +802,7 @@ NULL
 char *help_ps[] = {
 "ps",
 "display process status information",
-"[-k|-u][-s][-p|-c|-t] [pid | taskp | command] ...",
+"[-k|-u][-s][-p|-c|-t|-l] [pid | taskp | command] ...",
 "  This command displays process status for selected, or all, processes" ,
 "  in the system.  If no arguments are entered, the process data is",
 "  is displayed for all processes.  Selected process identifiers can be",
@@ -681,7 +822,7 @@ char *help_ps[] = {
 "    3. the CPU number that the task ran on last.",
 "    4. the task_struct address or the kernel stack pointer of the process.",
 "       (see -s option below)",
-"    5. the task state.",
+"    5. the task state (RU, IN, UN, ZO, ST, DE, SW).",
 "    6. the percentage of physical memory being used by this task.",
 "    7. the virtual address size of this task in kilobytes.",
 "    8. the resident set size of this task in kilobytes.",
@@ -703,6 +844,9 @@ char *help_ps[] = {
 "       -c  display the children of selected, or all, tasks.",
 "       -t  display the task run time, start time, and cumulative user",
 "           and system times.",
+"       -l  display the task last_run or timestamp value, whichever applies,",
+"           of selected, or all, tasks; the list is sorted with the most",
+"           recently-run task (largest last_run/timestamp) shown first.",
 "\nEXAMPLES",
 "  Show the process status of all current tasks:\n",
 "    %s> ps",
@@ -830,6 +974,65 @@ char *help_ps[] = {
 "        492      1   1  c0254000  IN   0.0     0     0  [nfsd]",
 "        493      1   0  c0a86000  IN   0.0     0     0  [nfsd]",
 "        494      1   0  c0968000  IN   0.0     0     0  [nfsd]",
+" ",
+"  Show all tasks sorted by their task_struct's last_run or timestamp value,",
+"  whichever applies:\n",
+"    %s> ps -l",
+"    [280195]  PID: 2      TASK: c1468000  CPU: 0   COMMAND: \"keventd\"",
+"    [280195]  PID: 1986   TASK: c5af4000  CPU: 0   COMMAND: \"sshd\"",
+"    [280195]  PID: 2039   TASK: c58e6000  CPU: 0   COMMAND: \"sshd\"",
+"    [280195]  PID: 2044   TASK: c5554000  CPU: 0   COMMAND: \"bash\"",
+"    [280195]  PID: 2289   TASK: c70c0000  CPU: 0   COMMAND: \"s\"",
+"    [280190]  PID: 1621   TASK: c54f8000  CPU: 0   COMMAND: \"cupsd\"",
+"    [280184]  PID: 5      TASK: c154c000  CPU: 0   COMMAND: \"kswapd\"",
+"    [280184]  PID: 6      TASK: c7ff6000  CPU: 0   COMMAND: \"kscand\"",
+"    [280170]  PID: 0      TASK: c038e000  CPU: 0   COMMAND: \"swapper\"",
+"    [280166]  PID: 2106   TASK: c0c0c000  CPU: 0   COMMAND: \"sshd\"",
+"    [280166]  PID: 2162   TASK: c03a4000  CPU: 0   COMMAND: \"vmstat\"",
+"    [280160]  PID: 1      TASK: c154a000  CPU: 0   COMMAND: \"init\"",
+"    [280131]  PID: 3      TASK: c11ce000  CPU: 0   COMMAND: \"kapmd\"",
+"    [280117]  PID: 1568   TASK: c5a8c000  CPU: 0   COMMAND: \"smartd\"",
+"    [280103]  PID: 1694   TASK: c4c66000  CPU: 0   COMMAND: \"ntpd\"",
+"    [280060]  PID: 8      TASK: c7ff2000  CPU: 0   COMMAND: \"kupdated\"",
+"    [279767]  PID: 1720   TASK: c4608000  CPU: 0   COMMAND: \"sendmail\"",
+"    [279060]  PID: 13     TASK: c69f4000  CPU: 0   COMMAND: \"kjournald\"",
+"    [278657]  PID: 1523   TASK: c5ad4000  CPU: 0   COMMAND: \"ypbind\"",
+"    [277712]  PID: 2163   TASK: c06e0000  CPU: 0   COMMAND: \"sshd\"",
+"    [277711]  PID: 2244   TASK: c4cdc000  CPU: 0   COMMAND: \"ssh\"",
+"    [277261]  PID: 1391   TASK: c5d8e000  CPU: 0   COMMAND: \"syslogd\"",
+"    [276837]  PID: 1990   TASK: c58d8000  CPU: 0   COMMAND: \"bash\"",
+"    [276802]  PID: 1853   TASK: c3828000  CPU: 0   COMMAND: \"atd\"",
+"    [276496]  PID: 1749   TASK: c4480000  CPU: 0   COMMAND: \"cannaserver\"",
+"    [274931]  PID: 1760   TASK: c43ac000  CPU: 0   COMMAND: \"crond\"",
+"    [246773]  PID: 1844   TASK: c38d8000  CPU: 0   COMMAND: \"xfs\"",
+"    [125620]  PID: 2170   TASK: c48dc000  CPU: 0   COMMAND: \"bash\"",
+"    [119059]  PID: 1033   TASK: c64be000  CPU: 0   COMMAND: \"kjournald\"",
+"    [110916]  PID: 1663   TASK: c528a000  CPU: 0   COMMAND: \"sshd\"",
+"    [ 86122]  PID: 2112   TASK: c0da6000  CPU: 0   COMMAND: \"bash\"",
+"    [ 13637]  PID: 1891   TASK: c67ae000  CPU: 0   COMMAND: \"sshd\"",
+"    [ 13636]  PID: 1894   TASK: c38ec000  CPU: 0   COMMAND: \"bash\"",
+"    [  7662]  PID: 1885   TASK: c6478000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7662]  PID: 1886   TASK: c62da000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7662]  PID: 1887   TASK: c5f8c000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7662]  PID: 1888   TASK: c5f88000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7662]  PID: 1889   TASK: c5f86000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7662]  PID: 1890   TASK: c6424000  CPU: 0   COMMAND: \"mingetty\"",
+"    [  7661]  PID: 4      TASK: c154e000  CPU: 0   COMMAND: \"ksoftirqd/0\"",
+"    [  7595]  PID: 1872   TASK: c2e7e000  CPU: 0   COMMAND: \"inventory.pl\"",
+"    [  6617]  PID: 1771   TASK: c435a000  CPU: 0   COMMAND: \"jserver\"",
+"    [  6307]  PID: 1739   TASK: c48f8000  CPU: 0   COMMAND: \"gpm\"",
+"    [  6285]  PID: 1729   TASK: c4552000  CPU: 0   COMMAND: \"sendmail\"",
+"    [  6009]  PID: 1395   TASK: c6344000  CPU: 0   COMMAND: \"klogd\"",
+"    [  5820]  PID: 1677   TASK: c4d74000  CPU: 0   COMMAND: \"xinetd\"",
+"    [  5719]  PID: 1422   TASK: c5d04000  CPU: 0   COMMAND: \"portmap\"",
+"    [  4633]  PID: 1509   TASK: c5ed4000  CPU: 0   COMMAND: \"apmd\"",
+"    [  4529]  PID: 1520   TASK: c5d98000  CPU: 0   COMMAND: \"ypbind\"",
+"    [  4515]  PID: 1522   TASK: c5d32000  CPU: 0   COMMAND: \"ypbind\"",
+"    [  4373]  PID: 1441   TASK: c5d48000  CPU: 0   COMMAND: \"rpc.statd\"",
+"    [  4210]  PID: 1352   TASK: c5b30000  CPU: 0   COMMAND: \"dhclient\"",
+"    [  1184]  PID: 71     TASK: c65b6000  CPU: 0   COMMAND: \"khubd\"",
+"    [   434]  PID: 9      TASK: c11de000  CPU: 0   COMMAND: \"mdrecoveryd\"",
+"    [    48]  PID: 7      TASK: c7ff4000  CPU: 0   COMMAND: \"bdflush\"",
 " ",
 "  Show the kernel stack pointer of each user task:\n",
 "    %s> ps -us",
@@ -966,7 +1169,11 @@ NULL
 char *help_bt[] = {
 "bt",
 "backtrace",
-"[-a | -r | -t | -l | -e | -g] [-R ref] [ -I ip ] [-S sp] [ pid | taskp] ... ",
+#if defined(GDB_6_0) || defined(GDB_6_1)
+"[-a|-r|-t|-l|-e|-E|-f] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
+#else
+"[-a|-r|-t|-l|-e|-f|-g] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
+#endif
 "  Display a kernel stack backtrace.  If no arguments are given, the stack",
 "  trace of the current context will be displayed.\n",
 "       -a  displays the stack traces of the active task on each CPU.",
@@ -974,11 +1181,18 @@ char *help_bt[] = {
 "       -r  display raw stack data, consisting of a memory dump of the two",
 "           pages of memory containing the task_union structure.",
 "       -t  display all text symbols found from the last known stack location",
-"           to the top of the stack. (helpful if kernel was compiled with",
-"           the -fomit-frame-pointer CFLAG)",
+"           to the top of the stack. (helpful if the back trace fails)",
 "       -l  show file and line number of each stack trace text location.",
 "       -e  search the stack for possible kernel and user mode exception frames.",
+"       -E  search the IRQ stacks (x86, x86_64 and PPC64), and the exception",
+"           stacks (x86_64) for possible exception frames; all other arguments",
+"           will be ignored since this is not a context-sensitive operation.",
+"       -f  display all stack data contained in a frame; this option can be",
+"           used to determine the arguments passed to each function (x86 only);",
+"           on IA64, the argument register contents are dumped.",
+#if !defined(GDB_6_0) && !defined(GDB_6_1)
 "       -g  use gdb stack trace code. (alpha only)",
+#endif
 "   -R ref  display stack trace only if there is a reference to this symbol",
 "           or text address.",
 "    -I ip  use ip as the starting text location.",
@@ -986,80 +1200,133 @@ char *help_bt[] = {
 "      pid  displays the stack trace(s) of this pid.",
 "    taskp  displays the stack trace the the task referenced by this hexadecimal",
 "           task_struct pointer.\n",
-"  The arguments that are passed to each function are shown under each frame.",
-"  The number of arguments shown are a \"best-guess\"; extra argument values",
-"  are displayed when the number of arguments cannot be accurately determined.",
-"  Arguments are not shown on all architectures.",
-"\nEXAMPLES",
-"  Display the stack trace of the active task when the kernel panicked:\n",
+"  Note that all examples below are for x86 only.  The output format will differ",
+"  for other architectures.  x86 backtraces from kernels that were compiled",
+"  with the --fomit-frame-pointer CFLAG occasionally will drop stack frames,",
+"  or display a stale frame reference.  x86_64 backtraces are only slightly",
+"  more intelligent than those generated from kernel oops messages; text return",
+"  addresses shown in the back trace may include stale references.  When in",
+"  doubt as to the accuracy of a backtrace, the -t option may help fill in",
+"  the blanks.\n",
+"EXAMPLES",
+"  Display the stack trace of the active task(s) when the kernel panicked:\n",
 "    %s> bt -a",
 "    PID: 286    TASK: c0b3a000  CPU: 0   COMMAND: \"in.rlogind\"",
 "    #0 [c0b3be90] crash_save_current_state at c011aed0",
-"       (c0b3a000)",
 "    #1 [c0b3bea4] panic at c011367c",
-"       (c02095a4)",
 "    #2 [c0b3bee8] tulip_interrupt at c01bc820",
-"       (9, eth0_dev, c0b3bf44)",
 "    #3 [c0b3bf08] handle_IRQ_event at c010a551",
-"       (9, c0b3bf44, c08e4190)",
 "    #4 [c0b3bf2c] do_8259A_IRQ at c010a319",
-"       (9, c0b3bf44)",
 "    #5 [c0b3bf3c] do_IRQ at c010a653",
-"       (c0e68280)",
 "    #6 [c0b3bfbc] ret_from_intr at c0109634",
 "       EAX: 00000000  EBX: c0e68280  ECX: 00000000  EDX: 00000004  EBP: c0b3bfbc",
 "       DS:  0018      ESI: 00000004  ES:  0018      EDI: c0e68284 ",
 "       CS:  0010      EIP: c012f803  ERR: ffffff09  EFLAGS: 00000246 ",
 "    #7 [c0b3bfbc] sys_select at c012f803",
-"       (4, bfffc9a0, 0, bfffc8a0)",
-"    #8 [bfffd224] system_call at c0109598",
+"    #8 [c0b3bfc0] system_call at c0109598",
 "       EAX: 0000008e  EBX: 00000004  ECX: bfffc9a0  EDX: 00000000 ",
 "       DS:  002b      ESI: bfffc8a0  ES:  002b      EDI: 00000000 ",
 "       SS:  002b      ESP: bfffc82c  EBP: bfffd224 ",
 "       CS:  0023      EIP: 400d032e  ERR: 0000008e  EFLAGS: 00000246  ",
-"\n  Display the stack traces of PID 340 and task c0c86000:\n",
-"    %s> bt 340 c0c86000",
-"    PID: 340    TASK: c1126000  CPU: 0   COMMAND: \"httpd\"",
-"    #0 [c1127e78] schedule at c0110f23",
-"       (void)",
-"    #1 [c1127eb4] interruptible_sleep_on at c011116b",
-"       (c0985670)",
-"    #2 [c1127efc] posix_lock_file at c0130bb1",
-"       (c0e6cf00, c1127f34, 1)",
-"    #3 [c1127f70] fcntl_setlk at c01303d1",
-"       (14, 7, 8077988)",
-"    #4 [c1127fbc] sys_fcntl at c012e97b",
-"       (14, 7, 8077988)",
-"    #5 [bffffcbc] system_call at c0109598",
-"       EAX: 00000037  EBX: 00000014  ECX: 00000007  EDX: 08077988 ",
-"       DS:  002b      ESI: 00000003  ES:  002b      EDI: 000001ec ",
-"       SS:  002b      ESP: bffffca4  EBP: bffffcbc ",
-"       CS:  0023      EIP: 400d59a4  ERR: 00000037  EFLAGS: 00000292  ",
-"    ",
-"    PID: 216    TASK: c0c86000  CPU: 0   COMMAND: \"inetd\"",
-"    #0 [c0c87eec] schedule at c0110f23",
-"       (void)",
-"    #1 [c0c87f34] schedule_timeout at c0110c6f",
-"       (2d)",
-"    #2 [c0c87f64] do_select at c012f2d8",
-"       (e, c0c87fa4, c0c87fa0)",
-"    #3 [c0c87fbc] sys_select at c012f83d",
-"       (e, bffffc14, 0, 0, 0)",
-"    #4 [bffffdb8] system_call at c0109598",
-"       EAX: 0000008e  EBX: 0000000e  ECX: bffffc14  EDX: 00000000 ",
-"       DS:  002b      ESI: 00000000  ES:  002b      EDI: 00000000 ",
-"       SS:  002b      ESP: bffffbbc  EBP: bffffdb8 ",
-"       CS:  0023      EIP: 4007e32e  ERR: 0000008e  EFLAGS: 00000202",
+"\n  Display the stack traces of task f2814000 and PID 1592:\n",
+"    %s> bt f2814000 1592",
+"    PID: 1018   TASK: f2814000  CPU: 1   COMMAND: \"java\"",
+"     #0 [f2815db4] schedule at c011af85",
+"     #1 [f2815de4] __down at c010600f",
+"     #2 [f2815e14] __down_failed at c01061b3",
+"     #3 [f2815e24] stext_lock (via drain_cpu_caches) at c025fa55",
+"     #4 [f2815ec8] kmem_cache_shrink_nr at c013a53e",
+"     #5 [f2815ed8] do_try_to_free_pages at c013f402",
+"     #6 [f2815f04] try_to_free_pages at c013f8d2",
+"     #7 [f2815f1c] _wrapped_alloc_pages at c01406bd",
+"     #8 [f2815f40] __alloc_pages at c014079d",
+"     #9 [f2815f60] __get_free_pages at c014083e",
+"    #10 [f2815f68] do_fork at c011cebb",
+"    #11 [f2815fa4] sys_clone at c0105ceb",
+"    #12 [f2815fc0] system_call at c010740c",
+"        EAX: 00000078  EBX: 00000f21  ECX: bc1ffbd8  EDX: bc1ffbe0",
+"        DS:  002b      ESI: 00000000  ES:  002b      EDI: bc1ffd04",
+"        SS:  002b      ESP: 0807316c  EBP: 080731bc",
+"        CS:  0023      EIP: 4012881e  ERR: 00000078  EFLAGS: 00000296",
+" ",
+"    PID: 1592   TASK: c0cec000  CPU: 3   COMMAND: \"httpd\"",
+"     #0 [c0ceded4] schedule at c011af85",
+"     #1 [c0cedf04] pipe_wait at c0153083",
+"     #2 [c0cedf58] pipe_read at c015317f",
+"     #3 [c0cedf7c] sys_read at c0148be6",
+"     #4 [c0cedfc0] system_call at c010740c",
+"        EAX: 00000003  EBX: 00000004  ECX: bffed4a3  EDX: 00000001 ",
+"        DS:  002b      ESI: 00000001  ES:  002b      EDI: bffed4a3 ",
+"        SS:  002b      ESP: bffed458  EBP: bffed488 ",
+"        CS:  0023      EIP: 4024f1d4  ERR: 00000003  EFLAGS: 00000286 ",
+" ",
+"  In order to examine each stack frame's contents use the bt -f option.",
+"  From the extra frame data that is displayed, the arguments passed to each",
+"  function can be determined.  Re-examining the PID 1592 trace above:",
+" ",
+"    %s> bt -f 1592",
+"    PID: 1592   TASK: c0cec000  CPU: 3   COMMAND: \"httpd\"",
+"     #0 [c0ceded4] schedule at c011af85",
+"        [RA: c0153088  SP: c0ceded4  FP: c0cedf04  SIZE: 52]",
+"        c0ceded4: c0cedf00  c0cec000  ce1a6000  00000003  ",
+"        c0cedee4: c0cec000  f26152c0  cfafc8c0  c0cec000  ",
+"        c0cedef4: ef70a0a0  c0cec000  c0cedf28  c0cedf54  ",
+"        c0cedf04: c0153088  ",
+"     #1 [c0cedf04] pipe_wait at c0153083",
+"        [RA: c0153184  SP: c0cedf08  FP: c0cedf58  SIZE: 84]",
+"        c0cedf08: 00000000  c0cec000  00000000  00000000  ",
+"        c0cedf18: 00000000  c0a41fa0  c011d38b  c0394120  ",
+"        c0cedf28: 00000000  c0cec000  ceeebf30  ce4adf30  ",
+"        c0cedf38: 00000000  d4b60ce0  00000000  c0cedf58  ",
+"        c0cedf48: e204f820  ef70a040  00000001  c0cedf78  ",
+"        c0cedf58: c0153184  ",
+"     #2 [c0cedf58] pipe_read at c015317f",
+"        [RA: c0148be8  SP: c0cedf5c  FP: c0cedf7c  SIZE: 36]",
+"        c0cedf5c: ef70a040  c0cec000  00000000  00000000  ",
+"        c0cedf6c: 00000001  f27ae680  ffffffea  c0cedfbc  ",
+"        c0cedf7c: c0148be8  ",
+"     #3 [c0cedf7c] sys_read at c0148be6",
+"        [RA: c0107413  SP: c0cedf80  FP: c0cedfc0  SIZE: 68]",
+"        c0cedf80: f27ae680  bffed4a3  00000001  f27ae6a0  ",
+"        c0cedf90: 40160370  24000000  4019ba28  00000000  ",
+"        c0cedfa0: 00000000  fffffffe  bffba207  fffffffe  ",
+"        c0cedfb0: c0cec000  00000001  bffed4a3  bffed488  ",
+"        c0cedfc0: c0107413  ",
+"     #4 [c0cedfc0] system_call at c010740c",
+"        EAX: 00000003  EBX: 00000004  ECX: bffed4a3  EDX: 00000001 ",
+"        DS:  002b      ESI: 00000001  ES:  002b      EDI: bffed4a3 ",
+"        SS:  002b      ESP: bffed458  EBP: bffed488 ",
+"        CS:  0023      EIP: 4024f1d4  ERR: 00000003  EFLAGS: 00000286 ",
+"        [RA: 4024f1d4  SP: c0cedfc4  FP: c0cedffc  SIZE: 60]",
+"        c0cedfc4: 00000004  bffed4a3  00000001  00000001  ",
+"        c0cedfd4: bffed4a3  bffed488  00000003  0000002b  ",
+"        c0cedfe4: 0000002b  00000003  4024f1d4  00000023  ",
+"        c0cedff4: 00000286  bffed458  0000002b  ",
+" ",
+"    Typically the arguments passed to a function will be the last values",
+"    that were pushed onto the stack by the next higher-numbered function, i.e.,", 
+"    the lowest stack addresses in the frame above the called function's",
+"    stack frame.  That can be verified by disassembling the calling function.",
+"    For example, the arguments passed from sys_read() to pipe_read() above",
+"    are the file pointer, the user buffer address, the count, and a pointer",
+"    to the file structure's f_pos field.  Looking at the frame #3 data for",
+"    sys_read(), the last four items pushed onto the stack (lowest addresses)",
+"    are f27ae680, bffed4a3, 00000001, and f27ae6a0 -- which are the 4 arguments",
+"    above, in that order.  Note that the first (highest address) stack content",
+"    in frame #2 data for pipe_read() is c0148be8, which is the return address",
+"    back to sys_read(). ",
 " ",
 "  Dump the text symbols found in the current context's stack:\n",
 "    %s> bt -t",
-"    PID: 527    TASK: c06be000  CPU: 0   COMMAND: \"sendmail\"",
-"         EIP: schedule+0x352",
-"    c06be038: schedule_timeout+0x65",
-"    c06be058: process_timeout",
-"    c06be060: do_select+0xac",
-"    c06be090: sys_select+0x405",
-"    c06be0e8: system_call+0x34",
+"    PID: 1357   TASK: c1aa0000  CPU: 0   COMMAND: \"lockd\"",
+"          START: schedule at c01190e0",
+"      [c1aa1f28] dput at c0157dbc",
+"      [c1aa1f4c] schedule_timeout at c0124cd4",
+"      [c1aa1f78] svc_recv at cb22c4d8",
+"      [c1aa1f98] put_files_struct at c011eb21",
+"      [c1aa1fcc] nlmclnt_proc at cb237bef",
+"      [c1aa1ff0] kernel_thread at c0105826",
+"      [c1aa1ff8] nlmclnt_proc at cb237a60",
 " ",
 "  Search the current stack for possible exception frames:\n",
 "    %s> bt -e",
@@ -1075,6 +1342,43 @@ char *help_bt[] = {
 "       DS:  002b      ESI: bfffc8a0  ES:  002b      EDI: 00000000 ",
 "       SS:  002b      ESP: bfffc82c  EBP: bfffd224 ",
 "       CS:  0023      EIP: 400d032e  ERR: 0000008e  EFLAGS: 00000246 ",
+" ",
+"  Display the back trace from a dumpfile that resulted from the execution",
+"  of the %s utility's \"sys -panic\" command:\n",
+"   %s> bt",
+"   PID: 12523  TASK: c610c000  CPU: 0   COMMAND: \"crash\"",
+"    #0 [c610de64] die at c01076ec",
+"    #1 [c610de74] do_invalid_op at c01079bc",
+"    #2 [c610df2c] error_code (via invalid_op) at c0107256",
+"       EAX: 0000001d  EBX: c024a4c0  ECX: c02f13c4  EDX: 000026f6  EBP: c610c000",
+"       DS:  0018      ESI: 401de2e0  ES:  0018      EDI: c610c000",
+"       CS:  0010      EIP: c011bbb4  ERR: ffffffff  EFLAGS: 00010296",
+"    #3 [c610df68] panic at c011bbb4",
+"    #4 [c610df78] do_exit at c011f1fe",
+"    #5 [c610dfc0] system_call at c0107154",
+"       EAX: 00000001  EBX: 00000000  ECX: 00001000  EDX: 401df154",
+"       DS:  002b      ESI: 401de2e0  ES:  002b      EDI: 00000000",
+"       SS:  002b      ESP: bffebf0c  EBP: bffebf38",
+"       CS:  0023      EIP: 40163afd  ERR: 00000001  EFLAGS: 00000246",
+" ",
+"  Display the back trace from a dumpfile that resulted from an attempt to",
+"  insmod the sample \"crash.c\" kernel module that comes as part of the",
+"  Red Hat netdump package:\n",
+"   %s> bt",
+"   PID: 1696   TASK: c74de000  CPU: 0   COMMAND: \"insmod\"",
+"    #0 [c74dfdcc] die at c01076ec",
+"    #1 [c74dfddc] do_page_fault at c0117bbc",
+"    #2 [c74dfee0] error_code (via page_fault) at c0107256",
+"       EAX: 00000013  EBX: cb297000  ECX: 00000000  EDX: c5962000  EBP: c74dff28",
+"       DS:  0018      ESI: 00000000  ES:  0018      EDI: 00000000",
+"       CS:  0010      EIP: cb297076  ERR: ffffffff  EFLAGS: 00010282",
+"    #3 [c74dff1c] crash_init at cb297076",
+"    #4 [c74dff2c] sys_init_module at c011d233",
+"    #5 [c74dffc0] system_call at c0107154",
+"       EAX: 00000080  EBX: 08060528  ECX: 08076450  EDX: 0000000a",
+"       DS:  002b      ESI: 0804b305  ES:  002b      EDI: 08074ed0",
+"       SS:  002b      ESP: bffe9a90  EBP: bffe9ac8",
+"       CS:  0023      EIP: 4012066e  ERR: 00000080  EFLAGS: 00000246",
 NULL               
 };
 
@@ -1252,22 +1556,37 @@ NULL
 char *help_mach[] = {
 "mach",
 "machine specific data",    
-"[-c]",
+"[-cm]",
 "  This command displays data specific to a machine type.\n",
-"    -c  Display each cpu's cpuinfo structure (x86 and ia64 only).",
+"    -c  Display each cpu's cpuinfo structure (x86, x86_64 and ia64 only).",
+"        Display each cpu's x8664_pda structure (x86_64 only),", 
 "        Display the hwrpb_struct, and each cpu's percpu_struct (alpha only).",
+"    -m  Display the physical memory map (x86, x86_64 and ia64 only).",
 "\nEXAMPLES", 
 "    %s> mach",
 "           MACHINE TYPE: i686",
-"            MEMORY SIZE: 128 MB",
+"            MEMORY SIZE: 512 MB",
 "                   CPUS: 2",
-"        PROCESSOR SPEED: 447 Mhz",
+"        PROCESSOR SPEED: 1993 Mhz",
 "                     HZ: 100",
 "              PAGE SIZE: 4096",
-"          L1 CACHE SIZE: 16",
+"          L1 CACHE SIZE: 32",
 "    KERNEL VIRTUAL BASE: c0000000",
-"    KERNEL VMALLOC BASE: c8000000",
+"    KERNEL VMALLOC BASE: e0800000",
 "      KERNEL STACK SIZE: 8192",
+" ",
+"  Display the system physical memory map:\n",
+"    %s> mach -m",
+"          PHYSICAL ADDRESS RANGE         TYPE",
+"    0000000000000000 - 00000000000a0000  E820_RAM",
+"    00000000000f0000 - 0000000000100000  E820_RESERVED",
+"    0000000000100000 - 000000001ff75000  E820_RAM",
+"    000000001ff75000 - 000000001ff77000  E820_NVS",
+"    000000001ff77000 - 000000001ff98000  E820_ACPI",
+"    000000001ff98000 - 0000000020000000  E820_RESERVED",
+"    00000000fec00000 - 00000000fec90000  E820_RESERVED",
+"    00000000fee00000 - 00000000fee10000  E820_RESERVED",
+"    00000000ffb00000 - 0000000100000000  E820_RESERVED",
 NULL               
 };
 
@@ -2531,7 +2850,7 @@ NULL
 char *help_struct[] = {
 "struct",
 "structure contents",
-"struct_name[.member] [[-o] | [[-r] [address | symbol] [count]]]",
+"struct_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]",
 "  This command displays either a structure definition, or a formatted display",
 "  of the contents of a structure at a specified address.  When no address is",
 "  specified, the structure definition is shown along with the structure size.",
@@ -2541,13 +2860,27 @@ char *help_struct[] = {
 "    struct_name  name of a C-code structure used by the kernel.",
 "        .member  name of a structure member.",
 "             -o  show member offsets when displaying structure definitions.",
+"      -l offset  if the address argument is a pointer to a list_head structure",
+"                 that is embedded in the target data structure, the offset",
+"                 to the list_head member may be entered in either of the",
+"                 following manners:",
+"                   1. in \"structure.member\" format.",
+"                   2. a number of bytes. ",
 "             -r  raw dump of structure data.",
-"        address  hexadecimal address of a structure.",  
+"        address  hexadecimal address of a structure; if the address points",  
+"                 to an embedded list_head structure contained within the",
+"                 target data structure, then the \"=l\" option must be used.",
 "         symbol  symbolic reference to the address of a structure.",
 "          count  count of structures to dump from an array of structures;",
 "                 if used, this must be the last argument entered.\n",
 "  Structure data, sizes, and member offsets are shown in the current output",
 "  radix.",
+" ",
+"  Please note that in the vast majority of cases, the \"struct\" command",
+"  name may be dropped; if the structure name does not conflict with any %s",
+"  or gdb command name, then the \"struct_name[.member]\" argument will be",
+"  recognized as a structure name, and this command automatically executed.",
+"  See the NOTE below.",
 "\nEXAMPLES",
 "  Display the vm_area_struct at address c1e44f10:\n",
 "    %s> struct vm_area_struct c1e44f10",
@@ -2654,6 +2987,61 @@ char *help_struct[] = {
 "      last = 0x143198,  ",
 "      handler = 0xc0164404  <tcp_bucketgc>",
 "    }",
+" ",
+"  Without using the \"struct\" command name, display the the \"d_child\" ",
+"  list_head member from a dentry structure:\n",
+"    %s> dentry.d_child 0xe813cb4",
+"      d_child = {",
+"        next = 0x3661344,",
+"        prev = 0xdea4bc4",
+"      },",
+" ",
+"  Display the child dentry structure referenced by the \"next\" pointer above.",
+"  Since the \"next\" address of 0x3661344 above is a pointer to an embedded",
+"  list_head structure within the child dentry structure, the -l option",
+"  is required:\n",
+"    %s> dentry -l dentry.d_child 0x3661344",
+"    struct dentry {",
+"      d_count = {",
+"        counter = 1",
+"      }, ",
+"      d_flags = 0, ",
+"      d_inode = 0xf9aa604, ",
+"      d_parent = 0x11152b1c, ",
+"      d_hash = {",
+"        next = 0x11fb3fc0, ",
+"        prev = 0x11fb3fc0",
+"      }, ",
+"      d_lru = {",
+"        next = 0x366133c, ",
+"        prev = 0x366133c",
+"      }, ",
+"      d_child = {",
+"        next = 0x36613cc, ",
+"        prev = 0xe813cd4",
+"      }, ",
+"      d_subdirs = {",
+"        next = 0x366134c, ",
+"        prev = 0x366134c",
+"      }, ",
+"      d_alias = {",
+"        next = 0xf9aa614, ",
+"        prev = 0xf9aa614",
+"      }, ",
+"      d_mounted = 0, ",
+"      d_name = {",
+"        name = 0x3661384 \"boot.log\", ",
+"        len = 8, ",
+"        hash = 1935169207",
+"      }, ",
+"      d_time = 1515870810, ",
+"      d_op = 0x0, ",
+"      d_sb = 0x11fc9c00, ",
+"      d_vfs_flags = 0, ",
+"      d_fsdata = 0x0, ",
+"      d_extra_attributes = 0x0, ",
+"      d_iname = \"boot.log\\000\"",
+"    }",
 "\nNOTE",
 "  If the structure name does not conflict with any %s command name, the",
 "  \"struct\" command may be dropped.  Accordingly, the examples above could",
@@ -2673,23 +3061,37 @@ NULL
 char *help_union[] = {
 "union",
 "union contents",
-"union_name[.member] [[-o] | [[-r] [address | symbol] [count]]]",
+"union_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]",
 "  This command displays either a union definition, or a formatted display",
 "  of the contents of a union at a specified address.  When no address is",
 "  specified, the union definition is shown along with the union size.",
 "  A union member may be appended to the structure name in order to limit",
 "  the scope of the data displayed to that particular member; when no address",
 "  is specified, the member's offset (always 0) and definition are shown.\n",
-"    struct_name  name of a C-code union used by the kernel.",
+"     union_name  name of a C-code union used by the kernel.",
 "        .member  name of a union member.",  
 "             -o  show member offsets when displaying union definitions.",
 "                 (always 0)",
+"      -l offset  if the address argument is a pointer to a list_head structure",
+"                 that is embedded in the target union structure, the offset",
+"                 to the list_head member may be entered in either of the",
+"                 following manners:",
+"                   1. in \"structure.member\" format.",
+"                   2. a number of bytes. ",
 "             -r  raw dump of union data.",
-"        address  hexadecimal address of a union.",  
+"        address  hexadecimal address of a union; if the address points",
+"                 to an embedded list_head structure contained within the",
+"                 target union structure, then the \"=l\" option must be used.",
 "         symbol  symbolic reference to the address of a union.",
 "          count  count of unions to dump from an array of unions; if used,",
 "                 this must be the last argument entered.\n",
 "  Union data, sizes, and member offsets are shown in the current output radix.",
+" ",
+"  Please note that in the vast majority of cases, the \"union\" command",
+"  name may be dropped; if the union name does not conflict with any %s",
+"  or gdb command name, then the \"union_name[.member]\" argument will be",
+"  recognized as a union name, and this command automatically executed.",
+"  See the NOTE below.",
 "\nEXAMPLES",
 "\n  Display the bdflush_param union definition, and then an instance of it:\n",
 "    %s> union bdflush_param",
@@ -2754,27 +3156,53 @@ NULL
 char *help_mod[] = {
 "mod",
 "module information and loading of symbols and debugging data",
-"[ -s module [objfile] | -d module | -S | -D | -r ] ",
+"[ -s module [objfile] | -d module | -S [directory] | -D | -r ] ",
 "  With no arguments, this command displays basic information of the currently",
-"  installed modules, consisting of the module address, name, size, and the",
-"  object file name, if known.\n",
+"  installed modules, consisting of the module address, name, size, the",
+"  object file name (if known), and whether the module was compiled with",
+"  CONFIG_KALLSYMS.",
+" ",
 "  The arguments are concerned with with the loading or deleting of symbolic",
-"  and debugging data from a module's object file:\n",
-
+"  and debugging data from a module's object file.  A modules's object file",
+"  always contains symbolic data (symbol names and addresses), but contains",
+"  debugging data only if the module was compiled with the -g CFLAG.  In",
+"  addition, the module may have compiled with CONFIG_KALLSYMS, which means",
+"  that the module's symbolic data will have been loaded into the kernel's",
+"  address space when it was installed.  If the module was not compiled with",
+"  CONFIG_KALLSYMS, then only the module's exported symbols will be loaded",
+"  into the kernel's address space.  Therefore, for the purpose of this",
+"  command, it should noted that a kernel module may have been compiled in",
+"  one of following manners:\n",
+"  1. If the module was built without CONFIG_KALLSYMS and without the -g CFLAG,",
+"     then the loading of the module's additional non-exported symbols can",
+"     be accomplished with this command.",
+"  2. If the module was built with CONFIG_KALLSYMS, but without the -g CFLAG,",
+"     then there is no benefit in loading the symbols from the module object",
+"     file, because all of the module's symbols will have been loaded into the",
+"     kernel's address space when it was installed.",
+"  3. If the module was built with CONFIG_KALLSYMS and with the the -g CFLAG,",
+"     then the loading of the module's debugging data can be accomplished",
+"     with this command.",
+"  4. If the module was built without CONFIG_KALLSYMS but with the -g CFLAG,",
+"     then the loading of the both module's symbolic and debugging data can",
+"     be accomplished with this command.",
+" ",
 "  -s module [objfile]  Loads symbolic and debugging data from the object file",
-"                       for the module specified.  If no objectfile argument is",
+"                       for the module specified.  If no objfile argument is",
 "                       appended, a search will be made for an object file",
-"                       consisting of the module name with a .o suffix,",
+"                       consisting of the module name with a .o or .ko suffix,",
 "                       starting at the /lib/modules/<release> directory on",
 "                       the host system.  If an objfile argument is appended,",
-"                       that file will be used.",
+"                       then that file will be used.",
 "            -d module  Deletes the symbolic and debugging data of the module",
 "                       specified.",
-"                   -S  Load symbolic and debugging data from the object file",
+"       -S [directory]  Load symbolic and debugging data from the object file",
 "                       for all loaded modules.  For each module, a search",
 "                       will be made for an object file consisting of the",
-"                       module name with a .o suffix, starting at the",
+"                       module name with a .o or.ko suffix, starting at the",
 "                       /lib/modules/<release> directory of the host system.",
+"                       If a directory argument is appended, then the search",
+"                       will be restricted to that directory.",
 "                   -D  Deletes the symbolic and debugging data of all modules.",
 "                   -r  Reinitialize module data. All currently-loaded symbolic",
 "                       and debugging data will be deleted, and the installed",
@@ -2804,6 +3232,41 @@ char *help_mod[] = {
 "    c805c000  lockd       31528  (not loaded)",
 "    c8065000  nfsd       151896  (not loaded)",
 "    c8092000  nfs         29752  (not loaded)",
+" ",
+"  Display the currently-installed modules on a system where all modules were",
+"  compiled with CONFIG_KALLSYMS:",
+" ",
+"    %s> mod",
+"     MODULE   NAME              SIZE  OBJECT FILE",
+"    e080d000  jbd              57016  (not loaded)  [CONFIG_KALLSYMS]",
+"    e081e000  ext3             92360  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0838000  usbcore          83168  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0850000  usb-uhci         27532  (not loaded)  [CONFIG_KALLSYMS]",
+"    e085a000  ehci-hcd         20904  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0865000  input             6208  (not loaded)  [CONFIG_KALLSYMS]",
+"    e086a000  hid              22404  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0873000  mousedev          5688  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0878000  keybdev           2976  (not loaded)  [CONFIG_KALLSYMS]",
+"    e08fd000  cdrom            34144  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0909000  ide-cd           35776  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0915000  scsi_mod        117928  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0935000  ide-scsi         12752  (not loaded)  [CONFIG_KALLSYMS]",
+"    e093c000  microcode         5248  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0943000  sr_mod           18136  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0956000  floppy           59056  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0966000  sg               38060  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0971000  ip_tables        16544  (not loaded)  [CONFIG_KALLSYMS]",
+"    e097d000  iptable_filter    2412  (not loaded)  [CONFIG_KALLSYMS]",
+"    e097f000  e1000            76096  (not loaded)  [CONFIG_KALLSYMS]",
+"    e09ba000  autofs           13780  (not loaded)  [CONFIG_KALLSYMS]",
+"    e09c1000  parport          39072  (not loaded)  [CONFIG_KALLSYMS]",
+"    e09ce000  lp                9220  (not loaded)  [CONFIG_KALLSYMS]",
+"    e09d4000  parport_pc       19204  (not loaded)  [CONFIG_KALLSYMS]",
+"    e09e2000  agpgart          59128  (not loaded)  [CONFIG_KALLSYMS]",
+"    e0a1a000  radeon          117156  (not loaded)  [CONFIG_KALLSYMS]",
+"    e2dc7000  sunrpc           91996  (not loaded)  [CONFIG_KALLSYMS]",
+"    e2de1000  lockd            60624  (not loaded)  [CONFIG_KALLSYMS]",
+"    e2df3000  nfs              96880  (not loaded)  [CONFIG_KALLSYMS]",
 " ",
 "  Load the symbolic and debugging data of all modules:\n",
 "    %s> mod -S",
@@ -2983,8 +3446,8 @@ char *help__list[] = {
 "    c02edfa0",
 "      name = 0xc028e1e0 \"devpts\"",
 " ",
-"  The system run queue is a linked list headed up by the \"runqueue_head\",",
-"  which is defined like so:",
+"  In some kernels, the system run queue is a linked list headed up by the",
+"  \"runqueue_head\", which is defined like so:",
 " ",
 "    static LIST_HEAD(runqueue_head);",
 " ",
@@ -3006,10 +3469,10 @@ char *help__list[] = {
 "    f7254000",
 "    f7004000",
 " ",
-"  Lastly, the vfsmount structures of the mounted filesystems are linked by",
-"  the LIST_HEAD \"vfsmntlist\", which uses the mnt_list list_head of each ",
-"  vfsmount structure in the list.  To dump each vfsmount structure in the list,",
-"  append the -s option:\n",
+"  Lastly, in some kernel versions, the vfsmount structures of the mounted",
+"  filesystems are linked by the LIST_HEAD \"vfsmntlist\", which uses the",
+"  mnt_list list_head of each vfsmount structure in the list.  To dump each",
+"  vfsmount structure in the list, append the -s option:\n",
 "    %s> list -H vfsmntlist vfsmount.mnt_list -s vfsmount",
 "    c3fc9e60",
 "    struct vfsmount {",
@@ -3096,7 +3559,7 @@ NULL
 char *help_kmem[] = {
 "kmem",
 "kernel memory",
-"[-f|-F|-p|-c|-C|-i|-s|-S|-v|-n] [-[l|L][a|i]] [slab-name] [address]",
+"[-f|-F|-p|-c|-C|-i|-s|-S|-v|-n] [-[l|L][a|i]] [slab-name] [[-P] address]",
 "  This command displays information about the use of kernel memory.\n",
 "        -f  displays the contents of the system free memory headers.",
 "            also verifies that the page count equals nr_free_pages.",
@@ -3110,13 +3573,15 @@ char *help_kmem[] = {
 "        -S  displays all kmalloc() slab data, including all slab objects,",
 "            and whether each object is in use or is free.",
 "        -v  displays the vmlist entries.",
-"        -n  display NUMA data (if supported).",
+"        -n  display memory node data (if supported).",
 "       -la  walks through the active_list and verifies nr_active_pages.",
 "       -li  walks through the inactive_list and verifies nr_inactive_pages.",
 "       -La  same as -la, but also dumps each page in the active_list.",
 "       -Li  same as -li, but also dumps each page in the inactive_list.",
-" slab-name  when used with -s or -S, limits the command to only the slab",
-"            of name \"slab-cache\".",
+" slab-name  when used with -s or -S, limits the command to only the slab cache",
+"            of name \"slab-name\".  If the slab-name argument is \"list\", then",
+"            all slab cache names and addresses are listed.",
+"        -P  declares that the following address argument is a physical address.",
 "   address  when used without any flag, the address can be a kernel virtual,",
 "            or physical address; a search is made through the symbol table,",
 "            the kmalloc() slab subsystem, the free list, the page_hash_table,",
@@ -3143,23 +3608,30 @@ char *help_kmem[] = {
 "\nEXAMPLES",
 "  Display memory usage information:\n",
 "    %s> kmem -i",
-"                  PAGES     TOTAL        PERCENTAGE",
-"     TOTAL MEM   127777   523374592         ----",
-"          FREE      928     3801088    0% of TOTAL MEM",
-"          USED   126849   519573504   99% of TOTAL MEM",
-"        SHARED    37981   155570176   29% of TOTAL MEM",
-"       BUFFERS      369     1511424    0% of TOTAL MEM",
-"        CACHED    37856   155058176   29% of TOTAL MEM",
-"          SLAB    76138   311861248   59% of TOTAL MEM",
+"                  PAGES        TOTAL      PERCENTAGE",
+"     TOTAL MEM    63602     248.4 MB         ----",
+"          FREE      993       3.9 MB    1% of TOTAL MEM",
+"          USED    62609     244.6 MB   98% of TOTAL MEM",
+"        SHARED    34035     132.9 MB   53% of TOTAL MEM",
+"       BUFFERS    10928      42.7 MB   17% of TOTAL MEM",
+"        CACHED    35249     137.7 MB   55% of TOTAL MEM",
+"          SLAB     2823        11 MB    4% of TOTAL MEM",
 "    ",
-"    TOTAL HIGH        0           0    0% of TOTAL MEM",
-"     FREE HIGH        0           0    0% of TOTAL HIGH",
-"     TOTAL LOW   127777   523374592  100% of TOTAL MEM",
-"      FREE LOW      928     3801088    0% of TOTAL LOW",
+"    TOTAL HIGH        0            0    0% of TOTAL MEM",
+"     FREE HIGH        0            0    0% of TOTAL HIGH",
+"     TOTAL LOW    63602     248.4 MB  100% of TOTAL MEM",
+"      FREE LOW      993       3.9 MB    1% of TOTAL LOW",
 "    ",
-"    TOTAL SWAP    51198   209707008         ----",
-"     SWAP USED        0           0    0% of TOTAL SWAP",
-"     SWAP FREE    51198   209707008  100% of TOTAL SWAP",
+"    TOTAL SWAP   129792       507 MB         ----",
+"     SWAP USED    14727      57.5 MB   11% of TOTAL SWAP",
+"     SWAP FREE   115065     449.5 MB   88% of TOTAL SWAP",
+"    ",
+"    ZONE  NAME      FREE   ACTIVE  INACTIVE_DIRTY  INACTIVE_CLEAN  MIN/LOW/HIGH",
+"      0   DMA        240     1166               7             161  128/256/384 ",
+"      1   Normal     753    17009           27834               0  255/510/765 ",
+"      2   HighMem      0        0               0               0     0/0/0    ",
+
+
 " ",
 "  Display and verify free memory data:\n",
 "    %s> kmem -f",
@@ -3178,6 +3650,7 @@ char *help_kmem[] = {
 "      7   512k      c02eb058           1    128",
 "      8  1024k      c02eb064           1    256",
 "      9  2048k      c02eb070           5   2560",
+" ",
 "    ZONE  NAME        SIZE    FREE  MEM_MAP   START_PADDR  START_MAPNR",
 "      1   Normal    225280  202269  c4044040    1000000        4096   ",
 "    AREA  SIZE  FREE_AREA_STRUCT  BLOCKS  PAGES",
@@ -3191,6 +3664,7 @@ char *help_kmem[] = {
 "      7   512k      c02eb10c           0      0",
 "      8  1024k      c02eb118           0      0",
 "      9  2048k      c02eb124         395 202240",
+" ",
 "    ZONE  NAME        SIZE    FREE  MEM_MAP   START_PADDR  START_MAPNR",
 "      2   HighMem   819200  748686  c4ee0040    38000000      229376  ",
 "    AREA  SIZE  FREE_AREA_STRUCT  BLOCKS  PAGES",
@@ -3490,34 +3964,38 @@ char *help_kmem[] = {
 "    nr_active_pages: 1893 (verified)",
 "    nr_inactive_pages: 2491 (verified)",
 
-"\n  Display NUMA data (if supported):\n",
-"    %s> kmem  -n",
-"    NODE    SIZE    PGLIST_DATA   BOOTMEM_DATA",
-"      0    32766      c02dff40      c033e14c",
-"    ",
+"\n  Display memory node data (if supported):\n",
+"    %s> kmem -n",
+"    NODE    SIZE    PGLIST_DATA   BOOTMEM_DATA   NODE_ZONES",
+"      0    130933     c0332ee0      c0403a44      c0332ee0",
+"                                                  c03333e0",
+"                                                  c03338e0",
 "    MEM_MAP   START_PADDR  START_MAPNR",
-"    c100000c       0            0",
+"    c1000030       0            0",
 "    ",
-"    ZONE  NAME        SIZE    FREE   MEM_MAP  START_PADDR  START_MAPNR",
-"      0   DMA         4096      88  c100000c            0            0",
-"      1   Normal     28670     607  c104c00c      1000000         4096",
-"      2   HighMem        0       0         0            0            0",
-
+"    ZONE  NAME        SIZE   MEM_MAP  START_PADDR  START_MAPNR",
+"      0   DMA         4096  c1000030            0            0",
+"      1   Normal    126837  c1038030      1000000         4096",
+"      2   HighMem        0         0            0            0",
 NULL               
 };
 
 char *help_dis[] = {
 "dis",
 "disassemble",
-"[-r][-l] [address | symbol | (expression)] [count]",
+"[-r][-l][-u] [address | symbol | (expression)] [count]",
 "  This command disassembles source code instructions starting (or ending) at",
 "  a text address that may be expressed by value, symbol or expression:\n",
 "            -r  (reverse) displays all instructions from the start of the ",
 "                routine up to and including the designated address.",
 "            -l  displays source code line number data in addition to the ",
 "                disassembly output.", 
+"            -u  address is a user virtual address; otherwise the address is ",
+"                assumed to be a kernel virtual address.  If this option is",
+"                used, then -r and -l are ignored.",
 "       address  starting hexadecimal text address.",
-"        symbol  symbol of starting text address.",
+"        symbol  symbol of starting text address.  On PPC64, the symbol",
+"                preceded by '.' is used.",
 "  (expression)  expression evaluating to a starting text address.",
 "         count  the number of instructions to be disassembled (default is 1).",
 "                If no count argument is entered, and the starting address",
@@ -3601,6 +4079,19 @@ char *help_dis[] = {
 "    0xc011eaa4 <do_no_page+60>:     call   0xc011e9e4 <do_anonymous_page>",
 "    0xc011eaa9 <do_no_page+65>:     jmp    0xc011eb47 <do_no_page+223>",
 "    ",
+"  Disassemble 10 instructions starting at user virtual address 0x81ec624:\n",
+"    %s> dis -u 81ec624 10",
+"    0x81ec624:      push   \%ebp",
+"    0x81ec625:      mov    \%esp,\%ebp",
+"    0x81ec627:      sub    $0x18,\%esp",
+"    0x81ec62a:      movl   $0x1,0x8(\%ebp)",
+"    0x81ec631:      mov    0x82f9040,\%eax",
+"    0x81ec636:      mov    0x10(\%eax),\%edx",
+"    0x81ec639:      and    $0x100,\%edx",
+"    0x81ec63f:      mov    0x14(\%eax),\%ecx",
+"    0x81ec642:      and    $0x0,\%ecx",
+"    0x81ec645:      mov    \%ecx,\%eax",
+" ",
 NULL               
 };
 
@@ -3630,6 +4121,8 @@ char *help_eval[] = {
 "    -b  Indicate which bit positions in the resultant value are set.",
 "    -l  Numeric arguments are presumed to be 64-bit values, and the result",
 "        will be expressed as a 64-bit value. (ignored on 64-bit processors)",
+"        However, if either operand or the resultant value are 64-bit values,",
+"        then the result will be also be expressed as a 64-bit value.",
 " ",
 " The -b and -l options must precede the expression or value arguments.",
 "\nEXAMPLES",
@@ -3651,6 +4144,12 @@ char *help_eval[] = {
 "         octal: 1000000000",
 "        binary: 00001000000000000000000000000000",
 "   ",
+"   %s> eval (1 << 32)",
+"   hexadecimal: 100000000  (4GB)",
+"       decimal: 4294967296",
+"         octal: 40000000000",
+"        binary: 0000000000000000000000000000000100000000000000000000000000000000",
+" ",
 "   %s> eval -b 41dc065",
 "   hexadecimal: 41dc065",
 "       decimal: 69058661  ",
@@ -3853,7 +4352,7 @@ char *help_files[] = {
 "      1  f7368f80  f72c7a40  f72f27e0  FIFO  pipe:/[1456]",
 "      2  f74f3c80  f72c79c0  f72f2600  FIFO  pipe:/[1457]",
 "      3  f7368b60  f72a5be0  f74300c0  REG   /var/run/crond.pid",
-"      4   f7534360  f73408c0  f72c2840  REG   /var/log/cron",
+"      4  f7534360  f73408c0  f72c2840  REG   /var/log/cron",
 "      7  f7368ce0  f72c7940  f72f2420  FIFO  pipe:/[1458]",
 "      8  f7295de0  f72c7940  f72f2420  FIFO  pipe:/[1458]",
 "     21  f74f36e0  f747cdc0  f747e840  CHR   /dev/null",
@@ -4095,25 +4594,34 @@ cmd_usage(char *cmd, int helpflag)
 	struct command_table_entry *cp;
 	char buf[BUFSIZE];
 	struct alias_data *ad;
+	FILE *less;
+
+	if (helpflag & PIPE_TO_LESS) {
+	        if ((less = popen("/usr/bin/less", "w")) != NULL)
+			fp = less;
+		helpflag &= ~PIPE_TO_LESS;
+	} else
+		less = NULL;
+		
 
 	if (STREQ(cmd, "copying")) {
 		display_copying_info();
-		return;
+		goto done_usage;
 	}
 
 	if (STREQ(cmd, "warranty")) {
 		display_warranty_info();
-		return;
+		goto done_usage;
 	}
 
 	if (STREQ(cmd, "input")) {
 		display_input_info();
-		return;
+		goto done_usage;
 	}
 
         if (STREQ(cmd, "output")) {
                 display_output_info();
-                return;
+                goto done_usage;
         }
 
 	if (STREQ(cmd, "all")) {
@@ -4124,17 +4632,17 @@ cmd_usage(char *cmd, int helpflag)
 			cmd_usage(pc->cmdlist[i], COMPLETE_HELP);
 		display_warranty_info();
 		display_copying_info();
-		return;
+		goto done_usage;
 	}
 
 	if (STREQ(cmd, "commands")) {
 		display_commands();
-		return;
+		goto done_usage;
 	}
 
 	if (STREQ(cmd, "README")) {
 		display_README();
-		return;
+		goto done_usage;
 	}
 
 	found = FALSE;
@@ -4171,7 +4679,7 @@ retry:
 				    "No help data for \"%s\" is available.\n",
                                 	cmd);
 		}
-		return;
+		goto done_usage;
         }
 
 	p++;
@@ -4204,6 +4712,13 @@ retry:
         } while (*p);
 
         fprintf(fp, "\n");
+
+done_usage:
+
+	if (less) {
+		fflush(less);
+		pclose(less);
+	}
 }
 
 
@@ -4285,20 +4800,23 @@ char *output_info[] = {
 
 "\nBy default, %s command output is piped to \"/usr/bin/less -E -X\" along",
 "with a prompt line.  This behavior can be turned off in two ways:\n",
-"  1. Enter \"set scroll off\" during runtime.",
+"  1. During runtime, enter \"set scroll off\" or the alias \"sf\".",
 "  2. Enter \"set scroll off\" in a .%src file, which can be located either",
-"      in the current directory or in your home directory.\n",
+"     in the current directory or in your home directory.\n",
+"To restore the scrolling behavior during runtime, enter \"set scroll on\"",
+"or the alias: \"sn\"\n",
 "Command output may be piped to an external command using standard command",
 "line pipe syntax.  For example:\n", 
-"  %s> log | grep MHz\n",
+"  %s> log | grep eth0\n",
 "Command output may be redirected to a file using standard command line syntax.",
 "For example:\n",
 "  %s> foreach bt > bt.all\n",
 "Use double brackets to append the output to a pre-existing file:\n",
 "  %s> ps >> crash.data\n",
-"The default output radix for gdb output and certain %s commands is decimal.",
-"This can be changed to hexadecimal by using the built-in alias \"hex\".",
-"It can be reverted back to decimal by using the built-in alias \"dec\".",
+"The default output radix for gdb output and certain %s commands is",
+"hexadecimal.  This can be changed to decimal by entering \"set radix 10\"",
+"or the alias \"dec\".  It can be reverted back to hexadecimal by entering",
+"\"set radix 16\" or the alias \"hex\".",
 " ",
 NULL
 };
@@ -4340,6 +4858,10 @@ display_version(void)
 static 
 char *version_info[] = {
 
+"Copyright (C) 2002, 2003, 2004  Red Hat, Inc.",
+"Copyright (C) 2004  IBM Corp.", 
+"Copyright (C) 1998-2004  Hewlett-Packard Co",
+"Copyright (C) 1999, 2002  Silicon Graphics, Inc.",
 "Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.",
 "This program is free software, covered by the GNU General Public License,",
 "and you are welcome to change it and/or distribute copies of it under",
@@ -4706,8 +5228,8 @@ char *README[] = {
 "",
 "  The core analysis suite is a self-contained tool that can be used to",
 "  investigate either live systems, kernel core dumps created from the",
-"  Kernel Core Dump patch offered by Mission Critical Linux, or kernel",
-"  core dumps created by the LKCD patch.",
+"  netdump and diskdump packages offered by Red Hat, the LKCD kernel patch",
+"  or the mcore kernel patch available from Mission Critical Linux.",
 "",
 "  o  The tool is loosely based on the SVR4 crash command, but has been",
 "     completely integrated with gdb in order to be able to display ",
@@ -4729,37 +5251,46 @@ char *README[] = {
 "     building in recognition of major kernel code changes so as to adapt to ",
 "     new kernel versions, while maintaining backwards compatibility.",
 "",
+"  A whitepaper with complete documentation concerning the use of this utility",
+"  can be found here:",
+" ",
+"         http://people.redhat.com/anderson/crash_whitepaper",
+" ",
 "  These are the current prerequisites: ",
 "",
-"  o  At this point, Intel-, Alpha-, PowerPC-, and IA64-based kernels are ",
-"     supported.  The IA64 version of crash has only been tested on live",
-"     systems.  Other architectures will be addressed in the future.",
+"  o  At this point, x86, ia64, x86_64, alpha and ppc64-based kernels are ",
+"     supported.  Other architectures may be addressed in the future.",
 "",
 "  o  One size fits all -- the utility can be run on any Linux kernel version ",
-"     from 2.2.5-15 through 2.4.*.",
+"     from 2.2.5-15 through 2.6.*.",
 "",
 "  o  In order to contain debugging data, the top-level kernel Makefile's CFLAGS",
-"     definition must be modified, and the kernel rebuilt.  In 2.2 kernels,",
-"     change the following line:",
+"     definition must contain the -g flag.  If not, the kernel must be rebuilt.",
+"     For 2.2 kernels that are not built with -g, change the following line:",
 "",
 "        CFLAGS = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer",
 "",
 "     to:",
 "",
-"        CFLAGS = -Wall -Wstrict-prototypes -O2 -g",
+"        CFLAGS = -g -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer",
 "",
-"     In 2.4 kernels, change the following line:",
+"     For 2.4 kernels that are not built with -g, change the following line:",
 "",
 "        CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -fno-strict-aliasing",
 "",
 "     to:",
 "",
-"        CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -g -fno-strict-aliasing",
+"        CFLAGS := -g $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -fno-strict-aliasing",
 "",
-"     The deletion of -fomit-frame-pointer is done for dependable stack ",
-"     traces.",
-"",
-"  o  After the kernel is re-compiled, the uncompressed \"vmlinux\" kernel",
+"     For 2.6 kernels that are not built with -g, change the following line:",
+" ",
+"        CFLAGS          := -Wall -Wstrict-prototypes -Wno-trigraphs \\ ",
+" ",
+"     to:",
+" ",
+"        CFLAGS          := -g -Wall -Wstrict-prototypes -Wno-trigraphs \\ ",
+" ",
+"     After the kernel is re-compiled, the uncompressed \"vmlinux\" kernel",
 "     that is created in the top-level kernel build directory must be saved.",
 "",
 README_ENTER_DIRECTORY,
@@ -4783,7 +5314,7 @@ README_ENTER_DIRECTORY,
 README_CRASH_VERSION,
 README_GPL_INFO,
 README_GNU_GDB_VERSION,
-"    Copyright 2000 Free Software Foundation, Inc.",
+"    Copyright 2003 Free Software Foundation, Inc.",
 "    GDB is free software, covered by the GNU General Public License, and you are",
 "    welcome to change it and/or distribute copies of it under certain conditions",
 "    Type \"show copying\" to see the conditions.",
@@ -4791,7 +5322,7 @@ README_GNU_GDB_VERSION,
 "    This GDB was configured as \"i686-pc-linux-gnu\"..",
 "     ",
 "          KERNEL: /boot/vmlinux",
-"        DUMPFILE: /dev/mem (live system)",
+"        DUMPFILE: /dev/mem",
 "            CPUS: 1",
 README_DATE,
 "          UPTIME: 10 days, 22:55:18",
@@ -4812,15 +5343,51 @@ README_DATE,
 README_HELP_MENU,
 "    crash> ",
 " ",
-"  When run on a dumpfile, both the kernel namelist and dumpfile ",
-"  must be entered on the command line, as in:",
+"  When run on a dumpfile, both the kernel namelist and dumpfile must be ",
+"  entered on the command line.  For example, when run on a core dump created",
+"  by the Red Hat netdump or diskdump facilities:",
+"",
+"    $ crash vmlinux vmcore",
+" ",   
+README_CRASH_VERSION,
+README_GPL_INFO,
+README_GNU_GDB_VERSION,
+"    Copyright 2003 Free Software Foundation, Inc.",
+"    GDB is free software, covered by the GNU General Public License, and you are",
+"    welcome to change it and/or distribute copies of it under certain conditions.",
+"    Type \"show copying\" to see the conditions.",
+"    There is absolutely no warranty for GDB.  Type \"show warranty\" for details.",
+"    This GDB was configured as \"i686-pc-linux-gnu\"...",
+"    ",
+"          KERNEL: vmlinux",
+"        DUMPFILE: vmcore",
+"            CPUS: 4",
+"            DATE: Tue Mar  2 13:57:09 2004",
+"          UPTIME: 00:02:40",
+"    LOAD AVERAGE: 2.24, 0.96, 0.37",
+"           TASKS: 70",
+"        NODENAME: pro1.lab.boston.redhat.com",
+"         RELEASE: 2.6.3-2.1.214.11smp",
+"         VERSION: #1 SMP Tue Mar 2 10:58:27 EST 2004",
+"         MACHINE: i686  (2785 Mhz)",
+"          MEMORY: 512 MB",
+"           PANIC: \"Oops: 0002 [#1]\" (check log for details)",
+"             PID: 0",
+"         COMMAND: \"swapper\"",
+"            TASK: 22fa200  (1 of 4)  [THREAD_INFO: 2356000]",
+"             CPU: 0",
+"           STATE: TASK_RUNNING (PANIC)",
+"    ",
+"    crash> ",
+" ",
+"  When run on a core dump created by the MCLX mcore patch:",
 "",
 "    $ crash vmlinux.17 lcore.cr.17",
 "",
 README_CRASH_VERSION,
 README_GPL_INFO,
 README_GNU_GDB_VERSION,
-"    Copyright 2000 Free Software Foundation, Inc.",
+"    Copyright 2003 Free Software Foundation, Inc.",
 "    GDB is free software, covered by the GNU General Public License, and you are",
 "    welcome to change it and/or distribute copies of it under certain conditions",
 "    Type \"show copying\" to see the conditions.",
@@ -4967,16 +5534,6 @@ README_GNU_GDB_VERSION,
 "  help menu.  For details, enter \"help extend\" during runtime, or enter",
 "  \"crash -h extend\" from the shell command line.",
 " ",
-"  Complete documentation regarding this utility can be accessed by visiting:",
-" ",
-"             http://oss.missioncriticallinux.com/projects/crash",
-" ",
-"  From the page above you can join the Crash Mailing List, which we invite",
-"  you to use for reporting bugs, making suggestions, asking questions, or",
-"  sending any new commands you'd like to see permanently incorporated.",
-"  Alternatively, you can send the same type of queries to:",
-"",
-"                    support@missioncriticallinux.com",
 "",
 "",
 "",

@@ -1,3 +1,58 @@
+crash (3.10-11-1) unstable; urgency=medium
+
+  * New upstream version 3.10-11
+  * New maintainer Troy Heber <troy.heber@hp.com>
+  * New co-maintainer Micah Anderson <micah@debian.org>
+  * Patch to fix FTBS on Alpha, sent patch upstream as well.
+
+ -- Troy Heber <troy.heber@hp.com>  Wed, 02 Mar 2005 12:04:03 -0700
+
+crash (3.8-2.1-3) unstable; urgency=low
+
+  * Add missing Build-Depend on dbs. (closes: #258046)
+
+ -- Josh Huber <huber@debian.org>  Wed,  7 Jul 2004 13:18:05 +0000
+
+crash (3.8-2.1-2) unstable; urgency=low
+
+  * Update to debhelper compat version 4
+
+ -- Josh Huber <huber@debian.org>  Fri, 25 Jun 2004 13:16:45 +0000
+
+crash (3.8-2.1-1) unstable; urgency=low
+
+  * New upstream release! (closes: #249954)
+  * Misc packaging fixes:
+    + Repackaged with DBS, due to difficult source distribution.
+    + Brought man page in-line with actual command line options.
+    + Include changelog from distribution site.
+
+ -- Josh Huber <huber@debian.org>  Wed, 23 Jun 2004 18:25:59 +0000
+
+crash (3.3-1.2) unstable; urgency=low
+
+  * Non-maintainer upload
+  * Fixed build problems with gcc-3.3 (multiline strings). (Closes: #196710)
+  * debian/copyright: Fixed upstream URI. (Closes: #197985)
+
+ -- Marc Brockschmidt <marc@dch-faq.de>  Sun, 26 Oct 2003 13:31:57 +0100
+
+crash (3.3-1.1) unstable; urgency=low
+
+  * NMU (RC bug almost 4 months old).
+  * debian/control:
+    + Package description is no longer a full sentence.
+    + Set policy to 3.5.10.
+  * debian/copyright:
+    + Added the GPL location blurb.
+  * debian/rules:
+    + Set the debhelper build dependency to >=2.0.
+  * Removed "case NULL:" constructs with "case '\0':" in various places to
+    fix compilation (Closes: #180190).
+  * Replaced "cc" with "gcc" in the Makefile.
+
+ -- Sam Hocevar (Debian packages) <sam+deb@zoy.org>  Fri,  6 Jun 2003 00:51:57 +0200
+
 crash (3.3-1) unstable; urgency=low
 
   * New upstream release (Closes: #134967)

@@ -4,8 +4,8 @@
 
   The core analysis suite is a self-contained tool that can be used to
   investigate either live systems, kernel core dumps created from the
-  Kernel Core Dump patch offered by Mission Critical Linux, or kernel
-  core dumps created by the LKCD patch.
+  netdump and diskdump packages offered by Red Hat, the LKCD kernel patch
+  or the mcore kernel patch available from Mission Critical Linux.
 
   o  The tool is loosely based on the SVR4 crash command, but has been
      completely integrated with gdb in order to be able to display 
@@ -27,40 +27,49 @@
      building in recognition of major kernel code changes so as to adapt to 
      new kernel versions, while maintaining backwards compatibility.
 
+  A whitepaper with complete documentation concerning the use of this utility
+  can be found here:
+ 
+         http://people.redhat.com/anderson/crash_whitepaper
+ 
   These are the current prerequisites: 
 
-  o  At this point, Intel-, Alpha-, PowerPC-, and IA64-based kernels are 
-     supported.  The IA64 version of crash has only been tested on live
-     systems.  Other architectures will be addressed in the future.
+  o  At this point, x86, ia64, x86_64, alpha and ppc64-based kernels are 
+     supported.  Other architectures may be addressed in the future.
 
   o  One size fits all -- the utility can be run on any Linux kernel version 
-     from 2.2.5-15 through 2.4.*.
+     from 2.2.5-15 through 2.6.*.
 
   o  In order to contain debugging data, the top-level kernel Makefile's CFLAGS
-     definition must be modified, and the kernel rebuilt.  In 2.2 kernels,
-     change the following line:
+     definition must contain the -g flag.  If not, the kernel must be rebuilt.
+     For 2.2 kernels that are not built with -g, change the following line:
 
         CFLAGS = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer
 
      to:
 
-        CFLAGS = -Wall -Wstrict-prototypes -O2 -g
+        CFLAGS = -g -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer
 
-     In 2.4 kernels, change the following line:
+     For 2.4 kernels that are not built with -g, change the following line:
 
         CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -fno-strict-aliasing
 
      to:
 
-        CFLAGS := $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -g -fno-strict-aliasing
+        CFLAGS := -g $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -fno-strict-aliasing
 
-     The deletion of -fomit-frame-pointer is done for dependable stack 
-     traces.
-
-  o  After the kernel is re-compiled, the uncompressed "vmlinux" kernel
+     For 2.6 kernels that are not built with -g, change the following line:
+ 
+        CFLAGS          := -Wall -Wstrict-prototypes -Wno-trigraphs \ 
+ 
+     to:
+ 
+        CFLAGS          := -g -Wall -Wstrict-prototypes -Wno-trigraphs \ 
+ 
+     After the kernel is re-compiled, the uncompressed "vmlinux" kernel
      that is created in the top-level kernel build directory must be saved.
 
-  To build this utility, simply uncompress the tar file, enter the crash3.3
+  To build this utility, simply uncompress the tar file, enter the crash3.10-10rc
   subdirectory, and type "make".  The initial build will take several minutes 
   because the gdb module must be configured and and built.  
 
@@ -78,15 +87,19 @@
 
     $ crash
     
-    crash 3.3
+    crash 3.10-10rc
+    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
+    Copyright (C) 2004  IBM Corp.
+    Copyright (C) 1998-2004  Hewlett-Packard Co
+    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
     and you are welcome to change it and/or distribute copies of it under
     certain conditions.  Enter "help copying" to see the conditions.
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
-    GNU gdb 5.1
-    Copyright 2000 Free Software Foundation, Inc.
+    GNU gdb 6.0
+    Copyright 2003 Free Software Foundation, Inc.
     GDB is free software, covered by the GNU General Public License, and you are
     welcome to change it and/or distribute copies of it under certain conditions
     Type "show copying" to see the conditions.
@@ -94,9 +107,9 @@
     This GDB was configured as "i686-pc-linux-gnu"..
      
           KERNEL: /boot/vmlinux
-        DUMPFILE: /dev/mem (live system)
+        DUMPFILE: /dev/mem
             CPUS: 1
-            DATE: Fri Feb 22 10:34:21 2002
+            DATE: Mon Feb 21 13:17:40 2005
           UPTIME: 10 days, 22:55:18
     LOAD AVERAGE: 0.08, 0.03, 0.01
            TASKS: 42
@@ -124,28 +137,76 @@
     exit           log            rd             task           
     extend         mach           repeat         timer          
     
-    crash version: 3.3      gdb version: 5.1
+    crash version: 3.10-10rc   gdb version: 6.0
     For help on any command above, enter "help <command>".
     For help on input options, enter "help input".
     For help on output options, enter "help output".
-    For the most recent version: http://www.missioncriticallinux.com/download
 
     crash> 
  
-  When run on a dumpfile, both the kernel namelist and dumpfile 
-  must be entered on the command line, as in:
+  When run on a dumpfile, both the kernel namelist and dumpfile must be 
+  entered on the command line.  For example, when run on a core dump created
+  by the Red Hat netdump or diskdump facilities:
 
-    $ crash vmlinux.17 lcore.cr.17
-
-    crash 3.3
+    $ crash vmlinux vmcore
+ 
+    crash 3.10-10rc
+    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
+    Copyright (C) 2004  IBM Corp.
+    Copyright (C) 1998-2004  Hewlett-Packard Co
+    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
     and you are welcome to change it and/or distribute copies of it under
     certain conditions.  Enter "help copying" to see the conditions.
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
-    GNU gdb 5.1
-    Copyright 2000 Free Software Foundation, Inc.
+    GNU gdb 6.0
+    Copyright 2003 Free Software Foundation, Inc.
+    GDB is free software, covered by the GNU General Public License, and you are
+    welcome to change it and/or distribute copies of it under certain conditions.
+    Type "show copying" to see the conditions.
+    There is absolutely no warranty for GDB.  Type "show warranty" for details.
+    This GDB was configured as "i686-pc-linux-gnu"...
+    
+          KERNEL: vmlinux
+        DUMPFILE: vmcore
+            CPUS: 4
+            DATE: Tue Mar  2 13:57:09 2004
+          UPTIME: 00:02:40
+    LOAD AVERAGE: 2.24, 0.96, 0.37
+           TASKS: 70
+        NODENAME: pro1.lab.boston.redhat.com
+         RELEASE: 2.6.3-2.1.214.11smp
+         VERSION: #1 SMP Tue Mar 2 10:58:27 EST 2004
+         MACHINE: i686  (2785 Mhz)
+          MEMORY: 512 MB
+           PANIC: "Oops: 0002 [#1]" (check log for details)
+             PID: 0
+         COMMAND: "swapper"
+            TASK: 22fa200  (1 of 4)  [THREAD_INFO: 2356000]
+             CPU: 0
+           STATE: TASK_RUNNING (PANIC)
+    
+    crash> 
+ 
+  When run on a core dump created by the MCLX mcore patch:
+
+    $ crash vmlinux.17 lcore.cr.17
+
+    crash 3.10-10rc
+    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
+    Copyright (C) 2004  IBM Corp.
+    Copyright (C) 1998-2004  Hewlett-Packard Co
+    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
+    Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
+    This program is free software, covered by the GNU General Public License,
+    and you are welcome to change it and/or distribute copies of it under
+    certain conditions.  Enter "help copying" to see the conditions.
+    This program has absolutely no warranty.  Enter "help warranty" for details.
+     
+    GNU gdb 6.0
+    Copyright 2003 Free Software Foundation, Inc.
     GDB is free software, covered by the GNU General Public License, and you are
     welcome to change it and/or distribute copies of it under certain conditions
     Type "show copying" to see the conditions.
@@ -292,16 +353,6 @@
   help menu.  For details, enter "help extend" during runtime, or enter
   "crash -h extend" from the shell command line.
  
-  Complete documentation regarding this utility can be accessed by visiting:
- 
-             http://oss.missioncriticallinux.com/projects/crash
- 
-  From the page above you can join the Crash Mailing List, which we invite
-  you to use for reporting bugs, making suggestions, asking questions, or
-  sending any new commands you'd like to see permanently incorporated.
-  Alternatively, you can send the same type of queries to:
-
-                    support@missioncriticallinux.com
 
 
 

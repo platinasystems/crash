@@ -1,6 +1,8 @@
 /* lkcd_vmdump_v2_v3.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,7 +24,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.2 $ $Date: 2002/01/29 22:20:13 $
+ * CVS: $Revision: 1.6 $ $Date: 2004/08/19 19:03:09 $
  */
 
 
@@ -99,14 +101,16 @@ typedef struct _dump_header_asm_s {
 
 #endif /* X86 || PPC */
 
-#if defined(ALPHA) || defined(IA64)
+#if defined(ALPHA) || defined(IA64) || defined(X86_64) || defined(PPC64)
 
 /* 
  *  Plug in the real ../arch/alpha/vmdump.h when available.  For now the
  *  data here are just placeholders...
  */
 
+#ifndef IA64
 #include <asm/ptrace.h>                          /* for pt_regs             */
+#endif
 
 /* definitions */
 #define DUMP_ASM_MAGIC_NUMBER     0xdeaddeadULL  /* magic number            */
@@ -131,7 +135,9 @@ typedef struct _dump_header_asm_s {
         uint32_t             dha_eip;
 
         /* the dump registers */
+#ifndef IA64
         struct pt_regs       dha_regs;
+#endif
 
 } dump_header_asm_t;
 
@@ -233,8 +239,10 @@ typedef struct _dump_page_s {
 
 #endif /* CONFIG_VMDUMP */
 
+#ifdef __KERNEL__
 extern void dump_init(uint64_t, uint64_t);
 extern void dump_open(char *);
 extern void dump_execute(char *, struct pt_regs *);
+#endif
 
 #endif /* _VMDUMP_H */

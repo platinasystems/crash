@@ -1,6 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +27,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.56 $ $Date: 2002/01/29 22:20:13 $
+ * CVS: $Revision: 1.39 $ $Date: 2004/09/02 15:52:55 $
  */
 
 #include "defs.h"
@@ -36,6 +38,7 @@ static void print_number(struct number_option *, int, int);
 static long alloc_hq_entry(void);
 struct hq_entry;
 static void dealloc_hq_entry(struct hq_entry *);
+static void show_options(void);
 
 /*
  *  General purpose error reporting routine.  Type INFO prints the message
@@ -53,18 +56,11 @@ __error(int type, char *fmt, ...)
 {
 	int end_of_line, new_line;
         char buf[BUFSIZE];
+        ulong retaddr[4] = { 0 };
 	va_list ap;
 
-	if (MCLXDEBUG(1)) {
-                ulong retaddr[4] = { 0 };
-
-                retaddr[0] = (ulong) __builtin_return_address(0);
-#if defined(X86) || defined(PPC)
-                retaddr[1] = (ulong) __builtin_return_address(1);
-                retaddr[2] = (ulong) __builtin_return_address(2);
-                retaddr[3] = (ulong) __builtin_return_address(2);
-#endif
-
+	if (CRASHDEBUG(1) || (pc->flags & DROP_CORE)) {
+		save_return_address(retaddr);
 		console("error() trace: %lx => %lx => %lx => %lx\n",
 			retaddr[3], retaddr[2], retaddr[1], retaddr[0]);
 	}
@@ -75,7 +71,7 @@ __error(int type, char *fmt, ...)
 
 	if (!fmt && FATAL_ERROR(type)) {
 		fprintf(stdout, "\n");
-		exit(1);
+		clean_exit(1);
 	}
 
 	end_of_line = FATAL_ERROR(type) && !(pc->flags & RUNTIME);
@@ -86,24 +82,30 @@ __error(int type, char *fmt, ...)
 	if (pc->stdpipe) {
 		fprintf(pc->stdpipe, "%s%s: %s%s", 
 			new_line ? "\n" : "", pc->curcmd, 
-			type == WARNING ? "WARNING: " : "", buf);
+			type == WARNING ? "WARNING: " : 
+			type == NOTE ? "NOTE: " : "", 
+			buf);
 		fflush(pc->stdpipe);
 	} else { 
 		fprintf(stdout, "%s%s: %s%s", 
 			new_line || end_of_line ? "\n" : "",
-			type == WARNING ? "WARNING" : pc->curcmd, 
+			type == WARNING ? "WARNING" : 
+			type == NOTE ? "NOTE" : pc->curcmd, 
 			buf, end_of_line ? "\n" : "");
 		fflush(stdout);
 	}
 
         if ((fp != stdout) && (fp != pc->stdpipe)) {
                 fprintf(fp, "%s%s: %s", new_line ? "\n" : "",
-			type == WARNING ? "WARNING" : pc->curcmd, buf);
+			type == WARNING ? "WARNING" : 
+			type == NOTE ? "NOTE" : pc->curcmd, buf);
 		fflush(fp);
 	}
 
-	if (pc->flags & DROP_CORE) {
-		drop_core("DROP_CORE flag set\n");
+	if ((pc->flags & DROP_CORE) && (type != NOTE)) {
+		dump_trace(retaddr);
+		SIGACTION(SIGSEGV, SIG_DFL, &pc->sigaction, NULL);
+		drop_core("DROP_CORE flag set: forcing a segmentation fault\n");
 	}
 
         switch (type)
@@ -119,11 +121,12 @@ __error(int type, char *fmt, ...)
                 else {
 			if (REMOTE())
 				remote_exit();
-                        exit(1);
+                        clean_exit(1);
 		}
 
 	default:
         case INFO:
+        case NOTE:
 	case WARNING:
                 return FALSE;
         }
@@ -203,7 +206,7 @@ parse_line(char *str, char *argv[])
 	        case '\n':
 	            str[i] = NULLCHAR;
 	                        /* keep falling... */
-	        case NULL:
+	        case NULLCHAR:
 	            argv[j] = NULLCHAR;
 	            return(j);
 	        }
@@ -1184,6 +1187,32 @@ hexadecimal_only(char *s, int count)
 }
 
 /*
+ *  Clean a command argument that has an obvious but ignorable error.
+ *  The first one is an attached comma to a number, that usually is the 
+ *  result of a cut-and-paste of an address from a structure display.  
+ *  Add more when they become annoynance.
+ *
+ *  It presumes args[optind] is the argument being tinkered with, and
+ *  always returns TRUE for convenience of use.
+ */
+int
+clean_arg(void)
+{
+	char buf[BUFSIZE];
+
+	if (LASTCHAR(args[optind]) == ',') {
+		strcpy(buf, args[optind]);
+		LASTCHAR(buf) = NULLCHAR;
+		if (IS_A_NUMBER(buf))
+			LASTCHAR(args[optind]) = NULLCHAR;
+	}
+
+	return TRUE;
+}
+
+
+
+/*
  *  Translate a hexadecimal string into its ASCII components.
  */
 void
@@ -1317,16 +1346,35 @@ pad_line(FILE *filep, int cnt, char c)
  *  the architecture.  Since the mininum space must be at least 1, MINSPACE,
  *  MINSPACE-1 and MINSPACE+1 are all valid, special numbers.  Otherwise
  *  the space count must be greater than or equal to 0.
+ *
+ *  If the cnt request is greater than SPACES, a dynamic buffer is
+ *  allocated, and normal buffer garbage collection will return it
+ *  back to the pool.
  */
 char *
 space(int cnt)
 {
-	static char spacebuf[20] = "                    ";
+#define SPACES 40
+	static char spacebuf[SPACES+1] = { 0 };
+	int i;
+	char *bigspace;
 
-	if ((cnt > 20) || (cnt < (MINSPACE-1)))
-		error(FATAL, "illegal spacing request: %d\n", cnt);
+	if (cnt > SPACES) {
+		bigspace = GETBUF(cnt);
+		for (i = 0; i < cnt; i++)
+			bigspace[i] = ' ';
+		bigspace[i] = NULLCHAR;
+		return bigspace;
+	}
+
+	if (!strlen(spacebuf)) {
+		for (i = 0; i < SPACES; i++)
+			spacebuf[i] = ' ';
+		spacebuf[i] = NULLCHAR; 
+	}
+
 	if (cnt < (MINSPACE-1))
-		error(FATAL, "illegal spacing request\n");
+		error(FATAL, "illegal spacing request: %d\n", cnt);
 	if ((cnt > MINSPACE+1) && (cnt < 0))
 		error(FATAL, "illegal spacing request\n");
 
@@ -1334,24 +1382,24 @@ space(int cnt)
 	{
 	case (MINSPACE-1):
 		if (VADDR_PRLEN > 8)
-			return (&spacebuf[20]);    /* NULL */
+			return (&spacebuf[SPACES]);    /* NULL */
 		else
-			return (&spacebuf[20-1]);  /* 1 space */
+			return (&spacebuf[SPACES-1]);  /* 1 space */
 
 	case MINSPACE:
 		if (VADDR_PRLEN > 8)
-			return (&spacebuf[20-1]);  /* 1 space */
+			return (&spacebuf[SPACES-1]);  /* 1 space */
 		else
-			return (&spacebuf[20-2]);  /* 2 spaces */
+			return (&spacebuf[SPACES-2]);  /* 2 spaces */
 
 	case (MINSPACE+1):
                 if (VADDR_PRLEN > 8) 
-                        return (&spacebuf[20-2]);  /* 2 spaces */
+                        return (&spacebuf[SPACES-2]);  /* 2 spaces */
                 else    
-                        return (&spacebuf[20-3]);  /* 3 spaces */
+                        return (&spacebuf[SPACES-3]);  /* 3 spaces */
 
 	default:
-		return (&spacebuf[20-cnt]);        /* as requested */
+		return (&spacebuf[SPACES-cnt]);        /* as requested */
 	}
 }
 
@@ -1482,7 +1530,9 @@ shift_string_right(char *s, int cnt)
  *  Create a string in a buffer of a given size, centering, or justifying 
  *  left or right as requested.  If the opt argument is used, then the string
  *  is created with its string/integer value.  If opt is NULL, then the
- *  string is already in contained in string s (not justified). 
+ *  string is already in contained in string s (not justified).  Note that
+ *  flag LONGLONG_HEX implies that opt is a ulonglong pointer to the 
+ *  actual value.
  */
 char *
 mkstring(char *s, int size, ulong flags, const char *opt)
@@ -1494,7 +1544,7 @@ mkstring(char *s, int size, ulong flags, const char *opt)
 	int right;
 	char buf[BUFSIZE];
 
-	switch (flags & (LONG_DEC|LONG_HEX|INT_HEX|INT_DEC)) 
+	switch (flags & (LONG_DEC|LONG_HEX|INT_HEX|INT_DEC|LONGLONG_HEX)) 
 	{
 	case LONG_DEC:
 		sprintf(s, "%lu", (ulong)opt);
@@ -1507,6 +1557,9 @@ mkstring(char *s, int size, ulong flags, const char *opt)
 		break;
 	case INT_HEX:
 		sprintf(s, "%x", (uint)((ulong)opt));
+		break;
+	case LONGLONG_HEX:
+		sprintf(s, "%llx", *((ulonglong *)opt));
 		break;
 	default:
 		if (opt)
@@ -1620,11 +1673,13 @@ cmd_set(void)
 	int cpu;
 	int runtime;
 	char buf[BUFSIZE];
+	char *extra_message;
 	struct task_context *tc;
 
+	extra_message = NULL;
 	runtime = pc->flags & RUNTIME;
 
-        while ((c = getopt(argcnt, args, "pc:")) != EOF) {
+        while ((c = getopt(argcnt, args, "pvc:")) != EOF) {
                 switch(c)
 		{
 		case 'c':
@@ -1649,7 +1704,7 @@ cmd_set(void)
 
 			if (ACTIVE()) {
 				set_context(NO_TASK, pc->program_pid);
-				show_context(CURRENT_CONTEXT(), 0, FALSE);
+				show_context(CURRENT_CONTEXT());
 				return;
 			}
 
@@ -1658,7 +1713,11 @@ cmd_set(void)
 				return;
 			}
         		set_context(tt->panic_task, NO_PID);
-			show_context(CURRENT_CONTEXT(), 0, FALSE);
+			show_context(CURRENT_CONTEXT());
+			return;
+
+		case 'v':
+			show_options();
 			return;
 
 		default:
@@ -1675,7 +1734,7 @@ cmd_set(void)
 
 	if (!args[optind]) {
 		if (runtime)
-			show_context(CURRENT_CONTEXT(), 0, FALSE);
+			show_context(CURRENT_CONTEXT());
 		return;
 	}
 
@@ -1698,6 +1757,7 @@ cmd_set(void)
 
 			set_lkcd_debug(pc->debug);
 			set_vas_debug(pc->debug);
+			return;
 
                 } else if (STREQ(args[optind], "hash")) {
                         if (args[optind+1]) {
@@ -1720,6 +1780,7 @@ cmd_set(void)
 			if (runtime)
                         	fprintf(fp, "hash: %s\n",
                                 	pc->flags & HASH ? "on" : "off");
+			return;
 
                } else if (STREQ(args[optind], "refresh")) {
                         if (args[optind+1]) {
@@ -1748,6 +1809,7 @@ cmd_set(void)
                         if (runtime)
                                 fprintf(fp, "refresh: %s\n",
                                	    tt->flags & TASK_REFRESH ?  "on" : "off");
+			return;
 
                } else if (STREQ(args[optind], "scroll")) {
                         if (args[optind+1] && pc->scroll_command) {
@@ -1770,6 +1832,8 @@ cmd_set(void)
 			if (runtime)
                         	fprintf(fp, "scroll: %s\n",
                                 	pc->flags & SCROLL ? "on" : "off");
+
+			return;
 
                } else if (STREQ(args[optind], "silent")) {
                         if (args[optind+1]) {
@@ -1797,7 +1861,8 @@ cmd_set(void)
 
                         } else if (runtime && !(pc->flags & SILENT))
                                	fprintf(fp, "silent: off\n");
-			
+			return;
+
                 } else if (STREQ(args[optind], "console")) {
 			int assignment;
 
@@ -1821,16 +1886,33 @@ cmd_set(void)
 						fprintf(fp, "not set\n");
 				}		
 			}
+			return;
 
 		} else if (STREQ(args[optind], "core")) {
-			if (pc->flags & DROP_CORE)
-				pc->flags &= ~DROP_CORE;
-			else
-				pc->flags |= DROP_CORE;
+                        if (args[optind+1]) {
+                                optind++;
+                                if (STREQ(args[optind], "on"))
+                                        pc->flags |= DROP_CORE;
+                                else if (STREQ(args[optind], "off"))
+                                        pc->flags &= ~DROP_CORE;
+                                else if (IS_A_NUMBER(args[optind])) {
+                                        value = stol(args[optind],
+                                                FAULT_ON_ERROR, NULL);
+                                        if (value)
+                                                pc->flags |= DROP_CORE;
+                                        else
+                                                pc->flags &= ~DROP_CORE;
+                                } else
+                                        goto invalid_set_command;
+                        }
 		
-			fprintf(fp, "%s on call to error().\n",
-				pc->flags & DROP_CORE ? 
-				"Drop core" : "Do NOT drop core");
+			if (runtime) {
+				fprintf(fp, "core: %s on error message)\n",
+					pc->flags & DROP_CORE ? 
+					"on (drop core" : 
+					"off (do NOT drop core");
+			}
+			return;
 
                 } else if (STREQ(args[optind], "radix")) {
                        if (args[optind+1]) {
@@ -1856,6 +1938,7 @@ cmd_set(void)
 					pc->output_radix == 10 ? 
 					"decimal" : "hex");
 			}
+			return;
 
                 } else if (STREQ(args[optind], "hex")) {
 			pc->output_radix = 16;
@@ -1864,6 +1947,7 @@ cmd_set(void)
 					NULL, GNU_FROM_TTY_OFF);
 				fprintf(fp, "output radix: 16 (hex)\n");
 			}
+			return;
 
                 } else if (STREQ(args[optind], "dec")) {
 			pc->output_radix = 10;
@@ -1872,14 +1956,33 @@ cmd_set(void)
                                         NULL, GNU_FROM_TTY_OFF);
 				fprintf(fp, "output radix: 10 (decimal)\n");
 			}
+			return;
+
+               } else if (STREQ(args[optind], "edit")) {
+                        if (args[optind+1]) {
+				if (runtime)
+					error(FATAL, 
+		                "cannot change editing mode during runtime\n");
+                                optind++;
+                                if (STREQ(args[optind], "vi"))
+                                        pc->editing_mode = "vi";
+                                else if (STREQ(args[optind], "emacs"))
+                                        pc->editing_mode = "emacs";
+				else
+                                        goto invalid_set_command;
+                        }
+
+                        if (runtime)
+                                fprintf(fp, "edit: %s\n", pc->editing_mode);
+                        return;
 
                 } else if (STREQ(args[optind], "vi")) {
 			if (runtime)
 				error(FATAL, 
-		               "cannot change %s editing mode during runtime\n",
-				    	pc->editing_mode); 
+		               "cannot change editing mode during runtime\n"); 
 			else
 				pc->editing_mode = "vi";
+			return;
 
                 } else if (STREQ(args[optind], "emacs")) {
 			if (runtime)
@@ -1888,6 +1991,7 @@ cmd_set(void)
 					pc->editing_mode);
 			else
 				pc->editing_mode = "emacs";
+			return;
 
                 } else if (STREQ(args[optind], "print_max")) {
 			optind++;
@@ -1902,19 +2006,25 @@ cmd_set(void)
 					goto invalid_set_command;
 
 			}
-			fprintf(fp, "print_max: %d\n", print_max);
+			if (runtime)
+				fprintf(fp, "print_max: %d\n", print_max);
+			return;
 
                 } else if (STREQ(args[optind], "dumpfile")) {
 			optind++;
                         if (!runtime && args[optind]) {
-				pc->flags &= ~(LKCD|MCLXCD|S390D|S390XD);
-				if (is_lkcd_compressed_dump(args[optind])) 
+				pc->flags &= ~(DUMPFILE_TYPES);
+				if (is_netdump(args[optind], NETDUMP_LOCAL))
+					pc->flags |= NETDUMP;
+				else if (is_diskdump(args[optind]))
+					pc->flags |= DISKDUMP;
+				else if (is_lkcd_compressed_dump(args[optind])) 
                                		pc->flags |= LKCD;
                         	else if (is_mclx_compressed_dump(args[optind])) 
                                 	pc->flags |= MCLXCD;
                         	else 
                                 	error(FATAL, 
-					    "%s: not a compressed dumpfile\n",
+					    "%s: not a supported file format\n",
                                         	args[optind]);
 				if ((pc->dumpfile = (char *)
 				    malloc(strlen(args[optind])+1)) == NULL) {
@@ -1925,6 +2035,7 @@ cmd_set(void)
 					strcpy(pc->dumpfile, args[optind]);
 					
 			}
+			return;
 
                 } else if (STREQ(args[optind], "namelist")) {
 			optind++;
@@ -1942,11 +2053,18 @@ cmd_set(void)
                                 } else
                                         strcpy(pc->namelist, args[optind]);
 			}
+			return;
 
                 } else if (STREQ(args[optind], "free")) {
 
 			fprintf(fp, "%d pages freed\n",
 				dumpfile_memory(DUMPFILE_FREE_MEM));
+			return;
+
+                } else if (STREQ(args[optind], "data_debug")) {
+
+			pc->flags |= DATADEBUG;
+			return;
 
 		} else if (runtime) {
 			ulong pid, task;
@@ -1957,16 +2075,14 @@ cmd_set(void)
                                 pid = value;
                                 task = NO_TASK;
                         	if (set_context(task, pid))
-                                	show_context(CURRENT_CONTEXT(),
-						0, FALSE);
+                                	show_context(CURRENT_CONTEXT());
 	                        break;
 	
 	                case STR_TASK:
                                 task = value;
                                 pid = NO_PID;
                                 if (set_context(task, pid))
-                                        show_context(CURRENT_CONTEXT(), 
-                                                0, FALSE);
+                                        show_context(CURRENT_CONTEXT()); 
 	                        break;
 	
 	                case STR_INVALID:
@@ -1974,7 +2090,9 @@ cmd_set(void)
 	                                args[optind]);
 	                        break;
 	                }
-		}
+		} else
+			console("set: ignoring \"%s\"\n", args[optind]);
+
 		optind++;
 	}
 
@@ -1989,8 +2107,35 @@ invalid_set_command:
 	for (i = 0; i < argcnt; i++)
 		sprintf(&buf[strlen(buf)], "%s ", args[i]);
 	strcat(buf, "\n");
+	if (extra_message)
+		strcat(buf, extra_message);
 	error(runtime ? FATAL : INFO, buf);
 }
+
+/*
+ *  Display the set of settable internal variables.
+ */
+static void
+show_options(void)
+{
+	fprintf(fp, "        scroll: %s\n", pc->flags & SCROLL ? "on" : "off"); 
+        fprintf(fp, "         radix: %d (%s)\n", pc->output_radix,
+                pc->output_radix == 10 ? "decimal" :
+                pc->output_radix == 16 ? "hexadecimal" : "unknown");
+	fprintf(fp, "       refresh: %s\n", tt->flags & TASK_REFRESH ? "on" : "off");
+	fprintf(fp, "     print_max: %d\n", print_max);
+	fprintf(fp, "       console: %s\n", pc->console ? 
+		pc->console : "(not assigned)");
+	fprintf(fp, "         debug: %ld\n", pc->debug);
+	fprintf(fp, "          core: %s\n", pc->flags & DROP_CORE ? "on" : "off");
+	fprintf(fp, "          hash: %s\n", pc->flags & HASH ? "on" : "off");
+	fprintf(fp, "        silent: %s\n", pc->flags & SILENT ? "on" : "off"); 
+	fprintf(fp, "          edit: %s\n", pc->editing_mode);
+	fprintf(fp, "      namelist: %s\n", pc->namelist);
+	fprintf(fp, "      dumpfile: %s\n", pc->dumpfile);
+}
+
+
 
 
 /*
@@ -2005,7 +2150,7 @@ void
 cmd_eval(void)
 {
 	int expression, flags;
-	int bitflag, longlongflag;
+	int bitflag, longlongflag, longlongflagforce;
 	struct number_option nopt;
 	char buf1[BUFSIZE];
 
@@ -2014,14 +2159,15 @@ cmd_eval(void)
 	 */
 	optind = 1;
 	bitflag = 0;
-	longlongflag = 0;
+	longlongflag = longlongflagforce = 0;
+	BZERO(&nopt, sizeof(struct number_option));
 
 	if (STREQ(args[optind], "-lb") || STREQ(args[optind], "-bl")) {
-		longlongflag++;
+		longlongflagforce++;
 		bitflag++;
 		optind++;
 	} else if (STREQ(args[optind], "-l")) {
-		longlongflag++;
+		longlongflagforce++;
 		optind++;
 		if (STREQ(args[optind], "-b") && args[optind+1]) { 
 			optind++;
@@ -2031,7 +2177,7 @@ cmd_eval(void)
 		if (STREQ(args[optind+1], "-l")) { 
 			if (args[optind+2]) {
 				bitflag++;
-				longlongflag++;
+				longlongflagforce++;
 				optind += 2;
 			} else
                 		cmd_usage(pc->curcmd, SYNOPSIS);
@@ -2044,8 +2190,7 @@ cmd_eval(void)
         if (!args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (BITS64())
-		longlongflag = 0;
+	longlongflag = BITS32() ? TRUE : FALSE;
 	flags = longlongflag ? (LONG_LONG|RETURN_ON_ERROR) : FAULT_ON_ERROR;
 
 	expression = TRUE;
@@ -2055,7 +2200,7 @@ cmd_eval(void)
         while (args[optind]) {
                 if (*args[optind] == '(') {
 			if (eval_common(args[optind], flags, NULL, &nopt))
-				print_number(&nopt, bitflag, longlongflag);
+				print_number(&nopt, bitflag, longlongflagforce);
 			else
 				error(FATAL, "invalid expression: %s\n", 
 					args[optind]);
@@ -2072,7 +2217,7 @@ cmd_eval(void)
 	strcat(buf1, ")");
 
 	if (eval_common(buf1, flags, NULL, &nopt))
-        	print_number(&nopt, bitflag, longlongflag);
+        	print_number(&nopt, bitflag, longlongflagforce);
 	else
 		error(FATAL, "invalid expression: %s\n", buf1);
 }
@@ -2133,7 +2278,8 @@ can_eval(char *s)
 #define OP_MOD   (7)
 #define OP_SL    (8)
 #define OP_SR    (9)
-#define OP_EXOR (10)
+#define OP_EXOR  (10)
+#define OP_POWER (11)
 
 ulong
 eval(char *s, int flags, int *errptr)
@@ -2162,6 +2308,9 @@ ulonglong
 evall(char *s, int flags, int *errptr)
 {
         struct number_option nopt;
+
+	if (BITS32())
+		flags |= LONG_LONG;
 
         if (eval_common(s, flags, errptr, &nopt)) {
                 return(nopt.ll_num);
@@ -2196,6 +2345,9 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
 	char *element2;
 	struct syment *sp;
 
+	value1 = value2 = 0;
+	ll_value1 = ll_value2 = 0;
+
 	if (strstr(s, "(") || strstr(s, ")")) {
 		p1 = s;
 		if (*p1 != '(')
@@ -2219,11 +2371,13 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
                 work[0] = '0';
         }
 
-        if (!(op = strpbrk(work, "><+-&|*/%^"))) {
+        if (!(op = strpbrk(work, "#><+-&|*/%^"))) {
 		if (calculate(work, &value1, &ll_value1, 
 		    flags & (HEX_BIAS|LONG_LONG))) { 
 			if (flags & LONG_LONG) {
 				np->ll_num = ll_value1;
+				if (BITS32() && (ll_value1 > 0xffffffff)) 
+					np->retflags |= LONG_LONG;
 				return TRUE;
 			} else {
 				np->num = value1;
@@ -2278,6 +2432,10 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
 	case '^':
 		opcode = OP_EXOR;
 		break;
+
+	case '#':
+		opcode = OP_POWER;
+		break;
 	}
 
         element1 = &work[0];
@@ -2295,20 +2453,25 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
                 goto malformed;
 
 	if ((sp = symbol_search(element1)))
-                value1 = sp->value;
+                value1 = ll_value1 = sp->value;
 	else {
 		if (!calculate(element1, &value1, &ll_value1, 
 		    flags & (HEX_BIAS|LONG_LONG)))
 			goto malformed;
+                if (BITS32() && (ll_value1 > 0xffffffff)) 
+                	np->retflags |= LONG_LONG;
 	}
 
         if ((sp = symbol_search(element2)))
-                value2 = sp->value;
+                value2 = ll_value2 = sp->value;
         else if (!calculate(element2, &value2, &ll_value2, 
 	    	flags & (HEX_BIAS|LONG_LONG)))
 		goto malformed;
 
 	if (flags & LONG_LONG) {
+		if (BITS32() && (ll_value2 > 0xffffffff)) 
+			np->retflags |= LONG_LONG;
+
                 switch (opcode)
                 {
                 case OP_ADD:
@@ -2340,6 +2503,9 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
 			break;           
                 case OP_EXOR:
                         np->ll_num = (ll_value1 ^ ll_value2);
+			break;
+		case OP_POWER:
+			np->ll_num = ll_power(ll_value1, ll_value2);
 			break;
                 }
 	} else {
@@ -2374,6 +2540,9 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
 			break;
 		case OP_EXOR:
 			np->num = (value1 ^ value2);
+			break;
+		case OP_POWER:
+			np->num = power(value1, value2);
 			break;
 		}
 	}
@@ -2486,7 +2655,7 @@ calculate(char *s, ulong *value, ulonglong *llvalue, ulong flags)
  *  
  */
 static void
-print_number(struct number_option *np, int bitflag, int longlongflag)
+print_number(struct number_option *np, int bitflag, int longlongflagforce)
 {
 	int i;
 	ulong hibit;
@@ -2497,8 +2666,22 @@ print_number(struct number_option *np, int bitflag, int longlongflag)
         char *hdr = "   bits set: ";
         char buf[BUFSIZE];
         int hdrlen;
+	int longlongformat;
 
-	if (longlongflag) {
+	longlongformat = longlongflagforce;
+
+	if (!longlongflagforce) {
+		if (BITS32()) {
+			if (np->retflags & LONG_LONG)
+				longlongformat = TRUE;
+			if (np->ll_num > 0xffffffff) 
+				longlongformat = TRUE;
+			else
+				np->num = (ulong)np->ll_num;
+		} 
+	}
+
+	if (longlongformat) {
                 ll_hibit = (ulonglong)(1) << ((sizeof(long long)*8)-1);
                 
                 fprintf(fp, "hexadecimal: %llx  ", np->ll_num);
@@ -2566,7 +2749,7 @@ print_number(struct number_option *np, int bitflag, int longlongflag)
 	ccnt = hdrlen;
 	fprintf(fp, "%s", hdr);
 
-	if (longlongflag) {
+	if (longlongformat) {
 	        for (i = 63; i >= 0; i--) {
 	                ll_mask = (ulonglong)(1) << i;
 	                if (np->ll_num & ll_mask) {
@@ -2838,8 +3021,35 @@ int
 do_list(struct list_data *ld)
 {
 	ulong next, last, first;
-	ulong searchfor;
-	int count;
+	ulong searchfor, readflag;
+	int count, others;
+
+	if (CRASHDEBUG(1)) {
+		others = 0;
+		console("           flags: %lx (", ld->flags);
+		if (ld->flags & VERBOSE)
+			console("%sVERBOSE", others++ ? "|" : "");
+		if (ld->flags & LIST_OFFSET_ENTERED)
+			console("%sLIST_OFFSET_ENTERED", others++ ? "|" : "");
+		if (ld->flags & LIST_START_ENTERED)
+			console("%sLIST_START_ENTERED", others++ ? "|" : "");
+		if (ld->flags & LIST_HEAD_FORMAT)
+			console("%sLIST_HEAD_FORMAT", others++ ? "|" : "");
+		if (ld->flags & LIST_HEAD_POINTER)
+			console("%sLIST_HEAD_POINTER", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_DUPLICATE)
+			console("%sRETURN_ON_DUPLICATE", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_LIST_ERROR)
+			console("%sRETURN_ON_LIST_ERROR", others++ ? "|" : "");
+		console(")\n");
+		console("           start: %lx\n", ld->start);
+		console("   member_offset: %ld\n", ld->member_offset);
+		console("list_head_offset: %ld\n", ld->list_head_offset);
+		console("             end: %lx\n", ld->end);
+		console("       searchfor: %lx\n", ld->searchfor);
+		console("      structname: %s\n", ld->structname);
+		console("          header: %s\n", ld->header);
+	}
 
 	count = 0;
 	searchfor = ld->searchfor;
@@ -2847,8 +3057,14 @@ do_list(struct list_data *ld)
 
 	next = ld->start;
 
-	readmem(next + ld->member_offset, KVADDR, &first, sizeof(void *),
-        	"first list entry", FAULT_ON_ERROR);
+	readflag = ld->flags & RETURN_ON_LIST_ERROR ? 
+		(RETURN_ON_ERROR|QUIET) : FAULT_ON_ERROR;
+
+	if (!readmem(next + ld->member_offset, KVADDR, &first, sizeof(void *),
+            "first list entry", readflag)) {
+                error(INFO, "\ninvalid list entry: %lx\n", next);
+		return -1;
+	}
 
 	if (ld->header)
 		fprintf(fp, "%s", ld->header);
@@ -2877,7 +3093,8 @@ do_list(struct list_data *ld)
 		}
 
                 if (next && !hq_enter(next - ld->list_head_offset)) {
-			if (ld->flags & RETURN_ON_DUPLICATE) {
+			if (ld->flags & 
+			    (RETURN_ON_DUPLICATE|RETURN_ON_LIST_ERROR)) {
                         	error(INFO, "\nduplicate list entry: %lx\n", 
 					next);
 				return -1;
@@ -2892,45 +3109,48 @@ do_list(struct list_data *ld)
 		count++;
                 last = next;
 
-                readmem(next + ld->member_offset, KVADDR, &next, sizeof(void *),
-                        "list entry", FAULT_ON_ERROR);
+                if (!readmem(next + ld->member_offset, KVADDR, &next, 
+		    sizeof(void *), "list entry", readflag)) {
+			error(INFO, "\ninvalid list entry: %lx\n", next);
+			return -1;
+		}
 
 		if (next == 0) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				console("do_list end: next:%lx\n", next);
 			break;
 		}
 
 		if (next == ld->end) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				console("do_list end: next:%lx == end:%lx\n", 
 					next, ld->end);
 			break;
 		}
 
 		if (next == ld->start) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				console("do_list end: next:%lx == start:%lx\n", 
 					next, ld->start);
 			break;
 		}
 
 		if (next == last) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				console("do_list end: next:%lx == last:%lx\n", 
 					next, last);
 			break;
 		}
 
 		if ((next == first) && (count != 1)) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 		      console("do_list end: next:%lx == first:%lx (count %d)\n",
 				next, last, count);
 			break;
 		}
 	}
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		console("do_list count: %d\n", count);
 
 	return count;
@@ -3307,6 +3527,10 @@ retrieve_list(ulong array[], int count)
         struct hq_entry *list_entry;
         int elements;
 
+	if (!(pc->flags & HASH))
+		error(FATAL, 
+		    "cannot perform this command with hash turned off\n");
+
         ht = &hash_table;
 
 	list_entry = ht->memptr;
@@ -3354,28 +3578,39 @@ power(long base, int exp)
 	return p;
 }
 
+long long 
+ll_power(long long base, long long exp)
+{
+        long long i;
+        long long p;
+
+        p = 1;
+        for (i = 1; i <= exp; i++)
+                p = p * base;
+
+        return p;
+}
+
 /*
  *  Internal buffer allocation scheme to avoid inline malloc() calls and 
  *  resultant memory leaks due to aborted commands.  These buffers are
- *  for TEMPORARY use on a per-command basis.
+ *  for TEMPORARY use on a per-command basis.  They are allocated by calls
+ *  to GETBUF(size).  They can explicitly freed by FREEBUF(address), but
+ *  they are all freed by free_all_bufs() which is called in a number of
+ *  places, most not
  */
 
 #define NUMBER_1K_BUFS  (10)
 #define NUMBER_2K_BUFS  (10)
-#define NUMBER_4K_BUFS  (0)
-#define NUMBER_8K_BUFS  (10)
-#define NUMBER_32K_BUFS (1)
-#define NUMBER_SYM_BUFS (20)
+#define NUMBER_4K_BUFS   (5)
+#define NUMBER_8K_BUFS   (5)
+#define NUMBER_32K_BUFS  (1)
 
 #define SHARED_1K_BUF_FULL   (0x003ff)
 #define SHARED_2K_BUF_FULL   (0x003ff)
-#define SHARED_4K_BUF_FULL   (0x00000)
-#define SHARED_8K_BUF_FULL   (0x003ff)
+#define SHARED_4K_BUF_FULL   (0x0001f)
+#define SHARED_8K_BUF_FULL   (0x0001f)
 #define SHARED_32K_BUF_FULL  (0x00001)
-#define SHARED_SYM_BUF_FULL  (0xfffff)
-
-#define USE_SYM_BUF(X)  (bp->buf_sym && ((X) == pc->sym_maxline))
-#define SYM_BUF_INDEX   (1)
 
 #define SHARED_1K_BUF_AVAIL(X) \
   (NUMBER_1K_BUFS && !(((X) & SHARED_1K_BUF_FULL) == SHARED_1K_BUF_FULL))
@@ -3387,18 +3622,15 @@ power(long base, int exp)
   (NUMBER_8K_BUFS && !(((X) & SHARED_8K_BUF_FULL) == SHARED_8K_BUF_FULL))
 #define SHARED_32K_BUF_AVAIL(X) \
   (NUMBER_32K_BUFS && !(((X) & SHARED_32K_BUF_FULL) == SHARED_32K_BUF_FULL))
-#define SHARED_SYM_BUF_AVAIL(X) \
-  (NUMBER_SYM_BUFS && !(((X) & SHARED_SYM_BUF_FULL) == SHARED_SYM_BUF_FULL))
 
 #define B1K  (0)
 #define B2K  (1)
 #define B4K  (2)
 #define B8K  (3)
 #define B32K (4)
-#define BSB  (5)
 
-#define SHARED_BUF_SIZES  (BSB+1)
-#define MAX_MALLOC_BUFS   (500)
+#define SHARED_BUF_SIZES  (B32K+1)
+#define MAX_MALLOC_BUFS   (2000)
 #define MAX_CACHE_SIZE    (KILOBYTES(32))
 
 struct shared_bufs {
@@ -3407,25 +3639,21 @@ struct shared_bufs {
 	char buf_4K[NUMBER_4K_BUFS][4096];
 	char buf_8K[NUMBER_8K_BUFS][8192];
 	char buf_32K[NUMBER_32K_BUFS][32768];
-	char *buf_sym;
 	long buf_1K_used;
 	long buf_2K_used;
 	long buf_4K_used;
 	long buf_8K_used;
 	long buf_32K_used;
-	long buf_sym_used;
         long buf_1K_maxuse;
         long buf_2K_maxuse;
         long buf_4K_maxuse;
         long buf_8K_maxuse;
         long buf_32K_maxuse;
-	long buf_sym_maxuse;
         long buf_1K_ovf;
         long buf_2K_ovf;
         long buf_4K_ovf;
         long buf_8K_ovf;
         long buf_32K_ovf;
-	long buf_sym_ovf;
 	int buf_inuse[SHARED_BUF_SIZES];
 	char *malloc_bp[MAX_MALLOC_BUFS];
 	long smallest;
@@ -3450,26 +3678,6 @@ buf_init(void)
 	bp->total = 0.0;
 }
 
-/*
- *  These are the most popular getbuf users, and depending upon the kernel
- *  configuration, pc->sym_maxline can wildly vary in size.  That being the
- *  case, after pc->sym_maxline is determined, this routine is called to
- *  carve out a special-case buffer scheme.
- */
-void
-sym_buf_init(void)
-{
-	struct shared_bufs *bp;
-
-	bp = &shared_bufs;
-
-	if ((bp->buf_sym = (char *)malloc(pc->sym_maxline * 20)) == NULL) {
-		error(INFO, "symbol file buffer malloc: %s\n", 
-			strerror(errno));
-		return;
-	}
-	bp->buf_inuse[BSB] = 0;
-}
 
 /*
  *  Free up all buffers used by the last command.
@@ -3510,24 +3718,13 @@ freebuf(char *addr)
 {
         int i;
         struct shared_bufs *bp;
-	char *bufp;
 
         bp = &shared_bufs;
 	bp->embedded--;
 
-        if (MCLXDEBUG(5)) {
+        if (CRASHDEBUG(8)) {
 		INDENT(bp->embedded*2);
                 fprintf(fp, "FREEBUF(%ld)\n", bp->embedded);
-        }
-
-        for (i = 0; bp->buf_sym && (i < NUMBER_SYM_BUFS); i++) {
-		
-		bufp = bp->buf_sym + (i * pc->sym_maxline);
-
-                if (addr == bufp) {
-                        bp->buf_inuse[BSB] &= ~(1 << i);
-                        return;
-                }
         }
 
 	for (i = 0; i < NUMBER_1K_BUFS; i++) {
@@ -3617,14 +3814,12 @@ dump_shared_bufs(void)
         fprintf(fp, "   buf_4K_used: %ld\n", bp->buf_4K_used);
         fprintf(fp, "   buf_8K_used: %ld\n", bp->buf_8K_used);
         fprintf(fp, "  buf_32K_used: %ld\n", bp->buf_32K_used);
-        fprintf(fp, "  buf_sym_used: %ld\n", bp->buf_sym_used);
 
         fprintf(fp, "    buf_1K_ovf: %ld\n", bp->buf_1K_ovf);
         fprintf(fp, "    buf_2K_ovf: %ld\n", bp->buf_2K_ovf);
         fprintf(fp, "    buf_4K_ovf: %ld\n", bp->buf_4K_ovf);
         fprintf(fp, "    buf_8K_ovf: %ld\n", bp->buf_8K_ovf);
         fprintf(fp, "   buf_32K_ovf: %ld\n", bp->buf_32K_ovf);
-        fprintf(fp, "   buf_sym_ovf: %ld\n", bp->buf_sym_ovf);
 
         fprintf(fp, " buf_1K_maxuse: %2ld of %d\n", bp->buf_1K_maxuse, 
 		NUMBER_1K_BUFS);
@@ -3636,8 +3831,6 @@ dump_shared_bufs(void)
 		NUMBER_8K_BUFS);
         fprintf(fp, "buf_32K_maxuse: %2ld of %d\n", bp->buf_32K_maxuse, 
 		NUMBER_32K_BUFS);
-        fprintf(fp, "buf_sym_maxuse: %2ld of %d\n", bp->buf_sym_maxuse, 
-		NUMBER_SYM_BUFS);
 
 	fprintf(fp, "  buf_inuse[%d]: ", SHARED_BUF_SIZES);
 	for (i = 0; i < SHARED_BUF_SIZES; i++)
@@ -3693,13 +3886,13 @@ getbuf(long reqsize)
 
 	bp = &shared_bufs;
 
-	index = USE_SYM_BUF(reqsize) ? SYM_BUF_INDEX : SHARED_BUFSIZE(reqsize);
+	index = SHARED_BUFSIZE(reqsize);
 
-	if (MCLXDEBUG(1) && (reqsize > MAX_CACHE_SIZE))
-		error(WARNING, "unusually large GETBUF request: %ld\n", 
+	if (CRASHDEBUG(7) && (reqsize > MAX_CACHE_SIZE))
+		error(NOTE, "GETBUF request > MAX_CACHE_SIZE: %ld\n", 
 			reqsize);
 
-	if (MCLXDEBUG(5)) {
+	if (CRASHDEBUG(8)) {
 		INDENT(bp->embedded*2);
 		fprintf(fp, "GETBUF(%ld -> %ld)\n", reqsize, bp->embedded);
 	}
@@ -3716,29 +3909,9 @@ getbuf(long reqsize)
 	bp->total += reqsize;
 	bp->reqs++;
 
-getbuf_retry:
-
 	switch (index)
 	{
 	case -1:
-		break;
-
-	case 1:
-                if (SHARED_SYM_BUF_AVAIL(bp->buf_inuse[BSB])) {
-                        mask = ~(bp->buf_inuse[BSB]);
-                        bdx = ffs(mask) - 1;
-			bufp = bp->buf_sym + (bdx * pc->sym_maxline);
-                        bp->buf_sym_used++;
-                        bp->buf_inuse[BSB] |= (1 << bdx);
-                        bp->buf_sym_maxuse = MAX(bp->buf_sym_maxuse,
-                                count_bits_int(bp->buf_inuse[BSB]));
-                        BZERO(bufp, pc->sym_maxline);
-                        return(bufp);
-		} else {
-			bp->buf_sym_ovf++;
-			index = SHARED_BUFSIZE(reqsize);
-			goto getbuf_retry;
-		}
 		break;
 
 	case 8:
@@ -3854,7 +4027,7 @@ count_bits_int(int val)
 }
 
 int
-count_bits_long(long val)
+count_bits_long(ulong val)
 {
         int i, cnt;
         int total;
@@ -4042,9 +4215,9 @@ sigsetup(int sig, void *handler, struct sigaction *act,struct sigaction *oldact)
 #define SEC_DAYS     (24 * SEC_HOURS)
 
 char *
-convert_time(ulong count, char *buf)
+convert_time(ulonglong count, char *buf)
 {
-	ulong total, days, hours, minutes, seconds;
+	ulonglong total, days, hours, minutes, seconds;
 
         total = (count)/machdep->hz;
 
@@ -4058,9 +4231,71 @@ convert_time(ulong count, char *buf)
 	buf[0] = NULLCHAR;
 
         if (days)
-        	sprintf(buf, "%ld days, ", days);
-        sprintf(&buf[strlen(buf)], "%02ld:%02ld:%02ld", 
+        	sprintf(buf, "%llu days, ", days);
+        sprintf(&buf[strlen(buf)], "%02llu:%02llu:%02llu", 
 		hours, minutes, seconds);
 
 	return buf;
+}
+
+/*
+ *  Stall for a number of microseconds.
+ */
+void
+stall(ulong microseconds)
+{
+        struct timeval delay;
+
+        delay.tv_sec = 0;
+        delay.tv_usec = (__time_t)microseconds;
+
+        (void) select(0, (fd_set *) 0, (fd_set *) 0, (fd_set *) 0, &delay);
+}
+
+
+/*
+ *  Fill a buffer with a page count translated to a GB/MB/KB value.
+ */ 
+char *
+pages_to_size(ulong pages, char *buf)
+{
+	double total;
+	char *p1, *p2;
+
+	if (pages == 0) {
+		sprintf(buf, "0");
+		return buf;
+	}
+
+	total = (double)pages * (double)PAGESIZE();
+
+    	if (total >= GIGABYTES(1))
+        	sprintf(buf, "%.1f GB", total/(double)GIGABYTES(1));
+    	else if (total >= MEGABYTES(1))
+        	sprintf(buf, "%.1f MB", total/(double)MEGABYTES(1));
+        else
+        	sprintf(buf, "%ld KB", (ulong)(total/(double)KILOBYTES(1)));
+
+	if ((p1 = strstr(buf, ".0 "))) {
+		p2 = p1 + 3;
+		*p1++ = ' ';
+		strcpy(p1, p2);
+	}
+
+	return buf;
+}
+
+/*
+ *  If the list_head.next value points to itself, it's an emtpy list.
+ */
+int
+empty_list(ulong list_head_addr)
+{
+	ulong next;
+ 
+	if (!readmem(list_head_addr, KVADDR, &next, sizeof(void *),
+            "list_head next contents", RETURN_ON_ERROR))
+		return TRUE;
+
+	return (next == list_head_addr);
 }
