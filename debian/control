@@ -1,0 +1,36 @@
+Source: crash
+Section: utils
+Priority: optional
+Maintainer: Josh Huber <huber@debian.org>
+Build-Depends: debhelper, binutils-dev, zlib1g-dev, libncurses5-dev
+Standards-Version: 3.5.6.0
+
+Package: crash
+Architecture: alpha i386 powerpc ia64
+Depends: ${shlibs:Depends}
+Description: A kernel debugging utility, allowing gdb like syntax.
+ The core analysis suite is a self-contained tool that can be used to
+ investigate either live systems, kernel core dumps created from the
+ Kernel Core Dump patch offered by Mission Critical Linux, or kernel
+ core dumps created by the LKCD patch offered by SGI.
+ .
+ o  The tool is loosely based on the SVR4 crash command, but has been
+    completely integrated with gdb in order to be able to display 
+    formatted kernel data structures, disassemble source code, etc.
+ .    
+ o  The current set of available commands consist of common kernel core
+    analysis tools such as a context-specific stack traces, source code
+    disassembly, kernel variable displays, memory display, dumps of 
+    linked-lists, etc.  In addition, any gdb command may be entered,
+    which in turn will be passed onto the gdb module for execution.  
+ .
+ o  There are several commands that delve deeper into specific kernel
+    subsystems, which also serve as templates for kernel developers
+    to create new commands for analysis of a specific area of interest.
+    Adding a new command is a simple affair, and a quick recompile
+    adds it to the command menu.
+ .
+ o  The intent is to make the tool independent of Linux version dependencies,
+    building in recognition of major kernel code changes so as to adapt to 
+    new kernel versions, while maintaining backwards compatibility.
+

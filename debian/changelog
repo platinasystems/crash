@@ -1,0 +1,73 @@
+crash (3.3-1) unstable; urgency=low
+
+  * New upstream release (Closes: #134967)
+
+ -- Josh Huber <huber@debian.org>  Fri,  1 Mar 2002 10:51:00 -0500
+
+crash (3.2-1) unstable; urgency=low
+
+  * New upstream release. Adds IA64 support.
+
+ -- Josh Huber <huber@debian.org>  Thu, 17 Jan 2002 12:25:49 -0500
+
+crash (3.1-4) unstable; urgency=medium
+
+  * Fixed missing build-depends on libncurses.  Should build on the
+    autobuilders now
+
+ -- Josh Huber <huber@debian.org>  Fri, 30 Nov 2001 16:57:44 -0500
+
+crash (3.1-3) unstable; urgency=low
+
+  * Fixed false-positive builds (hopefully no packages with missing
+    binaries now)
+
+ -- Josh Huber <huber@debian.org>  Tue, 20 Nov 2001 13:35:40 -0500
+
+crash (3.1-2) unstable; urgency=low
+
+  * Added binutils-dev and zlib1g-dev to the build-depends
+    (closes #114061)
+
+ -- Josh Huber <huber@debian.org>  Mon,  1 Oct 2001 11:22:08 -0400
+
+crash (3.1-1) unstable; urgency=low
+
+  * New upstream version (3.1)
+    (note, I never uploaded the 3.0 package)
+
+ -- Josh Huber <huber@debian.org>  Tue, 25 Sep 2001 11:31:50 -0400
+
+crash (3.0-1) unstable; urgency=low
+
+  * New upstream version (3.0)
+
+ -- Josh Huber <huber@debian.org>  Wed, 15 Aug 2001 19:41:25 -0400
+
+crash (2.6-1) unstable; urgency=low
+
+  * new release (closes: #90895) 
+
+ -- Josh Huber <huber@debian.org>  Mon, 26 Mar 2001 15:54:55 -0500
+
+crash (2.5-2) unstable; urgency=low
+
+  * fixed maintainer address
+
+ -- Josh Huber <huber@debian.org>  Tue, 12 Dec 2000 23:33:41 -0500
+
+crash (2.5-1) unstable; urgency=low
+
+  * new upstream version
+
+ -- Josh Huber <huber@debian.org>  Sat,  9 Dec 2000 10:52:06 -0500
+
+crash (2.4-1) unstable; urgency=low
+
+  * Initial Release.
+
+ -- Josh Huber <huber@mclx.com>  Tue, 10 Oct 2000 18:00:20 -0400
+
+Local variables:
+mode: debian-changelog
+End:

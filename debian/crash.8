@@ -1,0 +1,73 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH CRASH 8 "October 11, 2000"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+crash \- A kernel debugging utility, allowing gdb like syntax.
+.SH SYNOPSIS
+.B crash
+.RI [-silent]
+.RI [namelist]
+.RI [dumpfile]
+.SH DESCRIPTION
+This manual page documents briefly the
+.B crash
+command.
+This manual page was written for the Debian GNU/Linux distribution
+because the original program does not have a manual page.
+Instead, it has online documentation; see below.
+.PP
+.\" TeX users may be more comfortable with the \fB<whatever>\fP and
+.\" \fI<whatever>\fP escape sequences to invode bold face and italics, 
+.\" respectively.
+crash is a self-contained tool that can be used to
+investigate either live systems, kernel core dumps created from the
+Kernel Core Dump patch offered by Mission Critical Linux, or kernel
+core dumps created by the LKCD patch offered by SGI.
+
+The tool is loosely based on the SVR4 crash command, but has been
+completely integrated with gdb in order to be able to display
+formatted kernel data structures, disassemble source code, etc.
+
+The current set of available commands consist of common kernel core
+analysis tools such as a context-specific stack traces, source code
+disassembly, kernel variable displays, memory display, dumps of
+linked-lists, etc.  In addition, any gdb command may be entered,
+which in turn will be passed onto the gdb module for execution.
+
+There are several commands that delve deeper into specific kernel
+subsystems, which also serve as templates for kernel developers
+to create new commands for analysis of a specific area of interest.
+Adding a new command is a simple affair, and a quick recompile
+adds it to the command menu.
+
+The intent is to make the tool independent of Linux version dependencies,
+building in recognition of major kernel code changes so as to adapt to
+new kernel versions, while maintaining backwards compatibility.
+.SH OPTIONS
+Most options are documented internal to crash.  After running crash,
+the help command will give you all the information you need.
+.TP
+.B \-silent
+Hide most output, except for critical errors
+.TP
+.B \-v
+Show version and copyright information for crash.
+.SH SEE ALSO
+.BR gdb (1)
+.SH AUTHOR
+This manual page was written by Josh Huber <huber@mclx.com>,
+for the Debian GNU/Linux system (but may be used by others).
