@@ -7,7 +7,7 @@ Build-Depends: debhelper (>= 4), binutils-dev, zlib1g-dev, libncurses5-dev, dpat
 Standards-Version: 3.6.1.1
 
 Package: crash
-Architecture: alpha i386 powerpc ia64
+Architecture: any
 Depends: ${shlibs:Depends}
 Description: kernel debugging utility, allowing gdb like syntax
  The core analysis suite is a self-contained tool that can be used to

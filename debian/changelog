@@ -1,3 +1,10 @@
+crash (3.10-11-2) unstable; urgency=medium
+
+  * Moving Architecture to any
+  * Adding patch to move ia64 NR_CPUS to 64 to match kernel-patch-LKCD
+
+ -- Troy Heber <troy.heber@hp.com>  Mon, 14 Mar 2005 13:42:43 -0700 
+
 crash (3.10-11-1) unstable; urgency=medium
 
   * New upstream version 3.10-11
