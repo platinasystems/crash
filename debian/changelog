@@ -1,3 +1,10 @@
+crash (3.10-11-3) unstable; urgency=medium
+
+  * Updated debian/control description to integrate with LKCD suite
+  * Updated debian/control to Suggest kernel-patch-lkcd and dumputils
+
+ -- Micah Anderson <micah@debian.org>  Mon, 14 Mar 2005 15:23:19 -0600
+
 crash (3.10-11-2) unstable; urgency=medium
 
   * Moving Architecture to any
