@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -14,21 +14,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)memory.c 1.17
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.93 $ $Date: 2005/01/06 19:56:46 $
  */
 
 #include "defs.h"
@@ -554,6 +539,8 @@ vm_init(void)
 			if (INVALID_MEMBER(zone_struct_size))
 	                	MEMBER_OFFSET_INIT(zone_struct_memsize, 
 					"zone_struct", "memsize");
+			MEMBER_OFFSET_INIT(zone_struct_zone_start_pfn,
+				"zone_struct", "zone_start_pfn");
 	                MEMBER_OFFSET_INIT(zone_struct_zone_start_paddr,  
 	                        "zone_struct", "zone_start_paddr");
 	                MEMBER_OFFSET_INIT(zone_struct_zone_start_mapnr, 
@@ -865,10 +852,11 @@ cmd_rd(void)
  */
 #define MAX_HEXCHARS_PER_LINE (32)
 
-#define ASCII_START_8   (59)     /* line locations where ASCII output starts */
-#define ASCII_START_16  (51)
-#define ASCII_START_32  (47)
-#define ASCII_START_64  (45)
+/* line locations where ASCII output starts */
+#define ASCII_START_8   (51 + VADDR_PRLEN)
+#define ASCII_START_16  (43 + VADDR_PRLEN)
+#define ASCII_START_32  (39 + VADDR_PRLEN)
+#define ASCII_START_64  (37 + VADDR_PRLEN)
 
 #define ENTRIES_8   (16)         /* number of entries per line per size */
 #define ENTRIES_16  (8)
@@ -898,7 +886,6 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	char ch;
 	int linelen;
 	char buf[BUFSIZE];
-	int int32;
 	int ascii_start;
 	char *hex_64_fmt = BITS32() ? "%.*llx " : "%.*lx ";
 	char *dec_64_fmt = BITS32() ? "%12lld " : "%15ld ";
@@ -906,8 +893,6 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 
 	if (count <= 0) 
 		error(FATAL, "invalid count request: %ld\n", count);
-
-	int32 = sizeof(int) == 4 ? TRUE : FALSE;
 
 	switch (memtype)
 	{
@@ -941,7 +926,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	case DISPLAY_32:
 		ascii_start = ASCII_START_32; 
 		typesz = SIZEOF_32BIT;
-		location = int32 ?  (void *)&mem.u32 : &mem.u64;
+		location = &mem.u32;
 		sprintf(readtype, "32-bit %s", addrtype);
 		per_line = ENTRIES_32;
 		break;
@@ -1010,27 +995,23 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	        case DISPLAY_32:
                         if ((flag & (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) ==
                             (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) {
-				if (in_ksymbol_range(int32 ? 
-				    mem.u32 : mem.u64)) {
+				if (in_ksymbol_range(mem.u32)) {
 					fprintf(fp, INT_PRLEN == 16 ? 
 					    "%-16s " : "%-8s ",
-                                                value_to_symstr(int32 ?
-						mem.u32 : mem.u64, buf, 0));
+                                                value_to_symstr(mem.u32,
+						                buf, 0));
 					linelen += strlen(buf)+1;
 					break;
 				}
                         }
 			if (flag & HEXADECIMAL) {
-				fprintf(fp, "%.*x ", INT_PRLEN, 
-					int32 ?  mem.u32 : (uint32_t)mem.u64);
+				fprintf(fp, "%.*x ", INT_PRLEN, mem.u32 );
 				linelen += (INT_PRLEN + 1);
 			}
                         else if (flag & DECIMAL)
-                                fprintf(fp, "%12d ", 
-					int32 ?  mem.u32 : (uint32_t)mem.u64);
+                                fprintf(fp, "%12d ", mem.u32 );
                         else if (flag & UDECIMAL)
-                                fprintf(fp, "%12u ", 
-					int32 ?  mem.u32 : (uint32_t)mem.u64);
+                                fprintf(fp, "%12u ", mem.u32 );
 	                break;
 
 	        case DISPLAY_16:
@@ -1057,47 +1038,55 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	        }
 
 		if (flag & HEXADECIMAL) {
+			char* ptr;
 	                switch (flag & DISPLAY_TYPES)
 	                {
 	                case DISPLAY_64:
+				ptr = (char*)&mem.u64;
 		                for (j = 0; j < SIZEOF_64BIT; j++) {
-		                        ch = (mem.u64 >> (8*j)) & 0xff;
+					ch = ptr[j];
 		                        if ((ch >= 0x20) && (ch < 0x7f)) {
 		                                hexchars[hx++] = ch;
 		                        }
-		                        else hexchars[hx++] = '.';
+		                        else {
+						hexchars[hx++] = '.';
+					}
 		                }
 	                        break;
 	
 	                case DISPLAY_32:
+				ptr = (char*)&mem.u32;
 	                        for (j = 0; j < (SIZEOF_32BIT); j++) {
-					ch = int32 ?
-	                                    (mem.u32 >> (8*j)) & 0xff :
-					    (mem.u64 >> (8*j)) & 0xff;
+					ch = ptr[j];
 	                                if ((ch >= 0x20) && (ch < 0x7f)) {
 	                                        hexchars[hx++] = ch;
-	                                }
-	                                else hexchars[hx++] = '.';
+	                                } else {
+						hexchars[hx++] = '.';
+					}
 	                        }
 	                        break;
 	
 	                case DISPLAY_16:
+				ptr = (char*)&mem.u16;
 	                        for (j = 0; j < SIZEOF_16BIT; j++) {
-	                                ch = (mem.u16 >> (8*j)) & 0xff;
+					ch = ptr[j];
 	                                if ((ch >= 0x20) && (ch < 0x7f)) {
 	                                        hexchars[hx++] = ch;
-	                                }
-	                                else hexchars[hx++] = '.';
+	                                } else {
+						hexchars[hx++] = '.';
+					}
 	                        }
 	                        break;
 	
 	                case DISPLAY_8:
+				ptr = (char*)&mem.u8;
 	                        for (j = 0; j < SIZEOF_8BIT; j++) {
-	                                ch = (mem.u8 >> (8*j)) & 0xff;
+	                                ch = ptr[j];
 	                                if ((ch >= 0x20) && (ch < 0x7f)) {
 	                                        hexchars[hx++] = ch;
-	                                }
-	                                else hexchars[hx++] = '.';
+	                                } else {
+						hexchars[hx++] = '.';
+					}
 	                        }
 	                        break;
 	                }
@@ -1148,7 +1137,7 @@ cmd_wr(void)
 		error(FATAL, "not allowed on dumpfiles\n");
 
 	memtype = 0;
-	size = 4;
+	size = sizeof(void*);
 	addr_entered = value_entered = FALSE;
 
         while ((c = getopt(argcnt, args, "ukp81:3:6:")) != EOF) {
@@ -2268,15 +2257,15 @@ cmd_ptov(void)
 void
 cmd_ptob(void)
 {
-        ulong value;
+        ulonglong value;
 
         optind = 1;
         if (!args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
         while (args[optind]) {
-		value = stol(args[optind], FAULT_ON_ERROR, NULL);
-		fprintf(fp, "%lx: %lx\n", value, PTOB(value));
+		value = stoll(args[optind], FAULT_ON_ERROR, NULL);
+		fprintf(fp, "%llx: %llx\n", value, PTOB(value));
                 optind++;
         }
 }
@@ -2288,15 +2277,15 @@ cmd_ptob(void)
 void
 cmd_btop(void)
 {
-        ulong value;
+        ulonglong value;
 
         optind = 1;
         if (!args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
         while (args[optind]) {
-		value = htol(args[optind], FAULT_ON_ERROR, NULL); 
-		fprintf(fp, "%lx: %lx\n", value, BTOP(value));
+		value = htoll(args[optind], FAULT_ON_ERROR, NULL); 
+		fprintf(fp, "%llx: %llx\n", value, BTOP(value));
                 optind++;
         }
 }
@@ -5500,12 +5489,13 @@ dump_kmeminfo(void)
 	        fprintf(fp, "%10s  %7ld  %11s         ----\n", 
 			"TOTAL SWAP", totalswap_pages, 
 			pages_to_size(totalswap_pages, buf));
-	        pct = (totalused_pages * 100)/totalswap_pages;
+	        pct = totalswap_pages ? (totalused_pages * 100) /
+			totalswap_pages : 100;
 	        fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n",
 	                "SWAP USED", totalused_pages,
 	                pages_to_size(totalused_pages, buf), pct);
-	        pct = ((totalswap_pages - totalused_pages) * 100) / 
-			totalswap_pages;
+	        pct = totalswap_pages ? ((totalswap_pages - totalused_pages) *
+			100) / totalswap_pages : 0;
 	        fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n", 
 			"SWAP FREE",
 	                totalswap_pages - totalused_pages,
@@ -5584,6 +5574,8 @@ static void
 dump_vmlist(struct meminfo *vi)
 {
 	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 	ulong vmlist;
 	ulong addr, size, next, pcheck; 
 	physaddr_t paddr;
@@ -5612,12 +5604,14 @@ dump_vmlist(struct meminfo *vi)
 		if (!(vi->flags & ADDRESS_SPECIFIED) || 
 		    ((vi->memtype == KVADDR) &&
 		    ((vi->spec_addr >= addr) && (vi->spec_addr < (addr+size)))))
-			fprintf(fp, "%s%s  %lx - %lx  %6ld\n",
-				mkstring(buf, VADDR_PRLEN, 
-				LONG_HEX|CENTER|LJUST,
-				MKSTR(next)), 
-				space(MINSPACE-1),
-				addr, addr+size, size);
+			fprintf(fp, "%s%s  %s - %s  %6ld\n",
+				mkstring(buf,VADDR_PRLEN, LONG_HEX|CENTER|LJUST,
+				MKSTR(next)), space(MINSPACE-1),
+				mkstring(buf1, VADDR_PRLEN, LONG_HEX|RJUST,
+				MKSTR(addr)),
+				mkstring(buf2, VADDR_PRLEN, LONG_HEX|LJUST,
+				MKSTR(addr+size)),
+				size);
 
 		if ((vi->flags & ADDRESS_SPECIFIED) && 
 		     (vi->memtype == PHYSADDR)) {
@@ -5632,15 +5626,16 @@ dump_vmlist(struct meminfo *vi)
 						    PAGEOFFSET(paddr);
 						return;
 				        } else
-						fprintf(fp, 
-						    "%s%s  %lx - %lx  %6ld\n",
-							mkstring(buf, 
-							VADDR_PRLEN, 
-							LONG_HEX|CENTER|LJUST,
-                                			MKSTR(next)),
-							space(MINSPACE-1),
-							addr, 
-						    	addr+size, size);
+						fprintf(fp,
+						"%s%s  %s - %s  %6ld\n",
+						mkstring(buf, VADDR_PRLEN,
+						LONG_HEX|CENTER|LJUST,
+						MKSTR(next)), space(MINSPACE-1),
+						mkstring(buf1, VADDR_PRLEN,
+						LONG_HEX|RJUST, MKSTR(addr)),
+						mkstring(buf2, VADDR_PRLEN,
+						LONG_HEX|LJUST,
+						MKSTR(addr+size)), size);
 					break;
 				}
 			}
@@ -6184,6 +6179,7 @@ kmem_cache_init(void)
 
                 if (!readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
                         "kmem_cache_s buffer", RETURN_ON_ERROR)) {
+			FREEBUF(cache_buf);
 			vt->flags |= KMEM_CACHE_UNAVAIL;
 			error(INFO, 
 		          "unable to initialize kmem slab cache subsystem\n\n");
@@ -6197,6 +6193,13 @@ kmem_cache_init(void)
 
 		if ((tmp = max_cpudata_limit(cache, &tmp2)) > max_limit)
 			max_limit = tmp;
+		/*
+		 *  Recognize and bail out on any max_cpudata_limit() failures.
+		 */
+		if (vt->flags & KMEM_CACHE_UNAVAIL) {
+			FREEBUF(cache_buf);
+			return;
+		}
 
 		if (tmp2 > max_cpus)
 			max_cpus = tmp2;
@@ -6262,20 +6265,22 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 		goto kmem_cache_s_array;
 
         if (INVALID_MEMBER(kmem_cache_s_cpudata)) {
-                *cpus = 0;
-                return 0;
-        }
+		*cpus = 0;
+		return 0;
+	}
 
-	readmem(cache+OFFSET(kmem_cache_s_cpudata),
-        	KVADDR, &cpudata[0], 
-		sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_cpudata),
-                "cpudata array", FAULT_ON_ERROR);
+	if (!readmem(cache+OFFSET(kmem_cache_s_cpudata),
+            KVADDR, &cpudata[0], 
+	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_cpudata),
+            "cpudata array", RETURN_ON_ERROR))
+		goto bail_out;
 
 	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_cpudata)) && 
 	     cpudata[i]; i++) {
-		readmem(cpudata[i]+OFFSET(cpucache_s_limit),
-        		KVADDR, &limit, sizeof(int),
-                	"cpucache limit", FAULT_ON_ERROR);
+		if (!readmem(cpudata[i]+OFFSET(cpucache_s_limit),
+        	    KVADDR, &limit, sizeof(int),
+                    "cpucache limit", RETURN_ON_ERROR))
+			goto bail_out;
 		if (limit > max_limit)
 			max_limit = limit;
 	}
@@ -6286,22 +6291,30 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 
 kmem_cache_s_array:
 
-	readmem(cache+OFFSET(kmem_cache_s_array),
-        	KVADDR, &cpudata[0], 
-		sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
-                "array cache array", FAULT_ON_ERROR);
+	if (!readmem(cache+OFFSET(kmem_cache_s_array),
+            KVADDR, &cpudata[0], 
+	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
+            "array cache array", RETURN_ON_ERROR))
+		goto bail_out;
 
 	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
 	     cpudata[i]; i++) {
-                readmem(cpudata[i]+OFFSET(array_cache_limit),
-                        KVADDR, &limit, sizeof(int),
-                        "array cache limit", FAULT_ON_ERROR);
+                if (!readmem(cpudata[i]+OFFSET(array_cache_limit),
+                    KVADDR, &limit, sizeof(int),
+                    "array cache limit", RETURN_ON_ERROR))
+			goto bail_out;
                 if (limit > max_limit)
                         max_limit = limit;
         }
 
 	*cpus = i;
 	return max_limit;
+
+bail_out:
+	vt->flags |= KMEM_CACHE_UNAVAIL;
+	error(INFO, "unable to initialize kmem slab cache subsystem\n\n");
+	*cpus = 0;
+	return 0;
 }
 
 /*
@@ -7411,9 +7424,20 @@ verify_slab_v1(struct meminfo *si, ulong last, int s)
                         si->curname, list, si->slab, inuse);
 		errcnt++;
 	}
+
+	if (!last)
+		goto no_inuse_check_v1;
+
 	switch (s) 
 	{
-	case 0: /* full -- or one singular list, so we can't test this */
+	case 0: /* full -- but can be one singular list */
+                if (VALID_MEMBER(kmem_cache_s_slabs_full) && 
+		    (inuse != si->c_num)) {
+                        error(INFO,
+                            "%s: %s list: slab: %lx  bad inuse counter: %ld\n",
+                                si->curname, list, si->slab, inuse);
+                        errcnt++;
+                }
 		break;
 
 	case 1: /* partial */
@@ -7435,6 +7459,7 @@ verify_slab_v1(struct meminfo *si, ulong last, int s)
 		break;
 	}
 
+no_inuse_check_v1:
 	s_mem = ULONG(slab_s_buf + OFFSET(slab_s_s_mem));
 	if (!IS_KVADDR(s_mem) || !accessible(s_mem)) {
                 error(INFO, "%s: %s list: slab: %lx  bad s_mem pointer: %lx\n",
@@ -7679,6 +7704,10 @@ verify_slab_v2(struct meminfo *si, ulong last, int s)
                         si->curname, list, si->slab, inuse);
 		errcnt++;
 	}
+
+	if (!last)
+		goto no_inuse_check_v2;
+
 	switch (s) 
 	{
 	case 0: /* partial */
@@ -7709,6 +7738,7 @@ verify_slab_v2(struct meminfo *si, ulong last, int s)
 		break;
 	}
 
+no_inuse_check_v2:
 	s_mem = ULONG(slab_buf + OFFSET(slab_s_mem));
 	if (!IS_KVADDR(s_mem) || !accessible(s_mem)) {
                 error(INFO, "%s: %s list: slab: %lx  bad s_mem pointer: %lx\n",
@@ -7879,9 +7909,7 @@ dump_slab_percpu_v1(struct meminfo *si)
 				si->found = KMEM_BUFCTL_ADDR;
 			else
                 		si->found = KMEM_SLAB_ADDR;
-                        return;
-                }
-		if (INSLAB_PERCPU(si->spec_addr, si))
+                } else if (INSLAB_PERCPU(si->spec_addr, si))
 			si->found = KMEM_ON_SLAB;  /* But don't return yet... */
 		else
 			return;
@@ -7933,9 +7961,7 @@ dump_slab_percpu_v2(struct meminfo *si)
 				si->found = KMEM_BUFCTL_ADDR;
 			else
                 		si->found = KMEM_SLAB_ADDR;
-                        return;
-                }
-		if (INSLAB_PERCPU(si->spec_addr, si))
+                } else if (INSLAB_PERCPU(si->spec_addr, si))
 			si->found = KMEM_ON_SLAB;  /* But don't return yet... */
 		else
 			return;
@@ -9012,6 +9038,28 @@ vaddr_type(ulong vaddr, struct task_context *tc)
 }
 
 /*
+ * Determine the first valid user space address
+ */
+static int
+address_space_start(struct task_context *tc, ulong *addr)
+{
+        ulong vma;
+        char *vma_buf;
+
+        if (!tc->mm_struct)
+                return FALSE;
+
+        fill_mm_struct(tc->mm_struct);
+        vma = ULONG(tt->mm_struct + OFFSET(mm_struct_mmap));
+        if (!vma)
+                return FALSE;
+	vma_buf = fill_vma_cache(vma);
+        *addr = ULONG(vma_buf + OFFSET(vm_area_struct_vm_start));
+	
+	return TRUE;
+}
+
+/*
  *  Search for a given value between a starting and ending address range,
  *  applying an optional mask for "don't care" bits.  As an alternative
  *  to entering the starting address value, -k means "start of kernel address
@@ -9023,12 +9071,14 @@ cmd_search(void)
 {
         int c;
 	ulong start, end, mask, memtype, len;
+	ulong uvaddr_end;
 	int sflag;
 	struct meminfo meminfo;
 	ulong value_array[MAXARGS];
 	struct syment *sp;
 
 	start = end = mask = sflag = memtype = len = 0;
+	uvaddr_end = COMMON_VADDR_SPACE() ? (ulong)(-1) : machdep->kvbase;
 	BZERO(value_array, sizeof(ulong) * MAXARGS);
 
         while ((c = getopt(argcnt, args, "l:uks:e:v:m:")) != EOF) {
@@ -9036,7 +9086,7 @@ cmd_search(void)
                 {
 		case 'u':
 			if (!sflag) {
-				start = 0;
+				address_space_start(CURRENT_CONTEXT(),&start);
 				sflag++;
 			}
 			memtype = UVADDR;
@@ -9116,7 +9166,7 @@ cmd_search(void)
 		switch (memtype)
 		{
 		case UVADDR:
-			end = machdep->kvbase;
+			end = uvaddr_end;
 			break;
 
 		case KVADDR:
@@ -9137,7 +9187,7 @@ cmd_search(void)
 	switch (memtype)
 	{
 	case UVADDR:
-		if (end > machdep->kvbase) {
+		if (end > uvaddr_end) {
 			error(INFO, 
 	          "address range starts in user space and ends kernel space\n");
                		cmd_usage(pc->curcmd, SYNOPSIS);
@@ -9563,6 +9613,9 @@ get_swapdev(ulong type, char *buf)
 			vfsmnt = ULONG(vt->swap_info_struct + 
 				OFFSET(swap_info_struct_swap_vfsmnt));
         		get_pathname(swap_file, buf, BUFSIZE, 1, vfsmnt);
+                } else if (VALID_MEMBER (swap_info_struct_old_block_size)) {
+                        get_pathname(file_to_dentry(swap_file),
+                        	buf, BUFSIZE, 1, 0);
 		} else {
         		get_pathname(swap_file, buf, BUFSIZE, 1, 0);
 		}
@@ -9893,12 +9946,24 @@ dump_memory_nodes(int initialize)
                 	if (!read_string(value, buf1, BUFSIZE-1))
                         	sprintf(buf1, "(unknown) ");
 			if (VALID_STRUCT(zone_struct)) {
-                        	readmem(node_zones+
-					OFFSET(zone_struct_zone_start_paddr),
-                                	KVADDR, &zone_start_paddr, 
-					sizeof(ulong), 
-					"node_zones zone_start_paddr", 
-					FAULT_ON_ERROR);
+				if (VALID_MEMBER(zone_struct_zone_start_paddr))
+				{
+                        		readmem(node_zones+OFFSET
+					    (zone_struct_zone_start_paddr),
+                                	    KVADDR, &zone_start_paddr, 
+					    sizeof(ulong), 
+					    "node_zones zone_start_paddr", 
+					    FAULT_ON_ERROR);
+				} else {
+					readmem(node_zones+
+					    OFFSET(zone_struct_zone_start_pfn),
+					    KVADDR, &zone_start_pfn,
+					    sizeof(ulong),
+					    "node_zones zone_start_pfn",
+					    FAULT_ON_ERROR);
+					    zone_start_paddr = 
+						PTOB(zone_start_pfn);
+				}
                         	readmem(node_zones+
 					OFFSET(zone_struct_zone_start_mapnr),
                                 	KVADDR, &zone_start_mapnr, 
@@ -10073,10 +10138,6 @@ memory_page_size(void)
 		psz = s390_page_size();
 		break;
 
-	case S390XD:
-		psz = s390x_page_size();
-		break;
-
 	default:
 		error(FATAL, "memory_page_size: invalid pc->flags: %lx\n", 
 			pc->flags & MEMORY_SOURCES); 
@@ -10165,8 +10226,6 @@ dumpfile_memory(int cmd)
                         retval = vas_memory_used();
 		else if (pc->flags & S390D)
 			retval = s390_memory_used();
-		else if (pc->flags & S390XD)
-			retval = s390x_memory_used();
 		break;
 
 	case DUMPFILE_FREE_MEM:
@@ -10182,8 +10241,6 @@ dumpfile_memory(int cmd)
                         retval = vas_free_memory(NULL);
                 else if (pc->flags & S390D)
                         retval = s390_free_memory();
-                else if (pc->flags & S390XD)
-                        retval = s390x_free_memory();
 		break;
 
 	case DUMPFILE_MEM_DUMP:
@@ -10199,8 +10256,6 @@ dumpfile_memory(int cmd)
                         retval = vas_memory_dump(fp);
                 else if (pc->flags & S390D)
                         retval = s390_memory_dump(fp);
-                else if (pc->flags & S390XD)
-                        retval = s390x_memory_dump(fp);
 		break;
 	
 	case DUMPFILE_ENVIRONMENT:

@@ -1,8 +1,8 @@
 /* ibm_common.h - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:07:55 $
  */
 
 /*

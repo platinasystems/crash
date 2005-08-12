@@ -3,8 +3,8 @@
  * Forward ported from lkcd_dump_v5.h by Corey Mineyard <minyard@acm.org>
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003 David Anderson
- * Copyright (C) 2002, 2003 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,8 +15,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.2 $ $Date: 2004/05/24 14:59:08 $
  */
 
 
@@ -194,6 +192,9 @@ typedef struct _dump_header_s {
 
 	/* any additional flags */
 	uint32_t             dh_dump_device;
+
+	/* size of dump buffer -- only in v9 dumps so we don't declare it here */
+	/* uint64_t          dh_dump_buffer_size; */
 
 } __attribute__((packed)) dump_header_t;
 

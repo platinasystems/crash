@@ -1,8 +1,8 @@
 /* x86.c - core analysis suite
  *
  * Portions Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)x86.c 1.20
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.78 $ $Date: 2005/02/14 21:59:44 $
  */
 
 #ifdef X86
@@ -64,8 +49,6 @@
  *
  * any improvements or extensions that they make and grant Carnegie the
  * rights to redistribute these changes.
- *
- *	$Id: x86.c,v 1.78 2005/02/14 21:59:44 anderson Exp $
  */
 #include "defs.h"
 
@@ -487,7 +470,8 @@ db_get_value(addr, size, is_signed, bt)
 		else
 			GET_STACK_DATA(addr, data, size);
 	} else {
-		if ((size == sizeof(int)) && text_value_cache(addr, 0, &value))
+		if ((size == sizeof(int)) && 
+		    text_value_cache(addr, 0, (uint32_t *)&value))
 			return value;
 
 		if (!readmem(addr, KVADDR, data, size, "db_get_value", 

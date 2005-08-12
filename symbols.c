@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)symbols.c 1.27
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.105 $ $Date: 2004/11/04 19:45:40 $
  */
 
 #include "defs.h"
@@ -411,7 +396,8 @@ separate_debug_file_exists(const char *name, unsigned long crc, int *exists)
 #if defined(GDB_5_3)
     		file_crc = calc_crc32(file_crc, buffer, count);
 #elif defined(GDB_6_0) || defined(GDB_6_1)
-    		file_crc = gnu_debuglink_crc32(file_crc, buffer, count);
+    		file_crc = gnu_debuglink_crc32(file_crc, 
+			(unsigned char *)buffer, count);
 #else
 		file_crc = 0xdeadbeef;  /* can't get here */
 #endif
@@ -4043,7 +4029,12 @@ cmd_struct(void)
 	if (list_head_offset)
 		addr -= list_head_offset;
 
-	for (c =  0; c < count; c++, addr += len) {
+	if (count < 0) {
+		addr -= len * abs(count);
+		addr += len;
+	}
+
+	for (c =  0; c < abs(count); c++, addr += len) {
 		if (rawdata) 
 			raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
 		else {
@@ -4159,7 +4150,12 @@ cmd_pointer(void)
         if (!aflag) 
                 error(FATAL, "no kernel virtual address argument entered\n");
 
-        for (c =  0; c < count; c++, addr += len) {
+	if (count < 0) {
+		addr -= len * abs(count);
+		addr += len;
+	}
+
+        for (c =  0; c < abs(count); c++, addr += len) {
                 if (rawdata)
                         raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
                 else {
@@ -4185,7 +4181,8 @@ cmd_pointer(void)
  * specified, the union size and the file in which the union is defined
  * are also displayed.  A union member may be appended to the union
  * name (in a "union.member" format) in order to limit the scope of the data 
- * displayed to that particular member.  Structure data is shown in hexadecimal  * format.  The raw data in a union may be dumped with the -r flag.
+ * displayed to that particular member.  Structure data is shown in hexadecimal
+ * format.  The raw data in a union may be dumped with the -r flag.
  */
 void
 cmd_union(void)
@@ -4291,7 +4288,12 @@ cmd_union(void)
 	if (list_head_offset)
 		addr -= list_head_offset;
 
-	for (c = 0; c < count; c++, addr += len) {
+	if (count < 0) {
+		addr -= len * abs(count);
+		addr += len;
+	}
+
+	for (c = 0; c < abs(count); c++, addr += len) {
 		if (rawdata) 
 			raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
 		else {
@@ -6289,6 +6291,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(zone_struct_size));
 	fprintf(fp, "           zone_struct_memsize: %ld\n",
                 OFFSET(zone_struct_memsize));
+	fprintf(fp, "    zone_struct_zone_start_pfn: %ld\n",
+                OFFSET(zone_struct_zone_start_pfn));
 	fprintf(fp, "  zone_struct_zone_start_paddr: %ld\n",
                 OFFSET(zone_struct_zone_start_paddr));
 	fprintf(fp, "  zone_struct_zone_start_mapnr: %ld\n",
@@ -6463,10 +6467,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(x8664_pda_kernelstack));
 	fprintf(fp, "              x8664_pda_irqrsp: %ld\n",
 		OFFSET(x8664_pda_irqrsp));
+	fprintf(fp, "           x8664_pda_cpunumber: %ld\n",
+		OFFSET(x8664_pda_cpunumber));
 	fprintf(fp, "         x8664_pda_irqstackptr: %ld\n",
-		OFFSET(x8664_pda_pcurrent));
+		OFFSET(x8664_pda_irqstackptr));
 	fprintf(fp, "          x8664_pda_level4_pgt: %ld\n",
-		OFFSET(x8664_pda_pcurrent));
+		OFFSET(x8664_pda_level4_pgt));
+	fprintf(fp, "                  x8664_pda_me: %ld\n",
+		OFFSET(x8664_pda_me));
 
 	fprintf(fp, "                tss_struct_ist: %ld\n", 
 		OFFSET(tss_struct_ist));
@@ -6603,6 +6611,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(tss_struct));
 	fprintf(fp, "        task_struct_start_time: %ld\n", 
 		SIZE(task_struct_start_time));
+	fprintf(fp, "                     cputime_t: %ld\n", 
+		SIZE(cputime_t));
 
 
         fprintf(fp, "\n                   array_table:\n");
@@ -8261,6 +8271,8 @@ datatype_error(ulong *retaddr, char *errmsg, char *func, char *file, int line)
         if (pc->flags & DROP_CORE)
         	drop_core("DROP_CORE flag set: forcing a segmentation fault\n");
 	
+	gdb_readnow_warning();
+
 	if (pc->flags & RUNTIME) {
 		sprintf(buf, "%s\n%s  FILE: %s  LINE: %d  FUNCTION: %s()\n",
 			errmsg, space(strlen(pc->curcmd)), file, line, func);

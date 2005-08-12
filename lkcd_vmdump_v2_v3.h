@@ -1,8 +1,8 @@
 /* lkcd_vmdump_v2_v3.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,18 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)sgi_vmdump_v2.h 1.2
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.6 $ $Date: 2004/08/19 19:03:09 $
  */
 
 
@@ -47,7 +35,7 @@
 #include <asm/vmdump.h>                 /* for architecture-specific header */
 #endif
 
-#if defined(X86) || defined(PPC)
+#if defined(X86) || defined(PPC) || defined(S390) || defined(S390X)
 
 /*
  * Kernel header file for Linux crash dumps.

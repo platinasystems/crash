@@ -5,17 +5,14 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted as noted from the following LKCD files:
  *
  *    lkcdutils-4.1/lcrash/arch/i386/lib/dis.c
  *    lkcdutils-4.1/lcrash/arch/i386/lib/trace.c
  *    lkcdutils-4.1/libutil/kl_queue.c
- *
- *  CVS: $Revision: 1.59 $ $Date: 2004/11/04 20:28:21 $
- *
  */
 
 
@@ -4803,7 +4800,7 @@ get_instr_info(kaddr_t pc, instr_rec_t *irp)
 		instrbuf.addr = pc;
 		instrbuf.size = 256;
 #ifdef REDHAT
-		fill_instr_cache(pc, instrbuf.buf);
+		fill_instr_cache(pc, (char *)instrbuf.buf);
 #else
 		GET_BLOCK(pc, 256, instrbuf.buf);
 #endif

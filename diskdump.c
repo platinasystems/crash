@@ -9,8 +9,8 @@
  *       in place, along with the DISKDUMP-related #define's
  *       and their usage throughout the crash sources.
  *
- * Copyright (C) 2004 David Anderson
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005 David Anderson
+ * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.
@@ -20,8 +20,6 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Author: David Anderson
- *
- * CVS: $Revision: 1.6 $ $Date: 2004/05/12 20:26:19 $
  */
 
 #include "defs.h"

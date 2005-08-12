@@ -1,8 +1,8 @@
 /* 
  * diskdump.h
  *
- * Copyright (C) 2004 David Anderson
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005 David Anderson
+ * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.
@@ -12,7 +12,5 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Author: David Anderson
- *
- * CVS: $Revision: 1.1 $ $Date: 2004/03/05 20:10:53 $
  */
 

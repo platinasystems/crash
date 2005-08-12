@@ -1,8 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,16 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)net.c 1.2
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.13 $ $Date: 2004/04/12 18:57:22 $
  */
 
 #include "defs.h"
@@ -206,6 +196,23 @@ net_init(void)
 			STRUCT_SIZE_INIT(inet_sock, "inet_sock");
 			STRUCT_SIZE_INIT(socket, "socket");
 			MEMBER_OFFSET_INIT(inet_sock_inet, "inet_sock", "inet");
+			if (VALID_STRUCT(inet_sock) && 
+			    INVALID_MEMBER(inet_sock_inet)) {
+				/*
+				 *  gdb can't seem to figure out the inet_sock
+				 *  in later 2.6 kernels, returning this:
+				 *
+				 *  struct inet_sock {
+				 *      <no data fields>
+			         *  }
+				 *  
+				 *  It does know the struct size, so kludge it
+			         *  to subtract the size of the inet_opt struct
+				 *  from the size of the containing inet_sock.
+				 */
+				ASSIGN_OFFSET(inet_sock_inet) = 
+				    SIZE(inet_sock) - STRUCT_SIZE("inet_opt");
+			}
 			MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_opt", "daddr");
 			MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_opt", 
 				"rcv_saddr");
@@ -241,6 +248,7 @@ cmd_net(void)
 	int c;
 	ulong sflag;
 	ulong value;
+	in_addr_t in_addr;
 	struct reference reference, *ref;
 
 	if (!(net->flags & NETDEV_INIT)) 
@@ -267,8 +275,9 @@ cmd_net(void)
 
 		case 'n':
 			value = stol(optarg, FAULT_ON_ERROR, NULL);
+			in_addr = (in_addr_t)value;
 			fprintf(fp, "%s\n",
-			    inet_ntoa(*((struct in_addr *)&(value))));
+			    inet_ntoa(*((struct in_addr *)&(in_addr))));
 			return;
 
 		case 's':

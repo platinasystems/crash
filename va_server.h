@@ -1,8 +1,8 @@
 /* va_server.h - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,14 +15,7 @@
  * GNU General Public License for more details.
  *
  * 10/99, Dave Winchell, Initial release for kernel crash dump support.
- *
  * 11/12/99, Dave Winchell, Add support for in memory dumps.
- *
- * BitKeeper ID: @(#)va_server.h 1.1
- *
- * 09/28/00  Transition to CVS version control
- *
- * CVS: $Revision: 1.3 $ $Date: 2004/01/28 17:11:25 $
  */
 
 #include "vas_crash.h"

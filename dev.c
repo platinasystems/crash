@@ -1,8 +1,8 @@
 /* dev.c - core analysis suite 
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.9 $
  */
 
 #include "defs.h"
@@ -93,10 +91,14 @@ cmd_dev(void)
                 switch(c)
                 {
 		case 'i':
+			if (machine_type("X86") || machine_type("S390X"))
+				option_not_supported(c);
 			do_io();
 			return;
 
 		case 'p':
+			if (machine_type("X86") || machine_type("S390X"))
+				option_not_supported(c);
 			do_pci();
 			return;
 
@@ -707,7 +709,7 @@ do_resource_list(ulong first_entry, char *resource_buf, int size)
 
 #ifdef USE_2_2_17_PCI_H
 /*
- *	$Id: dev.c,v 1.9 2004/04/07 20:13:52 anderson Exp $
+ *	$Id: dev.c,v 1.11 2005/04/13 20:48:17 anderson Exp $
  *
  *	PCI defines and function prototypes
  *	Copyright 1994, Drew Eckhardt

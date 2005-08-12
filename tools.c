@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)tools.c 1.16
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.39 $ $Date: 2004/09/02 15:52:55 $
  */
 
 #include "defs.h"
@@ -1190,6 +1175,8 @@ hexadecimal_only(char *s, int count)
  *  Clean a command argument that has an obvious but ignorable error.
  *  The first one is an attached comma to a number, that usually is the 
  *  result of a cut-and-paste of an address from a structure display.  
+ *  The second on is an attached colon to a number, usually from a
+ *  cut-and-paste of a memory dump.
  *  Add more when they become annoynance.
  *
  *  It presumes args[optind] is the argument being tinkered with, and
@@ -1200,7 +1187,8 @@ clean_arg(void)
 {
 	char buf[BUFSIZE];
 
-	if (LASTCHAR(args[optind]) == ',') {
+	if (LASTCHAR(args[optind]) == ',' || 
+	    LASTCHAR(args[optind]) == ':') {
 		strcpy(buf, args[optind]);
 		LASTCHAR(buf) = NULLCHAR;
 		if (IS_A_NUMBER(buf))
@@ -2192,6 +2180,9 @@ cmd_eval(void)
 
 	longlongflag = BITS32() ? TRUE : FALSE;
 	flags = longlongflag ? (LONG_LONG|RETURN_ON_ERROR) : FAULT_ON_ERROR;
+
+	if(!BITS32())
+		longlongflagforce = 0;
 
 	expression = TRUE;
 	BZERO(buf1, BUFSIZE);
@@ -4219,7 +4210,7 @@ convert_time(ulonglong count, char *buf)
 {
 	ulonglong total, days, hours, minutes, seconds;
 
-        total = (count)/machdep->hz;
+        total = (count)/(ulonglong)machdep->hz;
 
         days = total / SEC_DAYS;
         total %= SEC_DAYS;
@@ -4298,4 +4289,23 @@ empty_list(ulong list_head_addr)
 		return TRUE;
 
 	return (next == list_head_addr);
+}
+
+int
+machine_type(char *type)
+{
+	return STREQ(MACHINE_TYPE, type);
+}
+
+void
+command_not_supported()
+{
+	error(FATAL, "command not supported on this architecture\n");
+}
+
+void
+option_not_supported(int c)
+{
+	error(FATAL, "-%c option not supported on this architecture\n", 
+		(char)c);
 }

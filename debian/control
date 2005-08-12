@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Troy Heber <troy.heber@hp.com>
 Uploaders: Micah Anderson <micah@debian.org>
 Build-Depends: debhelper (>= 4), binutils-dev, zlib1g-dev, libncurses5-dev, dpatch
-Standards-Version: 3.6.1.1
+Standards-Version: 3.6.2.1
 
 Package: crash
 Architecture: any

@@ -5,8 +5,8 @@
 /*
  *  lkcd_x86_trace.h
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted as noted from the following LKCD files:
  *
@@ -17,9 +17,6 @@
  *     lkcdutils-4.1/lcrash/include/asm-i386/lc_trace.h
  *     lkcdutils-4.1/libutil/kl_queue.h
  *     lkcdutils-4.1/libklib/include/kl_error.h
- *
- *  CVS: $Revision: 1.5 $ $Date: 2004/01/28 17:09:24 $
- * 
  */
 
 #ifdef REDHAT

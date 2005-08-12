@@ -1,8 +1,8 @@
 /* gdb_interface.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,18 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)gdb_interface.c 1.16
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.28 $ $Date: 2004/11/03 16:43:43 $
  */
 
 #include "defs.h"
@@ -43,15 +31,8 @@ gdb_main_loop(int argc, char **argv)
 {
 	argc = 1;
 
-	if ((THIS_GCC_VERSION >= GCC(3,4,0)) && !(pc->flags & READNOW)) {
-		error(WARNING, 
- "Because this kernel was compiled with gcc version %d.%d.%d, certain\n" 
- "         commands or command options may fail unless crash is invoked with\n"
- "         the  \"--readnow\" command line option.\n\n",
-			kt->gcc_version[0],
-			kt->gcc_version[1],
-			kt->gcc_version[2]);
-	}
+	if (CRASHDEBUG(1))
+		gdb_readnow_warning();
 
 	if (pc->flags & SILENT) {
 		if (pc->flags & READNOW)
@@ -100,6 +81,20 @@ update_gdb_hooks(void)
 	target_new_objfile_hook = NULL;
 }
 #endif
+
+void
+gdb_readnow_warning(void)
+{
+	if ((THIS_GCC_VERSION >= GCC(3,4,0)) && !(pc->flags & READNOW)) {
+		fprintf(stderr, 
+ "WARNING: Because this kernel was compiled with gcc version %d.%d.%d, certain\n" 
+ "         commands or command options may fail unless crash is invoked with\n"
+ "         the  \"--readnow\" command line option.\n\n",
+			kt->gcc_version[0],
+			kt->gcc_version[1],
+			kt->gcc_version[2]);
+	}
+}
 
 /*
  *  Used only by the -v command line option, get gdb to initialize itself
@@ -755,7 +750,8 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 	{
 	case SIZEOF_8BIT:
 		p1 = (char *)buf;
-		if ((memtype == KVADDR) && text_value_cache_byte(addr, p1)) 
+		if ((memtype == KVADDR) && 
+		    text_value_cache_byte(addr, (unsigned char *)p1)) 
 			return TRUE;
 
 		if (readmem(addr, memtype, locbuf, SIZEOF_32BIT,
@@ -788,7 +784,7 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 /*
  *  Used by gdb_interface() to catch gdb-related errors, if desired.
  */
-volatile void
+void
 gdb_error_hook(void)
 {
 	char buf1[BUFSIZE];

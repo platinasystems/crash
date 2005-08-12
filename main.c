@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)main.c 1.16
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.44 $ $Date: 2004/11/22 23:07:24 $
  */
 
 #include "defs.h"
@@ -326,17 +311,6 @@ main(int argc, char **argv)
                                 pc->dumpfile = argv[optind];
                                 pc->readmem = read_s390_dumpfile;
                                 pc->writemem = write_s390_dumpfile;
-
-                        } else if (is_s390x_dump(argv[optind])) {
-                                if (pc->flags & MEMORY_SOURCES) {
-                                        error(INFO,
-                                            "too many dumpfile arguments\n");
-                                        program_usage(SHORT_FORM);
-                                }
-                                pc->flags |= S390XD;
-                                pc->dumpfile = argv[optind];
-                                pc->readmem = read_s390x_dumpfile;
-                                pc->writemem = write_s390x_dumpfile;
 
 			} else { 
 				error(INFO, 
@@ -863,15 +837,9 @@ dump_program_context(void)
         if (pc->flags & S390D)
                 sprintf(&buf[strlen(buf)],
                         "%sS390D", others++ ? "|" : "");
-        if (pc->flags & S390XD)
-                sprintf(&buf[strlen(buf)],
-                        "%sS390XD", others++ ? "|" : "");
         if (pc->flags & REM_S390D)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_S390D", others++ ? "|" : "");
-        if (pc->flags & REM_S390XD)
-                sprintf(&buf[strlen(buf)],
-                        "%sREM_S390XD", others++ ? "|" : "");
        if (pc->flags & NETDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sNETDUMP", others++ ? "|" : "");
