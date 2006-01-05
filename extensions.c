@@ -18,9 +18,6 @@
 #include "defs.h"
 #include <dlfcn.h>
 
-static void load_extension(char *);
-static void unload_extension(char *);
-
 #define DUMP_EXTENSIONS   (0)
 #define LOAD_EXTENSION    (1)
 #define UNLOAD_EXTENSION  (2)
@@ -171,7 +168,7 @@ dump_extension_table(int verbose)
 /*
  *  Load an extension library.
  */
-static void 
+void 
 load_extension(char *lib)
 {
 	struct extension_table *ext;
@@ -252,7 +249,7 @@ load_extension(char *lib)
 /*
  *  Unload all, or as specified, extension libraries.
  */
-static void 
+void 
 unload_extension(char *lib)
 {
         struct extension_table *ext;

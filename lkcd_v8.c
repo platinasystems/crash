@@ -26,6 +26,7 @@ static dump_header_t dump_header_v8 = { 0 };
 // static dump_header_asm_t dump_header_asm_v8 = { 0 };
 static dump_page_t dump_page = { 0 };
 static void mclx_cache_page_headers_v8(void);
+static off_t lkcd_offset_to_first_page = LKCD_OFFSET_TO_FIRST_PAGE;
 
 /*
  *  Verify and initialize the LKCD environment, storing the common data
@@ -56,10 +57,13 @@ lkcd_dump_init_v8(FILE *fp, int fd, char *dumpfile)
 	if (read(lkcd->fd, dh, sizeof(dump_header_t)) !=
 	    sizeof(dump_header_t))
 		return FALSE;
-	if ((dh->dh_version & LKCD_DUMP_VERSION_NUMBER_MASK) == LKCD_DUMP_V9)
+	if ((dh->dh_version & LKCD_DUMP_VERSION_NUMBER_MASK) == LKCD_DUMP_V9){
 	    if (read(lkcd->fd, &dh_dump_buffer_size, sizeof(dh_dump_buffer_size)) !=
 		sizeof(dh_dump_buffer_size))
 		    return FALSE;
+	    lkcd_offset_to_first_page = dh_dump_buffer_size;
+	} else
+	    lkcd_offset_to_first_page = LKCD_OFFSET_TO_FIRST_PAGE;
 	
         lkcd->dump_page = dp;
         lkcd->dump_header = dh;
@@ -146,7 +150,7 @@ lkcd_dump_init_v8(FILE *fp, int fd, char *dumpfile)
    	lkcd->compression = dh->dh_dump_compress; 
         lkcd->page_header_size = sizeof(dump_page_t);
 
-        lseek(lkcd->fd, LKCD_OFFSET_TO_FIRST_PAGE, SEEK_SET);
+        lseek(lkcd->fd, lkcd_offset_to_first_page, SEEK_SET);
 
 	/*
 	 * Read all of the pages and save the page offsets for lkcd_lseek().
@@ -483,7 +487,7 @@ mclx_cache_page_headers_v8(void)
 	/*
 	 *  Determine the granularity between offsets.
 	 */
-        if (lseek(lkcd->fd, page_headers[0] + LKCD_OFFSET_TO_FIRST_PAGE, 
+        if (lseek(lkcd->fd, page_headers[0] + lkcd_offset_to_first_page, 
 	    SEEK_SET) == -1) 
 		return;
         if (read(lkcd->fd, dp, lkcd->page_header_size) != 
@@ -491,7 +495,7 @@ mclx_cache_page_headers_v8(void)
                 return;
         physaddr1 = (dp->dp_address - lkcd->kvbase) << lkcd->page_shift;
 
-        if (lseek(lkcd->fd, page_headers[1] + LKCD_OFFSET_TO_FIRST_PAGE,
+        if (lseek(lkcd->fd, page_headers[1] + lkcd_offset_to_first_page,
             SEEK_SET) == -1)
                 return;
         if (read(lkcd->fd, dp, lkcd->page_header_size) 
@@ -508,7 +512,7 @@ mclx_cache_page_headers_v8(void)
 	for (i = 0; i < (MCLX_PAGE_HEADERS-1); i++) {
 		if (!page_headers[i])
 			break;
-		lkcd->curhdroffs = page_headers[i] + LKCD_OFFSET_TO_FIRST_PAGE;
+		lkcd->curhdroffs = page_headers[i] + lkcd_offset_to_first_page;
 		set_mb_benchmark((granularity * (i+1))/lkcd->page_size);
 	}
 }

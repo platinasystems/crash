@@ -1,3 +1,21 @@
+crash (4.0-2.18-1) unstable; urgency=low
+  
+  * New upstream version 4.0-2.18 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * removing patch to fix v8/v9 dump_header size mismatch, it's in this
+    release. 
+  * alpha lval cast fix from Ben Hutchings (closes: #337871) 
+
+ -- Troy Heber <troy.heber@hp.com>  Thu, 05 Jan 2006 09:38:00 -0700
+
+crash (4.0-2.16-1) unstable; urgency=low
+
+  * New upstream version 4.0-2.16 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Adding patch to fix v8/v9 dump_header size mismatch
+
+ -- Troy Heber <troy.heber@hp.com>  Wed, 14 Dec 2005 15:38:38 -0700
+
 crash (4.0-2.2-1) unstable; urgency=low
   
   * New upstream version 4.0-2.2 (see

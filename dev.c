@@ -91,13 +91,13 @@ cmd_dev(void)
                 switch(c)
                 {
 		case 'i':
-			if (machine_type("X86") || machine_type("S390X"))
+			if (machine_type("S390X"))
 				option_not_supported(c);
 			do_io();
 			return;
 
 		case 'p':
-			if (machine_type("X86") || machine_type("S390X"))
+			if (machine_type("S390X"))
 				option_not_supported(c);
 			do_pci();
 			return;
@@ -709,8 +709,6 @@ do_resource_list(ulong first_entry, char *resource_buf, int size)
 
 #ifdef USE_2_2_17_PCI_H
 /*
- *	$Id: dev.c,v 1.11 2005/04/13 20:48:17 anderson Exp $
- *
  *	PCI defines and function prototypes
  *	Copyright 1994, Drew Eckhardt
  *	Copyright 1997--1999 Martin Mares <mj@atrey.karlin.mff.cuni.cz>

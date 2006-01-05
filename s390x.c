@@ -193,8 +193,6 @@ s390x_dump_machdep_table(ulong arg)
 	fprintf(fp, "              flags: %lx (", machdep->flags);
 	if (machdep->flags & KSYMS_START)
 		fprintf(fp, "%sKSYMS_START", others++ ? "|" : "");
-	if (machdep->flags & SYSRQ)
-		fprintf(fp, "%sSYSRQ", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);

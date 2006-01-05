@@ -59,7 +59,7 @@
 #define NR_CPUS  (32)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (128)
+#define NR_CPUS  (256)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -155,8 +155,8 @@ struct number_option {
 #define UNLINK_MODULES     (0x1000000000ULL)
 #define S390D              (0x2000000000ULL)
 #define REM_S390D          (0x4000000000ULL)
-#define PC_UNUSED_1        (0x8000000000ULL)
-#define PC_UNUSED_2       (0x10000000000ULL)
+#define SYSRQ              (0x8000000000ULL)
+#define KDUMP             (0x10000000000ULL)
 #define NETDUMP           (0x20000000000ULL)
 #define REM_NETDUMP       (0x40000000000ULL)
 #define SYSMAP            (0x80000000000ULL)
@@ -169,11 +169,12 @@ struct number_option {
 #define VERSION_QUERY   (0x4000000000000ULL)
 #define READNOW         (0x8000000000000ULL)
 #define NOCRASHRC      (0x10000000000000ULL)
+#define INIT_IFILE     (0x20000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|MCLXCD|LKCD|S390D)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D)
 #define REMOTE()            (pc->flags & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
@@ -182,13 +183,21 @@ struct number_option {
 #define LKCD_DUMPFILE()     (pc->flags & (LKCD|REM_LKCD))
 #define NETDUMP_DUMPFILE()  (pc->flags & (NETDUMP|REM_NETDUMP))
 #define DISKDUMP_DUMPFILE() (pc->flags & DISKDUMP)
+#define KDUMP_DUMPFILE()    (pc->flags & KDUMP)
+#define SYSRQ_TASK(X)   ((pc->flags & SYSRQ) && is_task_active(X))
 
 #define NETDUMP_LOCAL    (0x1)  /* netdump_data flags */
 #define NETDUMP_REMOTE   (0x2)  
-#define NETDUMP_VALID()  (nd->flags & (NETDUMP_LOCAL|NETDUMP_REMOTE))
+#define VMCORE_VALID()   (nd->flags & (NETDUMP_LOCAL|NETDUMP_REMOTE|KDUMP_LOCAL))
 #define NETDUMP_ELF32    (0x4)
 #define NETDUMP_ELF64    (0x8)
 #define PARTIAL_DUMP    (0x10)  /* netdump or diskdump */
+#define KDUMP_ELF32     (0x20)
+#define KDUMP_ELF64     (0x40)
+#define KDUMP_LOCAL     (0x80)  
+
+#define DUMPFILE_FORMAT(flags) ((flags) & \
+		        (NETDUMP_ELF32|NETDUMP_ELF64|KDUMP_ELF32|KDUMP_ELF64))
 
 #define DISKDUMP_LOCAL   (0x1)
 #define DISKDUMP_VALID() (dd->flags & DISKDUMP_LOCAL)
@@ -407,6 +416,7 @@ struct new_utsname {
 #define KALLSYMS_V2   (0x2000)
 #define TVEC_BASES_V2 (0x4000)
 #define GCC_3_3_3     (0x8000)
+#define USE_OLD_BT   (0x10000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
@@ -660,13 +670,11 @@ struct machdep_table {
  *  as defined in their processor-specific files below. (see KSYMS_START defs).
  */
 #define HWRESET         (0x80000000)
-#define SYSRQ           (0x40000000)
-#define OMIT_FRAME_PTR  (0x20000000)
-#define FRAMESIZE_DEBUG (0x10000000)
-#define MACHDEP_BT_TEXT  (0x8000000)
-#define DEVMEMRD         (0x4000000)
-#define INIT             (0x2000000)
-#define SYSRQ_TASK(X)   ((machdep->flags & SYSRQ) && is_task_active(X))
+#define OMIT_FRAME_PTR  (0x40000000)
+#define FRAMESIZE_DEBUG (0x20000000)
+#define MACHDEP_BT_TEXT (0x10000000)
+#define DEVMEMRD         (0x8000000)
+#define INIT             (0x4000000)
 
 extern struct machdep_table *machdep;
 
@@ -737,6 +745,7 @@ extern struct machdep_table *machdep;
 #define FOREACH_c_FLAG   (0x40000)
 #define FOREACH_f_FLAG   (0x80000)
 #define FOREACH_o_FLAG  (0x100000)
+#define FOREACH_T_FLAG  (0x200000)
 
 struct foreach_data {
 	ulong flags;
@@ -875,6 +884,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mm_struct_mmap;
 	long mm_struct_pgd;
 	long mm_struct_rss;
+	long mm_struct_anon_rss;
 	long mm_struct_total_vm;
 	long mm_struct_start_code;
         long vm_area_struct_vm_mm;
@@ -970,6 +980,11 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long hw_interrupt_type_set_affinity;
 	long irq_cpustat_t___softirq_active;
 	long irq_cpustat_t___softirq_mask;
+	long fdtable_max_fds;
+	long fdtable_max_fdset;
+	long fdtable_open_fds;
+	long fdtable_fd;
+	long files_struct_fdt;
         long files_struct_max_fds;
         long files_struct_max_fdset;
         long files_struct_open_fds;
@@ -1088,6 +1103,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long inet_opt_dport;
 	long inet_opt_sport;
 	long inet_opt_num;
+	long ipv6_pinfo_rcv_saddr;
+	long ipv6_pinfo_daddr;
 	long timer_list_list;
 	long timer_list_next;
 	long timer_list_entry;
@@ -1241,6 +1258,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long umode_t;
 	long dentry;
 	long files_struct;
+	long fdtable;
 	long fs_struct;
 	long file;
 	long inode;
@@ -1294,6 +1312,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long address_space;
 	long char_device_struct;
 	long inet_sock;
+	long in6_addr;
 	long socket;
 	long spinlock_t;
 	long radix_tree_root;
@@ -1732,15 +1751,29 @@ struct load_module {
 #define _64BIT_
 #define MACHINE_TYPE       "X86_64"
 
-#define USERSPACE_TOP         0x0000008000000000
-#define __START_KERNEL_map    0xffffffff80000000
-#define PAGE_OFFSET           0x0000010000000000
+#define USERSPACE_TOP   (machdep->machspec->userspace_top)
+#define PAGE_OFFSET     (machdep->machspec->page_offset)
+#define VMALLOC_START   (machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END     (machdep->machspec->vmalloc_end)
+#define MODULES_VADDR   (machdep->machspec->modules_vaddr)
+#define MODULES_END     (machdep->machspec->modules_end)
 
-#define VMALLOC_START   0xffffff0000000000
-#define VMALLOC_END     0xffffff7fffffffff
-#define MODULES_VADDR   0xffffffffa0000000
-#define MODULES_END     0xffffffffafffffff
+#define __START_KERNEL_map    0xffffffff80000000
 #define MODULES_LEN     (MODULES_END - MODULES_VADDR)
+
+#define USERSPACE_TOP_ORIG         0x0000008000000000
+#define PAGE_OFFSET_ORIG           0x0000010000000000
+#define VMALLOC_START_ADDR_ORIG    0xffffff0000000000
+#define VMALLOC_END_ORIG           0xffffff7fffffffff
+#define MODULES_VADDR_ORIG         0xffffffffa0000000
+#define MODULES_END_ORIG           0xffffffffafffffff
+ 
+#define USERSPACE_TOP_2_6_11       0x0000800000000000
+#define PAGE_OFFSET_2_6_11         0xffff810000000000
+#define VMALLOC_START_ADDR_2_6_11  0xffffc20000000000
+#define VMALLOC_END_2_6_11         0xffffe1ffffffffff
+#define MODULES_VADDR_2_6_11       0xffffffff88000000
+#define MODULES_END_2_6_11         0xfffffffffff00000
 
 #define PTOV(X)               ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)               x86_64_VTOP((ulong)(X))
@@ -1764,6 +1797,15 @@ struct load_module {
                 readmem(vt->kernel_pgd[0], KVADDR, machdep->machspec->pml4, \
                         PAGESIZE(), "init_level4_pgt", FAULT_ON_ERROR); \
 	}
+
+#define IS_LAST_UPML_READ(pgd) ((ulong)(pml) == machdep->machspec->last_upml_read)
+
+#define FILL_UPML(PML, TYPE, SIZE) 					      \
+    if (!IS_LAST_UPML_READ(PML)) {                                             \
+            readmem((ulonglong)((ulong)(PML)), TYPE, machdep->machspec->upml, \
+                    SIZE, "pml page", FAULT_ON_ERROR);                        \
+            machdep->machspec->last_upml_read = (ulong)(PML);                 \
+    }								            
 
 /* 
  *  PHYSICAL_PAGE_MASK changed (enlarged) between 2.4 and 2.6, so
@@ -2068,6 +2110,32 @@ struct efi_memory_desc_t {
 #define PGD_OFFSET_24(vaddr)    ((vaddr >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
 #define PGD_OFFSET(vaddr)       ((vaddr >> PGDIR_SHIFT) & 0x7ff)
 #define PMD_OFFSET(vaddr)       ((vaddr >> PMD_SHIFT) & (PTRS_PER_PMD - 1))
+
+/* 4-level page table support */
+
+/* 4K pagesize */
+#define PTE_INDEX_SIZE_L4_4K  9
+#define PMD_INDEX_SIZE_L4_4K  7
+#define PUD_INDEX_SIZE_L4_4K  7
+#define PGD_INDEX_SIZE_L4_4K  9
+#define PTE_SHIFT_L4_4K  17
+#define PMD_MASKED_BITS_4K  0
+
+/* 64K pagesize */
+#define PTE_INDEX_SIZE_L4_64K  12
+#define PMD_INDEX_SIZE_L4_64K  12
+#define PUD_INDEX_SIZE_L4_64K  0
+#define PGD_INDEX_SIZE_L4_64K  4
+#define PTE_SHIFT_L4_64K  32
+#define PMD_MASKED_BITS_64K  0x1ff
+
+#define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & 0x1ff)
+
+#define PGD_OFFSET_L4(vaddr)	\
+	((vaddr >> (machdep->machspec->l3_shift)) & (machdep->machspec->ptrs_per_l3 - 1))
+
+#define PMD_OFFSET_L4(vaddr)	\
+	((vaddr >> (machdep->machspec->l2_shift)) & (machdep->machspec->ptrs_per_l2 - 1))
 
 #define _PAGE_PRESENT   0x001UL /* software: pte contains a translation */
 #define _PAGE_USER      0x002UL /* matches one of the PP bits */
@@ -2809,6 +2877,7 @@ uint64_t generic_memory_size(void);
 char *swap_location(ulonglong, char *); 
 void clear_swap_info_cache(void);
 uint memory_page_size(void);
+void force_page_size(char *);
 ulong first_vmalloc_address(void);
 int l1_cache_size(void);
 int dumpfile_memory(int);
@@ -3007,6 +3076,8 @@ void sort_context_array(void);
  */
 void register_extension(struct command_table_entry *);
 void dump_extension_table(int);
+void load_extension(char *);
+void unload_extension(char *);
 
 /*
  *  kernel.c 
@@ -3071,6 +3142,7 @@ void back_trace(struct bt_info *);
 #define BT_DUMPFILE_SEARCH (0x800000000ULL)
 #define BT_EFRAME_SEARCH2 (0x1000000000ULL)
 #define BT_START          (0x2000000000ULL)
+#define BT_TEXT_SYMBOLS_ALL (0x4000000000ULL)     
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)
@@ -3196,7 +3268,15 @@ struct x86_64_stkinfo {
 #define NMI_STACK 2    /* ebase[] offset to NMI exception stack */
 
 struct machine_specific {
+	ulong userspace_top;
+	ulong page_offset;
+	ulong vmalloc_start_addr;
+	ulong vmalloc_end;
+	ulong modules_vaddr;
+	ulong modules_end;
         char *pml4;
+	char *upml;
+	ulong last_upml_read;
 	char *irqstack;
 	struct x86_64_pt_regs_offsets pto;
 	struct x86_64_stkinfo stkinfo;
@@ -3204,6 +3284,8 @@ struct machine_specific {
 
 #define KSYMS_START    (0x1)
 #define PT_REGS_INIT   (0x2)
+#define VM_ORIG        (0x4)
+#define VM_2_6_11      (0x8)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
 #endif
@@ -3242,13 +3324,43 @@ struct machine_specific {
         ulong hwintrstack[NR_CPUS];
         char *hwstackbuf;
         uint hwstacksize;
+        char *level4;
+        ulong last_level4_read;
+
+	uint l4_index_size;
+	uint l3_index_size;
+	uint l2_index_size;
+	uint l1_index_size;
+
+	uint ptrs_per_l3;
+	uint ptrs_per_l2;
+	uint ptrs_per_l1;
+
+	uint l4_shift;
+	uint l3_shift;
+	uint l2_shift;
+	uint l1_shift;
+
+	uint pte_shift;
+	uint l2_masked_bits;
 };
+
+#define IS_LAST_L4_READ(l4)   ((ulong)(l4) == machdep->machspec->last_level4_read)
+
+#define FILL_L4(L4, TYPE, SIZE) 						\
+    if (!IS_LAST_L4_READ(L4)) {							\
+            readmem((ulonglong)((ulong)(L4)), TYPE, machdep->machspec->level4,	\
+                    SIZE, "level4 page", FAULT_ON_ERROR);			\
+            machdep->machspec->last_level4_read = (ulong)(L4);			\
+    }								            
 
 void ppc64_init(int);
 void ppc64_dump_machdep_table(ulong);
 #define display_idt_table() \
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
+#define VM_ORIG     (0x2)
+#define VM_4_LEVEL  (0x4)
 #endif
 
 /*
@@ -3398,10 +3510,23 @@ int netdump_memory_used(void);
 int netdump_init(char *, FILE *);
 ulong get_netdump_panic_task(void);
 ulong get_netdump_switch_stack(ulong);
-int netdump_memory_dump(FILE *);
 FILE *set_netdump_fp(FILE *);
+int netdump_memory_dump(FILE *);
 void get_netdump_regs(struct bt_info *, ulong *, ulong *);
 int is_partial_netdump(void);
+void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
+void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
+
+int read_kdump(int, void *, int, ulong, physaddr_t);
+int write_kdump(int, void *, int, ulong, physaddr_t);
+int is_kdump(char *, ulong);
+int kdump_init(char *, FILE *);
+ulong get_kdump_panic_task(void);
+uint kdump_page_size(void);
+int kdump_free_memory(void);
+int kdump_memory_used(void);
+int kdump_memory_dump(FILE *);
+void get_kdump_regs(struct bt_info *, ulong *, ulong *);
 
 /*
  *  diskdump.c
@@ -3562,6 +3687,7 @@ uint64_t get_dp_address_v8(void);
 #define LKCD_DUMP_V7                  (0x7)  /* DUMP_VERSION_NUMBER */
 #define LKCD_DUMP_V8                  (0x8)  /* DUMP_VERSION_NUMBER */
 #define LKCD_DUMP_V9                  (0x9)  /* DUMP_VERSION_NUMBER */
+#define LKCD_DUMP_V10                 (0xa)  /* DUMP_VERSION_NUMBER */
 
 #define LKCD_DUMP_VERSION_NUMBER_MASK (0xf)
 #define LKCD_DUMP_RAW                 (0x1)   /* DUMP_[DH_]RAW */ 

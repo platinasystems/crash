@@ -24,3 +24,14 @@
 
 #define NT_TASKSTRUCT 4
 #define NT_DISKDUMP   0x70000001
+
+#ifdef NOTDEF
+/*
+ *  Note: Based upon the original, abandoned, proposal for
+ *  its contents -- keep around for potential future use.
+ */
+#ifndef NT_KDUMPINFO
+#define NT_KDUMPINFO 7
+#endif
+
+#endif  /* NOTDEF */

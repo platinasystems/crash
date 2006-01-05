@@ -1397,9 +1397,22 @@ unwind_init_v3(void)
 	req = &request;
 
         if (get_symbol_type("unw", "tables", req) == TYPE_CODE_UNDEF) {
-		error(WARNING, "cannot determine unw.tables offset\n");
-		machdep->flags |= UNW_OUT_OF_SYNC;
-	} else { 
+		/*
+		 *  KLUDGE ALERT:
+		 *  If unw.tables cannot be ascertained by gdb, try unw.save_order,
+		 *  given that it is the field just after unw.tables.
+		 */
+		if (get_symbol_type("unw", "save_order", req) == TYPE_CODE_UNDEF) {
+			error(WARNING, "cannot determine unw.tables offset\n");
+			machdep->flags |= UNW_OUT_OF_SYNC;
+		} else
+	        	req->member_offset -= BITS_PER_BYTE * sizeof(void *);
+
+		if (CRASHDEBUG(1))
+			error(WARNING, "using unw.save_order to determine unw.tables\n");
+	}
+
+	if (!(machdep->flags & UNW_OUT_OF_SYNC)) {
 		machdep->machspec->unw_tables_offset =
 			 req->member_offset/BITS_PER_BYTE;
 

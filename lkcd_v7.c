@@ -89,7 +89,11 @@ lkcd_dump_init_v7(FILE *fp, int fd, char *dumpfile)
 	ifd = 0;
 
 #ifdef LKCD_INDEX_FILE
-	lkcd->memory_pages = (dh->dh_memory_size * (getpagesize()/lkcd->page_size)) * 2;
+        if (dh->dh_memory_end < 0x1000000000LL) {
+            lkcd->memory_pages = dh->dh_memory_end / lkcd->page_size + 1;
+        } else {
+            lkcd->memory_pages = (dh->dh_memory_size * (getpagesize()/lkcd->page_size)) * 2;
+        }
 	dump_index_size = (lkcd->memory_pages * sizeof(off_t));	
 	lkcd->page_offsets = 0;
 	strcpy(dumpfile_index_name, dumpfile);

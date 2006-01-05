@@ -45,6 +45,7 @@ struct meminfo {           /* general purpose memory information structure */
 	ulong *addrlist;
 	int *kmem_bufctl;
 	ulong *cpudata[NR_CPUS];
+	ulong *shared_array_cache;
 	ulong found;
 	ulong retval;
 	char *ignore;
@@ -57,6 +58,10 @@ struct meminfo {           /* general purpose memory information structure */
 	ulong get_slabs;
 	char *slab_buf;
 	char *cache_buf;
+	struct vmlist {
+		ulong addr;
+		ulong size;
+	} *vmlist;
 };
 
 static char *memtype_string(int, int);
@@ -98,6 +103,7 @@ static void gather_slab_free_list_percpu(struct meminfo *);
 static void gather_cpudata_list_v1(struct meminfo *);
 static void gather_cpudata_list_v2(struct meminfo *);
 static int check_cpudata_list(struct meminfo *, ulong);
+static int check_shared_list(struct meminfo *, ulong);
 static void gather_slab_cached_count(struct meminfo *);
 static void dump_slab_objects(struct meminfo *);
 static void dump_slab_objects_percpu(struct meminfo *);
@@ -110,6 +116,7 @@ static void display_memory(ulonglong, long, ulong, int);
 static void search(ulong, ulong, ulong, int, ulong *, int);
 static int next_upage(struct task_context *, ulong, ulong *);
 static int next_kpage(ulong, ulong *);
+static ulong next_vmlist_vaddr(struct meminfo *, ulong);
 static int vm_area_page_dump(ulong, ulong, ulong, ulong, void *, 
 	struct reference *);
 static int dump_swap_info(ulong, ulong *, ulong *);
@@ -182,6 +189,13 @@ vm_init(void)
         MEMBER_OFFSET_INIT(mm_struct_mmap, "mm_struct", "mmap");
         MEMBER_OFFSET_INIT(mm_struct_pgd, "mm_struct", "pgd");
 	MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "rss");
+	if (!VALID_MEMBER(mm_struct_rss))
+		MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "_rss");
+	if (!VALID_MEMBER(mm_struct_rss))
+		MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "_file_rss");
+	MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "anon_rss");
+	if (!VALID_MEMBER(mm_struct_anon_rss))
+		MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "_anon_rss");
 	MEMBER_OFFSET_INIT(mm_struct_total_vm, "mm_struct", "total_vm");
 	MEMBER_OFFSET_INIT(mm_struct_start_code, "mm_struct", "start_code");
         MEMBER_OFFSET_INIT(vm_area_struct_vm_mm, "vm_area_struct", "vm_mm");
@@ -270,6 +284,7 @@ vm_init(void)
 	STRUCT_SIZE_INIT(kmem_slab_s, "kmem_slab_s");
 	STRUCT_SIZE_INIT(slab_s, "slab_s");
 	STRUCT_SIZE_INIT(slab, "slab");
+	STRUCT_SIZE_INIT(kmem_cache_s, "kmem_cache_s");
 	STRUCT_SIZE_INIT(pgd_t, "pgd_t");
 
         if (!VALID_STRUCT(kmem_slab_s) && VALID_STRUCT(slab_s)) {
@@ -310,17 +325,38 @@ vm_init(void)
 		   !VALID_STRUCT(slab_s) && VALID_STRUCT(slab)) {
                 vt->flags |= PERCPU_KMALLOC_V2;
 
-		MEMBER_OFFSET_INIT(kmem_cache_s_num, "kmem_cache_s", "num");
-		MEMBER_OFFSET_INIT(kmem_cache_s_next, "kmem_cache_s", "next");
-		MEMBER_OFFSET_INIT(kmem_cache_s_name, "kmem_cache_s", "name");
-		MEMBER_OFFSET_INIT(kmem_cache_s_colour_off, "kmem_cache_s", 
-			"colour_off");
-		MEMBER_OFFSET_INIT(kmem_cache_s_objsize,  "kmem_cache_s", 
-			"objsize");
-		MEMBER_OFFSET_INIT(kmem_cache_s_flags, "kmem_cache_s", "flags");
-		MEMBER_OFFSET_INIT(kmem_cache_s_gfporder,  
-			"kmem_cache_s", "gfporder");
+		if (VALID_STRUCT(kmem_cache_s)) {
+			MEMBER_OFFSET_INIT(kmem_cache_s_num, "kmem_cache_s", "num");
+			MEMBER_OFFSET_INIT(kmem_cache_s_next, "kmem_cache_s", "next");
+			MEMBER_OFFSET_INIT(kmem_cache_s_name, "kmem_cache_s", "name");
+			MEMBER_OFFSET_INIT(kmem_cache_s_colour_off, "kmem_cache_s", 
+				"colour_off");
+			MEMBER_OFFSET_INIT(kmem_cache_s_objsize,  "kmem_cache_s", 
+				"objsize");
+			MEMBER_OFFSET_INIT(kmem_cache_s_flags, "kmem_cache_s", "flags");
+			MEMBER_OFFSET_INIT(kmem_cache_s_gfporder,  
+				"kmem_cache_s", "gfporder");
 
+			MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache_s", "lists");
+			MEMBER_OFFSET_INIT(kmem_cache_s_array, "kmem_cache_s", "array");
+			ARRAY_LENGTH_INIT(len, NULL, "kmem_cache_s.array", NULL, 0);
+		} else {
+			STRUCT_SIZE_INIT(kmem_cache_s, "kmem_cache");
+			MEMBER_OFFSET_INIT(kmem_cache_s_num, "kmem_cache", "num");
+			MEMBER_OFFSET_INIT(kmem_cache_s_next, "kmem_cache", "next");
+			MEMBER_OFFSET_INIT(kmem_cache_s_name, "kmem_cache", "name");
+			MEMBER_OFFSET_INIT(kmem_cache_s_colour_off, "kmem_cache", 
+				"colour_off");
+			MEMBER_OFFSET_INIT(kmem_cache_s_objsize,  "kmem_cache", 
+				"objsize");
+			MEMBER_OFFSET_INIT(kmem_cache_s_flags, "kmem_cache", "flags");
+			MEMBER_OFFSET_INIT(kmem_cache_s_gfporder,  
+				"kmem_cache", "gfporder");
+
+			MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache", "lists");
+			MEMBER_OFFSET_INIT(kmem_cache_s_array, "kmem_cache", "array");
+			ARRAY_LENGTH_INIT(len, NULL, "kmem_cache.array", NULL, 0);
+		}
 		MEMBER_OFFSET_INIT(slab_list, "slab", "list");
 		MEMBER_OFFSET_INIT(slab_s_mem, "slab", "s_mem");
 		MEMBER_OFFSET_INIT(slab_inuse, "slab", "inuse");
@@ -329,10 +365,6 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(array_cache_avail, "array_cache", "avail");
 		MEMBER_OFFSET_INIT(array_cache_limit, "array_cache", "limit");
 		STRUCT_SIZE_INIT(array_cache, "array_cache");
-
-		MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache_s", "lists");
-		MEMBER_OFFSET_INIT(kmem_cache_s_array, "kmem_cache_s", "array");
-                ARRAY_LENGTH_INIT(len, NULL, "kmem_cache_s.array", NULL, 0);
 
 		MEMBER_OFFSET_INIT(kmem_list3_slabs_partial, 
 			"kmem_list3", "slabs_partial");
@@ -478,7 +510,6 @@ vm_init(void)
 	STRUCT_SIZE_INIT(free_area_struct, "free_area_struct");
 	STRUCT_SIZE_INIT(zone, "zone");
 	STRUCT_SIZE_INIT(zone_struct, "zone_struct");
-	STRUCT_SIZE_INIT(kmem_cache_s, "kmem_cache_s");
 	STRUCT_SIZE_INIT(kmem_bufctl_t, "kmem_bufctl_t");
 	STRUCT_SIZE_INIT(swap_info_struct, "swap_info_struct");
 	STRUCT_SIZE_INIT(mm_struct, "mm_struct");
@@ -972,7 +1003,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	        case DISPLAY_64:
 			if ((flag & (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) ==
 			    (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) {
-				if (in_ksymbol_range(mem.u64)) {
+				if (in_ksymbol_range(mem.u64) &&
+				    strlen(value_to_symstr(mem.u64, buf, 0))) {
 					fprintf(fp, "%-16s ",
                                             value_to_symstr(mem.u64, buf, 0));
 					linelen += strlen(buf)+1;
@@ -995,7 +1027,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	        case DISPLAY_32:
                         if ((flag & (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) ==
                             (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) {
-				if (in_ksymbol_range(mem.u32)) {
+				if (in_ksymbol_range(mem.u32) &&
+				    strlen(value_to_symstr(mem.u32, buf, 0))) {
 					fprintf(fp, INT_PRLEN == 16 ? 
 					    "%-16s " : "%-8s ",
                                                 value_to_symstr(mem.u32,
@@ -2982,6 +3015,8 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 		return;
 
         tm->rss = ULONG(tt->mm_struct + OFFSET(mm_struct_rss));
+	if (VALID_MEMBER(mm_struct_anon_rss))
+		tm->rss +=  ULONG(tt->mm_struct + OFFSET(mm_struct_anon_rss));
         tm->total_vm = ULONG(tt->mm_struct + OFFSET(mm_struct_total_vm));
         tm->pgd_addr = ULONG(tt->mm_struct + OFFSET(mm_struct_pgd));
 
@@ -3038,6 +3073,9 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 #define GET_INACTIVE_DIRTY     (ADDRESS_SPECIFIED << 13)  /* obsolete */
 #define SLAB_GET_COUNTS        (ADDRESS_SPECIFIED << 14)
 #define SLAB_WALKTHROUGH       (ADDRESS_SPECIFIED << 15)
+#define GET_VMLIST_COUNT       (ADDRESS_SPECIFIED << 16)
+#define GET_VMLIST             (ADDRESS_SPECIFIED << 17)
+#define SLAB_DATA_NOSAVE       (ADDRESS_SPECIFIED << 18)
 
 #define GET_ALL \
 	(GET_SHARED_PAGES|GET_TOTALRAM_PAGES|GET_BUFFERS_PAGES|GET_SLAB_PAGES)
@@ -5577,15 +5615,17 @@ dump_vmlist(struct meminfo *vi)
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	ulong vmlist;
-	ulong addr, size, next, pcheck; 
+	ulong addr, size, next, pcheck, count; 
 	physaddr_t paddr;
 
 	get_symbol_data("vmlist", sizeof(void *), &vmlist);
 	next = vmlist;
+	count = 0;
 
 	while (next) {
 		if ((next == vmlist) && 
-		    !(vi->flags & (GET_HIGHEST|GET_PHYS_TO_VMALLOC))) {
+		    !(vi->flags & (GET_HIGHEST|GET_PHYS_TO_VMALLOC|
+		      GET_VMLIST_COUNT|GET_VMLIST))) {
 			fprintf(fp, "%s  ", 
 			    mkstring(buf, MAX(strlen("VM_STRUCT"), VADDR_PRLEN),
 			    	CENTER|LJUST, "VM_STRUCT"));
@@ -5600,6 +5640,20 @@ dump_vmlist(struct meminfo *vi)
                 readmem(next+OFFSET(vm_struct_size), KVADDR, 
 			&size, sizeof(ulong),
                         "vmlist size", FAULT_ON_ERROR);
+
+		if (vi->flags & (GET_VMLIST_COUNT|GET_VMLIST)) {
+			/*
+			 *  Preceding GET_VMLIST_COUNT set vi->retval.
+			 */
+			if (vi->flags & GET_VMLIST) {
+				if (count < vi->retval) {
+					vi->vmlist[count].addr = addr;
+					vi->vmlist[count].size = size;
+				}
+			}
+			count++;
+			goto next_entry;
+		}
 
 		if (!(vi->flags & ADDRESS_SPECIFIED) || 
 		    ((vi->memtype == KVADDR) &&
@@ -5641,7 +5695,7 @@ dump_vmlist(struct meminfo *vi)
 			}
 
 		}
-
+next_entry:
                 readmem(next+OFFSET(vm_struct_next), 
 			KVADDR, &next, sizeof(void *),
                         "vmlist next", FAULT_ON_ERROR);
@@ -5649,6 +5703,9 @@ dump_vmlist(struct meminfo *vi)
 
 	if (vi->flags & GET_HIGHEST)
 		vi->retval = addr+size;
+
+	if (vi->flags & GET_VMLIST_COUNT)
+		vi->retval = count;
 }
 
 /*
@@ -6260,6 +6317,7 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 	ulong cpudata[NR_CPUS];
 	int limit; 
 	ulong max_limit;
+	ulong shared; 
 
 	if (vt->flags & PERCPU_KMALLOC_V2)
 		goto kmem_cache_s_array;
@@ -6307,6 +6365,21 @@ kmem_cache_s_array:
                         max_limit = limit;
         }
 
+	/*
+	 *  If the shared list can be accessed, check its size as well.
+	 */
+	if (VALID_MEMBER(kmem_list3_shared) &&
+	    VALID_MEMBER(kmem_cache_s_lists) &&
+            readmem(cache+OFFSET(kmem_cache_s_lists)+OFFSET(kmem_list3_shared),
+	    KVADDR, &shared, sizeof(void *), "kmem_list3 shared", 
+	    RETURN_ON_ERROR|QUIET) &&
+	    readmem(shared+OFFSET(array_cache_limit), 
+	    KVADDR, &limit, sizeof(int), "shared array_cache limit",
+	    RETURN_ON_ERROR|QUIET)) {
+		if (limit > max_limit)
+			max_limit = limit;
+	}
+		   
 	*cpus = i;
 	return max_limit;
 
@@ -6373,6 +6446,7 @@ ignore_cache(struct meminfo *si, char *name)
 #define KMEM_OBJECT_ADDR_INUSE  (4)
 #define KMEM_OBJECT_ADDR_CACHED (5)
 #define KMEM_ON_SLAB            (6)
+#define KMEM_OBJECT_ADDR_SHARED (7)
 
 #define DUMP_KMEM_CACHE_INFO_V1() \
       {  \
@@ -6428,7 +6502,7 @@ dump_kmem_cache_info_v2(struct meminfo *si)
       { \
         char b1[BUFSIZE], b2[BUFSIZE]; \
         ulong allocated, freeobjs; \
-        if (vt->flags & PERCPU_KMALLOC_V1) { \
+        if (vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2)) { \
                 allocated = si->s_inuse - si->cpucached_slab; \
                 freeobjs = si->c_num - allocated - si->cpucached_slab; \
         } else { \
@@ -6439,8 +6513,8 @@ dump_kmem_cache_info_v2(struct meminfo *si)
                 mkstring(b1, VADDR_PRLEN, LJUST|LONG_HEX, MKSTR(si->slab)), \
                 mkstring(b2, VADDR_PRLEN, LJUST|LONG_HEX, MKSTR(si->s_mem)), \
                 si->c_num, allocated, \
-                vt->flags & PERCPU_KMALLOC_V1 ? freeobjs + si->cpucached_slab :\
-                freeobjs); \
+                vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2) ? \
+		freeobjs + si->cpucached_slab : freeobjs); \
       }
 
 static void
@@ -6877,6 +6951,8 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 	for (i = 0; i < vt->kmem_max_cpus; i++) 
 		si->cpudata[i] = (ulong *)
 			GETBUF(vt->kmem_max_limit * sizeof(ulong)); 
+	si->shared_array_cache = (ulong *)
+			GETBUF(vt->kmem_max_limit * sizeof(ulong)); 
 
 	cnt = 0;
 
@@ -7025,7 +7101,14 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 					    "   %lx  (cpu %d cache)\n", 
 						(ulong)si->spec_addr, si->cpu);
                                         break;
-				}
+
+                                case KMEM_OBJECT_ADDR_SHARED:
+                                        fprintf(fp, free_inuse_hdr);
+                                        fprintf(fp,
+                                            "   %lx  (shared cache)\n",
+                                                (ulong)si->spec_addr);
+                                        break;
+                                }
 
 				break;
 			}
@@ -7053,6 +7136,7 @@ next_cache:
 	FREEBUF(si->kmem_bufctl);
         for (i = 0; i < vt->kmem_max_cpus; i++)
                 FREEBUF(si->cpudata[i]);
+	FREEBUF(si->shared_array_cache);
 
 }
 
@@ -7770,6 +7854,11 @@ save_slab_data(struct meminfo *si)
 {
 	int i;
 
+	if (si->flags & SLAB_DATA_NOSAVE) {
+		si->flags &= ~SLAB_DATA_NOSAVE;
+		return;
+	}
+
 	if (ACTIVE())
 		return;
 
@@ -8283,7 +8372,7 @@ static void
 dump_slab_objects_percpu(struct meminfo *si)
 {
 	int i, j;
-	int on_free_list, on_cpudata_list; 
+	int on_free_list, on_cpudata_list, on_shared_list; 
 	ulong cnt, expected;
 	ulong obj;
 
@@ -8305,6 +8394,7 @@ dump_slab_objects_percpu(struct meminfo *si)
 	for (i = 0, obj = si->s_mem; i < si->c_num; i++, obj += si->size) {
 		on_free_list = FALSE;
 		on_cpudata_list = FALSE;
+		on_shared_list = FALSE;
 
 	        for (j = 0; j < si->c_num; j++) {        
 	                if (obj == si->addrlist[j]) {                   
@@ -8314,11 +8404,24 @@ dump_slab_objects_percpu(struct meminfo *si)
 	        }                                                       
 
 		on_cpudata_list = check_cpudata_list(si, obj);
+		on_shared_list = check_shared_list(si, obj);
 
 		if (on_free_list && on_cpudata_list) {
 			error(INFO, 
-		    "\"%s\" cache: object %lx on both free and cpudata lists\n",
+		    "\"%s\" cache: object %lx on both free and cpu %d lists\n",
+				si->curname, si->cpu, obj);
+			si->errors++;
+		}
+		if (on_free_list && on_shared_list) {
+			error(INFO, 
+		    "\"%s\" cache: object %lx on both free and shared lists\n",
 				si->curname, obj);
+			si->errors++;
+		}
+		if (on_cpudata_list && on_shared_list) {
+			error(INFO, 
+		    "\"%s\" cache: object %lx on both cpu %d and shared lists\n",
+				si->curname, obj, si->cpu);
 			si->errors++;
 		}
 	                                                               
@@ -8344,6 +8447,17 @@ dump_slab_objects_percpu(struct meminfo *si)
                                         return;
                                 } 
                         }
+		} else if (on_shared_list) {
+                        if (!(si->flags & ADDRESS_SPECIFIED))
+                                fprintf(fp, "   %lx  (shared cache)\n", obj);
+			cnt++;
+                        if (si->flags & ADDRESS_SPECIFIED) {
+                                if (INOBJECT(si->spec_addr, obj)) {
+                                        si->found =
+                                            KMEM_OBJECT_ADDR_SHARED;
+                                        return;
+                                } 
+			}
 	        } else {                                                
 	                if (!(si->flags & ADDRESS_SPECIFIED))           
 	                        fprintf(fp, "  [%lx]\n", obj);          
@@ -8369,7 +8483,10 @@ dump_slab_objects_percpu(struct meminfo *si)
 /*
  *  Determine how many of the "inuse" slab objects are actually cached
  *  in the kmem_cache_s header.  Set the per-slab count and update the 
- *  cumulative per-cache count.
+ *  cumulative per-cache count.  With the addition of the shared list
+ *  check, the terms "cpucached_cache" and "cpucached_slab" are somewhat
+ *  misleading.  But they both are types of objects that are cached
+ *  in the kmem_cache_s header, just not necessarily per-cpu.
  */
 
 static void
@@ -8377,15 +8494,34 @@ gather_slab_cached_count(struct meminfo *si)
 {
 	int i;
 	ulong obj;
+	int in_cpudata, in_shared;
 
 	si->cpucached_slab = 0;
 
         for (i = 0, obj = si->s_mem; i < si->c_num; i++, obj += si->size) {
+		in_cpudata = in_shared = 0;
 		if (check_cpudata_list(si, obj)) {
+			in_cpudata = TRUE;
 			si->cpucached_slab++;
 			if (si->flags & SLAB_GET_COUNTS) {
 				si->cpucached_cache++;
 			}
+		}
+                if (check_shared_list(si, obj)) {
+			in_shared = TRUE;
+			if (!in_cpudata) {
+                        	si->cpucached_slab++;
+                        	if (si->flags & SLAB_GET_COUNTS) {
+                                	si->cpucached_cache++;
+                        	}
+			}
+                }
+		if (in_cpudata && in_shared) {
+			si->flags |= SLAB_DATA_NOSAVE;
+			if (!(si->flags & VERBOSE))
+				error(INFO, 
+		    "\"%s\" cache: object %lx on both cpu %d and shared lists\n",
+				si->curname, obj, si->cpu);
 		}
 	}
 }
@@ -8443,7 +8579,8 @@ gather_cpudata_list_v1(struct meminfo *si)
 }
 
 /*
- *  Updated for 2.6 slab percpu data structure.
+ *  Updated for 2.6 slab percpu data structure, this also gathers
+ *  the shared array_cache list as well.
  */
 static void
 gather_cpudata_list_v2(struct meminfo *si)
@@ -8451,6 +8588,7 @@ gather_cpudata_list_v2(struct meminfo *si)
         int i, j;
 	int avail;
         ulong cpudata[NR_CPUS];
+	ulong shared;
 
         readmem(si->cache+OFFSET(kmem_cache_s_array),
                 KVADDR, &cpudata[0], 
@@ -8486,8 +8624,43 @@ gather_cpudata_list_v2(struct meminfo *si)
 
 		if (CRASHDEBUG(2))
 			for (j = 0; j < avail; j++)
-				fprintf(fp, "  %lx\n", si->cpudata[i][j]);
+				fprintf(fp, "  %lx (cpu %d)\n", si->cpudata[i][j], i);
         }
+
+        /*
+         *  If the shared list contains anything, gather them as well.
+         */
+	BZERO(si->shared_array_cache, sizeof(ulong) * vt->kmem_max_limit);
+
+        if (!VALID_MEMBER(kmem_list3_shared) ||
+            !VALID_MEMBER(kmem_cache_s_lists) ||
+            !readmem(si->cache+OFFSET(kmem_cache_s_lists)+
+       	    OFFSET(kmem_list3_shared), KVADDR, &shared, sizeof(void *),
+	    "kmem_list3 shared", RETURN_ON_ERROR|QUIET) ||
+	    !readmem(shared+OFFSET(array_cache_avail),
+            KVADDR, &avail, sizeof(int), "shared array_cache avail",
+            RETURN_ON_ERROR|QUIET) || !avail)
+		return;
+
+	if (avail > vt->kmem_max_limit) {
+		error(INFO, 
+  	  "\"%s\" cache: shared array_cache.avail %d greater than limit %ld\n",
+			si->curname, avail, vt->kmem_max_limit);
+		si->errors++;
+		return;
+	}
+
+	if (CRASHDEBUG(2))
+		fprintf(fp, "%s: shared avail: %d\n", 
+			si->curname, avail);
+
+        readmem(shared+SIZE(array_cache), KVADDR, si->shared_array_cache,
+        	sizeof(void *) * avail, "shared array_cache avail", 
+		FAULT_ON_ERROR);
+
+        if (CRASHDEBUG(2))
+        	for (j = 0; j < avail; j++)
+                	fprintf(fp, "  %lx (shared list)\n", si->shared_array_cache[j]);
 }
 
 /*
@@ -8511,6 +8684,27 @@ check_cpudata_list(struct meminfo *si, ulong obj)
 	return FALSE;
 }
 
+/*
+ *  Check whether a given address is contained in the previously-gathered
+ *  shared object cache.
+ */
+
+static int
+check_shared_list(struct meminfo *si, ulong obj)
+{
+	int i;
+
+	if (INVALID_MEMBER(kmem_list3_shared) ||
+	    !si->shared_array_cache)
+		return FALSE;
+
+        for (i = 0; i < si->shared_array_cache[i]; i++) {
+		if (si->shared_array_cache[i] == obj)
+			return TRUE;
+	}
+
+        return FALSE;
+}
 
 /*
  *  Search the various memory subsystems for instances of this address.
@@ -9341,6 +9535,43 @@ next_upage(struct task_context *tc, ulong vaddr, ulong *nextvaddr)
 }
 
 /*
+ *  Return the next mapped kernel virtual address in the vmlist
+ *  that is equal to or comes after the passed-in address.
+ */
+static ulong
+next_vmlist_vaddr(struct meminfo *mi, ulong vaddr)
+{
+	ulong i, count;
+
+	BZERO(mi, sizeof(struct meminfo));
+
+        mi->flags = GET_VMLIST_COUNT;
+        dump_vmlist(mi);
+	count = mi->retval;
+
+	if (!count)
+		return vaddr;
+
+	mi->vmlist = (struct vmlist *)GETBUF(sizeof(struct vmlist)*count);
+        mi->flags = GET_VMLIST;
+        dump_vmlist(mi);
+
+	for (i = 0; i < count; i++) {
+		if (vaddr <= mi->vmlist[i].addr) {
+			vaddr = mi->vmlist[i].addr;
+			break;
+		}
+		if (vaddr < (mi->vmlist[i].addr + mi->vmlist[i].size))
+			break;
+	}
+
+	FREEBUF(mi->vmlist);
+
+	return vaddr;
+}
+
+
+/*
  *  Return the next kernel virtual address page that comes after
  *  the passed-in address.
  */
@@ -9368,6 +9599,8 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
 
 	if (IS_VMALLOC_ADDR(vaddr_orig)) {
 		if (IS_VMALLOC_ADDR(vaddr) && (vaddr < vmalloc_limit)) {
+			if (machine_type("X86_64")) 
+				vaddr = next_vmlist_vaddr(&meminfo, vaddr);
 			*nextvaddr = vaddr;
 			return TRUE;
 		}
@@ -9397,6 +9630,7 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
                 /*
                  *  We're in the physical range.
                  */
+		*nextvaddr = vaddr;
                 return TRUE;
         }
 
@@ -10104,6 +10338,9 @@ memory_page_size(void)
 {
 	uint psz;
 
+	if (machdep->pagesize)
+		return machdep->pagesize;
+
 	if (REMOTE_MEMSRC()) 
 		return remote_page_size();
 
@@ -10111,6 +10348,10 @@ memory_page_size(void)
 	{
 	case DISKDUMP:
 		psz = diskdump_page_size();
+		break;
+
+	case KDUMP:
+		psz = kdump_page_size();
 		break;
 
 	case NETDUMP:
@@ -10145,6 +10386,48 @@ memory_page_size(void)
 
 	return psz;
 }
+
+/*
+ *  If the page size cannot be determined by the dumpfile (like kdump),
+ *  and the processor default cannot be used, allow the force-feeding
+ *  of a crash command-line page size option.
+ */
+void
+force_page_size(char *s)
+{
+	int k, err;
+	ulong psize;
+
+	k = 1;
+	err = FALSE;
+
+	switch (LASTCHAR(s))
+	{
+	case 'k':
+	case 'K':
+		LASTCHAR(s) = NULLCHAR;
+		if (decimal(s, 0))
+			k = 1024;
+		else 
+			err = TRUE;
+		break;
+
+	default:
+        	if (decimal(s, 0))
+                	psize = dtol(s, QUIET|RETURN_ON_ERROR, &err);
+        	else if (hexadecimal(s, 0))
+                	psize = htol(s, QUIET|RETURN_ON_ERROR, &err);
+		else
+			err = TRUE;
+		break;
+	}
+
+	if (err) 
+		error(INFO, "invalid page size: %s\n", s);
+	else
+		machdep->pagesize = psize * k;
+}
+
 
 /*
  *  Return the vmalloc address referenced by the first vm_struct
@@ -10218,6 +10501,8 @@ dumpfile_memory(int cmd)
                         retval = remote_memory_used();
 		else if (pc->flags & NETDUMP)
         		retval = netdump_memory_used();
+		else if (pc->flags & KDUMP)
+        		retval = kdump_memory_used();
 		else if (pc->flags & DISKDUMP)
         		retval = diskdump_memory_used();
 		else if (pc->flags & LKCD)
@@ -10233,6 +10518,8 @@ dumpfile_memory(int cmd)
                         retval = remote_free_memory();
                 else if (pc->flags & NETDUMP)
 			retval = netdump_free_memory();
+                else if (pc->flags & KDUMP)
+			retval = kdump_free_memory();
                 else if (pc->flags & DISKDUMP)
 			retval = diskdump_free_memory();
                 else if (pc->flags & LKCD)
@@ -10248,6 +10535,8 @@ dumpfile_memory(int cmd)
                         retval = remote_memory_dump(0);
                 else if (pc->flags & NETDUMP) 
                         retval = netdump_memory_dump(fp);
+                else if (pc->flags & KDUMP) 
+                        retval = kdump_memory_dump(fp);
                 else if (pc->flags & DISKDUMP) 
                         retval = diskdump_memory_dump(fp);
                 else if (pc->flags & LKCD) 

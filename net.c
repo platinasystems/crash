@@ -75,6 +75,7 @@ static void dump_ether_hw(unsigned char *, int);
 static void dump_sockets(ulong, struct reference *);
 static int  sym_socket_dump(ulong, int, int, ulong, struct reference *);
 static void dump_hw_addr(unsigned char *, int);
+static char *dump_in6_addr_port(uint16_t *, uint16_t, char *, int *);
 
 
 #define MK_TYPE_T(f,s,m)						\
@@ -158,13 +159,6 @@ net_init(void)
 			"in_ifaddr", "ifa_address");
 
 		STRUCT_SIZE_INIT(sock, "sock");
-		MEMBER_OFFSET_INIT(sock_daddr, "sock", "daddr");
-		MEMBER_OFFSET_INIT(sock_rcv_saddr, "sock", "rcv_saddr");
-		MEMBER_OFFSET_INIT(sock_dport, "sock", "dport");
-		MEMBER_OFFSET_INIT(sock_sport, "sock", "sport");
-		MEMBER_OFFSET_INIT(sock_num, "sock", "num");
-		MEMBER_OFFSET_INIT(sock_family, "sock", "family");
-		MEMBER_OFFSET_INIT(sock_type, "sock", "type");
 
                 MEMBER_OFFSET_INIT(sock_family, "sock", "family");
 		if (VALID_MEMBER(sock_family)) {
@@ -195,7 +189,23 @@ net_init(void)
 			 */
 			STRUCT_SIZE_INIT(inet_sock, "inet_sock");
 			STRUCT_SIZE_INIT(socket, "socket");
-			MEMBER_OFFSET_INIT(inet_sock_inet, "inet_sock", "inet");
+
+			if (STRUCT_EXISTS("inet_opt")) {
+				MEMBER_OFFSET_INIT(inet_sock_inet, "inet_sock", "inet");
+				MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_opt", "daddr");
+				MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_opt", "rcv_saddr");
+				MEMBER_OFFSET_INIT(inet_opt_dport, "inet_opt", "dport");
+				MEMBER_OFFSET_INIT(inet_opt_sport, "inet_opt", "sport");
+				MEMBER_OFFSET_INIT(inet_opt_num, "inet_opt", "num");
+			} else {	/* inet_opt moved to inet_sock */
+				ASSIGN_OFFSET(inet_sock_inet) = 0;
+				MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_sock", "daddr");
+				MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_sock", "rcv_saddr");
+				MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "dport");
+				MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "sport");
+				MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "num");
+			}	
+
 			if (VALID_STRUCT(inet_sock) && 
 			    INVALID_MEMBER(inet_sock_inet)) {
 				/*
@@ -213,12 +223,32 @@ net_init(void)
 				ASSIGN_OFFSET(inet_sock_inet) = 
 				    SIZE(inet_sock) - STRUCT_SIZE("inet_opt");
 			}
-			MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_opt", "daddr");
-			MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_opt", 
-				"rcv_saddr");
-			MEMBER_OFFSET_INIT(inet_opt_dport, "inet_opt", "dport");
-			MEMBER_OFFSET_INIT(inet_opt_sport, "inet_opt", "sport");
-			MEMBER_OFFSET_INIT(inet_opt_num, "inet_opt", "num");
+
+			/* 
+			 *  If necessary, set inet_sock size and inet_sock_inet offset,
+			 *  accounting for the configuration-dependent, intervening,
+			 *  struct ipv6_pinfo pointer located in between the sock and 
+			 *  inet_opt members of the inet_sock.
+			 */
+			if (!VALID_STRUCT(inet_sock)) 
+			{
+				if (symbol_exists("tcpv6_protocol") && 
+				    symbol_exists("udpv6_protocol")) {
+					ASSIGN_SIZE(inet_sock) = SIZE(sock) + 
+						sizeof(void *) + STRUCT_SIZE("inet_opt");
+					ASSIGN_OFFSET(inet_sock_inet) = SIZE(sock) + 
+						sizeof(void *);
+				} else {
+					ASSIGN_SIZE(inet_sock) = SIZE(sock) + 
+						STRUCT_SIZE("inet_opt");
+					ASSIGN_OFFSET(inet_sock_inet) = SIZE(sock);
+				}
+			}
+
+			MEMBER_OFFSET_INIT(ipv6_pinfo_rcv_saddr, "ipv6_pinfo", "rcv_saddr");
+			MEMBER_OFFSET_INIT(ipv6_pinfo_daddr, "ipv6_pinfo", "daddr");
+			STRUCT_SIZE_INIT(in6_addr, "in6_addr");
+
 			net->flags |= SOCK_V2;
 		}
 	}	
@@ -378,6 +408,24 @@ dump_arp(void)
 	nhash_buckets = (i = ARRAY_LENGTH(neigh_table_hash_buckets)) ?
 		i : get_array_length("neigh_table.hash_buckets", 
 			NULL, sizeof(void *));
+
+	/*
+	 *  NOTE: 2.6.8 -> 2.6.9 neigh_table struct changed from:
+	 *
+	 *    struct neighbour *hash_buckets[32];
+	 *  to
+	 *    struct neighbour **hash_buckets;
+	 *
+	 *  Even after hardwiring and testing with the correct
+	 *  array size, other changes cause this command to break
+	 *  down, so it needs to be looked at by someone who cares...
+	 */
+
+	if (nhash_buckets == 0) {
+		option_not_supported('a');
+		return;
+	}
+
 	hash_bytes = nhash_buckets * sizeof(*hash_buckets);
 
 	hash_buckets = (ulong *)GETBUF(hash_bytes);
@@ -609,8 +657,14 @@ get_sock_info(ulong sock, char *buf)
 	uint16_t dport, sport;
 	ushort num, family, type;
 	char *sockbuf, *inet_sockbuf;
+	ulong ipv6_pinfo, ipv6_rcv_saddr, ipv6_daddr;
+	uint16_t u6_addr16_src[8];
+	uint16_t u6_addr16_dest[8];
+	char buf2[BUFSIZE];
+	int len;
 
 	BZERO(buf, BUFSIZE);
+	BZERO(buf2, BUFSIZE);
 	sockbuf = inet_sockbuf = NULL;
 
 	switch (net->flags & (SOCK_V1|SOCK_V2))
@@ -646,6 +700,7 @@ get_sock_info(ulong sock, char *buf)
 			OFFSET(inet_opt_num));
 		family = USHORT(inet_sockbuf + OFFSET(sock_common_skc_family));
 		type = USHORT(inet_sockbuf + OFFSET(sock_sk_type));
+		ipv6_pinfo = ULONG(inet_sockbuf + SIZE(sock));
 		break;
 	}
 
@@ -723,27 +778,28 @@ get_sock_info(ulong sock, char *buf)
 	}
 
 	/* make sure we have room at the end... */
-	sprintf(&buf[strlen(buf)], "%s", space(MINSPACE-1));
+//	sprintf(&buf[strlen(buf)], "%s", space(MINSPACE-1));
+	sprintf(&buf[strlen(buf)], " ");
            
 	if (family == AF_INET) {
 		if (BITS32()) {
-			sprintf(&buf[strlen(buf)], "%*s:%-*d%s",
+			sprintf(&buf[strlen(buf)], "%*s-%-*d%s",
 				BYTES_IP_ADDR,
 				inet_ntoa(*((struct in_addr *)&rcv_saddr)),
 				BYTES_PORT_NUM,
 				ntohs(sport),
 				space(1));
-			sprintf(&buf[strlen(buf)], "%*s:%-*d%s",
+			sprintf(&buf[strlen(buf)], "%*s-%-*d%s",
 				BYTES_IP_ADDR,
 				inet_ntoa(*((struct in_addr *)&daddr)), 
 				BYTES_PORT_NUM,
 				ntohs(dport),
 				space(1));
 		} else {
-	                sprintf(&buf[strlen(buf)], " %s:%d ",
+	                sprintf(&buf[strlen(buf)], " %s-%d ",
 	                        inet_ntoa(*((struct in_addr *)&rcv_saddr)),
 	                        ntohs(sport));
-	                sprintf(&buf[strlen(buf)], "%s:%d",
+	                sprintf(&buf[strlen(buf)], "%s-%d",
 	                        inet_ntoa(*((struct in_addr *)&daddr)),
 	                        ntohs(dport));
 		}
@@ -753,6 +809,60 @@ get_sock_info(ulong sock, char *buf)
 		FREEBUF(sockbuf);
 	if (inet_sockbuf)
 		FREEBUF(inet_sockbuf);
+
+	if (family != AF_INET6)
+		return;
+
+	switch (net->flags & (SOCK_V1|SOCK_V2))
+	{
+	case SOCK_V1:
+		break;
+
+	case SOCK_V2:
+		if (INVALID_MEMBER(ipv6_pinfo_rcv_saddr) ||
+		    INVALID_MEMBER(ipv6_pinfo_daddr))
+			break;
+
+        	ipv6_rcv_saddr = ipv6_pinfo + OFFSET(ipv6_pinfo_rcv_saddr);
+		ipv6_daddr = ipv6_pinfo + OFFSET(ipv6_pinfo_daddr);
+
+		if (!readmem(ipv6_rcv_saddr, KVADDR, u6_addr16_src, SIZE(in6_addr),
+                    "ipv6_rcv_saddr buffer", QUIET|RETURN_ON_ERROR))
+			break;
+                if (!readmem(ipv6_daddr, KVADDR, u6_addr16_dest, SIZE(in6_addr),
+                    "ipv6_daddr buffer", QUIET|RETURN_ON_ERROR))
+			break;
+
+		sprintf(&buf[strlen(buf)], "%*s ", BITS32() ? 22 : 12,
+			dump_in6_addr_port(u6_addr16_src, sport, buf2, &len));
+		if (BITS32() && (len > 22))
+			len = 1;
+		mkstring(dump_in6_addr_port(u6_addr16_dest, dport, buf2, NULL),
+			len, CENTER, NULL);
+		sprintf(&buf[strlen(buf)], "%s", buf2);
+
+		break;
+	}
+}
+
+static char *
+dump_in6_addr_port(uint16_t *addr, uint16_t port, char *buf, int *len)
+{
+	sprintf(buf, "%x:%x:%x:%x:%x:%x:%x:%x-%d",
+                ntohs(addr[0]),
+                ntohs(addr[1]),
+                ntohs(addr[2]),
+                ntohs(addr[3]),
+                ntohs(addr[4]),
+                ntohs(addr[5]),
+                ntohs(addr[6]),
+                ntohs(addr[7]),
+                ntohs(port));
+
+	if (len)
+		*len = strlen(buf);
+
+	return buf;
 }
 
 
@@ -1096,9 +1206,9 @@ dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
  */
 
 static char *socket_hdr_32 = 
-"FD   SOCKET     SOCK    FAMILY:TYPE          SOURCE:PORT      DESTINATION:PORT";
+"FD   SOCKET     SOCK    FAMILY:TYPE          SOURCE-PORT      DESTINATION-PORT";
 static char *socket_hdr_64 = 
-"FD      SOCKET            SOCK       FAMILY:TYPE SOURCE:PORT DESTINATION:PORT";
+"FD      SOCKET            SOCK       FAMILY:TYPE SOURCE-PORT DESTINATION-PORT";
 
 static int
 sym_socket_dump(ulong file, 
@@ -1223,7 +1333,12 @@ sym_socket_dump(ulong file,
     			dump_struct("sock", sock, 0);
 			break;
 		case SOCK_V2:
-			dump_struct("inet_sock", sock, 0);
+			if (STRUCT_EXISTS("inet_sock"))
+				dump_struct("inet_sock", sock, 0);
+			else if (STRUCT_EXISTS("sock"))
+				dump_struct("sock", sock, 0);
+			else
+				fprintf(fp, "\nunable to display inet_sock structure\n");
 			break;
 		}
 		break;

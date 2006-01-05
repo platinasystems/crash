@@ -2004,6 +2004,8 @@ cmd_set(void)
 				pc->flags &= ~(DUMPFILE_TYPES);
 				if (is_netdump(args[optind], NETDUMP_LOCAL))
 					pc->flags |= NETDUMP;
+				else if (is_kdump(args[optind], KDUMP_LOCAL))
+					pc->flags |= KDUMP;
 				else if (is_diskdump(args[optind]))
 					pc->flags |= DISKDUMP;
 				else if (is_lkcd_compressed_dump(args[optind])) 
@@ -4300,12 +4302,12 @@ machine_type(char *type)
 void
 command_not_supported()
 {
-	error(FATAL, "command not supported on this architecture\n");
+	error(FATAL, "command not supported on this architecture or kernel\n");
 }
 
 void
 option_not_supported(int c)
 {
-	error(FATAL, "-%c option not supported on this architecture\n", 
+	error(FATAL, "-%c option not supported on this architecture or kernel\n", 
 		(char)c);
 }

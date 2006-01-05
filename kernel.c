@@ -20,6 +20,7 @@
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
 static char *find_module_objfile(char *, char *, char *);
+static char *module_objfile_search(char *, char *, char *);
 static char *get_uptime(char *);
 static char *get_loadavg(char *);
 static void get_lkcd_regs(struct bt_info *, ulong *, ulong *);
@@ -51,7 +52,7 @@ void
 kernel_init(int when)
 {
 	int i;
-	char *p1, *p2, buf[BUFSIZE];;
+	char *p1, *p2, buf[BUFSIZE];
 	struct syment *sp1, *sp2;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
@@ -1140,7 +1141,10 @@ cmd_bt(void)
 	bt = &bt_info;
 	BZERO(bt, sizeof(struct bt_info));
 
-        while ((c = getopt(argcnt, args, "fF:I:S:aloreEgstd:R:")) != EOF) {
+	if (kt->flags & USE_OLD_BT)
+		bt->flags |= BT_OLD_BACK_TRACE;
+
+        while ((c = getopt(argcnt, args, "fF:I:S:aloreEgstTd:R:O")) != EOF) {
                 switch(c)
 		{
 		case 'f':
@@ -1150,6 +1154,28 @@ cmd_bt(void)
 		case 'o':
 			bt->flags |= BT_OLD_BACK_TRACE;
 			break;
+
+		case 'O':
+			if (!machine_type("X86")) 
+				option_not_supported(c);
+			else if (kt->flags & USE_OLD_BT) { 
+				/* 
+				 *  Make this setting idempotent across the use of
+				 *  $HOME/.crashrc, ./.crashrc, and "-i input" files. 
+				 *  If we've been here before during initialization,
+				 *  leave it alone.
+			 	 */
+				if (pc->flags & INIT_IFILE) {
+					error(INFO, "use old bt method by default (already set)\n");
+					return;
+				}
+				kt->flags &= ~USE_OLD_BT;
+				error(INFO, "use new bt method by default\n");
+			} else {
+				kt->flags |= USE_OLD_BT;
+				error(INFO, "use old bt method by default\n");
+			}
+			return;
 
 		case 'R':
 			if (refptr) 
@@ -1241,6 +1267,8 @@ cmd_bt(void)
 			bt->flags |= BT_SYMBOLIC_ARGS;
 			break;
 
+		case 'T':
+			bt->flags |= BT_TEXT_SYMBOLS_ALL;
 		case 't':
 			bt->flags |= BT_TEXT_SYMBOLS;
 			break;
@@ -1350,9 +1378,10 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 	char buf[BUFSIZE];
 
 	if (bt->flags & BT_TEXT_SYMBOLS) {
-		fprintf(fp, "%sSTART: %s at %lx\n",
-			space(VADDR_PRLEN > 8 ? 14 : 6),
-		        closest_symbol(eip), eip);
+		if (!(bt->flags & BT_TEXT_SYMBOLS_ALL))
+			fprintf(fp, "%sSTART: %s at %lx\n",
+				space(VADDR_PRLEN > 8 ? 14 : 6),
+		        	closest_symbol(eip), eip);
 	}
 
 	if (bt->hp) 
@@ -1461,8 +1490,8 @@ back_trace(struct bt_info *bt)
 	if (bt->hp) {
 		if (bt->hp->esp && !INSTACK(bt->hp->esp, bt))
 			error(INFO, 
-			    "invalid stack address for this task: %lx\n",
-				bt->hp->esp);
+			    "invalid stack address for this task: %lx\n    (valid range: %lx - %lx)\n",
+				bt->hp->esp, bt->stackbase, bt->stacktop);
 		eip = bt->hp->eip;
 		esp = bt->hp->esp;
 
@@ -1471,6 +1500,8 @@ back_trace(struct bt_info *bt)
 	 
         } else if (NETDUMP_DUMPFILE())
                 get_netdump_regs(bt, &eip, &esp);
+	else if (KDUMP_DUMPFILE())
+                get_kdump_regs(bt, &eip, &esp);
 	else if (DISKDUMP_DUMPFILE())
                 get_diskdump_regs(bt, &eip, &esp);
         else if (LKCD_DUMPFILE())
@@ -1485,6 +1516,13 @@ back_trace(struct bt_info *bt)
 
 	if (bt->flags & 
 	    (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT)) {
+
+		if (bt->flags & BT_TEXT_SYMBOLS_ALL) {
+			esp = bt->stackbase + 
+				((tt->flags & THREAD_INFO) ?
+				SIZE(thread_info) : SIZE(task_struct));
+			eip = 0;
+		}
 
 		if (machdep->flags & MACHDEP_BT_TEXT) {
 			bt->instptr = eip;
@@ -1719,6 +1757,13 @@ get_lkcd_regs(struct bt_info *bt, ulong *eip, ulong *esp)
                 if (STREQ(sym, "panic") && INSTACK(*(up-1), bt)) {
                         *eip = *up;
                         *esp = *(up-1);
+                        return;
+                }
+		/* Egenera */
+                if (STREQ(sym, "netdump_ipi")) {
+                        *eip = *up;
+                        *esp = bt->task + 
+				((char *)(up-1) - bt->stackbuf);
                         return;
                 }
                 if (STREQ(sym, "smp_stop_cpu_interrupt")) {
@@ -2459,7 +2504,7 @@ reinit_modules(void)
 
 
 static char *
-find_module_objfile(char *modref, char *filename, char *tree)
+module_objfile_search(char *modref, char *filename, char *tree)
 {
 	char buf[BUFSIZE];
 	char file[BUFSIZE];
@@ -2592,6 +2637,32 @@ find_module_objfile(char *modref, char *filename, char *tree)
 	return retbuf;
 }
 
+/*
+ *  First look for a module based upon its reference name.
+ *  If that fails, try replacing any underscores in the
+ *  reference name with a dash.  
+ *
+ *  Example: module name "dm_mod" comes from "dm-mod.ko" objfile
+ */
+static char *
+find_module_objfile(char *modref, char *filename, char *tree)
+{
+	char * retbuf;
+	char tmpref[BUFSIZE];
+	int c;
+
+	retbuf = module_objfile_search(modref, filename, tree);
+
+	if (!retbuf) {
+		strncpy(tmpref, modref, BUFSIZE);
+		for (c = 0; c < BUFSIZE && tmpref[c]; c++)
+			if (tmpref[c] == '_')
+				tmpref[c] = '-';
+		retbuf = module_objfile_search(tmpref, filename, tree);
+	}
+
+	return retbuf;
+}
 
 /*
  *  Unlink any temporary remote module object files.
@@ -3225,6 +3296,8 @@ dump_kernel_table(void)
 		fprintf(fp, "%sKMOD_V2", others++ ? "|" : "");
 	if (kt->flags & KALLSYMS_V2)
 		fprintf(fp, "%sKALLSYMS_V2", others++ ? "|" : "");
+	if (kt->flags & USE_OLD_BT)
+		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);

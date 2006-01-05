@@ -55,7 +55,7 @@ main(int argc, char **argv)
 	 */
 	opterr = 0;
 	optind = 0;
-	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tf",
+	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tfp:",
        		long_options, &option_index)) != -1) {
 		switch (c)
 		{
@@ -193,6 +193,10 @@ main(int argc, char **argv)
 			set_vas_debug(pc->debug);
 			break;
 
+		case 'p':
+			force_page_size(optarg);
+			break;
+
 		default:
 			if (STREQ(argv[optind-1], "-h"))
 				program_usage(LONG_FORM);
@@ -263,6 +267,17 @@ main(int argc, char **argv)
                                 pc->dumpfile = argv[optind];
                                 pc->readmem = read_netdump;
                                 pc->writemem = write_netdump;
+
+                        } else if (is_kdump(argv[optind], KDUMP_LOCAL)) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+                                pc->flags |= KDUMP;
+                                pc->dumpfile = argv[optind];
+                                pc->readmem = read_kdump;
+                                pc->writemem = write_kdump;
 
 			} else if (is_diskdump(argv[optind])) {
                                 if (pc->flags & MEMORY_SOURCES) {
@@ -591,6 +606,8 @@ setup_environment(int argc, char **argv)
 	int i;
 	char *p1;
 	char buf[BUFSIZE];
+	char homerc[BUFSIZE];
+	char localrc[BUFSIZE];
 	FILE *afp;
 	char *program;
 
@@ -685,11 +702,11 @@ setup_environment(int argc, char **argv)
 			pc->home = "(unknown)";
 		} else
 			strcpy(pc->home, p1);
-	        sprintf(buf, "%s/.%src", pc->home, pc->program_name);
-	        if (!(pc->flags & NOCRASHRC) && file_exists(buf, NULL)) {
-	                if ((afp = fopen(buf, "r")) == NULL)
+	        sprintf(homerc, "%s/.%src", pc->home, pc->program_name);
+	        if (!(pc->flags & NOCRASHRC) && file_exists(homerc, NULL)) {
+	                if ((afp = fopen(homerc, "r")) == NULL)
 	                        error(INFO, "cannot open %s: %s\n",
-	                                buf, strerror(errno));
+	                                homerc, strerror(errno));
 	                else {
 	                        while (fgets(buf, BUFSIZE, afp))
 	                                resolve_rc_cmd(buf, ALIAS_RCHOME);
@@ -698,11 +715,12 @@ setup_environment(int argc, char **argv)
 	        }
 	}
 
-        sprintf(buf, ".%src", pc->program_name);
-	if (!(pc->flags & NOCRASHRC) && file_exists(buf, NULL)) {
-		if ((afp = fopen(buf, "r")) == NULL)
+        sprintf(localrc, ".%src", pc->program_name);
+	if (!same_file(homerc, localrc) && 
+	    !(pc->flags & NOCRASHRC) && file_exists(localrc, NULL)) {
+		if ((afp = fopen(localrc, "r")) == NULL)
                         error(INFO, "cannot open %s: %s\n",
-				buf, strerror(errno));
+				localrc, strerror(errno));
 		else {
 			while (fgets(buf, BUFSIZE, afp)) 
 				resolve_rc_cmd(buf, ALIAS_RCLOCAL);
@@ -840,13 +858,19 @@ dump_program_context(void)
         if (pc->flags & REM_S390D)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_S390D", others++ ? "|" : "");
-       if (pc->flags & NETDUMP)
+        if (pc->flags & NETDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sNETDUMP", others++ ? "|" : "");
+        if (pc->flags & KDUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sKDUMP", others++ ? "|" : "");
+        if (pc->flags & SYSRQ)
+                sprintf(&buf[strlen(buf)],
+                        "%sSYSRQ", others++ ? "|" : "");
         if (pc->flags & REM_NETDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_NETDUMP", others++ ? "|" : "");
-       if (pc->flags & DISKDUMP)
+        if (pc->flags & DISKDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sDISKDUMP", others++ ? "|" : "");
         if (pc->flags & SYSMAP)
@@ -855,21 +879,24 @@ dump_program_context(void)
         if (pc->flags & SYSMAP_ARG)
                 sprintf(&buf[strlen(buf)],
                         "%sSYSMAP_ARG", others++ ? "|" : "");
-       if (pc->flags & DATADEBUG)
+        if (pc->flags & DATADEBUG)
                 sprintf(&buf[strlen(buf)],
                         "%sDATADEBUG", others++ ? "|" : "");
-       if (pc->flags & FINDKERNEL)
+	if (pc->flags & FINDKERNEL)
                 sprintf(&buf[strlen(buf)],
                         "%sFINDKERNEL", others++ ? "|" : "");
-       if (pc->flags & VERSION_QUERY)
+        if (pc->flags & VERSION_QUERY)
                 sprintf(&buf[strlen(buf)],
                         "%sVERSION_QUERY", others++ ? "|" : "");
-       if (pc->flags & READNOW)
+        if (pc->flags & READNOW)
                 sprintf(&buf[strlen(buf)],
                         "%sREADNOW", others++ ? "|" : "");
-       if (pc->flags & NOCRASHRC)
+        if (pc->flags & NOCRASHRC)
                 sprintf(&buf[strlen(buf)],
                         "%sNOCRASHRC", others++ ? "|" : "");
+        if (pc->flags & INIT_IFILE)
+                sprintf(&buf[strlen(buf)],
+                        "%sINIT_IFILE", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");
@@ -1051,6 +1078,8 @@ dump_program_context(void)
 		fprintf(fp, "          readmem: read_daemon()\n");
 	else if (pc->readmem == read_netdump)
 		fprintf(fp, "          readmem: read_netdump()\n");
+	else if (pc->readmem == read_kdump)
+		fprintf(fp, "          readmem: read_kdump()\n");
 	else if (pc->readmem == read_memory_device)
 		fprintf(fp, "          readmem: read_memory_device()\n");
 	else
@@ -1065,6 +1094,8 @@ dump_program_context(void)
                 fprintf(fp, "         writemem: write_daemon()\n");
         else if (pc->writemem == write_netdump)
                 fprintf(fp, "         writemem: write_netdump()\n");
+        else if (pc->writemem == write_kdump)
+                fprintf(fp, "         writemem: write_kdump()\n");
         else if (pc->writemem == write_memory_device)
                 fprintf(fp, "         writemem: write_memory_device()\n");
         else
