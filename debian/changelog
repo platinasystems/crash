@@ -1,3 +1,17 @@
+crash (4.0-2.21-1) unstable; urgency=low
+
+  * New upstream version 4.0-2.21 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * fix bt on ia64 with 64k page size.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 15 Mar 2006 13:48:48 -0700
+
+crash (4.0-2.18-2) unstable; urgency=low
+
+  * Changing my email address
+
+ -- Troy Heber <troyh@debian.org>  Wed, 11 Jan 2006 13:24:39 -0700
+
 crash (4.0-2.18-1) unstable; urgency=low
   
   * New upstream version 4.0-2.18 (see

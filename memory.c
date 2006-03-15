@@ -9995,7 +9995,7 @@ static void
 dump_memory_nodes(int initialize)
 {
 	int i, j;
-	int n, id, flen, slen;
+	int n, id, flen, slen, badaddr;
 	ulong node_mem_map;
         ulong node_start_paddr;
 	ulong node_start_pfn;
@@ -10039,7 +10039,7 @@ dump_memory_nodes(int initialize)
 	else
 		pgdat = vt->node_table[0].pgdat;
 
-	for (n = 0; pgdat; n++) {
+	for (n = 0, badaddr = FALSE; pgdat; n++) {
 		if (n >= vt->numnodes)
 			error(FATAL, "numnodes out of sync with pgdat_list?\n");
 
@@ -10048,9 +10048,20 @@ dump_memory_nodes(int initialize)
 		readmem(pgdat+OFFSET(pglist_data_node_id), KVADDR, &id,
 			sizeof(int), "pglist node_id", FAULT_ON_ERROR);
 
-		readmem(pgdat+OFFSET(pglist_data_node_mem_map), KVADDR, 
-			&node_mem_map, sizeof(ulong), 
-			"node_mem_map", FAULT_ON_ERROR);
+		if (VALID_MEMBER(pglist_data_node_mem_map)) {
+			readmem(pgdat+OFFSET(pglist_data_node_mem_map), KVADDR, 
+				&node_mem_map, sizeof(ulong), 
+				"node_mem_map", FAULT_ON_ERROR);
+		} else {
+			node_mem_map = BADADDR;
+			if (!badaddr && initialize) {
+				error(INFO, 
+  		 "pglist_data.node_mem_map structure member does not exist.\n");
+				error(INFO,
+       "certain memory-related commands will fail or display invalid data\n\n");
+			}
+			badaddr = TRUE;
+		}
 
 		if (VALID_MEMBER(pglist_data_node_start_paddr))
 			readmem(pgdat+OFFSET(pglist_data_node_start_paddr), 

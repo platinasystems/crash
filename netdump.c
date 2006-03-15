@@ -1680,7 +1680,13 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 	Elf64_Nhdr *note;
 	size_t len;
 
-	if (bt->task == tt->panic_task) {
+	if ((bt->task == tt->panic_task) ||
+		(is_task_active(bt->task) && nd->num_prstatus_notes > 1)) {
+		/*	
+		 * Registers are saved during the dump process for the 
+		 * panic task. Whereas in kdump, regs are captured for all 
+		 * CPUs if they responded to an IPI.
+		 */
                 if (nd->num_prstatus_notes > 1)
                         note = (Elf64_Nhdr *)
                                 nd->nt_prstatus_percpu[bt->tc->processor];

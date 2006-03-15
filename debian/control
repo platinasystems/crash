@@ -1,7 +1,7 @@
 Source: crash
 Section: utils
 Priority: optional
-Maintainer: Troy Heber <troy.heber@hp.com>
+Maintainer: Troy Heber <troyh@debian.org>
 Uploaders: Micah Anderson <micah@debian.org>
 Build-Depends: debhelper (>= 4), binutils-dev, zlib1g-dev, libncurses5-dev, dpatch
 Standards-Version: 3.6.2.1

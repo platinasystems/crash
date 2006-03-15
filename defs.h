@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -1318,6 +1318,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long radix_tree_root;
 	long radix_tree_node;
 	long x8664_pda;
+	long ppc64_paca;
 	long gate_struct;
 	long tss_struct;
 	long task_struct_start_time;
@@ -1410,6 +1411,7 @@ struct builtin_debug_table {
 #define ULONGLONG(ADDR) *((ulonglong *)((char *)(ADDR)))
 #define ULONG_PTR(ADDR) *((ulong **)((char *)(ADDR)))
 #define USHORT(ADDR)    *((ushort *)((char *)(ADDR)))
+#define SHORT(ADDR)     *((short *)((char *)(ADDR)))
 #define VOID_PTR(ADDR)  *((void **)((char *)(ADDR)))
 
 struct node_table {
@@ -1839,6 +1841,15 @@ struct load_module {
 #define TIF_SIGPENDING  (2)
 
 #define PAGEBASE(X)           (((ulong)(X)) & (ulong)machdep->pagemask)
+
+#define _CPU_PDA_READ(CPU, BUFFER) \
+	((STRNEQ("_cpu_pda", closest_symbol((symbol_value("_cpu_pda") +	\
+	     ((CPU) * sizeof(unsigned long)))))) &&			\
+ 	(readmem(symbol_value("_cpu_pda") + ((CPU) * sizeof(void *)),   \
+		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),          \
+		 "_cpu_pda addr", FAULT_ON_ERROR)) &&	   	        \
+	(readmem(cpu_pda_addr, KVADDR, (BUFFER), SIZE(x8664_pda),       \
+		 "cpu_pda entry", FAULT_ON_ERROR)))
 
 #define CPU_PDA_READ(CPU, BUFFER) \
 	(STRNEQ("cpu_pda", closest_symbol((symbol_value("cpu_pda") +	\
