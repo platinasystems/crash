@@ -64,7 +64,7 @@ INSTALLDIR=${DESTDIR}/usr/bin
 
 GENERIC_HFILES=defs.h 
 MCORE_HFILES=va_server.h vas_crash.h
-REDHAT_HFILES=netdump.h diskdump.h
+REDHAT_HFILES=netdump.h diskdump.h xendump.h
 LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
         lkcd_dump_v7.h lkcd_dump_v8.h lkcd_fix_mem.h
 LKCD_TRACE_HFILES=lkcd_x86_trace.h
@@ -77,7 +77,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
-	netdump.c diskdump.c unwind.c unwind_decoder.c
+	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
@@ -88,7 +88,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	alpha.o x86.o ppc.o ia64.o s390.o s390x.o ppc64.o x86_64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
-	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o \
+	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o
 
 # These are the current set of crash extensions sources.  They are not built
@@ -340,7 +340,7 @@ remote.o: ${GENERIC_HFILES} remote.c
 remote_daemon.o: ${GENERIC_HFILES} remote.c
 	cc -c ${CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-x86.o: ${GENERIC_HFILES} x86.c
+x86.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86.c
 	cc -c ${CFLAGS} -DMCLX x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 alpha.o: ${GENERIC_HFILES} alpha.c
@@ -374,6 +374,9 @@ netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
 
 diskdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} diskdump.c
 	cc -c ${CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+xendump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} xendump.c
+	cc -c ${CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 extensions.o: ${GENERIC_HFILES} extensions.c
 	cc -c ${CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -443,7 +446,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-2.21
+RELEASE=4.0-2.31
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

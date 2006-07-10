@@ -31,9 +31,6 @@ gdb_main_loop(int argc, char **argv)
 {
 	argc = 1;
 
-	if (CRASHDEBUG(1))
-		gdb_readnow_warning();
-
 	if (pc->flags & SILENT) {
 		if (pc->flags & READNOW)
 			argv[argc++] = "--readnow";
@@ -206,12 +203,17 @@ retry:
 		if (!debug_data_pulled_in) {
 			if (CRASHDEBUG(1))
 				error(INFO, 
-         "gdb_session_init: pulling in debug data by accessing init_mm.mmap\n");
+           "gdb_session_init: pulling in debug data by accessing init_mm.mmap %s\n",
+					symbol_exists("sysfs_mount") ?
+					"and syfs_mount" : "");
 			debug_data_pulled_in = TRUE;
 			req->command = GNU_PASS_THROUGH;
 			req->flags = GNU_RETURN_ON_ERROR|GNU_NO_READMEM;
 			req->name = NULL;
-			sprintf(req->buf, "print init_mm.mmap");
+			if (symbol_exists("sysfs_mount"))
+				sprintf(req->buf, "print sysfs_mount, init_mm.mmap");
+			else
+				sprintf(req->buf, "print init_mm.mmap");
 			gdb_interface(req);
         		if (!(req->flags & GNU_COMMAND_FAILED)) 
 				goto retry;

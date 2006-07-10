@@ -386,9 +386,9 @@ cache_page(physaddr_t paddr)
 
 	if (pd.flags & DUMP_DH_COMPRESSED) {
 		retlen = block_size;
-		ret = uncompress(dd->page_cache_hdr[i].pg_bufptr,
+		ret = uncompress((unsigned char *)dd->page_cache_hdr[i].pg_bufptr,
 		                 &retlen,
-		                 dd->compressed_page,
+		                 (unsigned char *)dd->compressed_page,
 		                 pd.size);
 		if ((ret != Z_OK) || (retlen != block_size)) {
 			error(INFO, "diskdump: uncompress failed: %d\n", ret);

@@ -1128,7 +1128,7 @@ make_spec_file(void)
 	printf("License: GPL\n");
 	printf("Group: Development/Debuggers\n");
 	printf("Source: %%{name}-%%{version}-%%{release}.tar.gz\n");
-	printf("URL: ftp://people.redhat.com/anderson/%%{name}-%%{version}-%%{release}.tar.gz\n");
+	printf("URL: http://people.redhat.com/anderson\n");
 	printf("Distribution: Linux 2.2 or greater\n");
 	printf("Vendor: Red Hat, Inc.\n");
 	printf("Packager: Dave Anderson <anderson@redhat.com>\n");

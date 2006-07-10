@@ -670,6 +670,8 @@ save_offset(uint64_t paddr, off_t off)
 {
 	uint64_t zone, page;
 	int ii, ret;
+	int max_zones;
+	struct physmem_zone *zones;
 
 	zone = paddr & lkcd->zone_mask;
 
@@ -696,6 +698,7 @@ save_offset(uint64_t paddr, off_t off)
 		lkcd->num_zones++;
 	}
 
+retry:
 	/* find the zone */
 	for (ii=0; ii < lkcd->num_zones; ii++) {
 		if (lkcd->zones[ii].start == zone) {
@@ -737,8 +740,20 @@ save_offset(uint64_t paddr, off_t off)
 			ret = 1;
 			lkcd->num_zones++;
 		} else {
-			lkcd_print("fixme, need to add more zones (ZONE_ALLOC)\n");
-			exit(1);
+			/* need to expand zone */
+			max_zones = lkcd->max_zones * 2;
+			zones = malloc(max_zones * sizeof(struct physmem_zone));
+			if (!zones) {
+				return -1; /* This should be fatal */
+			}
+			BZERO(zones, max_zones * sizeof(struct physmem_zone));
+			memcpy(zones, lkcd->zones,
+				lkcd->max_zones * sizeof(struct physmem_zone));
+			free(lkcd->zones);
+
+			lkcd->zones = zones;
+			lkcd->max_zones = max_zones;
+			goto retry;
 		}
 	}
 

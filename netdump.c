@@ -44,10 +44,12 @@ struct vmcore_data {
 	ulong switch_stack;
 	uint num_prstatus_notes;
 	void *nt_prstatus_percpu[NR_CPUS];
+	struct xen_kdump_data *xen_kdump_data;
 };
 
 static struct vmcore_data vmcore_data = { 0 };
 static struct vmcore_data *nd = &vmcore_data;
+static struct xen_kdump_data xen_kdump_data = { 0 };
 static void netdump_print(char *, ...);
 static void dump_Elf32_Ehdr(Elf32_Ehdr *);
 static void dump_Elf32_Phdr(Elf32_Phdr *, int);
@@ -56,6 +58,7 @@ static void dump_Elf64_Ehdr(Elf64_Ehdr *);
 static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
+static physaddr_t xen_kdump_p2m(physaddr_t);
 
 #define ELFSTORE 1
 #define ELFREAD  0
@@ -694,6 +697,10 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
+	if (nd->flags & KDUMP_XEN)
+		netdump_print("%sKDUMP_XEN", others++ ? "|" : "");
+	if (nd->flags & KDUMP_P2M_INIT)
+		netdump_print("%sKDUMP_P2M_INIT", others++ ? "|" : "");
 	netdump_print(")\n");
 	netdump_print("                   ndfd: %d\n", nd->ndfd);
 	netdump_print("                    ofp: %lx\n", nd->ofp);
@@ -722,6 +729,31 @@ netdump_memory_dump(FILE *fp)
 	netdump_print("            task_struct: %lx\n", nd->task_struct);
 	netdump_print("              page_size: %d\n", nd->page_size);
 	netdump_print("           switch_stack: %lx\n", nd->switch_stack);
+	netdump_print("         xen_kdump_data: %s\n",
+		nd->flags & KDUMP_XEN ? " " : "(unused)");
+	if (nd->flags & KDUMP_XEN) {
+		netdump_print("                      cr3: %lx\n", 
+			nd->xen_kdump_data->cr3);
+		netdump_print("            last_mfn_read: %lx\n", 
+			nd->xen_kdump_data->last_mfn_read);
+		netdump_print("                     page: %lx\n", 
+			nd->xen_kdump_data->page);
+		netdump_print("                 accesses: %lx\n", 
+			nd->xen_kdump_data->accesses);
+		netdump_print("               cache_hits: %lx ", 
+			nd->xen_kdump_data->cache_hits);
+      		if (nd->xen_kdump_data->accesses)
+                	netdump_print("(%ld%%)", 
+			    nd->xen_kdump_data->cache_hits * 100 / nd->xen_kdump_data->accesses);
+		netdump_print("\n               p2m_frames: %lx\n", 
+			nd->xen_kdump_data->p2m_frames);
+		netdump_print("       p2m_mfn_frame_list: %lx\n", 
+			nd->xen_kdump_data->p2m_mfn_frame_list);
+		for (i = 0; i < nd->xen_kdump_data->p2m_frames; i++)
+			netdump_print("%lx ", 
+				nd->xen_kdump_data->p2m_mfn_frame_list[i]);
+		if (i) netdump_print("\n");
+	}
 	netdump_print("     num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
 	netdump_print("     nt_prstatus_percpu: ");
         wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
@@ -1298,16 +1330,38 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		}
 		break;
 #endif
+	case NT_XEN_KDUMP_CR3:
+                netdump_print("(NT_XEN_KDUMP_CR3)\n");
+		if (store) { 
+			nd->flags |= KDUMP_XEN;
+			nd->xen_kdump_data = &xen_kdump_data;
+			nd->xen_kdump_data->last_mfn_read = BADVAL;
+			/*
+			 *  Use the first cr3 found.
+			 */
+			if (!nd->xen_kdump_data->cr3) {
+				uptr = (ulong *)(ptr + note->n_namesz);
+				uptr = (ulong *)roundup((ulong)uptr, 4);
+				nd->xen_kdump_data->cr3 = *uptr;
+			}
+		}
+		break;
+
 	default:
 		netdump_print("(?)\n");
 	}
 
 	uptr = (ulong *)(ptr + note->n_namesz);
+
 	/*
 	 * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
  	 */
 	if ((nd->flags & KDUMP_ELF32) && (note->n_namesz == 5))
 		uptr = (ulong *)(ptr + ((note->n_namesz + 3) & ~3));
+
+	if (note->n_type == NT_XEN_KDUMP_CR3)
+		uptr = (ulong *)roundup((ulong)uptr, 4);
+
 	for (i = lf = 0; i < note->n_descsz/sizeof(ulong); i++) {
 		if (((i%4)==0)) {
 			netdump_print("%s                         ", 
@@ -1318,7 +1372,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		netdump_print("%08lx ", *uptr++);
 	}
 	if (!lf || (note->n_type == NT_TASKSTRUCT) ||
-	    (note->n_type == NT_DISKDUMP))
+	    (note->n_type == NT_DISKDUMP) || 
+	    (note->n_type == NT_XEN_KDUMP_CR3))
 		netdump_print("\n");
 
   	len = sizeof(Elf32_Nhdr);
@@ -1339,6 +1394,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	char *ptr;
 	ulonglong *uptr;
 	int *iptr;
+	ulong *up;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
@@ -1417,16 +1473,38 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		}
                 break;
 #endif
+	case NT_XEN_KDUMP_CR3:
+                netdump_print("(NT_XEN_KDUMP_CR3)\n");
+		if (store) {
+			nd->flags |= KDUMP_XEN;
+			nd->xen_kdump_data = &xen_kdump_data;
+			nd->xen_kdump_data->last_mfn_read = BADVAL;
+                        /*
+                         *  Use the first cr3 found.
+                         */
+                        if (!nd->xen_kdump_data->cr3) {
+				up = (ulong *)(ptr + note->n_namesz);
+                                up = (ulong *)roundup((ulong)up, 4);
+                                nd->xen_kdump_data->cr3 = *up;
+                        }
+		}
+                break;
+
 	default:
 		netdump_print("(?)\n");
 	}
 
 	uptr = (ulonglong *)(ptr + note->n_namesz);
+
         /*
          * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
          */
         if ((nd->flags & KDUMP_ELF64) && (note->n_namesz == 5))
                 uptr = (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3));
+
+       if (note->n_type == NT_XEN_KDUMP_CR3)
+                uptr = (ulonglong *)roundup((ulong)uptr, 4);
+
 	for (i = lf = 0; i < note->n_descsz/sizeof(ulonglong); i++) {
 		if (((i%2)==0)) {
 			netdump_print("%s                         ", 
@@ -1736,6 +1814,28 @@ get_kdump_panic_task(void)
 int
 read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
+	if ((nd->flags & KDUMP_XEN)) {
+	    	if (!(nd->flags & KDUMP_P2M_INIT)) {
+        		if (!machdep->xen_kdump_p2m_create)
+                		error(FATAL,
+                            "xen kdump dumpfiles not supported on this architecture\n");
+
+			if ((nd->xen_kdump_data->page = 
+			    (char *)malloc(PAGESIZE())) == NULL)
+				error(FATAL,
+				    "cannot malloc xen kdump data page\n");
+
+			if (!machdep->xen_kdump_p2m_create(nd->xen_kdump_data))
+                		error(FATAL,
+                    	    "cannot create xen kdump pfn-to-mfn mapping\n");
+
+        		nd->flags |= KDUMP_P2M_INIT;
+		}
+
+		if ((paddr = xen_kdump_p2m(paddr)) == P2M_FAILURE)
+			return READ_ERROR;
+	}
+
 	return read_netdump(fd, bufptr, cnt, addr, paddr);
 }
 
@@ -1781,4 +1881,48 @@ int
 kdump_memory_dump(FILE *fp)
 {
 	return netdump_memory_dump(fp);
+}
+
+/*
+ *  Translate a xen domain's pseudo-physical address into the
+ *  xen machine address.  Since there's no compression involved,
+ *  just the last phys_to_machine_mapping[] page read is cached, 
+ *  which essentially caches 1024 p2m translations. 
+ */
+static physaddr_t 
+xen_kdump_p2m(physaddr_t pseudo)
+{
+	ulong pfn, mfn_frame; 
+	ulong *mfnptr;
+	ulong mfn_idx, frame_idx;
+	physaddr_t paddr;
+	struct xen_kdump_data *xkd = nd->xen_kdump_data;
+
+	xkd->accesses++;
+
+	pfn = (ulong)BTOP(pseudo);
+	mfn_idx = pfn / (PAGESIZE()/sizeof(ulong));
+	frame_idx = pfn % (PAGESIZE()/sizeof(ulong));
+	mfn_frame = xkd->p2m_mfn_frame_list[mfn_idx];
+
+	if (mfn_frame == xkd->last_mfn_read)
+		xkd->cache_hits++;
+	else if (!read_netdump(0, xkd->page, PAGESIZE(), 0, 
+	    	(physaddr_t)PTOB(mfn_frame)))
+		return P2M_FAILURE;
+
+	xkd->last_mfn_read = mfn_frame;
+
+	mfnptr = ((ulong *)(xkd->page)) + frame_idx;
+	paddr = (physaddr_t)PTOB((ulonglong)(*mfnptr));  
+	paddr |= PAGEOFFSET(pseudo);
+
+	if (CRASHDEBUG(7))
+		fprintf(fp, 
+		    "xen_dump_p2m(%llx): mfn_idx: %ld frame_idx: %ld"
+		    " mfn_frame: %lx mfn: %lx => %llx\n",
+			(ulonglong)pseudo, mfn_idx, frame_idx, 
+			mfn_frame, *mfnptr, (ulonglong)paddr);
+	
+	return paddr;
 }

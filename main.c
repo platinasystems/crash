@@ -35,11 +35,13 @@ static struct option long_options[] = {
 	{"no_data_debug", 0, 0, 0},
 	{"no_crashrc", 0, 0, 0},
 	{"no_kmem_cache", 0, 0, 0},
+	{"kmem_cache_delay", 0, 0, 0},
 	{"readnow", 0, 0, 0},
 	{"smp", 0, 0, 0},
 	{"machdep", 1, 0, 0},
 	{"version", 0, 0, 0},
 	{"buildinfo", 0, 0, 0},
+	{"shadow_page_tables", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -98,6 +100,10 @@ main(int argc, char **argv)
 				vt->flags |= KMEM_CACHE_UNAVAIL;
 
 		        if (STREQ(long_options[option_index].name, 
+			    "kmem_cache_delay")) 
+				vt->flags |= KMEM_CACHE_DELAY;
+
+		        if (STREQ(long_options[option_index].name, 
 			    "readnow")) 
 				pc->flags |= READNOW;
 
@@ -122,6 +128,10 @@ main(int argc, char **argv)
 				dump_build_data();
 				clean_exit(0);
 			}
+
+		        if (STREQ(long_options[option_index].name, 
+			    "shadow_page_tables")) 
+				kt->xen_flags |= SHADOW_PAGE_TABLES;
 
 			break;
 
@@ -279,6 +289,17 @@ main(int argc, char **argv)
                                 pc->readmem = read_kdump;
                                 pc->writemem = write_kdump;
 
+                        } else if (is_xendump(argv[optind])) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+                                pc->flags |= XENDUMP;
+                                pc->dumpfile = argv[optind];
+                                pc->readmem = read_xendump;
+                                pc->writemem = write_xendump;
+
 			} else if (is_diskdump(argv[optind])) {
                                 if (pc->flags & MEMORY_SOURCES) {
                                         error(INFO,
@@ -350,8 +371,8 @@ main(int argc, char **argv)
 	machdep_init(PRE_SYMTAB);
         symtab_init();
 	machdep_init(PRE_GDB);
-	kernel_init(PRE_GDB);
-	verify_version();
+//	kernel_init(PRE_GDB);
+//	verify_version();
         datatype_init();
 
 	/*
@@ -376,6 +397,8 @@ main_loop(void)
 {
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
+		kernel_init(PRE_GDB);
+		verify_version();
 		kernel_init(POST_GDB);
 		machdep_init(POST_GDB);
         	vm_init();
@@ -861,6 +884,9 @@ dump_program_context(void)
         if (pc->flags & NETDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sNETDUMP", others++ ? "|" : "");
+        if (pc->flags & XENDUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sXENDUMP", others++ ? "|" : "");
         if (pc->flags & KDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sKDUMP", others++ ? "|" : "");

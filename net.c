@@ -50,6 +50,7 @@ struct net_table *net = &net_table;
 #define STRUCT_NET_DEVICE (0x4)
 #define SOCK_V1           (0x8)
 #define SOCK_V2           (0x10)
+#define NO_INET_SOCK      (0x20)
 
 #define	DEV_NAME_MAX	100
 struct devinfo {
@@ -220,6 +221,7 @@ net_init(void)
 			         *  to subtract the size of the inet_opt struct
 				 *  from the size of the containing inet_sock.
 				 */
+				net->flags |= NO_INET_SOCK;
 				ASSIGN_OFFSET(inet_sock_inet) = 
 				    SIZE(inet_sock) - STRUCT_SIZE("inet_opt");
 			}
@@ -1009,6 +1011,8 @@ dump_net_table(void)
 		fprintf(fp, "%sSTRUCT_DEVICE", others++ ? "|" : "");
 	if (net->flags & STRUCT_NET_DEVICE)
 		fprintf(fp, "%sSTRUCT_NET_DEVICE", others++ ? "|" : "");
+	if (net->flags & NO_INET_SOCK)
+		fprintf(fp, "%sNO_INET_SOCK", others++ ? "|" : "");
 	if (net->flags & SOCK_V1)
 		fprintf(fp, "%sSOCK_V1", others++ ? "|" : "");
 	if (net->flags & SOCK_V2)
@@ -1082,7 +1086,7 @@ dump_sockets(ulong flag, struct reference *ref)
 void
 dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
 {
-	ulong files_struct_addr = 0;
+	ulong files_struct_addr = 0, fdtable_addr = 0;
 	int max_fdset = 0;
 	int max_fds = 0;
 	ulong open_fds_addr = 0;
@@ -1114,32 +1118,51 @@ dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
             sizeof(void *), "task files contents", FAULT_ON_ERROR);
 
         if (files_struct_addr) {
-        	readmem(files_struct_addr + OFFSET(files_struct_max_fdset), 
-                    	KVADDR, &max_fdset, sizeof(int), 
-			"files_struct max_fdset", FAULT_ON_ERROR);
+                if (VALID_MEMBER(files_struct_max_fdset)) {
+		 	readmem(files_struct_addr + OFFSET(files_struct_max_fdset),
+		          	KVADDR, &max_fdset, sizeof(int),
+				"files_struct max_fdset", FAULT_ON_ERROR);
+		      	readmem(files_struct_addr + OFFSET(files_struct_max_fds),
+        	        	KVADDR, &max_fds, sizeof(int), "files_struct max_fds",
+                	   	FAULT_ON_ERROR);
+                }
+		else if (VALID_MEMBER(files_struct_fdt)) {
+			readmem(files_struct_addr + OFFSET(files_struct_fdt), KVADDR,
+				&fdtable_addr, sizeof(void *), "fdtable buffer",
+				FAULT_ON_ERROR);
+		      	readmem(fdtable_addr + OFFSET(fdtable_max_fdset),
+        	         	KVADDR, &max_fdset, sizeof(int),
+				"fdtable_struct max_fdset", FAULT_ON_ERROR);
+		      	readmem(fdtable_addr + OFFSET(fdtable_max_fds),
+	      	            	KVADDR, &max_fds, sizeof(int), "fdtable_struct max_fds",
+	               	    	FAULT_ON_ERROR);
+    		}
+	}
 
-        	readmem(files_struct_addr + OFFSET(files_struct_max_fds), 
-                    	KVADDR, &max_fds, sizeof(int), "files_struct max_fds",
-                    	FAULT_ON_ERROR);
-    	}
-
-	if (!files_struct_addr || (max_fdset == 0) || (max_fds == 0)) {
+	if ((VALID_MEMBER(files_struct_fdt) && !fdtable_addr) ||
+	    !files_struct_addr || (max_fdset == 0) || (max_fds == 0)) {
 		if (!NET_REFERENCE_CHECK(ref))
 			fprintf(fp, "No open sockets.\n");
 		return;
 	}
 
-	readmem(files_struct_addr + OFFSET(files_struct_open_fds), KVADDR, 
-            	&open_fds_addr, sizeof(void *), "files_struct open_fds addr", 
-            	FAULT_ON_ERROR);
+	if (VALID_MEMBER(fdtable_open_fds)){
+		readmem(fdtable_addr + OFFSET(fdtable_open_fds), KVADDR,
+     	  		&open_fds_addr, sizeof(void *), "files_struct open_fds addr",
+	            	FAULT_ON_ERROR);
+		readmem(fdtable_addr + OFFSET(fdtable_fd), KVADDR, &fd,
+           		sizeof(void *), "files_struct fd addr", FAULT_ON_ERROR);
+	} else {
+		readmem(files_struct_addr + OFFSET(files_struct_open_fds), KVADDR,
+            		&open_fds_addr, sizeof(void *), "files_struct open_fds addr",
+	          	FAULT_ON_ERROR);
+		readmem(files_struct_addr + OFFSET(files_struct_fd), KVADDR, &fd,
+            		sizeof(void *), "files_struct fd addr", FAULT_ON_ERROR);
+	}
 
 	if (open_fds_addr) 
-        	readmem(open_fds_addr, KVADDR, &open_fds, sizeof(fd_set), 
-                    	"files_struct open_fds", FAULT_ON_ERROR);
-
-	readmem(files_struct_addr + OFFSET(files_struct_fd), KVADDR, &fd,
-            	sizeof(void *), "files_struct fd addr", FAULT_ON_ERROR);
-
+		readmem(open_fds_addr, KVADDR, &open_fds, sizeof(fd_set),
+	               	"files_struct open_fds", FAULT_ON_ERROR);
     	if (!open_fds_addr || !fd) { 
 		if (!NET_REFERENCE_CHECK(ref))
 			fprintf(fp, "No open sockets.\n");
@@ -1333,7 +1356,7 @@ sym_socket_dump(ulong file,
     			dump_struct("sock", sock, 0);
 			break;
 		case SOCK_V2:
-			if (STRUCT_EXISTS("inet_sock"))
+			if (STRUCT_EXISTS("inet_sock") && !(net->flags & NO_INET_SOCK))
 				dump_struct("inet_sock", sock, 0);
 			else if (STRUCT_EXISTS("sock"))
 				dump_struct("sock", sock, 0);

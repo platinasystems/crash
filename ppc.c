@@ -138,6 +138,8 @@ ppc_init(int when)
 		machdep->hz = HZ;
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
 			machdep->hz = 1000;
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		break;
 
 	case POST_INIT:
@@ -203,6 +205,9 @@ ppc_dump_machdep_table(ulong arg)
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
+        fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
+        fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
+        fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
