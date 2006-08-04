@@ -990,6 +990,7 @@ static int x86_dis_filter(ulong, char *);
 static struct line_number_hook x86_line_number_hooks[];
 static int x86_is_uvaddr(ulong, struct task_context *);
 static void x86_init_kernel_pgd(void);
+static ulong xen_m2p_nonPAE(ulong);
 static int x86_xendump_p2m_create(struct xendump_data *);
 static int x86_xen_kdump_p2m_create(struct xen_kdump_data *);
 static char *x86_xen_kdump_load_page(ulong, char *);
@@ -1774,9 +1775,11 @@ x86_init(int when)
 				"irq_desc", NULL, 0);
 		else
 			machdep->nr_irqs = 224;  /* NR_IRQS */
-		machdep->hz = HZ;
-		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
-			machdep->hz = 1000;
+		if (!machdep->hz) {
+			machdep->hz = HZ;
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+				machdep->hz = 1000;
+		}
 
 		if (machdep->flags & PAE){
 			machdep->section_size_bits = _SECTION_SIZE_BITS_PAE;
@@ -2037,7 +2040,7 @@ x86_uvtop_xen_wpt(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int v
 				mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX, 
 				MKSTR(NONPAE_PAGEBASE(pgd_pte))));
 
-		pseudo_pgd_pte = xen_machine_to_pseudo(NONPAE_PAGEBASE(pgd_pte));
+		pseudo_pgd_pte = xen_m2p_nonPAE(NONPAE_PAGEBASE(pgd_pte));
 
                 if (pseudo_pgd_pte == XEN_MFN_NOT_FOUND) {
                         if (verbose)
@@ -2080,7 +2083,7 @@ x86_uvtop_xen_wpt(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int v
                 ((vaddr>>10) & ((PTRS_PER_PTE-1)<<2)));
 
         pseudo_page_table = (ulong *)
-                xen_machine_to_pseudo(NONPAE_PAGEBASE(machine_page_table));
+                xen_m2p_nonPAE(NONPAE_PAGEBASE(machine_page_table));
 
         FILL_PTBL(NONPAE_PAGEBASE(pseudo_page_table), PHYSADDR, PAGESIZE());
         machine_pte = ULONG(machdep->ptbl + PAGEOFFSET(machine_page_table));
@@ -2107,7 +2110,7 @@ x86_uvtop_xen_wpt(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int v
 		goto no_upage;
 	}
 
-        pseudo_pte = xen_machine_to_pseudo(NONPAE_PAGEBASE(machine_pte));
+        pseudo_pte = xen_m2p_nonPAE(NONPAE_PAGEBASE(machine_pte));
         pseudo_pte |= PAGEOFFSET(machine_pte);
 
 	*paddr = NONPAE_PAGEBASE(pseudo_pte) + PAGEOFFSET(vaddr);
@@ -2267,9 +2270,10 @@ x86_uvtop_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbo
         *paddr = physpage;
 
         if (verbose) {
-                fprintf(fp, " PAGE: %s\n\n", 
-			mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX, 
-			MKSTR(&physpage)));
+                ull = PAE_PAGEBASE(page_table_entry);
+                fprintf(fp, " PAGE: %s\n\n",
+                        mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX,
+                        MKSTR(&ull)));
                 x86_translate_pte(0, 0, page_table_entry);
         }
 
@@ -2349,7 +2353,7 @@ x86_uvtop_xen_wpt_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, i
 	}
 
 	page_middle = PAE_PAGEBASE(page_dir_entry);
-	pseudo_page_middle = xen_machine_to_pseudo_PAE(page_middle); 
+	pseudo_page_middle = xen_m2p(page_middle); 
 
         if (verbose)
                 fprintf(fp, "  PGD: %s => %llx\n",
@@ -2394,7 +2398,7 @@ x86_uvtop_xen_wpt_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, i
         }
 
         page_table = PAE_PAGEBASE(page_middle_entry);
-	pseudo_page_table = xen_machine_to_pseudo_PAE(page_table); 
+	pseudo_page_table = xen_m2p(page_table); 
 
         if (verbose) {
                 ull = page_middle + offset;
@@ -2431,7 +2435,7 @@ x86_uvtop_xen_wpt_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, i
         }
 
 	physpage = PAE_PAGEBASE(page_table_entry) + PAGEOFFSET(vaddr);
-	pseudo_physpage = xen_machine_to_pseudo_PAE(physpage); 
+	pseudo_physpage = xen_m2p(physpage); 
 
         if (verbose) {
                 ull = page_table + offset;
@@ -2622,7 +2626,7 @@ x86_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int 
 				mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX,
                         	MKSTR(NONPAE_PAGEBASE(pgd_pte))));
 
-		pseudo_pgd_pte = xen_machine_to_pseudo(NONPAE_PAGEBASE(pgd_pte));
+		pseudo_pgd_pte = xen_m2p_nonPAE(NONPAE_PAGEBASE(pgd_pte));
 
 		if (pseudo_pgd_pte == XEN_MFN_NOT_FOUND) {
 			if (verbose)
@@ -2664,7 +2668,7 @@ x86_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int 
                 ((kvaddr>>10) & ((PTRS_PER_PTE-1)<<2)));
 
 	pseudo_page_table = (ulong *)
-		xen_machine_to_pseudo(NONPAE_PAGEBASE(machine_page_table));
+		xen_m2p_nonPAE(NONPAE_PAGEBASE(machine_page_table));
 
         FILL_PTBL(NONPAE_PAGEBASE(pseudo_page_table), PHYSADDR, PAGESIZE());
         machine_pte = ULONG(machdep->ptbl + PAGEOFFSET(machine_page_table));
@@ -2688,7 +2692,7 @@ x86_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int 
 		goto no_kpage;
 	}
 
-	pseudo_pte = xen_machine_to_pseudo(NONPAE_PAGEBASE(machine_pte));
+	pseudo_pte = xen_m2p_nonPAE(NONPAE_PAGEBASE(machine_pte));
 	pseudo_pte |= PAGEOFFSET(machine_pte);
 
 	if (verbose) {
@@ -2833,9 +2837,10 @@ x86_kvtop_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verb
         *paddr = physpage;
 
         if (verbose) {
+		ull = PAE_PAGEBASE(page_table_entry);
                 fprintf(fp, " PAGE: %s\n\n",
                         mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX,
-                        MKSTR(&physpage)));
+                        MKSTR(&ull)));
                 x86_translate_pte(0, 0, page_table_entry);
         }
 
@@ -2882,7 +2887,7 @@ x86_kvtop_xen_wpt_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, 
         }
 
         page_middle = PAE_PAGEBASE(page_dir_entry);
-	pseudo_page_middle = xen_machine_to_pseudo_PAE(page_middle); 
+	pseudo_page_middle = xen_m2p(page_middle); 
 
         if (verbose)
                 fprintf(fp, "  PGD: %s => %llx\n",
@@ -2928,7 +2933,7 @@ x86_kvtop_xen_wpt_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, 
         }
 
         page_table = PAE_PAGEBASE(page_middle_entry);
-	pseudo_page_table = xen_machine_to_pseudo_PAE(page_table); 
+	pseudo_page_table = xen_m2p(page_table); 
 
         if (verbose) {
                 ull = page_middle + offset;
@@ -2963,7 +2968,7 @@ x86_kvtop_xen_wpt_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, 
         }
 
 	physpage = PAE_PAGEBASE(page_table_entry) + PAGEOFFSET(kvaddr);
-	pseudo_physpage = xen_machine_to_pseudo_PAE(physpage); 
+	pseudo_physpage = xen_m2p(physpage); 
 
         if (verbose) {
                 ull = page_table + offset;
@@ -3975,28 +3980,121 @@ x86_init_kernel_pgd(void)
 
 }
 
+static ulong
+xen_m2p_nonPAE(ulong machine)
+{
+	ulonglong pseudo;
+
+	pseudo = xen_m2p((ulonglong)machine);
+
+	if (pseudo == XEN_MACHADDR_NOT_FOUND)
+		return XEN_MFN_NOT_FOUND;
+
+	return ((ulong)pseudo);
+}
+
 #include "netdump.h"
 
 /*
  *  From the xen vmcore, create an index of mfns for each page that makes 
  *  up the dom0 kernel's complete phys_to_machine_mapping[max_pfn] array.
  */
+
+#define MAX_X86_FRAMES  (16)    
+#define MFNS_PER_FRAME  (PAGESIZE()/sizeof(ulong))
+
 static int 
 x86_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 {
-	int i;
+	int i, j;
 	ulong kvaddr;
 	ulong *up;
 	ulonglong *ulp;
-
-	if (CRASHDEBUG(1))
-		fprintf(fp, "x86_xen_kdump_p2m_create: cr3: %lx\n", xkd->cr3);
+	ulong frames;
+	ulong frame_mfn[MAX_X86_FRAMES] = { 0 };
+	int mfns[MAX_X86_FRAMES] = { 0 };
 
 	/*
-	 *  Temporarily read only physical addresses from vmcore by
+	 *  Temporarily read physical (machine) addresses from vmcore by
 	 *  going directly to read_netdump() instead of via read_kdump().
 	 */ 
 	pc->readmem = read_netdump;
+
+	if (xkd->flags & KDUMP_CR3)
+		goto use_cr3;
+
+        xkd->p2m_frames = 0;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "x86_xen_kdump_p2m_create: p2m_mfn: %lx\n",
+			xkd->p2m_mfn);
+
+	if (!readmem(PTOB(xkd->p2m_mfn), PHYSADDR, xkd->page, PAGESIZE(), 
+	    "xen kdump p2m mfn page", RETURN_ON_ERROR))
+		error(FATAL, "cannot read xen kdump p2m mfn page\n");
+
+	if (CRASHDEBUG(1)) {
+		up = (ulong *)xkd->page;
+		for (i = 0; i < 4; i++) {
+                	fprintf(fp, "%08lx: %08lx %08lx %08lx %08lx\n",
+                        	(ulong)((i * 4) * sizeof(ulong)),
+                        	*up, *(up+1), *(up+2), *(up+3));
+                        up += 4;
+		}
+		fprintf(fp, "\n");
+	}
+
+	for (i = 0, up = (ulong *)xkd->page; i < MAX_X86_FRAMES; i++, up++)
+		frame_mfn[i] = *up;
+
+	for (i = 0; i < MAX_X86_FRAMES; i++) {
+		if (!frame_mfn[i])
+			break;
+
+        	if (!readmem(PTOB(frame_mfn[i]), PHYSADDR, xkd->page, 
+		    PAGESIZE(), "xen kdump p2m mfn list page", RETURN_ON_ERROR))
+                	error(FATAL, "cannot read xen kdump p2m mfn list page\n");
+
+		for (j = 0, up = (ulong *)xkd->page; j < MFNS_PER_FRAME; j++, up++)
+			if (*up)
+				mfns[i]++;
+
+		xkd->p2m_frames += mfns[i];
+		
+	        if (CRASHDEBUG(7)) {
+	                up = (ulong *)xkd->page;
+	                for (i = 0; i < 256; i++) {
+	                        fprintf(fp, "%08lx: %08lx %08lx %08lx %08lx\n",
+	                                (ulong)((i * 4) * sizeof(ulong)),
+	                                *up, *(up+1), *(up+2), *(up+3));
+	                        up += 4;
+	                }
+	        }
+	}
+
+        if (CRASHDEBUG(1))
+		fprintf(fp, "p2m_frames: %d\n", xkd->p2m_frames);
+
+        if ((xkd->p2m_mfn_frame_list = (ulong *)
+	    malloc(xkd->p2m_frames * sizeof(ulong))) == NULL)
+                error(FATAL, "cannot malloc p2m_frame_index_list");
+
+	for (i = 0, frames = xkd->p2m_frames; frames; i++) {
+        	if (!readmem(PTOB(frame_mfn[i]), PHYSADDR, 
+		    &xkd->p2m_mfn_frame_list[i * MFNS_PER_FRAME], 
+		    mfns[i] * sizeof(ulong), "xen kdump p2m mfn list page", 
+		    RETURN_ON_ERROR))
+                	error(FATAL, "cannot read xen kdump p2m mfn list page\n");
+
+		frames -= mfns[i];
+	}
+
+	pc->readmem = read_kdump;
+	return TRUE;
+
+use_cr3:
+	if (CRASHDEBUG(1))
+		fprintf(fp, "x86_xen_kdump_p2m_create: cr3: %lx\n", xkd->cr3);
 
 	if (!readmem(PTOB(xkd->cr3), PHYSADDR, machdep->pgd, PAGESIZE(), 
 	    "xen kdump cr3 page", RETURN_ON_ERROR))
@@ -4122,7 +4220,6 @@ x86_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
 static char *
 x86_xen_kdump_load_page_PAE(ulong kvaddr, char *pgbuf)
 {
-	return NULL;
 	ulonglong *entry;
 	ulonglong *up;
 	ulong mfn;

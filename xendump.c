@@ -473,7 +473,7 @@ xc_save_read(void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 				return SEEK_ERROR;
 			if (read(xd->xfd, xd->page, xd->page_size) != xd->page_size)
                 		return READ_ERROR;
-		} else
+		} else if (CRASHDEBUG(1))
 			console("READ %ld (0x%lx) skipped!\n", reqpfn, reqpfn);
 
 		BCOPY(xd->page + PAGEOFFSET(paddr), bufptr, cnt);
@@ -651,6 +651,9 @@ xendump_init(char *unused, FILE *fptr)
 int
 read_xendump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
+	if (pc->curcmd_flags & XEN_MACHINE_ADDR)
+		return READ_ERROR;
+
 	switch (xd->flags & (XC_SAVE|XC_CORE))
 	{
 	case XC_SAVE:

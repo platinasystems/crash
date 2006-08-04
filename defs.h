@@ -98,6 +98,7 @@
 #define LASTCHAR(s)      (s[strlen(s)-1])
 #define FIRSTCHAR(s)     (s[0])
 #define QUOTED_STRING(s) ((FIRSTCHAR(s) == '"') && (LASTCHAR(s) == '"'))
+#define PATHEQ(A, B)     ((A) && (B) && (pathcmp((char *)(A), (char *)(B)) == 0))
 
 #ifdef roundup
 #undef roundup
@@ -199,8 +200,7 @@ struct number_option {
 #define KDUMP_ELF32     (0x20)
 #define KDUMP_ELF64     (0x40)
 #define KDUMP_LOCAL     (0x80)  
-#define KDUMP_XEN      (0x100)
-#define KDUMP_P2M_INIT (0x200)
+#define KDUMP_XEN_HV    (0x100)
 
 #define DUMPFILE_FORMAT(flags) ((flags) & \
 		        (NETDUMP_ELF32|NETDUMP_ELF64|KDUMP_ELF32|KDUMP_ELF64))
@@ -346,6 +346,8 @@ struct program_context {
 	char *lastcmd;                  /* previously-executed command */
 	ulong cmdgencur;		/* current command generation number */
 	ulong cmdgenspec;		/* specified command generation num */
+	ulong curcmd_flags;		/* general purpose per-command flag */
+#define XEN_MACHINE_ADDR  (0x1)
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
 	int sigint_cnt;                 /* number of ignored SIGINTs */
@@ -427,20 +429,20 @@ struct new_utsname {
 #define GCC_3_3_3     (0x8000)
 #define USE_OLD_BT   (0x10000)
 #define ARCH_XEN     (0x20000)
+#define NO_IKCONFIG  (0x40000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
 #define XEN()  (kt->flags & ARCH_XEN)
 
-#define XEN_MACHINE_TO_MFN(m)     ((ulong)(m) >> PAGESHIFT())
-#define XEN_PFN_TO_PSEUDO(p)      ((ulong)(p) << PAGESHIFT())
-#define XEN_PFNS_PER_PAGE         (PAGESIZE()/sizeof(ulong))
-#define XEN_MFN_NOT_FOUND         (~0UL)
-#define XEN_FOREIGN_FRAME         (1UL << (BITS()-1))
+#define XEN_MACHINE_TO_MFN(m)    ((ulonglong)(m) >> PAGESHIFT())
+#define XEN_PFN_TO_PSEUDO(p)     ((ulonglong)(p) << PAGESHIFT())
 
-#define XEN_MACHINE_TO_MFN_PAE(m) ((ulonglong)(m) >> PAGESHIFT())
-#define XEN_PFN_TO_PSEUDO_PAE(p)  ((ulonglong)(p) << PAGESHIFT())
-#define XEN_MFN_NOT_FOUND_PAE     (~0ULL)
+#define XEN_MFN_NOT_FOUND        (~0UL)
+#define XEN_PFNS_PER_PAGE        (PAGESIZE()/sizeof(ulong))
+#define XEN_FOREIGN_FRAME        (1UL << (BITS()-1))
+
+#define XEN_MACHADDR_NOT_FOUND   (~0ULL) 
 
 struct kernel_table {                   /* kernel data */
 	ulong flags;
@@ -452,6 +454,7 @@ struct kernel_table {                   /* kernel data */
 	ulong init_end;
 	ulong end;
 	int cpus;
+	char *cpus_override;
 	void (*display_bh)(void);
         ulong module_list;
         ulong kernel_module;
@@ -473,7 +476,7 @@ struct kernel_table {                   /* kernel data */
 #define SHADOW_PAGE_TABLES      (0x2)
 #define CANONICAL_PAGE_TABLES   (0x4)
 #define XEN_SUSPEND             (0x8)
-	char *machine_to_pseudo;
+	char *m2p_page;
 	ulong phys_to_machine_mapping;
 	ulong p2m_table_size;
 #define P2M_MAPPING_CACHE    (512)
@@ -700,9 +703,11 @@ struct machdep_table {
         	char **file;
 	} *line_number_hooks;
 	ulong last_pgd_read;
+	ulong last_pud_read;
 	ulong last_pmd_read;
 	ulong last_ptbl_read;
 	char *pgd;
+	char *pud;
  	char *pmd;	
 	char *ptbl;
 	int ptrs_per_pgd;
@@ -728,12 +733,18 @@ struct machdep_table {
 #define MACHDEP_BT_TEXT (0x10000000)
 #define DEVMEMRD         (0x8000000)
 #define INIT             (0x4000000)
+#define VM_4_LEVEL       (0x2000000)
 
 extern struct machdep_table *machdep;
+
+#ifndef HZ
+#define HZ sysconf(_SC_CLK_TCK)
+#endif
 
 #define IS_LAST_PGD_READ(pgd)     ((ulong)(pgd) == machdep->last_pgd_read)
 #define IS_LAST_PMD_READ(pmd)     ((ulong)(pmd) == machdep->last_pmd_read)
 #define IS_LAST_PTBL_READ(ptbl)   ((ulong)(ptbl) == machdep->last_ptbl_read)
+#define IS_LAST_PUD_READ(pud)     ((ulong)(pud) == machdep->last_pud_read)
 
 #define FILL_PGD(PGD, TYPE, SIZE) 					    \
     if (!IS_LAST_PGD_READ(PGD)) {                                           \
@@ -741,6 +752,13 @@ extern struct machdep_table *machdep;
                     SIZE, "pgd page", FAULT_ON_ERROR);                      \
             machdep->last_pgd_read = (ulong)(PGD);                          \
     }								            
+
+#define FILL_PUD(PUD, TYPE, SIZE) 					    \
+    if (!IS_LAST_PUD_READ(PUD)) {                                           \
+            readmem((ulonglong)((ulong)(PUD)), TYPE, machdep->pud,          \
+                    SIZE, "pud page", FAULT_ON_ERROR);                      \
+            machdep->last_pud_read = (ulong)(PUD);                          \
+    }
 
 #define FILL_PMD(PMD, TYPE, SIZE)			                    \
     if (!IS_LAST_PMD_READ(PMD)) {                                           \
@@ -1756,6 +1774,7 @@ struct load_module {
 #define KVADDR             (0x1)
 #define UVADDR             (0x2)
 #define PHYSADDR           (0x4)
+#define XENMACHADDR        (0x8)
 #define AMBIGUOUS          (~0)
 
 #define USE_USER_PGD       (UVADDR << 2)
@@ -1813,7 +1832,7 @@ struct load_module {
 #define MACHINE_TYPE       "X86"
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 #define KVBASE_MASK        (0x7fffff)
 
 #define PGDIR_SHIFT_2LEVEL   (22)
@@ -2011,7 +2030,7 @@ struct load_module {
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 #define KSEG_BASE_48_BIT   (0xffff800000000000)
 #define KSEG_BASE          (0xfffffc0000000000)
 #define _PFN_MASK          (0xFFFFFFFF00000000)
@@ -2056,7 +2075,7 @@ struct load_module {
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 
 #define PGDIR_SHIFT   (22)
 #define PTRS_PER_PTE  (1024)
@@ -2115,14 +2134,55 @@ struct load_module {
 
 #define SWITCH_STACK_ADDR(X)  (ia64_get_switch_stack((ulong)(X)))
 
-#define PGDIR_SHIFT     (PAGESHIFT() + 2*(PAGESHIFT()-3))
-#define PMD_SHIFT       (PAGESHIFT() + (PAGESHIFT()-3))
-#define PTRS_PER_PGD    (((ulong)(1)) << (PAGESHIFT()-3))
-#define PTRS_PER_PMD    (((ulong)(1)) << (PAGESHIFT()-3))
-#define PTRS_PER_PTE    (((ulong)(1)) << (PAGESHIFT()-3))
-#define PTRS_PER_PAGE   (((ulong)(1)) << (PAGESHIFT()-3))
 #define __IA64_UL(x)           ((unsigned long)(x))
 #define IA64_MAX_PHYS_BITS  (50)  /* max # of phys address bits (architected) */
+
+/*
+ * How many pointers will a page table level hold expressed in shift 
+ */
+#define PTRS_PER_PTD_SHIFT	(PAGESHIFT()-3)
+
+/*
+ * Definitions for fourth level:
+ */
+#define PTRS_PER_PTE	(__IA64_UL(1) << (PTRS_PER_PTD_SHIFT))
+
+/*
+ * Definitions for third level:
+ *
+ * PMD_SHIFT determines the size of the area a third-level page table
+ * can map.
+ */
+#define PMD_SHIFT	(PAGESHIFT() + (PTRS_PER_PTD_SHIFT))
+#define PMD_SIZE	(1UL << PMD_SHIFT)
+#define PMD_MASK	(~(PMD_SIZE-1))
+#define PTRS_PER_PMD	(1UL << (PTRS_PER_PTD_SHIFT))
+
+/*
+ * PUD_SHIFT determines the size of the area a second-level page table
+ * can map
+ */
+#define PUD_SHIFT	(PMD_SHIFT + (PTRS_PER_PTD_SHIFT))
+#define PUD_SIZE	(1UL << PUD_SHIFT)
+#define PUD_MASK	(~(PUD_SIZE-1))
+#define PTRS_PER_PUD	(1UL << (PTRS_PER_PTD_SHIFT))
+
+/*
+ * Definitions for first level:
+ *
+ * PGDIR_SHIFT determines what a first-level page table entry can map.
+ */
+
+#define PGDIR_SHIFT_4L		(PUD_SHIFT + (PTRS_PER_PTD_SHIFT))
+#define PGDIR_SHIFT_3L		(PMD_SHIFT + (PTRS_PER_PTD_SHIFT))
+/* Turns out 4L & 3L PGDIR_SHIFT are the same (for now) */
+#define PGDIR_SHIFT		PGDIR_SHIFT_4L
+#define PGDIR_SIZE		(__IA64_UL(1) << PGDIR_SHIFT)
+#define PGDIR_MASK		(~(PGDIR_SIZE-1))
+#define PTRS_PER_PGD_SHIFT	PTRS_PER_PTD_SHIFT
+#define PTRS_PER_PGD		(1UL << PTRS_PER_PGD_SHIFT)
+#define USER_PTRS_PER_PGD	(5*PTRS_PER_PGD/8)	/* regions 0-4 are user regions */
+#define FIRST_USER_ADDRESS	0
 
 /*
  * First, define the various bits in a PTE.  Note that the PTE format
@@ -2176,6 +2236,7 @@ struct load_module {
 #define __DIRTY_BITS		_PAGE_ED | __DIRTY_BITS_NO_ED
 
 #define EFI_PAGE_SHIFT  (12)
+
 /*
  * NOTE: #include'ing <asm/efi.h> creates too many compiler problems, so
  * this stuff is hardwired here; it's probably etched in stone somewhere.
@@ -2240,7 +2301,7 @@ struct efi_memory_desc_t {
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 #define KERNELBASE      machdep->pageoffset
 
 #define PGDIR_SHIFT     (machdep->pageshift + (machdep->pageshift -3) + (machdep->pageshift - 2))
@@ -2343,7 +2404,7 @@ struct efi_memory_desc_t {
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 #define PTRS_PER_PTE    512
 #define PTRS_PER_PMD    1024
 #define PTRS_PER_PGD    2048
@@ -2914,6 +2975,7 @@ void command_not_supported(void);
 void option_not_supported(int);
 void please_wait(char *);
 void please_wait_done(void);
+int pathcmp(char *, char *);
 
 
 /* 
@@ -3069,6 +3131,7 @@ void close_tmpfile2(void);
 void open_files_dump(ulong, int, struct reference *);
 void get_pathname(ulong, char *, int, int, ulong);
 ulong file_to_dentry(ulong);
+ulong file_to_vfsmnt(ulong);
 void nlm_files_dump(void);
 int get_proc_version(void);
 int file_checksum(char *, long *);
@@ -3337,8 +3400,16 @@ struct remote_file {
 #define TYPE_S390D       (REMOTE_VERBOSE << 6)
 #define TYPE_NETDUMP     (REMOTE_VERBOSE << 7)
 
-ulong xen_machine_to_pseudo(ulong);
-ulonglong xen_machine_to_pseudo_PAE(ulonglong);
+ulonglong xen_m2p(ulonglong);
+
+void read_in_kernel_config(int);
+
+#define IKCFG_INIT   (0)
+#define IKCFG_READ   (1)
+
+#define MAGIC_START  "IKCFG_ST"
+#define MAGIC_END    "IKCFG_ED"
+#define MAGIC_SIZE   (sizeof(MAGIC_START) - 1)
 
 /*
  *  dev.c
@@ -3531,7 +3602,6 @@ void ppc64_dump_machdep_table(ulong);
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
 #define VM_ORIG     (0x2)
-#define VM_4_LEVEL  (0x4)
 #endif
 
 /*

@@ -2,12 +2,12 @@ Source: crash
 Section: utils
 Priority: optional
 Maintainer: Troy Heber <troyh@debian.org>
-Uploaders: Micah Anderson <micah@debian.org>
+Uploaders: 
 Build-Depends: debhelper (>= 4), binutils-dev, zlib1g-dev, libncurses5-dev, dpatch
-Standards-Version: 3.6.2.1
+Standards-Version: 3.7.2
 
 Package: crash
-Architecture: any
+Architecture: i386 ia64 alpha powerpc amd64
 Depends: ${shlibs:Depends}
 Suggests: kernel-patch-lkcd, dumputils
 Description: kernel debugging utility, allowing gdb like syntax

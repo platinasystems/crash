@@ -1143,6 +1143,7 @@ cmd_mount(void)
         char *arglist[MAXARGS*2];
 	ulong vfsmount = 0;
 	int flags = 0;
+	int mh_flag = 1;
 	int save_next;
 
         while ((c = getopt(argcnt, args, "if")) != EOF) {
@@ -1193,7 +1194,7 @@ cmd_mount(void)
                         		continue;
 
 				for (i = 0; i < c; i++) {
-					if (STREQ(arglist[i], spec_string)) 
+					if (PATHEQ(arglist[i], spec_string))
 						found = TRUE;
 				}
 				if (found) {
@@ -1202,7 +1203,10 @@ cmd_mount(void)
 						sscanf(buf2,"%lx",&vfsmount);
 						show_mounts(vfsmount, flags);
 					} else {
-						fprintf(fp, mount_hdr);
+						if (mh_flag) {
+							fprintf(fp, mount_hdr);
+							mh_flag = 0;
+						}
 						fprintf(fp, buf2);
 					}
 					found = FALSE;
@@ -2545,6 +2549,20 @@ file_to_dentry(ulong file)
         file_buf = fill_file_cache(file);
         dentry = ULONG(file_buf + OFFSET(file_f_dentry));
         return dentry;
+}
+
+/*
+ *  Get the vfsmnt associated with a file.
+ */
+ulong
+file_to_vfsmnt(ulong file)
+{
+	char *file_buf;
+	ulong vfsmnt;
+
+	file_buf = fill_file_cache(file);
+	vfsmnt = ULONG(file_buf + OFFSET(file_f_vfsmnt));
+	return vfsmnt;
 }
 
 /*

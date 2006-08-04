@@ -161,6 +161,7 @@ ulong pfn_to_map(ulong);
 #define DECIMAL        (0x100)
 #define UDECIMAL       (0x200)
 #define ASCII_ENDLINE  (0x400)
+#define NO_ASCII       (0x800)
 
 static ulong DISPLAY_DEFAULT;
 
@@ -436,8 +437,11 @@ vm_init(void)
 			"kmem_slab_s", "s_magic");
 	}
 
-	kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_cpudata) ?
-		ARRAY_LENGTH(kmem_cache_s_cpudata) : ARRAY_LENGTH(kmem_cache_s_array);
+	if (!kt->kernel_NR_CPUS) {
+		kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_cpudata) ?
+			ARRAY_LENGTH(kmem_cache_s_cpudata) : 
+			ARRAY_LENGTH(kmem_cache_s_array);
+	}
 		
         if (kt->kernel_NR_CPUS > NR_CPUS) {
 		error(WARNING, 
@@ -753,7 +757,7 @@ cmd_rd(void)
 	memtype = KVADDR;
 	count = -1;
 
-        while ((c = getopt(argcnt, args, "e:pudDuso:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "xme:pudDuso:81:3:6:")) != EOF) {
                 switch(c)
 		{
 		case '8':
@@ -816,12 +820,12 @@ cmd_rd(void)
 			break;
 
 		case 'p':
-			memtype &= ~(UVADDR|KVADDR);
+			memtype &= ~(UVADDR|KVADDR|XENMACHADDR);
 			memtype = PHYSADDR;
 			break;
 
 		case 'u':
-			memtype &= ~(KVADDR|PHYSADDR);
+			memtype &= ~(KVADDR|PHYSADDR|XENMACHADDR);
 			memtype = UVADDR;
 			break;
 
@@ -833,6 +837,17 @@ cmd_rd(void)
 		case 'D':
 			flag &= ~(HEXADECIMAL|UDECIMAL);
                         flag |= UDECIMAL;
+			break;
+
+		case 'm':
+                	if (!(kt->flags & ARCH_XEN))
+                        	error(FATAL, "-m option only applies to xen architecture\n");
+			memtype &= ~(UVADDR|KVADDR);
+			memtype = XENMACHADDR;
+			break;
+
+		case 'x':
+                        flag |= NO_ASCII;
 			break;
 
 		default:
@@ -898,7 +913,7 @@ cmd_rd(void)
 		error(WARNING, 
 		    "ending address ignored when count is specified\n");
 
-	if ((flag & HEXADECIMAL) && !(flag & SYMBOLIC))
+	if ((flag & HEXADECIMAL) && !(flag & SYMBOLIC) && !(flag & NO_ASCII))
 		flag |= ASCII_ENDLINE;
 
 	if (memtype == KVADDR) {
@@ -907,7 +922,6 @@ cmd_rd(void)
 	}
 
 	display_memory(addr, count, flag, memtype);
-        
 }
 
 /*
@@ -970,6 +984,9 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 		break;
 	case PHYSADDR:
 		addrtype = "PHYSADDR";
+		break;
+	case XENMACHADDR:
+		addrtype = "XENMACHADDR";
 		break;
 	}
 
@@ -1446,6 +1463,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 	int fd;
 	long cnt;
 	physaddr_t paddr;
+	ulonglong pseudo;
 	char *bufptr;
 
 	if (CRASHDEBUG(4))
@@ -1494,6 +1512,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                 break;
 
         case PHYSADDR:
+	case XENMACHADDR:
                 break;
         }
 
@@ -1519,6 +1538,17 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 		case PHYSADDR:
 			paddr = addr;
 			break;
+
+		case XENMACHADDR:
+			pseudo = xen_m2p(addr);
+
+                	if (pseudo == XEN_MACHADDR_NOT_FOUND) {
+                        	pc->curcmd_flags |= XEN_MACHINE_ADDR;
+				paddr = addr;  
+                	} else
+                        	paddr = pseudo | PAGEOFFSET(addr);
+
+			break;
 		}
 
 		/* 
@@ -1530,7 +1560,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                         cnt = size;
 
 		switch (READMEM(fd, bufptr, cnt, 
-		    memtype == PHYSADDR ? 0 : addr, paddr))
+		    (memtype == PHYSADDR) || (memtype == XENMACHADDR) ? 0 : addr, paddr))
 		{
 		case SEEK_ERROR:
                         if (PRINT_ERROR_MESSAGE)
@@ -1680,6 +1710,9 @@ write_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 int
 read_memory_device(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
+	if (pc->curcmd_flags & XEN_MACHINE_ADDR)
+		return READ_ERROR;
+
         if (!machdep->verify_paddr(paddr)) {
                 if (CRASHDEBUG(1))
                         error(INFO, "verify_paddr(%lx) failed\n", paddr);
@@ -1823,6 +1856,9 @@ char *memtype_string(int memtype, int debug)
 		break;
 	case PHYSADDR:
 		sprintf(membuf, debug ? "PHYSADDR" : "physical");
+		break;
+	case XENMACHADDR:
+		sprintf(membuf, debug ? "XENMACHADDR" : "xen machine");
 		break;
 	default:
 		if (debug)
@@ -10317,7 +10353,7 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 			} else if (VALID_MEMBER
 				(swap_info_struct_old_block_size)) {
 				get_pathname(file_to_dentry(swap_file), 
-					buf, BUFSIZE, 1, 0);
+					buf, BUFSIZE, 1, file_to_vfsmnt(swap_file));
 			} else {
 				get_pathname(swap_file, buf, BUFSIZE, 1, 0);
 			}
@@ -11049,6 +11085,9 @@ first_vmalloc_address(void)
         ulong vmlist, addr;
 
         get_symbol_data("vmlist", sizeof(void *), &vmlist);
+
+	if (!vmlist)
+		return 0;
 
         if (!readmem(vmlist+OFFSET(vm_struct_addr), KVADDR, &addr, 
 	    sizeof(void *), "first vmlist addr", RETURN_ON_ERROR)) 
