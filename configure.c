@@ -1121,7 +1121,7 @@ make_spec_file(void)
 	printf("#\n");
 	printf("# crash core analysis suite\n");
 	printf("#\n");
-	printf("Summary: crash utility for live systems; netdump, diskdump, LKCD or mcore dumpfiles\n");
+	printf("Summary: crash utility for live systems; netdump, diskdump, kdump, LKCD or mcore dumpfiles\n");
 	printf("Name: %s\n", lower_case(target_data.program, buf));
 	printf("Version: %s\n", Version);
 	printf("Release: %s\n", Release);
@@ -1141,7 +1141,7 @@ make_spec_file(void)
 	printf("%%description\n");
 	printf("The core analysis suite is a self-contained tool that can be used to\n");
 	printf("investigate either live systems, kernel core dumps created from the\n");
-	printf("netdump and diskdump packages from Red Hat Linux, the mcore kernel patch\n");
+	printf("netdump, diskdump and kdump facilities from Red Hat Linux, the mcore kernel patch\n");
 	printf("offered by Mission Critical Linux, or the LKCD kernel patch.\n");
 	printf("\n");
 	printf("%%prep\n");

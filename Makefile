@@ -73,7 +73,7 @@ UNWIND_HFILES=unwind.h unwind_i.h rse.h
 
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
-	alpha.c x86.c ppc.c ia64.c s390.c s390x.c ppc64.c x86_64.c \
+	alpha.c x86.c ppc.c ia64.c s390.c s390x.c s390dbf.c ppc64.c x86_64.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
@@ -85,7 +85,7 @@ SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
-	alpha.o x86.o ppc.o ia64.o s390.o s390x.o ppc64.o x86_64.o \
+	alpha.o x86.o ppc.o ia64.o s390.o s390x.o s390dbf.o ppc64.o x86_64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
@@ -364,6 +364,9 @@ s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
 s390x.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x.c
 	cc -c ${CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+s390dbf.o: ${GENERIC_HFILES} ${IBM_HFILES} s390dbf.c
+	cc -c ${CFLAGS} s390dbf.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 s390_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390_dump.c
 	cc -c ${CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -446,7 +449,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-3.1
+RELEASE=4.0-3.2
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

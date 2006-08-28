@@ -348,6 +348,7 @@ struct program_context {
 	ulong cmdgenspec;		/* specified command generation num */
 	ulong curcmd_flags;		/* general purpose per-command flag */
 #define XEN_MACHINE_ADDR  (0x1)
+#define REPEAT (0x2)
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
 	int sigint_cnt;                 /* number of ignored SIGINTs */
@@ -1711,6 +1712,7 @@ struct symbol_table_data {
 #define NO_SEC_CONTENTS   (0x40)
 #define FORCE_DEBUGINFO   (0x80)
 #define CRC_MATCHES      (0x100)
+#define ADD_SYMBOL_FILE  (0x200)
 
 #endif /* !GDB_COMMON */
 
@@ -2125,6 +2127,9 @@ struct load_module {
 #define KERNEL_UNCACHED_BASE  ((ulong)KERNEL_UNCACHED_REGION << REGION_SHIFT)
 #define KERNEL_CACHED_BASE    ((ulong)KERNEL_CACHED_REGION << REGION_SHIFT)
 
+#define _SECTION_SIZE_BITS    30
+#define _MAX_PHYSMEM_BITS     50
+
 /*
  *  As of 2.6, these are no longer straight forward.
  */
@@ -2383,7 +2388,7 @@ struct efi_memory_desc_t {
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) s390_IS_VMALLOC_ADDR(X)
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 
 #define PTRS_PER_PTE    1024
 #define PTRS_PER_PMD    1
@@ -2822,6 +2827,9 @@ void cmd_dev(void);          /* dev.c */
 void cmd_gdb(void);          /* gdb_interface.c */
 void cmd_net(void);          /* net.c */
 void cmd_extend(void);       /* extensions.c */
+#if defined(S390) || defined(S390X)
+void cmd_s390dbf(void);
+#endif
 
 /*
  *  main.c
@@ -3239,6 +3247,9 @@ extern char *help_vtop[];
 extern char *help_waitq[];
 extern char *help_whatis[];
 extern char *help_wr[];
+#if defined(S390) || defined(S390X)
+extern char *help_s390dbf[];
+#endif
 
 /*
  *  task.c
@@ -3305,7 +3316,7 @@ void unload_extension(char *);
 /*
  *  kernel.c 
  */ 
-void kernel_init(int);
+void kernel_init(void);
 void module_init(void);
 void verify_version(void);
 void verify_spinlock(void);

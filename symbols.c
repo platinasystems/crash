@@ -2121,6 +2121,8 @@ dump_symbol_table(void)
                 fprintf(fp, "%sFORCE_DEBUGINFO", others++ ? "|" : "");
         if (st->flags & CRC_MATCHES)
                 fprintf(fp, "%sCRC_MATCHES", others++ ? "|" : "");
+        if (st->flags & ADD_SYMBOL_FILE)
+                fprintf(fp, "%sADD_SYMBOL_FILE", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "                 bfd: %lx\n", (ulong)st->bfd);
@@ -5095,7 +5097,8 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 
 	s = dm->member;
 	indent = 0;
-	on = array = FALSE;
+	array = FALSE;
+	on = 0;
 	rewind(pc->tmpfile);
 
 	switch (flag)  
@@ -5106,7 +5109,7 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 next_item:
 		while (fgets(buf, BUFSIZE, pc->tmpfile)) {
 			if (STRNEQ(buf, lookfor1) || STRNEQ(buf, lookfor2)) {
-				on = TRUE;
+				on++;
 				if (strstr(buf, "= {")) 
 					indent = count_leading_spaces(buf);
 				if (strstr(buf, "["))
@@ -5114,16 +5117,22 @@ next_item:
 			}
 	
 			if (on) {
+				if ((indent && (on > 1) && (count_leading_spaces(buf) == indent) &&
+				    !strstr(buf, "}")) || (buf[0] == '}')) {
+					break;
+				}
 				fprintf(pc->saved_fp, buf);
 				if (!indent)
 					break;
 				if (strstr(buf, "}") && 
 				    (count_leading_spaces(buf) == indent))
 					break;
+				on++;
 			}
 		}
 		if (array) {
 			on = array = FALSE;
+			on = 0;
 			goto next_item; 
 		}
 		break;
@@ -7320,7 +7329,9 @@ add_symbol_file(struct load_module *lm)
 	if (!CRASHDEBUG(1))
 		req->fp = pc->nullfp;
 
+	st->flags |= ADD_SYMBOL_FILE;
 	gdb_interface(req); 
+	st->flags &= ~ADD_SYMBOL_FILE;
 
 	sprintf(buf, "set complaints 0");
 	gdb_pass_through(buf, NULL, 0);

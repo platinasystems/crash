@@ -1710,13 +1710,18 @@ cmd_repeat(void)
 		error(FATAL, 
 		"scrolling must be turned off when repeating an input file\n");
 
+	pc->curcmd_flags |= REPEAT;
+
 	while (TRUE) {
 		optind = 0;
-console("exec_command...\n");
+
 		exec_command();
 		free_all_bufs();
 
 		if (received_SIGINT() || !output_open())
+			break;
+
+		if (!(pc->curcmd_flags & REPEAT))
 			break;
 
 		if (delay)

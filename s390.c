@@ -86,7 +86,6 @@ static int s390_translate_pte(ulong, void *, ulonglong);
 static ulong s390_processor_speed(void);
 static int s390_eframe_search(struct bt_info *);
 static void s390_back_trace_cmd(struct bt_info *);
-static void s390_back_trace(struct gnu_request *, struct bt_info *);
 static void s390_dump_irq(int);
 static void s390_get_stack_frame(struct bt_info *, ulong *, ulong *);
 static int s390_dis_filter(ulong, char *);
@@ -229,19 +228,6 @@ s390_dump_machdep_table(ulong arg)
 }
 
 /*
- * Check if address is in the vmalloc area
- */
-int
-s390_IS_VMALLOC_ADDR(ulong addr)
-{
-	static unsigned long high_memory = 0;
-	if(!high_memory){
-		high_memory = s390_vmalloc_start();
-	}
-	return (addr > high_memory);
-}
-
-/*
  * Check if address is in context's address space
  */
 static int 
@@ -292,7 +278,7 @@ s390_kvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 /*
  * Check if page is mapped
  */
-inline int 
+static inline int 
 s390_pte_present(unsigned long x)
 {
 	if(THIS_KERNEL_VERSION >= LINUX(2,6,0)) {
@@ -482,7 +468,7 @@ s390_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 		return FALSE;
 	}
 	fprintf(fp,"PTE      PHYSICAL  FLAGS\n");
-	fprintf(fp,"%08x %08x",pte, pte & S390_PAGE_BASE_MASK);
+	fprintf(fp,"%08lx %08lx",pte, pte & S390_PAGE_BASE_MASK);
 	fprintf(fp,"  (");
 	if(pte & S390_PAGE_INVALID)
 		fprintf(fp,"INVALID ");
@@ -509,7 +495,7 @@ s390_eframe_search(struct bt_info *bt)
 /*
  * returns cpu number of task
  */ 
-int 
+static int 
 s390_cpu_of_task(unsigned long task)
 {
 	int cpu;
@@ -550,7 +536,7 @@ s390_has_cpu(unsigned long task)
                         return FALSE;
         } else {
 		/* Linux 2.6 */
-		unsigned long runqueue_addr, runqueue_offset, per_cpu_offset;
+		unsigned long runqueue_addr, runqueue_offset;
 		unsigned long cpu_offset, per_cpu_offset_addr, running_task;
 		char runqueue[4096];
 		int cpu;
@@ -699,7 +685,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 		} else if(skip_first_frame){
 			skip_first_frame=0;
 		} else {
-			fprintf(fp," #%i [%08x] ",i,backchain);
+			fprintf(fp," #%i [%08lx] ",i,backchain);
 			fprintf(fp,"%s at %x\n", closest_symbol(r14), r14);
 			if (bt->flags & BT_LINE_NUMBERS)
 				s390_dump_line_number(r14);
@@ -721,9 +707,9 @@ s390_back_trace_cmd(struct bt_info *bt)
 			}
 			for(j=0; j< frame_size; j+=4){
 				if(j % 16 == 0){
-					fprintf(fp,"\n%08x: ",old_backchain+j);
+					fprintf(fp,"\n%08lx: ",old_backchain+j);
 				}
-				fprintf(fp," %08x",ULONG(&stack[old_backchain -
+				fprintf(fp," %08lx",ULONG(&stack[old_backchain -
 							 stack_base + j]));
 			}
 			fprintf(fp,"\n\n");
@@ -772,10 +758,10 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 		return;
 	}
 	fprintf(fp," LOWCORE INFO:\n");
-	fprintf(fp,"  -psw      : %#010x %#010x\n", tmp[0],
+	fprintf(fp,"  -psw      : %#010lx %#010lx\n", tmp[0],
 		tmp[1]);
 	if(show_symbols){
-		fprintf(fp,"  -function : %s at %x\n", 
+		fprintf(fp,"  -function : %s at %lx\n", 
 	       		closest_symbol(tmp[1] & S390_ADDR_MASK), 
 			tmp[1] & S390_ADDR_MASK);
 		if (bt->flags & BT_LINE_NUMBERS)
@@ -784,12 +770,12 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	ptr = lc + MEMBER_OFFSET("_lowcore","cpu_timer_save_area");
 	tmp[0]=UINT(ptr);
 	tmp[1]=UINT(ptr + S390_WORD_SIZE);
-	fprintf(fp,"  -cpu timer: %#010x %#010x\n", tmp[0],tmp[1]);
+	fprintf(fp,"  -cpu timer: %#010lx %#010lx\n", tmp[0],tmp[1]);
 
 	ptr = lc + MEMBER_OFFSET("_lowcore","clock_comp_save_area");
 	tmp[0]=UINT(ptr);
 	tmp[1]=UINT(ptr + S390_WORD_SIZE);
-	fprintf(fp,"  -clock cmp: %#010x %#010x\n", tmp[0], tmp[1]);
+	fprintf(fp,"  -clock cmp: %#010lx %#010lx\n", tmp[0], tmp[1]);
 
 	fprintf(fp,"  -general registers:\n");
 	ptr = lc + MEMBER_OFFSET("_lowcore","gpregs_save_area");
@@ -797,25 +783,25 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 3 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0],tmp[1],tmp[2],tmp[3]);
 	tmp[0]=ULONG(ptr + 4 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 5 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 6 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 7 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0],tmp[1],tmp[2],tmp[3]);
 	tmp[0]=ULONG(ptr + 8 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 9 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 10* S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 11* S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0],tmp[1],tmp[2],tmp[3]);
 	tmp[0]=ULONG(ptr + 12* S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 13* S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 14* S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 15* S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
 	fprintf(fp,"  -access registers:\n");
@@ -824,25 +810,25 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 3 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 	tmp[0]=ULONG(ptr + 4 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 5 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 6 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 7 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 	tmp[0]=ULONG(ptr + 8 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 9 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 10* S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 11* S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 	tmp[0]=ULONG(ptr + 12* S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 13* S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 14* S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 15* S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
 	fprintf(fp,"  -control registers:\n");
@@ -851,26 +837,26 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 3 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 	tmp[0]=ULONG(ptr + 4 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 5 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 6 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 7 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 3 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 	tmp[0]=ULONG(ptr + 4 * S390_WORD_SIZE);
 	tmp[1]=ULONG(ptr + 5 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 6 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 7 * S390_WORD_SIZE);
-	fprintf(fp,"     %#010x %#010x %#010x %#010x\n", 
+	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
 	ptr = lc + MEMBER_OFFSET("_lowcore","floating_pt_save_area");
@@ -879,8 +865,8 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	tmp[1]=ULONG(ptr + 2 * S390_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 4 * S390_WORD_SIZE);
 	tmp[3]=ULONG(ptr + 6 * S390_WORD_SIZE);
-	fprintf(fp,"     %#018llx %#018llx\n", tmp[0], tmp[1]);
-	fprintf(fp,"     %#018llx %#018llx\n", tmp[2], tmp[3]);
+	fprintf(fp,"     %#018lx %#018lx\n", tmp[0], tmp[1]);
+	fprintf(fp,"     %#018lx %#018lx\n", tmp[2], tmp[3]);
 }
 
 /*

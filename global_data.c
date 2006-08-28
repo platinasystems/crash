@@ -117,6 +117,9 @@ struct command_table_entry base_command_table[] = {
 	{"waitq",   cmd_waitq,   help_waitq,   REFRESH_TASK_TABLE},
 	{"whatis",  cmd_whatis,  help_whatis,  0},
 	{"wr",      cmd_wr,      help_wr,      0},
+#if defined(S390) || defined(S390X)
+        {"s390dbf", cmd_s390dbf, help_s390dbf, 0},
+#endif
 	{(char *)NULL}
 };
 

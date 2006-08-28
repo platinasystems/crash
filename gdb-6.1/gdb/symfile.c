@@ -3510,6 +3510,13 @@ symfile_dummy_outputs (bfd *abfd, asection *sectp, void *dummy)
 bfd_byte *
 symfile_relocate_debug_section (bfd *abfd, asection *sectp, bfd_byte *buf)
 {
+#ifdef CRASH_MERGE
+  /* Executable files have all the relocations already resolved.
+   * Handle files linked with --emit-relocs.
+   * http://sources.redhat.com/ml/gdb/2006-08/msg00137.html  */
+  if ((abfd->flags & EXEC_P) != 0)
+    return NULL;
+#endif
   /* We're only interested in debugging sections with relocation
      information.  */
   if ((sectp->flags & SEC_RELOC) == 0)
