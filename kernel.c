@@ -3189,9 +3189,9 @@ dump_sys_call_table(char *spec, int cnt)
 	struct syment *sp, *spn;
         long size;
 #ifdef S390X
-	unsigned int *sct, *sys_call_table, addr;
+	unsigned int *sct, *sys_call_table, sys_ni_syscall, addr;
 #else
-	ulong *sys_call_table, *sct, addr;
+	ulong *sys_call_table, *sct, sys_ni_syscall, addr;
 #endif
 	if (GDB_PATCHED())
 		error(INFO, "line numbers are not available\n"); 
@@ -3208,6 +3208,8 @@ dump_sys_call_table(char *spec, int cnt)
 
         readmem(symbol_value("sys_call_table"), KVADDR, sys_call_table,
                 size, "sys_call_table", FAULT_ON_ERROR);
+
+	sys_ni_syscall = symbol_value("sys_ni_syscall");
 
 	if (spec)
 		open_tmpfile();
@@ -3228,7 +3230,10 @@ dump_sys_call_table(char *spec, int cnt)
 		}
 		
 		fprintf(fp, (output_radix == 16) ? "%3x  " : "%3d  ", i);
-		fprintf(fp, "%-26s ", scp);
+  		if (sys_ni_syscall && *sct == sys_ni_syscall)
+			fprintf(fp, "%-26s ", "sys_ni_syscall");
+		else
+			fprintf(fp, "%-26s ", scp);
 
 		/*
 		 *  For system call symbols whose first instruction is

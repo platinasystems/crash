@@ -16,37 +16,6 @@
 #include "defs.h"
 #include "netdump.h"
 
-struct pt_load_segment {
-	off_t file_offset;
-	physaddr_t phys_start;
-	physaddr_t phys_end;
-};
-
-struct vmcore_data {
-	ulong flags;
-	int ndfd;
-	FILE *ofp;
-	uint header_size;
-	char *elf_header;
-	uint num_pt_load_segments;
-	struct pt_load_segment *pt_load_segments;
-        Elf32_Ehdr *elf32;
-        Elf32_Phdr *notes32;
-        Elf32_Phdr *load32;
-        Elf64_Ehdr *elf64;
-        Elf64_Phdr *notes64;
-        Elf64_Phdr *load64;
-        void *nt_prstatus;
-        void *nt_prpsinfo;
-        void *nt_taskstruct;
-	ulong task_struct;
-	uint page_size;
-	ulong switch_stack;
-	uint num_prstatus_notes;
-	void *nt_prstatus_percpu[NR_CPUS];
-	struct xen_kdump_data *xen_kdump_data;
-};
-
 static struct vmcore_data vmcore_data = { 0 };
 static struct vmcore_data *nd = &vmcore_data;
 static struct xen_kdump_data xen_kdump_data = { 0 };
@@ -1939,4 +1908,13 @@ xen_kdump_p2m(physaddr_t pseudo)
 			mfn_frame, *mfnptr, (ulonglong)paddr);
 	
 	return paddr;
+}
+
+struct vmcore_data *
+get_kdump_vmcore_data(void)
+{
+	if (!VMCORE_VALID() || !KDUMP_DUMPFILE())
+		return NULL;
+
+	return &vmcore_data;
 }

@@ -1,3 +1,10 @@
+crash (4.0-3.3-1) unstable; urgency=low
+
+  * New upstream version 4.0-3.3 (see
+    http://people.redhat.com/anderson/crash.changelog)
+
+ -- Troy Heber <troyh@debian.org>  Fri,  8 Sep 2006 11:05:29 -0600
+
 crash (4.0-3.2-1) unstable; urgency=low
 
   * New upstream version 4.0-3.2 (see

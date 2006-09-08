@@ -50,6 +50,7 @@ static void dump_prio_array(int, ulong, char *);
 static void task_struct_member(struct task_context *,ulong,struct reference *);
 static void signal_reference(struct task_context *, ulong, struct reference *);
 static void dump_signal_data(struct task_context *);
+static int sigrt_minmax(int *, int *);
 static void signame_list(void);
 static ulonglong task_signal(ulong);
 static ulonglong task_blocked(ulong);
@@ -5518,6 +5519,9 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 #define _NSIG_BPW       machdep->bits
 #define _NSIG_WORDS     (_NSIG / _NSIG_BPW)
 
+#undef SIGRTMIN
+#define SIGRTMIN	32
+
 static struct signame {
         char *name;
         char *altname;
@@ -5553,23 +5557,56 @@ static struct signame {
     /* 28 */  {"SIGWINCH",   NULL},
     /* 29 */  {"SIGIO",      "SIGPOLL"},
     /* 30 */  {"SIGPWR",     NULL},
-    /* 31 */  {"SIGSYS",     NULL},
+    /* 31 */  {"SIGSYS",     "SIGUNUSED"},
               {NULL,         NULL},    /* Real time signals start here. */
 };
+
+static int
+sigrt_minmax(int *min, int *max) 
+{
+	int sigrtmax, j;
+
+	sigrtmax = THIS_KERNEL_VERSION < LINUX(2,5,0) ? 
+		_NSIG - 1  : _NSIG;
+
+	if (min && max) {
+		j = sigrtmax-SIGRTMIN-1;
+		*max = j / 2;
+		*min = j - *max;
+	}
+
+	return sigrtmax;
+}
 
 static void
 signame_list(void)
 {
-	int i;
+	int i, sigrtmax, j, min, max;
 
-        for (i = 0; i < _NSIG; i++) {
-                if (!signame[i].name)
-                        continue;
+	sigrtmax = sigrt_minmax(&min, &max);
+	j = 1;
 
-                fprintf(fp, "%s[%d] %s", i < 10 ? " " : "", 
-			i, signame[i].name);
-		if (signame[i].altname)
-			fprintf(fp, "/%s",  signame[i].altname);
+        for (i = 1; i <= sigrtmax; i++) {
+		if ((i == SIGRTMIN) || (i == sigrtmax)) {
+			fprintf(fp, "[%d] %s", i, 
+			    (i== SIGRTMIN) ? "SIGRTMIN" : "SIGRTMAX");
+		} else if (i > SIGRTMIN) {
+			if (j <= min){
+				fprintf(fp, "[%d] %s%d", i , "SIGRTMIN+", j);
+				j++;
+			} else if (max >= 1) {
+				fprintf(fp, "[%d] %s%d", i , "SIGRTMAX-",max);
+				max--;
+			}
+		} else {
+                	if (!signame[i].name)
+                        	continue;
+
+                	fprintf(fp, "%s[%d] %s", i < 10 ? " " : "", 
+				i, signame[i].name);
+			if (signame[i].altname)
+				fprintf(fp, "/%s",  signame[i].altname);
+		}
 		fprintf(fp, "\n");
         }
 }
@@ -5580,8 +5617,7 @@ signame_list(void)
 static void 
 translate_sigset(ulonglong sigset)
 {
-	int i, c, bit, len;
-	ulonglong mask, sig;
+	int sigrtmax, min, max, i, j, c, len;
 	char buf[BUFSIZE];
 
 	if (!sigset) {
@@ -5590,21 +5626,42 @@ translate_sigset(ulonglong sigset)
 	}
 
 	len = 0;
+	sigrtmax= sigrt_minmax(&min, &max);
+	j = 1;
 
-        for (i = c = 0; i < (_NSIG/2); i++) {
-              	mask = (ulong)(1) << i;
-		if ((sig = (sigset & mask))) {
-			bit = ffs((int)sig);
-			sprintf(buf, "%s%s", c++ ? " " : "", 
-				signame[bit].name);
+        for (i = 1, c = 0; i <= sigrtmax; i++) {
+		if (sigset & (ulonglong)1) {
+			if (i == SIGRTMIN || i == sigrtmax)
+				sprintf(buf, "%s%s", c++ ? " " : "", 
+					(i==SIGRTMIN) ? "SIGRTMIN" : "SIGRTMAX");
+			else if (i > SIGRTMIN) {
+				if (j <= min)
+					sprintf(buf, "%s%s%d", 
+						c++ ? " " : "", "SIGRTMIN+", j);
+				else if (max >= 1)
+					sprintf(buf, "%s%s%d", 
+						c++ ? " " : "", "SIGRTMAX-", max);
+			} else
+				sprintf(buf, "%s%s", c++ ? " " : "", 
+					signame[i].name);
+
 			if ((len + strlen(buf)) > 80) {
 				shift_string_left(buf, 1);
 				fprintf(fp,  "\n");
 				len = 0;
 			}
+
 			len += strlen(buf);
 			fprintf(fp, buf);
 		}
+
+		sigset >>= 1;
+		if (i > SIGRTMIN) {
+			if (j <= min) 
+				j++;
+			else if (max >= 1)
+				max--;
+		}	
 	}
 	fprintf(fp, "\n");
 }
@@ -5747,11 +5804,11 @@ signal_reference(struct task_context *tc, ulong flags, struct reference *ref)
 static void
 dump_signal_data(struct task_context *tc)
 {
-	int i, others, use_sighand;
+	int i, sigrtmax, others, use_sighand;
 	int translate, sig, sigpending;
 	uint ti_flags;
 	ulonglong sigset, blocked, mask;
-	ulong signal_struct, kaddr, handler, flags, sigqueue, next;
+	ulong signal_struct, kaddr, handler, flags, sigqueue, sigqueue_save, next;
 	ulong sighand_struct;
 	long size;
 	char *signal_buf, *uaddr;
@@ -5827,7 +5884,9 @@ dump_signal_data(struct task_context *tc)
 	} else
 		use_sighand = FALSE;
 
-        for (i = 1; i < _NSIG; i++) {
+	sigrtmax = sigrt_minmax(NULL, NULL);
+
+        for (i = 1; i <= sigrtmax; i++) {
                 fprintf(fp, "%s[%d] ", i < 10 ? " " : "", i);
 
 		if (use_sighand) {
@@ -5933,6 +5992,8 @@ dump_signal_data(struct task_context *tc)
 	else
                 fprintf(fp, "SIGQUEUE: (empty)\n");
 
+	sigqueue_save = sigqueue;
+
         while (sigqueue) {
         	readmem(sigqueue, KVADDR, signal_buf, 
 			SIZE_OPTION(signal_queue, sigqueue), 
@@ -5949,6 +6010,9 @@ dump_signal_data(struct task_context *tc)
                 	sig = INT(signal_buf + OFFSET(sigqueue_info) + 
 				OFFSET(siginfo_si_signo));
 		}
+
+		if (sigqueue_save == next)
+			break;
 
                 fprintf(fp, "           %3d  %lx\n",
                         sig, sigqueue +
