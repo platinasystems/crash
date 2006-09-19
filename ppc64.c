@@ -67,19 +67,7 @@ ppc64_init(int when)
 		machdep->verify_symbol = ppc64_verify_symbol;
 		if (pc->flags & KERNEL_DEBUG_QUERY)
 			return;
-		machdep->pagesize = memory_page_size();
-		machdep->pageshift = ffs(machdep->pagesize) - 1;
-		machdep->pageoffset = machdep->pagesize - 1;
-		machdep->pagemask = ~((ulonglong)machdep->pageoffset);
-		machdep->stacksize = 4 * machdep->pagesize;
-		if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
-			error(FATAL, "cannot malloc pgd space.");
-		if ((machdep->pmd = (char *)malloc(PAGESIZE())) == NULL)
-			error(FATAL, "cannot malloc pmd space.");
-		if ((machdep->ptbl = (char *)malloc(PAGESIZE())) == NULL)
-			error(FATAL, "cannot malloc ptbl space.");
-		if ((machdep->machspec->level4 = (char *)malloc(PAGESIZE())) == NULL)
-			error(FATAL, "cannot malloc level4 space.");
+		machdep->stacksize = PPC64_STACK_SIZE;
 		machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
@@ -93,6 +81,39 @@ ppc64_init(int when)
 		break;
 
 	case PRE_GDB:
+		/*
+                * Recently there were changes made to kexec tools
+                * to support 64K page size. With those changes
+                * vmcore file obtained from a kernel which supports
+                * 64K page size cannot be analyzed using crash on a
+                * machine running with kernel supporting 4K page size
+                *
+                * The following modifications are required in crash
+                * tool to be in sync with kexec tools.
+                *
+                * Look if the following symbol exists. If yes then
+                * the dump was taken with a kernel supporting 64k
+                * page size. So change the page size accordingly.
+                *
+                * Also moved the following code block from
+                * PRE_SYMTAB case here.
+                */
+                if (symbol_exists("__hash_page_64K"))
+                        machdep->pagesize = PPC64_64K_PAGE_SIZE;
+                else
+			machdep->pagesize = memory_page_size();
+		machdep->pageshift = ffs(machdep->pagesize) - 1;
+		machdep->pageoffset = machdep->pagesize - 1;
+		machdep->pagemask = ~((ulonglong)machdep->pageoffset);
+		if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
+			error(FATAL, "cannot malloc pgd space.");
+		if ((machdep->pmd = (char *)malloc(PAGESIZE())) == NULL)
+			error(FATAL, "cannot malloc pmd space.");
+		if ((machdep->ptbl = (char *)malloc(PAGESIZE())) == NULL)
+			error(FATAL, "cannot malloc ptbl space.");
+		if ((machdep->machspec->level4 = (char *)malloc(PAGESIZE())) == NULL)
+			error(FATAL, "cannot malloc level4 space.");
+
 	        machdep->kvbase = symbol_value("_stext");
 		machdep->identity_map_base = machdep->kvbase;
                 machdep->is_kvaddr = generic_is_kvaddr;

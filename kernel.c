@@ -4332,7 +4332,7 @@ next_cpu:
 }
 
 /*
- *  2.6 per-cpu timers, using "per_cpu__tvec_bases".  XXX
+ *  2.6 per-cpu timers, using "per_cpu__tvec_bases".
  */
 
 static void
@@ -4505,6 +4505,11 @@ init_tv_ranges(struct tv_range *tv, int vec_root_size, int vec_size, int cpu)
 				kt->__per_cpu_offset[cpu];
 		else		
 			tvec_bases =  symbol_value("per_cpu__tvec_bases");
+
+		if (symbol_exists("boot_tvec_bases")) {
+			readmem(tvec_bases, KVADDR, &tvec_bases, sizeof(void *), 
+				"per-cpu tvec_bases", FAULT_ON_ERROR);
+		}
 
                 tv[1].base = tvec_bases +
                         OFFSET(tvec_t_base_s_tv1);

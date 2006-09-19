@@ -3503,7 +3503,7 @@ x86_64_calc_phys_base(void)
 	FILE *iomem;
 	char buf[BUFSIZE];
 	char *p1;
-	ulong text_start, kernel_code_start;
+	ulong phys_base, text_start, kernel_code_start;
 	int errflag;
 	struct vmcore_data *vd;
 	Elf64_Phdr *phdr;
@@ -3564,6 +3564,17 @@ x86_64_calc_phys_base(void)
 	/*
 	 *  Get relocation value from whatever dumpfile format is being used.
 	 */
+
+	if (DISKDUMP_DUMPFILE()) {
+		if (diskdump_phys_base(&phys_base)) {
+			machdep->machspec->phys_base = phys_base;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "compressed kdump: phys_base: %lx\n",
+					phys_base);
+		}
+		return;
+	}
+
 	if ((vd = get_kdump_vmcore_data())) {
                 for (i = 0; i < vd->num_pt_load_segments; i++) {
 			phdr = vd->load64 + i;

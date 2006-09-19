@@ -34,6 +34,7 @@ struct diskdump_data {
 	/* header */
 	struct disk_dump_header		*header;
 	struct disk_dump_sub_header	*sub_header;
+	struct kdump_sub_header		*sub_header_kdump;
 
 	size_t	data_offset;
 	int	block_size;
@@ -100,6 +101,7 @@ static int read_dump_header(void)
 {
 	struct disk_dump_header *header = NULL;
 	struct disk_dump_sub_header *sub_header = NULL;
+	struct kdump_sub_header *sub_header_kdump = NULL;
 	int bitmap_len;
 	const int block_size = (int)sysconf(_SC_PAGESIZE);
 	off_t offset;
@@ -110,7 +112,8 @@ static int read_dump_header(void)
 	if (block_size < 0)
 		return FALSE;
 
-	header = malloc(block_size);
+	if ((header = malloc(block_size)) == NULL)
+		error(FATAL, "diskdump: cannot malloc block_size buffer\n");
 
 	if (lseek(dd->dfd, 0, SEEK_SET) == failed) {
 		if (CRASHDEBUG(1))
@@ -125,8 +128,13 @@ static int read_dump_header(void)
 	}
 
 	/* validate dump header */
-	if (memcmp(header->signature, DISK_DUMP_SIGNATURE,
+	if (!memcmp(header->signature, DISK_DUMP_SIGNATURE,
 				sizeof(header->signature))) {
+		dd->flags |= DISKDUMP_LOCAL;
+	} else if (!memcmp(header->signature, KDUMP_SIGNATURE,
+				sizeof(header->signature))) {
+		dd->flags |= KDUMP_CMPRS_LOCAL;
+	} else {
 		if (CRASHDEBUG(1))
 			error(INFO, "diskdump: dump does not have panic dump header\n");
 		goto err;
@@ -152,14 +160,28 @@ static int read_dump_header(void)
 		error(INFO, "diskdump: cannot lseek dump sub header\n");
 		goto err;
 	}
-	sub_header = malloc(block_size);
-	if (read(dd->dfd, sub_header, block_size)
-	  < block_size) {
-		error(INFO, "diskdump: cannot read dump sub header\n");
-		goto err;
-	}
 
-	dd->sub_header = sub_header;
+	if (DISKDUMP_VALID()) {
+		if ((sub_header = malloc(block_size)) == NULL)
+			error(FATAL, "diskdump: cannot malloc sub_header buffer\n");
+
+		if (read(dd->dfd, sub_header, block_size)
+		  < block_size) {
+			error(INFO, "diskdump: cannot read dump sub header\n");
+			goto err;
+		}
+		dd->sub_header = sub_header;
+	} else if (KDUMP_CMPRS_VALID()) {
+		if ((sub_header_kdump = malloc(block_size)) == NULL)
+			error(FATAL, "diskdump: cannot malloc sub_header_kdump buffer\n");
+
+		if (read(dd->dfd, sub_header_kdump, block_size)
+		  < block_size) {
+			error(INFO, "diskdump: cannot read dump sub header\n");
+			goto err;
+		}
+		dd->sub_header_kdump = sub_header_kdump;
+	}
 
 	/* read memory bitmap */
 	bitmap_len = block_size * header->bitmap_blocks;
@@ -171,7 +193,8 @@ static int read_dump_header(void)
 		goto err;
 	}
 
-	dd->bitmap = malloc(bitmap_len);
+	if ((dd->bitmap = malloc(bitmap_len)) == NULL)
+		error(FATAL, "diskdump: cannot malloc bitmap buffer\n");
 	dd->dumpable_bitmap = calloc(bitmap_len, 1);
 	if (read(dd->dfd, dd->bitmap, bitmap_len) < bitmap_len) {
 		error(INFO, "diskdump: cannot read memory bitmap\n");
@@ -220,10 +243,13 @@ err:
 	free(header);
 	if (sub_header)
 		free(sub_header);
+	if (sub_header_kdump)
+		free(sub_header_kdump);
 	if (dd->bitmap)
 		free(dd->bitmap);
 	if (dd->dumpable_bitmap)
 		free(dd->dumpable_bitmap);
+	dd->flags &= ~(DISKDUMP_LOCAL|KDUMP_CMPRS_LOCAL);
 	return FALSE;
 }
 
@@ -257,25 +283,16 @@ is_diskdump(char *file)
 
 	sz = dd->block_size * (DISKDUMP_CACHED_PAGES);
 	if ((dd->page_cache_buf = malloc(sz)) == NULL)
-		return FALSE;
+		error(FATAL, "diskdump: cannot malloc compressed page_cache_buf\n");
 
 	for (i = 0; i < DISKDUMP_CACHED_PAGES; i++)
 		dd->page_cache_hdr[i].pg_bufptr =
 			&dd->page_cache_buf[i * dd->block_size];
 
 	if ((dd->compressed_page = (char *)malloc(dd->block_size)) == NULL)
-		goto err;
-
-	dd->flags |= DISKDUMP_LOCAL;
+		error(FATAL, "diskdump: cannot malloc compressed page space\n");
 
 	return TRUE;
-
-err:
-	if (dd->page_cache_buf)
-		free(dd->page_cache_buf);
-	if (dd->compressed_page)
-		free(dd->compressed_page);
-	return FALSE;
 }
 
 /*
@@ -285,11 +302,25 @@ err:
 int
 diskdump_init(char *unused, FILE *fptr)
 {
-	if (!DISKDUMP_VALID())
+	if (!DISKDUMP_VALID() && !KDUMP_CMPRS_VALID())
 		return FALSE;
 
 	dd->ofp = fptr;
 	return TRUE;
+}
+
+/*
+ *  Get the relocational offset from the sub header of kdump.
+ */
+int
+diskdump_phys_base(unsigned long *phys_base)
+{
+	if (KDUMP_CMPRS_VALID()) {
+		*phys_base = dd->sub_header_kdump->phys_base;
+		return TRUE;
+	}
+
+	return FALSE;
 }
 
 /*
@@ -446,7 +477,8 @@ write_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 ulong
 get_diskdump_panic_task(void)
 {
-	if (!DISKDUMP_VALID() || !get_active_set())
+	if ((!DISKDUMP_VALID() && !KDUMP_CMPRS_VALID())
+	    || !get_active_set())
 		return NO_TASK;
 
 	return (ulong)dd->header->tasks[dd->header->current_cpu];
@@ -458,7 +490,7 @@ extern void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
 static void
 get_diskdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 {
-	if (bt->task == tt->panic_task)
+	if ((bt->task == tt->panic_task) && DISKDUMP_VALID())
 		bt->machdep = &dd->sub_header->elf_regs;
 
 	machdep->get_stack_frame(bt, eip, esp);
@@ -505,7 +537,7 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 uint
 diskdump_page_size(void)
 {
-	if (!DISKDUMP_VALID())
+	if (!DISKDUMP_VALID() && !KDUMP_CMPRS_VALID())
 		return 0;
 
 	return dd->header->block_size;
