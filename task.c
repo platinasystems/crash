@@ -33,6 +33,8 @@ static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
 static void child_list(ulong);
 static void show_task_times(struct task_context *, ulong);
+static void show_task_args(struct task_context *);
+static void show_tgid_list(ulong);
 static int compare_start_time(const void *, const void *);
 static int start_time_timespec(void);
 static ulonglong convert_start_time(ulonglong, ulonglong);
@@ -2119,7 +2121,7 @@ cmd_ps(void)
 	BZERO(&psinfo, sizeof(struct psinfo));
 	flag = 0;
 
-        while ((c = getopt(argcnt, args, "stcpkul")) != EOF) {
+        while ((c = getopt(argcnt, args, "gstcpkula")) != EOF) {
                 switch(c)
 		{
 		case 'k':
@@ -2133,21 +2135,31 @@ cmd_ps(void)
 			break;
 
 		/*
-		 *  The remaining flags are all mutually-exclusive.
+		 *  The a, t, c, p, g and l flags are all mutually-exclusive.
 		 */
+		case 'g':
+			flag &= ~(PS_EXCLUSIVE);
+			flag |= PS_TGID_LIST;
+			break;
+
+		case 'a':
+			flag &= ~(PS_EXCLUSIVE);
+			flag |= PS_ARGV_ENVP;
+			break;
+
 		case 't':
+			flag &= ~(PS_EXCLUSIVE);
 			flag |= PS_TIMES;
-			flag &= ~(PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN);
 			break;
 
 		case 'c': 
+			flag &= ~(PS_EXCLUSIVE);
 			flag |= PS_CHILD_LIST;
-			flag &= ~(PS_PPID_LIST|PS_TIMES|PS_LAST_RUN);
 			break;
 
 		case 'p':
+			flag &= ~(PS_EXCLUSIVE);
 			flag |= PS_PPID_LIST;
-			flag &= ~(PS_CHILD_LIST|PS_TIMES|PS_LAST_RUN);
 			break;
 			
 		case 'l':
@@ -2158,8 +2170,8 @@ cmd_ps(void)
 				argerrs++;
 				break;
 			}
+			flag &= ~(PS_EXCLUSIVE);
 			flag |= PS_LAST_RUN;
-			flag &= ~(PS_CHILD_LIST|PS_TIMES|PS_PPID_LIST);
 			break;
 
 		case 's':
@@ -2246,6 +2258,14 @@ cmd_ps(void)
                 show_last_run(tc);                                    \
                 continue;                                             \
         }                                                             \
+        if (flag & PS_ARGV_ENVP) {                                    \
+                show_task_args(tc);                                   \
+                continue;                                             \
+        }                                                             \
+        if (flag & PS_TGID_LIST) {                                    \
+                show_tgid_list(tc->task);                             \
+                continue;                                             \
+        }                                                             \
         get_task_mem_usage(tc->task, tm);                             \
         fprintf(fp, "%s", is_task_active(tc->task) ? "> " : "  ");    \
         fprintf(fp, "%5ld  %5ld  %2s  %s %3s",                        \
@@ -2276,7 +2296,7 @@ show_ps(ulong flag, struct psinfo *psi)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 
-	if (!(flag & (PS_PPID_LIST|PS_CHILD_LIST|PS_TIMES|PS_LAST_RUN))) 
+	if (!(flag & PS_EXCLUSIVE)) 
 		fprintf(fp, 
 		    "   PID    PPID  CPU %s  ST  %%MEM     VSZ    RSS  COMM\n",
 			flag & PS_KSTACKP ?
@@ -2302,6 +2322,8 @@ show_ps(ulong flag, struct psinfo *psi)
 		return;
 	}
 
+	pc->curcmd_flags |= TASK_SPECIFIED;
+
 	for (ac = 0; ac < psi->argc; ac++) {
 		tm = &task_mem_usage;
 		tc = FIRST_CONTEXT();
@@ -2322,8 +2344,15 @@ show_ps(ulong flag, struct psinfo *psi)
 				break;
 
 			case PS_BY_CMD:
-				if (STREQ(tc->comm, psi->comm[ac]))
-					print = TRUE;
+				if (STREQ(tc->comm, psi->comm[ac])) {
+					if (flag & PS_TGID_LIST) {
+						if (tc->pid == task_tgid(tc->task))
+							print = TRUE;
+						else
+							print = FALSE;
+					} else
+						print = TRUE;
+				}
 				break;
 			}
 
@@ -2368,6 +2397,115 @@ show_last_run(struct task_context *tc)
 			print_task_header(fp, tcp, FALSE);
 		}
 	}
+}
+
+/*
+ *  Show the argv and envp strings pointed to by mm_struct->arg_start 
+ *  and mm_struct->env_start.  The user addresses need to broken up
+ *  into physical on a page-per-page basis because we typically are
+ *  not going to be working in the context of the target task. 
+ */
+static void
+show_task_args(struct task_context *tc)
+{
+	ulong arg_start, arg_end, env_start, env_end;
+	char *buf, *bufptr, *p1;
+	char *as, *ae, *es, *ee;
+	physaddr_t paddr;
+	ulong uvaddr, size, cnt;
+	int c, d;
+
+	print_task_header(fp, tc, 0);
+
+        if (!tc || !tc->mm_struct) {     /* probably a kernel thread */
+               	error(INFO, "no user stack\n\n");
+                return;
+	}
+
+        if (!task_mm(tc->task, TRUE))
+                return;
+
+	if (INVALID_MEMBER(mm_struct_arg_start)) {
+		MEMBER_OFFSET_INIT(mm_struct_arg_start, "mm_struct", "arg_start");
+		MEMBER_OFFSET_INIT(mm_struct_arg_end, "mm_struct", "arg_end");
+		MEMBER_OFFSET_INIT(mm_struct_env_start, "mm_struct", "env_start");
+		MEMBER_OFFSET_INIT(mm_struct_env_end, "mm_struct", "env_end");
+	}
+	
+	arg_start = ULONG(tt->mm_struct + OFFSET(mm_struct_arg_start));
+	arg_end = ULONG(tt->mm_struct + OFFSET(mm_struct_arg_end));
+	env_start = ULONG(tt->mm_struct + OFFSET(mm_struct_env_start));
+	env_end = ULONG(tt->mm_struct + OFFSET(mm_struct_env_end));
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "arg_start: %lx arg_end: %lx (%ld)\n", 
+			arg_start, arg_end, arg_end - arg_start);
+		fprintf(fp, "env_start: %lx env_end: %lx (%ld)\n", 
+			env_start, env_end, env_end - env_start);
+	}
+
+	buf = GETBUF(env_end - arg_start + 1);
+
+	uvaddr = arg_start;
+	size = env_end - arg_start;
+	bufptr = buf;
+
+	while (size > 0) {
+        	if (!uvtop(tc, uvaddr, &paddr, 0)) {
+                	error(INFO, "cannot access user stack address: %lx\n\n",
+                        	uvaddr);
+			goto bailout;
+        	}
+
+		cnt = PAGESIZE() - PAGEOFFSET(uvaddr);
+
+		if (cnt > size)
+			cnt = size;
+
+        	if (!readmem(paddr, PHYSADDR, bufptr, cnt,
+                    "user stack contents", RETURN_ON_ERROR|QUIET)) {
+                	error(INFO, "cannot access user stack address: %lx\n\n",
+                        	uvaddr);
+			goto bailout;
+        	}
+		
+		uvaddr += cnt;
+                bufptr += cnt;
+                size -= cnt;
+	}
+
+	as = buf;
+	ae = &buf[arg_end - arg_start];
+	es = &buf[env_start - arg_start];
+	ee = &buf[env_end - arg_start];
+
+	fprintf(fp, "ARG: ");
+	for (p1 = as, c = 0; p1 < ae; p1++) {
+		if (*p1 == NULLCHAR) {
+			if (c)
+				fprintf(fp, " ");
+			c = 0;
+		} else {
+			fprintf(fp, "%c", *p1);
+			c++;
+		}
+	}
+
+	fprintf(fp, "\nENV: ");
+	for (p1 = es, c = d = 0; p1 < ee; p1++) {
+		if (*p1 == NULLCHAR) {
+			if (c)
+				fprintf(fp, "\n");
+			c = 0;
+		} else {
+			fprintf(fp, "%s%c", !c && (p1 != es) ? "     " : "", *p1);
+			c++, d++;
+		}
+	}
+	fprintf(fp, "\n%s", d ? "" : "\n");
+
+bailout:
+	FREEBUF(buf);
 }
 
 /*
@@ -2751,6 +2889,54 @@ child_list(ulong task)
 }
 
 /*
+ *  Dump the children of a task.
+ */
+static void
+show_tgid_list(ulong task)
+{
+        int i;
+        int cnt;
+        struct task_context *tc;
+	ulong tgid;
+
+        tc = task_to_context(task);
+	tgid = task_tgid(task);
+
+	if (tc->pid != tgid) {
+		if (pc->curcmd_flags & TASK_SPECIFIED) {
+			if (!(tc = tgid_to_context(tgid)))
+				return;
+			task = tc->task;
+		} else
+			return;
+	}
+
+	if ((tc->pid == 0) && (pc->curcmd_flags & IDLE_TASK_SHOWN))
+		return;
+
+       	print_task_header(fp, tc, 0);
+
+        tc = FIRST_CONTEXT();
+        for (i = cnt = 0; i < RUNNING_TASKS(); i++, tc++) {
+		if (tc->task == task)
+			continue;
+
+		if (task_tgid(tc->task)	== tgid) {
+                        INDENT(2);
+                        print_task_header(fp, tc, 0);
+                        cnt++;
+			if (tc->pid == 0)
+				pc->curcmd_flags |= IDLE_TASK_SHOWN;
+                }
+        }
+
+        if (!cnt)
+                fprintf(fp, "  (no threads)\n");
+
+	fprintf(fp, "\n");
+}
+
+/*
  * Return the first task found that belongs to a pid. 
  */
 ulong
@@ -2817,6 +3003,26 @@ task_to_context(ulong task)
                 if (tc->task == task)
                         return tc; 
         
+        return NULL;
+}
+
+/*
+ *  Return a tgid's parent task_context structure.
+ */
+struct task_context *
+tgid_to_context(ulong parent_tgid)
+{
+        int i;
+        struct task_context *tc;
+	ulong tgid;
+
+        tc = FIRST_CONTEXT();
+        for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+		tgid = task_tgid(tc->task);
+		if ((tgid == parent_tgid) && (tgid == tc->pid))
+                        return tc;
+	}
+
         return NULL;
 }
 
@@ -3425,6 +3631,22 @@ task_flags(ulong task)
 		 ULONG(tt->task_struct + OFFSET(task_struct_flags)) : 0;
 
 	return flags;
+}
+
+/*
+ *  Return a task's tgid.
+ */
+ulong
+task_tgid(ulong task)
+{
+        uint tgid;
+
+        fill_task_struct(task);
+
+        tgid = tt->last_task_read ?
+                 UINT(tt->task_struct + OFFSET(task_struct_tgid)) : 0;
+
+        return (ulong)tgid;
 }
 
 ulonglong

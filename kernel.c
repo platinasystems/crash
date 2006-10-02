@@ -4406,8 +4406,12 @@ next_cpu:
         else
                 tvec_bases =  symbol_value("per_cpu__tvec_bases");
 
-        fprintf(fp, "TVEC_BASES[%d]: %lx\n", cpu,
-                tvec_bases + SIZE(tvec_t_base_s));
+	if (symbol_exists("boot_tvec_bases")) {
+		readmem(tvec_bases, KVADDR, &tvec_bases, sizeof(void *),
+                        "per-cpu tvec_bases", FAULT_ON_ERROR);
+        }
+
+        fprintf(fp, "TVEC_BASES[%d]: %lx\n", cpu, tvec_bases);
 		
         sprintf(buf1, "%ld", highest);
         flen = MAX(strlen(buf1), strlen("JIFFIES"));

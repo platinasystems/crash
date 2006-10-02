@@ -1089,6 +1089,10 @@ dump_program_context(void)
 		fprintf(fp, "%sXEN_MACHINE_ADDR", others ? "|" : "");
         if (pc->curcmd_flags & REPEAT)
 		fprintf(fp, "%sREPEAT", others ? "|" : "");
+        if (pc->curcmd_flags & IDLE_TASK_SHOWN)
+		fprintf(fp, "%sIDLE_TASK_SHOWN", others ? "|" : "");
+        if (pc->curcmd_flags & TASK_SPECIFIED)
+		fprintf(fp, "%sTASK_SPECIFIED", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);
