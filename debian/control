@@ -4,7 +4,7 @@ Priority: optional
 Maintainer: Troy Heber <troyh@debian.org>
 Uploaders:
 Build-Depends: debhelper (>= 4), binutils-dev, zlib1g-dev, libncurses5-dev, dpatch
-Standards-Version: 3.7.2.1
+Standards-Version: 3.7.2.2
 
 Package: crash
 Architecture: i386 ia64 alpha powerpc amd64
