@@ -7,8 +7,8 @@
  * netdump dumpfiles, the facilities in netdump.c are used.  For
  * compressed dumpfiles, the facilities in this file are used.
  *
- * Copyright (C) 2004, 2005 David Anderson
- * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005  FUJITSU LIMITED
  * Copyright (C) 2005  NEC Corporation
  *

@@ -841,13 +841,13 @@ ia64_vtop(ulong vaddr, physaddr_t *paddr, ulong *pgd, int verbose, int usr)
 
 	if (usr) {
 		region = VADDR_REGION(vaddr);
-		offset = (vaddr >> PGDIR_SHIFT) & ((PTRS_PER_PGD >> 3) - 1);
+		offset = (vaddr >> PGDIR_SHIFT_3L) & ((PTRS_PER_PGD >> 3) - 1);
 		offset |= (region << (PAGESHIFT() - 6));
 		page_dir = pgd + offset;
 	} else {
 		if (!(pgd = (ulong *)vt->kernel_pgd[0]))
 			error(FATAL, "cannot determine kernel pgd pointer\n");
-		page_dir = pgd + ((vaddr >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1));
+		page_dir = pgd + ((vaddr >> PGDIR_SHIFT_3L) & (PTRS_PER_PGD - 1));
 	}
 
 	if (verbose)

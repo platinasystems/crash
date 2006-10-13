@@ -1,3 +1,13 @@
+crash (4.0-3.7-1) unstable; urgency=medium
+
+  * New upstream version 4.0-3.6 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for 3-level page tables on IA-64
+  * new sig -g option
+
+
+ -- Troy Heber <troyh@debian.org>  Fri, 13 Oct 2006 09:38:31 -0600
+
 crash (4.0-3.6-1) unstable; urgency=low
 
   * New upstream version 4.0-3.6 (see

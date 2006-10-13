@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -51,7 +51,11 @@ static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
 static void task_struct_member(struct task_context *,ulong,struct reference *);
 static void signal_reference(struct task_context *, ulong, struct reference *);
-static void dump_signal_data(struct task_context *);
+static void do_sig_thread_group(ulong);
+static void dump_signal_data(struct task_context *, ulong);
+#define TASK_LEVEL         (0x1)
+#define THREAD_GROUP_LEVEL (0x2)
+#define TASK_INDENT        (0x4)
 static int sigrt_minmax(int *, int *);
 static void signame_list(void);
 static void sigqueue_list(ulong);
@@ -1375,6 +1379,15 @@ retry_pid_hash:
 		}
 	}
 
+        if (cnt > tt->max_tasks) {
+                tt->max_tasks = cnt + TASK_SLUSH;
+                allocate_task_space(tt->max_tasks);
+                hq_close();
+                if (!DUMPFILE())
+                        retries++;
+                goto retry_pid_hash;
+        }
+
         BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
         cnt = retrieve_list((ulong *)tt->task_local, cnt);
 
@@ -1595,6 +1608,15 @@ retry_pid_hash:
 					next, kpp, pnext, pprev);
 		}
 	}
+
+        if (cnt > tt->max_tasks) {
+                tt->max_tasks = cnt + TASK_SLUSH;
+                allocate_task_space(tt->max_tasks);
+                hq_close();
+                if (!DUMPFILE())
+                        retries++;
+                goto retry_pid_hash;
+        }
 
         BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
         cnt = retrieve_list((ulong *)tt->task_local, cnt);
@@ -4266,12 +4288,14 @@ void
 foreach(struct foreach_data *fd)
 {
         int i, j, k, a;
-        struct task_context *tc;
+        struct task_context *tc, *tgc;
 	int specified;
 	int doit;
 	int subsequent;
 	ulong cmdflags; 
+	ulong tgid;
 	struct reference reference, *ref;
+	int print_header;
 	struct bt_info bt_info, *bt;
 
 	/* 
@@ -4308,6 +4332,8 @@ foreach(struct foreach_data *fd)
 		fprintf(fp, "    reference: \"%s\"\n", 
 			fd->reference ?  fd->reference : "");
 	}
+
+	print_header = TRUE;
 
         for (k = 0; k < fd->keys; k++) {
         	switch(fd->keyword_array[k])
@@ -4393,6 +4419,14 @@ foreach(struct foreach_data *fd)
 				error(FATAL, 
 			    	 "sig: -l and -s options are not applicable\n");
 			}
+			if (fd->flags & FOREACH_g_FLAG) {
+				if (!hq_open()) {
+                			error(INFO, 
+					   "cannot hash thread group tasks\n");
+					fd->flags &= ~FOREACH_g_FLAG;
+				} else
+					print_header = FALSE;
+			}
                         break;
 
 		case FOREACH_TEST:
@@ -4453,7 +4487,7 @@ foreach(struct foreach_data *fd)
 		if (fd->reference) {
 			BZERO(ref, sizeof(struct reference));
 			ref->str = fd->reference;
-		} else
+		} else if (print_header)
 			print_task_header(fp, tc, subsequent++);
 
 		for (k = 0; k < fd->keys; k++) {
@@ -4527,8 +4561,14 @@ foreach(struct foreach_data *fd)
 
                         case FOREACH_SIG:
 				pc->curcmd = "sig";
-                                do_sig(tc->task, FOREACH_SIG,
-                                        fd->reference ? ref : NULL);
+				if (fd->flags & FOREACH_g_FLAG) {
+					tgid = task_tgid(tc->task);	
+					tgc = tgid_to_context(tgid);
+					if (hq_enter(tgc->task))
+						do_sig_thread_group(tgc->task);
+				} else 
+                                	do_sig(tc->task, FOREACH_SIG,
+                                        	fd->reference ? ref : NULL);
                                 break;
 
 			case FOREACH_SET:
@@ -4591,6 +4631,11 @@ foreach(struct foreach_data *fd)
 				fprintf(fp, "\n");
 				nlm_files_dump();
 			}
+			break;
+
+		case FOREACH_SIG:
+                        if (fd->flags & FOREACH_g_FLAG)
+				hq_close();
 			break;
 		}
 	}
@@ -5936,13 +5981,14 @@ cmd_sig(void)
 	struct task_context *tc;
 	ulong *tasklist;
 	char *siglist;
+	int thread_group = FALSE;
 
 	tasklist = (ulong *)GETBUF((MAXARGS+NR_CPUS)*sizeof(ulong));
 	ref = (struct reference *)GETBUF(sizeof(struct reference));
 	siglist = GETBUF(BUFSIZE);
 	ref->str = siglist;
 
-        while ((c = getopt(argcnt, args, "lR:s:")) != EOF) {
+        while ((c = getopt(argcnt, args, "lR:s:g")) != EOF) {
                 switch(c)
 		{
 		case 's':
@@ -5960,6 +6006,10 @@ cmd_sig(void)
 			signame_list();
 			return;
 
+		case 'g':
+			pc->curcmd_flags |= TASK_SPECIFIED;
+			thread_group = TRUE;
+			break;
 		default:
 			argerrs++;
 			break;
@@ -6006,10 +6056,65 @@ cmd_sig(void)
 		tasklist[tcnt++] = CURRENT_TASK();
 
 	for (c = 0; c < tcnt; c++) {
-		do_sig(tasklist[c], 0, strlen(ref->str) ? ref : NULL);
-		fprintf(fp, "\n");
+		if (thread_group)
+			do_sig_thread_group(tasklist[c]);
+		else {
+			do_sig(tasklist[c], 0, strlen(ref->str) ? ref : NULL);
+			fprintf(fp, "\n");
+		}
 	}
 
+}
+
+
+/*
+ *  Do the work for the "sig -g" command option, coming from sig or foreach.
+ */
+static void
+do_sig_thread_group(ulong task)
+{
+        int i;
+        int cnt;
+        struct task_context *tc;
+	ulong tgid;
+
+        tc = task_to_context(task);
+	tgid = task_tgid(task);
+
+	if (tc->pid != tgid) {
+		if (pc->curcmd_flags & TASK_SPECIFIED) {
+			if (!(tc = tgid_to_context(tgid))) 
+				return;
+			task = tc->task;
+		} else 
+			return;
+	}
+
+	if ((tc->pid == 0) && (pc->curcmd_flags & IDLE_TASK_SHOWN))
+		return;
+
+       	print_task_header(fp, tc, 0);
+	dump_signal_data(tc, THREAD_GROUP_LEVEL);
+	fprintf(fp, "\n  ");
+	print_task_header(fp, tc, 0);
+	dump_signal_data(tc, TASK_LEVEL|TASK_INDENT);
+
+	tc = FIRST_CONTEXT();
+        for (i = cnt = 0; i < RUNNING_TASKS(); i++, tc++) {
+		if (tc->task == task)
+			continue;
+
+		if (task_tgid(tc->task)	== tgid) {
+			fprintf(fp, "\n  ");
+                        print_task_header(fp, tc, 0);
+			dump_signal_data(tc, TASK_LEVEL|TASK_INDENT);
+                        cnt++;
+			if (tc->pid == 0)
+				pc->curcmd_flags |= IDLE_TASK_SHOWN;
+                }
+        }
+
+	fprintf(fp, "\n");
 }
 
 /*
@@ -6027,7 +6132,7 @@ do_sig(ulong task, ulong flags, struct reference *ref)
         else {
                 if (!(flags & FOREACH_TASK))
                         print_task_header(fp, tc, 0);
-                dump_signal_data(tc);
+                dump_signal_data(tc, TASK_LEVEL|THREAD_GROUP_LEVEL);
         }
 }
 
@@ -6047,16 +6152,17 @@ signal_reference(struct task_context *tc, ulong flags, struct reference *ref)
  *  Dump all signal-handling data for a task.
  */
 static void
-dump_signal_data(struct task_context *tc)
+dump_signal_data(struct task_context *tc, ulong flags)
 {
 	int i, sigrtmax, others, use_sighand;
 	int translate, sigpending;
 	uint ti_flags;
 	ulonglong sigset, blocked, mask;
-	ulong signal_struct, kaddr, handler, flags, sigqueue;
+	ulong signal_struct, kaddr, handler, sa_flags, sigqueue;
 	ulong sighand_struct;
 	long size;
 	char *signal_buf, *uaddr;
+	ulong shared_pending, signal;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -6074,17 +6180,6 @@ dump_signal_data(struct task_context *tc)
 	sigset = task_signal(tc->task, 0);
 	if (!tt->last_task_read)
 		return;
-	blocked = task_blocked(tc->task);
-
-	if (VALID_MEMBER(task_struct_sigpending))
-		sigpending = INT(tt->task_struct + 
-			OFFSET(task_struct_sigpending));
-	else if (VALID_MEMBER(thread_info_flags)) {
-		fill_thread_info(tc->thread_info);
-		ti_flags = UINT(tt->thread_info + OFFSET(thread_info_flags));
-		sigpending = ti_flags & (1<<TIF_SIGPENDING);
-	}
-	
 
 	if (VALID_MEMBER(task_struct_sig))
 		signal_struct = ULONG(tt->task_struct + 
@@ -6093,160 +6188,224 @@ dump_signal_data(struct task_context *tc)
 		signal_struct = ULONG(tt->task_struct + 
 			OFFSET(task_struct_signal));
 
-	fprintf(fp, "SIGNAL_STRUCT: %lx  ", signal_struct);
-
 	size = MAX(SIZE(signal_struct), VALID_SIZE(signal_queue) ?  
 		SIZE(signal_queue) : SIZE(sigqueue));
 	if (VALID_SIZE(sighand_struct))
 		size = MAX(size, SIZE(sighand_struct));
 	signal_buf = GETBUF(size);
 
-	readmem(signal_struct, KVADDR, signal_buf,
-		SIZE(signal_struct), "signal_struct buffer",
-		FAULT_ON_ERROR);
-	fprintf(fp, "COUNT: %d\n",
-		INT(signal_buf + OFFSET(signal_struct_count)));
+	if (signal_struct)
+		readmem(signal_struct, KVADDR, signal_buf,
+			SIZE(signal_struct), "signal_struct buffer",
+			FAULT_ON_ERROR);
 
-	fprintf(fp, " SIG %s %s %s %s\n",
-		mkstring(buf1, VADDR_PRLEN == 8 ? 9 : VADDR_PRLEN, 
-			CENTER, "SIGACTION"),
+	/*
+	 *  Signal dispositions (thread group level).
+	 */
+	if (flags & THREAD_GROUP_LEVEL) {
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		fprintf(fp, "SIGNAL_STRUCT: %lx  ", signal_struct);
+		if (!signal_struct) {
+			fprintf(fp, "\n");
+			return;
+		}
+		fprintf(fp, "COUNT: %d\n",
+			INT(signal_buf + OFFSET(signal_struct_count)));
+
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		fprintf(fp, " SIG %s %s %s %s\n",
+			mkstring(buf1, VADDR_PRLEN == 8 ? 9 : VADDR_PRLEN, 
+				CENTER, "SIGACTION"),
 		mkstring(buf2, UVADDR_PRLEN, RJUST, "HANDLER"),
 		mkstring(buf3, 16, CENTER, "MASK"),
 		mkstring(buf4, VADDR_PRLEN, LJUST, "FLAGS"));
 
-	if (VALID_MEMBER(task_struct_sighand)) {
-		sighand_struct = ULONG(tt->task_struct +
-                        OFFSET(task_struct_sighand));
-		readmem(sighand_struct, KVADDR, signal_buf,
-			SIZE(sighand_struct), "sighand_struct buffer",
-			FAULT_ON_ERROR);
-		use_sighand = TRUE;
-	} else
-		use_sighand = FALSE;
+		if (VALID_MEMBER(task_struct_sighand)) {
+			sighand_struct = ULONG(tt->task_struct +
+	                        OFFSET(task_struct_sighand));
+			readmem(sighand_struct, KVADDR, signal_buf,
+				SIZE(sighand_struct), "sighand_struct buffer",
+				FAULT_ON_ERROR);
+			use_sighand = TRUE;
+		} else
+			use_sighand = FALSE;
 
-	sigrtmax = sigrt_minmax(NULL, NULL);
+		sigrtmax = sigrt_minmax(NULL, NULL);
 
-        for (i = 1; i <= sigrtmax; i++) {
-                fprintf(fp, "%s[%d] ", i < 10 ? " " : "", i);
+	        for (i = 1; i <= sigrtmax; i++) {
+			if (flags & TASK_INDENT)
+				INDENT(2);
 
-		if (use_sighand) {
-			kaddr = sighand_struct + OFFSET(sighand_struct_action) +
-				((i-1) * SIZE(k_sigaction));
-			uaddr = signal_buf + OFFSET(sighand_struct_action) +
-				((i-1) * SIZE(k_sigaction));
-		} else {
-			kaddr = signal_struct + OFFSET(signal_struct_action) +
-				((i-1) * SIZE(k_sigaction));
-			uaddr = signal_buf + OFFSET(signal_struct_action) +
-				((i-1) * SIZE(k_sigaction));
-		}
-
-		handler = ULONG(uaddr + OFFSET(sigaction_sa_handler));
-		switch ((long)handler)
-		{
-		case -1:
-			mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_ERR");
-			break;
-		case 0:
-			mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_DFL");
-			break;
-		case 1:
-			mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_IGN");
-			break;
-		default:
-			mkstring(buf1, UVADDR_PRLEN, RJUST|LONG_HEX,
-                                    MKSTR(handler));
-			break;
-		}
-
-		mask = sigaction_mask((ulong)uaddr);
-		flags = ULONG(uaddr + OFFSET(sigaction_sa_flags));
-
-		fprintf(fp, "%s%s %s %016llx %lx ",
-			space(MINSPACE-1), 
-			mkstring(buf2,UVADDR_PRLEN,LJUST|LONG_HEX,MKSTR(kaddr)),
-			buf1,
-			mask,
-			flags);
-
-		if (flags) {
-			others = 0; translate = 1;
-			if (flags & SA_NOCLDSTOP)
-				fprintf(fp, "%s%sSA_NOCLDSTOP",
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
+	                fprintf(fp, "%s[%d] ", i < 10 ? " " : "", i);
+	
+			if (use_sighand) {
+				kaddr = sighand_struct + 
+					OFFSET(sighand_struct_action) +
+					((i-1) * SIZE(k_sigaction));
+				uaddr = signal_buf + 
+					OFFSET(sighand_struct_action) +
+					((i-1) * SIZE(k_sigaction));
+			} else {
+				kaddr = signal_struct + 
+					OFFSET(signal_struct_action) +
+					((i-1) * SIZE(k_sigaction));
+				uaddr = signal_buf + 
+					OFFSET(signal_struct_action) +
+					((i-1) * SIZE(k_sigaction));
+			}
+	
+			handler = ULONG(uaddr + OFFSET(sigaction_sa_handler));
+			switch ((long)handler)
+			{
+			case -1:
+				mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_ERR");
+				break;
+			case 0:
+				mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_DFL");
+				break;
+			case 1:
+				mkstring(buf1, UVADDR_PRLEN, RJUST, "SIG_IGN");
+				break;
+			default:
+				mkstring(buf1, UVADDR_PRLEN, RJUST|LONG_HEX,
+	                                    MKSTR(handler));
+				break;
+			}
+	
+			mask = sigaction_mask((ulong)uaddr);
+			sa_flags = ULONG(uaddr + OFFSET(sigaction_sa_flags));
+	
+			fprintf(fp, "%s%s %s %016llx %lx ",
+				space(MINSPACE-1), 
+				mkstring(buf2,
+				UVADDR_PRLEN,LJUST|LONG_HEX,MKSTR(kaddr)),
+				buf1,
+				mask,
+				sa_flags);
+	
+			if (sa_flags) {
+				others = 0; translate = 1;
+				if (sa_flags & SA_NOCLDSTOP)
+					fprintf(fp, "%s%sSA_NOCLDSTOP",
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
 #ifdef SA_RESTORER
-                        if (flags & SA_RESTORER)
-                                fprintf(fp, "%s%sSA_RESTORER",
-                                        translate-- > 0 ? "(" : "",
-                                        others++ ? "|" : "");
+	                        if (sa_flags & SA_RESTORER)
+	                                fprintf(fp, "%s%sSA_RESTORER",
+	                                        translate-- > 0 ? "(" : "",
+	                                        others++ ? "|" : "");
 #endif
 #ifdef SA_NOCLDWAIT
-			if (flags & SA_NOCLDWAIT)
-				fprintf(fp, "%s%sSA_NOCLDWAIT", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
+				if (sa_flags & SA_NOCLDWAIT)
+					fprintf(fp, "%s%sSA_NOCLDWAIT", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
 #endif
-			if (flags & SA_SIGINFO)
-				fprintf(fp, "%s%sSA_SIGINFO", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
-			if (flags & SA_ONSTACK)
-				fprintf(fp, "%s%sSA_ONSTACK", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
-			if (flags & SA_RESTART)
-				fprintf(fp, "%s%sSA_RESTART", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
-			if (flags & SA_NODEFER)
-				fprintf(fp, "%s%sSA_NODEFER", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
-			if (flags & SA_RESETHAND)
-				fprintf(fp, "%s%sSA_RESETHAND", 
-					translate-- > 0 ? "(" : "",
-					others++ ? "|" : "");
-			if (translate < 1)
-                		fprintf(fp, ")");
+				if (sa_flags & SA_SIGINFO)
+					fprintf(fp, "%s%sSA_SIGINFO", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
+				if (sa_flags & SA_ONSTACK)
+					fprintf(fp, "%s%sSA_ONSTACK", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
+				if (sa_flags & SA_RESTART)
+					fprintf(fp, "%s%sSA_RESTART", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
+				if (sa_flags & SA_NODEFER)
+					fprintf(fp, "%s%sSA_NODEFER", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
+				if (sa_flags & SA_RESETHAND)
+					fprintf(fp, "%s%sSA_RESETHAND", 
+						translate-- > 0 ? "(" : "",
+						others++ ? "|" : "");
+				if (translate < 1)
+	                		fprintf(fp, ")");
+			}
+	
+	                fprintf(fp, "\n");
+	        }
+	}
+	
+	if (flags & TASK_LEVEL) {
+		/*
+	 	* Pending signals (task level).
+		*/
+		if (VALID_MEMBER(task_struct_sigpending))
+			sigpending = INT(tt->task_struct + 
+				OFFSET(task_struct_sigpending));
+		else if (VALID_MEMBER(thread_info_flags)) {
+			fill_thread_info(tc->thread_info);
+			ti_flags = UINT(tt->thread_info + OFFSET(thread_info_flags));
+			sigpending = ti_flags & (1<<TIF_SIGPENDING);
 		}
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		fprintf(fp, "SIGPENDING: %s\n", sigpending ? "yes" : "no");
 
-                fprintf(fp, "\n");
-        }
-	fprintf(fp, "SIGPENDING: %s\n", sigpending ? "yes" : "no");
-	fprintf(fp, "   BLOCKED: %016llx\n", blocked);
+		/*
+	 	*  Blocked signals (task level).
+	 	*/
+
+		blocked = task_blocked(tc->task);
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		fprintf(fp, "   BLOCKED: %016llx\n", blocked);
 		
-	if (VALID_MEMBER(signal_struct_shared_pending) )
-		fprintf(fp, "PRIVATE_PENDING\n");
-	fprintf(fp, "    SIGNAL: %016llx\n", sigset);
+		/*
+	 	*  Pending queue (task level).
+	 	*/
+	
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		if (VALID_MEMBER(signal_struct_shared_pending)) {
+			fprintf(fp, "PRIVATE_PENDING\n");
+			if (flags & TASK_INDENT)
+				INDENT(2);
+		}
+		fprintf(fp, "    SIGNAL: %016llx\n", sigset);
 
-	if (VALID_MEMBER(task_struct_sigqueue)) 
-		sigqueue = ULONG(tt->task_struct + 
-			OFFSET(task_struct_sigqueue));
+		if (VALID_MEMBER(task_struct_sigqueue)) 
+			sigqueue = ULONG(tt->task_struct + 
+				OFFSET(task_struct_sigqueue));
+	
+		else if (VALID_MEMBER(task_struct_pending)) 
+			sigqueue = ULONG(tt->task_struct +
+				OFFSET(task_struct_pending) +
+				OFFSET_OPTION(sigpending_head, 
+				sigpending_list));
+	
+		if (VALID_MEMBER(sigqueue_list) && empty_list(sigqueue))
+			sigqueue = 0;
 
-	else if (VALID_MEMBER(task_struct_pending)) 
-		sigqueue = ULONG(tt->task_struct +
-			OFFSET(task_struct_pending) +
-			OFFSET_OPTION(sigpending_head, sigpending_list));
+		if (flags & TASK_INDENT)
+			INDENT(2);
+		if (sigqueue) {
+                	fprintf(fp, "  SIGQUEUE:  SIG  %s\n",
+                        	mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SIGINFO"));
+		 	sigqueue_list(sigqueue);
+		} else
+                	fprintf(fp, "  SIGQUEUE: (empty)\n");
+	}
 
-	if (VALID_MEMBER(sigqueue_list) && empty_list(sigqueue))
-		sigqueue = 0;
+	/*
+	 *  Pending queue (thread group level).
+	 */
+	if ((flags & THREAD_GROUP_LEVEL) &&
+	    VALID_MEMBER(signal_struct_shared_pending)) {
 
-	if (sigqueue) {
-                fprintf(fp, "  SIGQUEUE:  SIG  %s\n",
-                        mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SIGINFO"));
-		 sigqueue_list(sigqueue);
-	} else
-                fprintf(fp, "  SIGQUEUE: (empty)\n");
-
-	if (VALID_MEMBER(signal_struct_shared_pending) ) {
-		ulong shared_pending, signal;
 		fprintf(fp, "SHARED_PENDING\n");
 		shared_pending = signal_struct + OFFSET(signal_struct_shared_pending);
 		signal = shared_pending + OFFSET(sigpending_signal);
 		readmem(signal, KVADDR, signal_buf,SIZE(sigpending_signal),
 			"signal", FAULT_ON_ERROR);
 		sigset = task_signal(0, (ulong*)signal_buf);
+		if (flags & TASK_INDENT)
+			INDENT(2);
 		fprintf(fp, "    SIGNAL: %016llx\n", sigset);
                 sigqueue = (shared_pending + 
 			OFFSET_OPTION(sigpending_head, sigpending_list) + 
@@ -6257,6 +6416,8 @@ dump_signal_data(struct task_context *tc)
 
 		if (VALID_MEMBER(sigqueue_list) && empty_list(sigqueue))
 			sigqueue = 0;
+		if (flags & TASK_INDENT)
+			INDENT(2);
 		if (sigqueue) {
                		fprintf(fp, "  SIGQUEUE:  SIG  %s\n",
                        		mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SIGINFO"));

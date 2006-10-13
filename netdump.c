@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.

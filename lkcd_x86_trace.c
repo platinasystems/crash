@@ -5,8 +5,8 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  *  Adapted as noted from the following LKCD files:
  *
