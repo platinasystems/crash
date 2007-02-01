@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
  */
 
 #include "defs.h"
+#include "xen_hyper_defs.h"
 #include <elf.h>
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
@@ -43,6 +44,7 @@ static void verify_namelist(void);
 static char *debug_kernel_version(char *);
 static int restore_stack(struct bt_info *);
 static ulong __xen_m2p(ulonglong, ulong);
+static int search_mapping_page(ulong, ulong *, ulong *, ulong *);
 static void read_in_kernel_config_err(int, char *);
 
 
@@ -70,16 +72,26 @@ kernel_init()
 	kt->end = symbol_value("_end");
 	
 	/*
-	 *  If Xen architecture, default to writable page tables; for now
-	 *  it can be overridden with the --shared_page_tables command
-	 *  line option.
+	 *  For the Xen architecture, default to writable page tables unless:
+	 *  
+	 *  (1) it's an "xm save" CANONICAL_PAGE_TABLES dumpfile,  or
+	 *  (2) the --shadow_page_tables option was explicitly entered.  
+	 *
+	 *  But if the "phys_to_maching_mapping" array does not exist, and 
+         *  it's not an "xm save" canonical dumpfile, then we have no choice 
+         *  but to presume shadow page tables.
 	 */ 
 	if (symbol_exists("xen_start_info")) {
 		kt->flags |= ARCH_XEN;
 		if (!(kt->xen_flags & (SHADOW_PAGE_TABLES|CANONICAL_PAGE_TABLES)))
 			kt->xen_flags |= WRITABLE_PAGE_TABLES;
-         	get_symbol_data("phys_to_machine_mapping", sizeof(ulong),
-                       	&kt->phys_to_machine_mapping);
+		if (symbol_exists("phys_to_machine_mapping"))
+         		get_symbol_data("phys_to_machine_mapping", sizeof(ulong),
+                       		&kt->phys_to_machine_mapping);
+		else if (!(kt->xen_flags & CANONICAL_PAGE_TABLES)) {
+			kt->xen_flags &= ~WRITABLE_PAGE_TABLES;
+			kt->xen_flags |= SHADOW_PAGE_TABLES;
+		}
 		if (machine_type("X86"))
                 	get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
 		if (machine_type("X86_64"))
@@ -102,8 +114,9 @@ kernel_init()
 		kt->cpus = 1;
 
 	if ((sp1 = symbol_search("__per_cpu_start")) &&
- 	    (sp2 =  symbol_search("__per_cpu_end")) &&
-	    (sp1->type == 'A') && (sp2->type == 'A') &&
+ 	    (sp2 = symbol_search("__per_cpu_end")) &&
+	    (sp1->type == 'A' || sp1->type == 'D') && 
+	    (sp2->type == 'A' || sp2->type == 'D') &&
 	    (sp2->value > sp1->value))
 		kt->flags |= SMP|PER_CPU_OFF;
 	
@@ -262,27 +275,66 @@ kernel_init()
 	STRUCT_SIZE_INIT(hlist_node, "hlist_node"); 
 
 	MEMBER_OFFSET_INIT(irq_desc_t_status,  "irq_desc_t", "status");
-	MEMBER_OFFSET_INIT(irq_desc_t_handler, "irq_desc_t", "handler");
+	if (MEMBER_EXISTS("irq_desc_t", "handler"))
+		MEMBER_OFFSET_INIT(irq_desc_t_handler, "irq_desc_t", "handler");
+	else
+		MEMBER_OFFSET_INIT(irq_desc_t_chip, "irq_desc_t", "chip");
 	MEMBER_OFFSET_INIT(irq_desc_t_action, "irq_desc_t", "action");
 	MEMBER_OFFSET_INIT(irq_desc_t_depth, "irq_desc_t", "depth");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_typename, 
-		"hw_interrupt_type", "typename");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_startup,
-		"hw_interrupt_type", "startup");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_shutdown,
-		"hw_interrupt_type", "shutdown");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_handle, 
-                "hw_interrupt_type", "handle");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_enable,
-		"hw_interrupt_type", "enable");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_disable,
-		"hw_interrupt_type", "disable");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_ack, 
-		"hw_interrupt_type", "ack");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_end, 
-		"hw_interrupt_type", "end");
-	MEMBER_OFFSET_INIT(hw_interrupt_type_set_affinity,
-		"hw_interrupt_type", "set_affinity");
+	if (STRUCT_EXISTS("hw_interrupt_type")) {
+		MEMBER_OFFSET_INIT(hw_interrupt_type_typename,
+			"hw_interrupt_type", "typename");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_startup,
+			"hw_interrupt_type", "startup");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_shutdown,
+			"hw_interrupt_type", "shutdown");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_handle,
+        	        "hw_interrupt_type", "handle");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_enable,
+			"hw_interrupt_type", "enable");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_disable,
+			"hw_interrupt_type", "disable");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_ack,
+			"hw_interrupt_type", "ack");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_end,
+			"hw_interrupt_type", "end");
+		MEMBER_OFFSET_INIT(hw_interrupt_type_set_affinity,
+			"hw_interrupt_type", "set_affinity");
+	} else { /*
+		  * On later kernels where hw_interrupt_type was replaced
+		  * by irq_chip
+		  */
+		MEMBER_OFFSET_INIT(irq_chip_typename,
+			"irq_chip", "name");
+		MEMBER_OFFSET_INIT(irq_chip_startup,
+			"irq_chip", "startup");
+		MEMBER_OFFSET_INIT(irq_chip_shutdown,
+			"irq_chip", "shutdown");
+		MEMBER_OFFSET_INIT(irq_chip_enable,
+			"irq_chip", "enable");
+		MEMBER_OFFSET_INIT(irq_chip_disable,
+			"irq_chip", "disable");
+		MEMBER_OFFSET_INIT(irq_chip_ack,
+			"irq_chip", "ack");
+		MEMBER_OFFSET_INIT(irq_chip_mask,
+			"irq_chip", "mask");
+		MEMBER_OFFSET_INIT(irq_chip_mask_ack,
+			"irq_chip", "mask_ack");
+		MEMBER_OFFSET_INIT(irq_chip_unmask,
+			"irq_chip", "unmask");
+		MEMBER_OFFSET_INIT(irq_chip_eoi,
+			"irq_chip", "eoi");
+		MEMBER_OFFSET_INIT(irq_chip_end,
+			"irq_chip", "end");
+		MEMBER_OFFSET_INIT(irq_chip_set_affinity,
+			"irq_chip", "set_affinity");
+		MEMBER_OFFSET_INIT(irq_chip_retrigger,
+			"irq_chip", "retrigger");
+		MEMBER_OFFSET_INIT(irq_chip_set_type,
+			"irq_chip", "set_type");
+		MEMBER_OFFSET_INIT(irq_chip_set_wake,
+			"irq_chip", "set_wake");
+	}
 	MEMBER_OFFSET_INIT(irqaction_handler, "irqaction", "handler");
 	MEMBER_OFFSET_INIT(irqaction_flags, "irqaction", "flags");
 	MEMBER_OFFSET_INIT(irqaction_mask, "irqaction", "mask");
@@ -402,6 +454,9 @@ kernel_init()
 		if (!(kt->flags & NO_KALLSYMS))
 			kt->flags |= KALLSYMS_V2;
 	}
+
+	if (!(kt->flags & DWARF_UNWIND))
+		kt->flags |= NO_DWARF_UNWIND; 
 }
 
 /*
@@ -427,7 +482,7 @@ verify_version(void)
 
 	if (!(sp = symbol_search("linux_banner")))
 		error(FATAL, "linux_banner symbol does not exist?\n");
-	else if (sp->type == 'R')
+	else if ((sp->type == 'R') || (sp->type == 'r'))
 		linux_banner = symbol_value("linux_banner");
 	else
 		get_symbol_data("linux_banner", sizeof(ulong), &linux_banner);
@@ -1149,18 +1204,25 @@ generic_dis_filter(ulong value, char *buf)
  *     -s  displays arguments symbolically.
  */
 
+void
+clone_bt_info(struct bt_info *orig, struct bt_info *new,
+	      struct task_context *tc)
+{
+	BCOPY(orig, new, sizeof(*new));
+	new->stackbuf = NULL;
+	new->tc = tc;
+	new->task = tc->task;
+	new->stackbase = GET_STACKBASE(tc->task);
+	new->stacktop = GET_STACKTOP(tc->task);
+}
+
 #define BT_SETUP(TC)                                          \
-	BCOPY(&bt_setup, bt, sizeof(struct bt_info));         \
+	clone_bt_info(&bt_setup, bt, (TC));         	      \
         if (refptr) {                                         \
 		BZERO(&reference, sizeof(struct reference));  \
 		bt->ref = &reference;                         \
         	bt->ref->str = refptr;                        \
-	}                                                     \
-        bt->tc = (TC);                                        \
-        bt->task = ((TC)->task);			      \
-	bt->stackbase = GET_STACKBASE((TC)->task);            \
-	bt->stacktop = GET_STACKTOP((TC)->task);              \
-	bt->stackbuf = NULL;
+	}
  
 void
 cmd_bt(void)
@@ -1185,7 +1247,7 @@ cmd_bt(void)
 		bt->flags |= BT_OLD_BACK_TRACE;
 
         while ((c = getopt(argcnt, args, "fF:I:S:aloreEgstTd:R:O")) != EOF) {
-                switch(c)
+                switch (c)
 		{
 		case 'f':
 			bt->flags |= BT_FULL;
@@ -1283,6 +1345,9 @@ cmd_bt(void)
 			} else if (*optarg == '-') {
 				hook.esp = dtol(optarg+1, FAULT_ON_ERROR, NULL);
 				hook.esp = (ulong)(0 - (long)hook.esp);
+			} else if (STREQ(optarg, "dwarf") || STREQ(optarg, "cfi")) {
+                        	if (!(kt->flags & DWARF_UNWIND_CAPABLE))
+					return;
 			} else
 				hook.esp = dtol(optarg, FAULT_ON_ERROR, NULL);
 			break;
@@ -1323,6 +1388,11 @@ cmd_bt(void)
 		}
 	}
 
+	if (XEN_HYPER_MODE()) {
+		if (bt->flags & BT_EFRAME_SEARCH)
+			argerrs++;
+	}
+
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
@@ -1352,6 +1422,34 @@ cmd_bt(void)
                 BT_SETUP(tc);
                 back_trace(bt);
                 return;
+	}
+
+	if (XEN_HYPER_MODE()) {
+#ifdef XEN_HYPERVISOR_ARCH
+		/* "task" means physical cpu id */
+		if (active) {
+			for (c = 0; c < XEN_HYPER_MAX_CPUS(); c++) {
+				if (!xen_hyper_test_pcpu_id(c))
+					continue;
+				fake_tc.task = c;
+				BT_SETUP(&fake_tc);
+				print_pcpu_header_hyper(fp, c, subsequent++);
+				back_trace(bt);
+			}
+		} else {
+			if (args[optind]) {
+				fake_tc.task = atoi(args[optind]);
+			} else {
+				fake_tc.task = 0; /* ODA: set current */
+			}
+			BT_SETUP(&fake_tc);
+			print_pcpu_header_hyper(fp, fake_tc.task, 0);
+			back_trace(bt);
+		}
+		return;
+#else
+		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
+#endif
 	}
 
 	if (active) {
@@ -1541,7 +1639,9 @@ back_trace(struct bt_info *bt)
 		machdep->get_stack_frame(bt, eip ? NULL : &eip, 
 			esp ? NULL : &esp);
 	 
-        } else if (NETDUMP_DUMPFILE())
+        } else if (XEN_HYPER_MODE())
+		machdep->get_stack_frame(bt, &eip, &esp);
+	else if (NETDUMP_DUMPFILE())
                 get_netdump_regs(bt, &eip, &esp);
 	else if (KDUMP_DUMPFILE())
                 get_kdump_regs(bt, &eip, &esp);
@@ -1749,6 +1849,7 @@ dump_bt_info(struct bt_info *bt)
 	fprintf(fp, "       flags: %llx\n", bt->flags);
 	fprintf(fp, "     instptr: %lx\n", bt->instptr);
 	fprintf(fp, "      stkptr: %lx\n", bt->stkptr);
+	fprintf(fp, "        bptr: %lx\n", bt->bptr);
 	fprintf(fp, "   stackbase: %lx\n", bt->stackbase);
 	fprintf(fp, "    stacktop: %lx\n", bt->stacktop);
 	fprintf(fp, "          tc: %lx ", (ulong)bt->tc);
@@ -1966,7 +2067,7 @@ module_init(void)
 	please_wait("gathering module symbol data");
 
         for (mod = kt->module_list; mod != kt->kernel_module; mod = mod_next) {
-		if (CRASHDEBUG(7))
+		if (CRASHDEBUG(3))
 			fprintf(fp, "module: %lx\n", mod);
 
                 if (!readmem(mod, KVADDR, modbuf, SIZE(module), 
@@ -2208,7 +2309,7 @@ cmd_mod(void)
 	address = 0;
 	flag = LIST_MODULE_HDR;
 
-        while ((c = getopt(argcnt, args, "rd:Ds:St:")) != EOF) {
+        while ((c = getopt(argcnt, args, "rd:Ds:St:o")) != EOF) {
                 switch(c)
 		{
                 case 'r':
@@ -2240,6 +2341,19 @@ cmd_mod(void)
                         else
                                 cmd_usage(pc->curcmd, SYNOPSIS);
                         break;
+
+                /*
+                 *  Revert to using old-style add-symbol-file command
+		 *  for KMOD_V2 kernels.
+                 */
+                case 'o':
+			if (flag) 
+				cmd_usage(pc->curcmd, SYNOPSIS);
+			if (kt->flags & KMOD_V1)
+				error(INFO, 
+				    "-o option is not applicable to this kernel version\n");
+                        st->flags |= USE_OLD_ADD_SYM;
+			return;
 
 		case 't':
 			if (is_directory(optarg))
@@ -2573,16 +2687,20 @@ module_objfile_search(char *modref, char *filename, char *tree)
 		strcpy(file, filename);
 #ifdef MODULES_IN_CWD
        else {
-                sprintf(file, "%s.o", modref);
-                if (access(file, R_OK) == 0) {
-                        retbuf = GETBUF(strlen(file)+1);
-                        strcpy(retbuf, file);
-                        if (CRASHDEBUG(1))
-                            	fprintf(fp, 
-				    "find_module_objfile: [%s] file in cwd\n",
-                                	retbuf);
-                        return retbuf;
-                }
+		char *fileext[] = { "ko", "o"};
+		int i;
+		for (i = 0; i < 2; i++) {
+			sprintf(file, "%s.%s", modref, fileext[i]);
+			if (access(file, R_OK) == 0) {
+				retbuf = GETBUF(strlen(file)+1);
+				strcpy(retbuf, file);
+				if (CRASHDEBUG(1))
+					fprintf(fp, 
+					    "find_module_objfile: [%s] file in cwd\n",
+						retbuf);
+				return retbuf;
+			}
+		}
 	}
 #else
 	else 
@@ -2601,6 +2719,8 @@ module_objfile_search(char *modref, char *filename, char *tree)
 	if ((st->flags & INSMOD_BUILTIN) && !filename) {
 		sprintf(buf, "__insmod_%s_O/", modref);
 		if (symbol_query(buf, NULL, &sp) == 1) {
+                        if (CRASHDEBUG(1))
+                                fprintf(fp, "search: INSMOD_BUILTIN %s\n", sp->name);
 			BZERO(buf, BUFSIZE);
 			p1 = strstr(sp->name, "/");
 			if ((p2 = strstr(sp->name, file)))
@@ -3021,7 +3141,11 @@ display_sys_stats(void)
 	if (DUMPFILE()) {
 		fprintf(fp, "       PANIC: ");
 		if (machdep->flags & HWRESET)
-			fprintf(fp, "HARDWARE RESET\n");
+			fprintf(fp, "(HARDWARE RESET)\n");
+		else if (machdep->flags & INIT)
+			fprintf(fp, "(INIT)\n");
+		else if (machdep->flags & MCA)
+			fprintf(fp, "(MCA)\n");
 		else {
         		strip_linefeeds(get_panicmsg(buf));
 			fprintf(fp, "\"%s\"%s\n", buf, 
@@ -3378,6 +3502,16 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
 	if (kt->flags & NO_IKCONFIG)
 		fprintf(fp, "%sNO_IKCONFIG", others++ ? "|" : "");
+	if (kt->flags & DWARF_UNWIND)
+		fprintf(fp, "%sDWARF_UNWIND", others++ ? "|" : "");
+	if (kt->flags & NO_DWARF_UNWIND)
+		fprintf(fp, "%sNO_DWARF_UNWIND", others++ ? "|" : "");
+	if (kt->flags & DWARF_UNWIND_MEMORY)
+		fprintf(fp, "%sDWARF_UNWIND_MEMORY", others++ ? "|" : "");
+	if (kt->flags & DWARF_UNWIND_EH_FRAME)
+		fprintf(fp, "%sDWARF_UNWIND_EH_FRAME", others++ ? "|" : "");
+	if (kt->flags & DWARF_UNWIND_MODULES)
+		fprintf(fp, "%sDWARF_UNWIND_MODULES", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -3452,16 +3586,23 @@ dump_kernel_table(int verbose)
 	for (i = 0; verbose && (i < P2M_MAPPING_CACHE); i++) {
 		if (!kt->p2m_mapping_cache[i].mapping)
 			continue;
-		fprintf(fp, "       [%d] mapping: %lx mfn: %lx\n",
+		fprintf(fp, "       [%d] mapping: %lx start: %lx end: %lx (%ld mfns)\n",
 			i, kt->p2m_mapping_cache[i].mapping,
-			kt->p2m_mapping_cache[i].mfn);
+			kt->p2m_mapping_cache[i].start,
+			kt->p2m_mapping_cache[i].end,
+			kt->p2m_mapping_cache[i].end -  kt->p2m_mapping_cache[i].start + 1);
         }
 	fprintf(fp, "      last_mapping_read: %lx\n", kt->last_mapping_read);
 	fprintf(fp, "        p2m_cache_index: %ld\n", kt->p2m_cache_index);
 	fprintf(fp, "     p2m_pages_searched: %ld\n", kt->p2m_pages_searched);
-	fprintf(fp, "         p2m_cache_hits: %ld ", kt->p2m_cache_hits);
+	fprintf(fp, "     p2m_mfn_cache_hits: %ld ", kt->p2m_mfn_cache_hits);
 	if (kt->p2m_pages_searched)
-		fprintf(fp, "(%ld%%)\n", kt->p2m_cache_hits * 100 / kt->p2m_pages_searched);
+		fprintf(fp, "(%ld%%)\n", kt->p2m_mfn_cache_hits * 100 / kt->p2m_pages_searched);
+	else
+		fprintf(fp, "\n");
+	fprintf(fp, "    p2m_page_cache_hits: %ld ", kt->p2m_page_cache_hits);
+	if (kt->p2m_pages_searched)
+		fprintf(fp, "(%ld%%)\n", kt->p2m_page_cache_hits * 100 / kt->p2m_pages_searched);
 	else
 		fprintf(fp, "\n");
 }
@@ -3588,8 +3729,14 @@ generic_dump_irq(int irq)
 
         readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, &status,
                 sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), KVADDR, &handler,
-                sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
+	if (VALID_MEMBER(irq_desc_t_handler))
+	        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), KVADDR,
+        	        &handler, sizeof(long), "irq_desc entry",
+			FAULT_ON_ERROR);
+	else if (VALID_MEMBER(irq_desc_t_chip))
+	        readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
+        	        &handler, sizeof(long), "irq_desc entry",
+			FAULT_ON_ERROR);
         readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR, &action,
                 sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
         readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
@@ -3627,19 +3774,30 @@ generic_dump_irq(int irq)
 	} else
 		fprintf(fp, "%lx\n", handler);
 
-	if (handler) { 
-        	readmem(handler+OFFSET(hw_interrupt_type_typename), KVADDR, 
-			&tmp1, sizeof(void *),
-                	"hw_interrupt_type typename", FAULT_ON_ERROR);
+	if (handler) {
+		if (VALID_MEMBER(hw_interrupt_type_typename))
+	        	readmem(handler+OFFSET(hw_interrupt_type_typename),
+				KVADDR,	&tmp1, sizeof(void *),
+        	        	"hw_interrupt_type typename", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_chip_typename))
+	        	readmem(handler+OFFSET(irq_chip_typename),
+				KVADDR,	&tmp1, sizeof(void *),
+                		"hw_interrupt_type typename", FAULT_ON_ERROR);
+
 	 	fprintf(fp, "         typename: %lx  ", tmp1);
 		BZERO(buf, BUFSIZE);
         	if (read_string(tmp1, buf, BUFSIZE-1))
 			fprintf(fp, "\"%s\"", buf);
 		fprintf(fp, "\n");
 
-		readmem(handler+OFFSET(hw_interrupt_type_startup), KVADDR,
-			&tmp1, sizeof(void *),
-			"hw_interrupt_type startup", FAULT_ON_ERROR);
+		if (VALID_MEMBER(hw_interrupt_type_startup))
+			readmem(handler+OFFSET(hw_interrupt_type_startup),
+				KVADDR,	&tmp1, sizeof(void *),
+				"hw_interrupt_type startup", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_chip_startup))
+			readmem(handler+OFFSET(irq_chip_startup),
+				KVADDR,	&tmp1, sizeof(void *),
+				"hw_interrupt_type startup", FAULT_ON_ERROR);
 		fprintf(fp, "          startup: %lx  ", tmp1); 
 		if (is_kernel_text(tmp1)) 
 			fprintf(fp, "<%s>", value_to_symstr(tmp1, buf, 0));
@@ -3650,9 +3808,15 @@ generic_dump_irq(int irq)
                                 	value_to_symstr(tmp2, buf, 0));
 		fprintf(fp, "\n");
 
-                readmem(handler+OFFSET(hw_interrupt_type_shutdown), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "hw_interrupt_type shutdown", FAULT_ON_ERROR);
+		if (VALID_MEMBER(hw_interrupt_type_shutdown))
+	                readmem(handler+OFFSET(hw_interrupt_type_shutdown),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type shutdown", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_chip_shutdown))
+	                readmem(handler+OFFSET(irq_chip_shutdown),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type shutdown", FAULT_ON_ERROR);
+
                 fprintf(fp, "         shutdown: %lx  ", tmp1);
                 if (is_kernel_text(tmp1))
                         fprintf(fp, "<%s>", value_to_symstr(tmp1, buf, 0));
@@ -3680,9 +3844,14 @@ generic_dump_irq(int irq)
 	                fprintf(fp, "\n");
 		}
 
-                readmem(handler+OFFSET(hw_interrupt_type_enable), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "hw_interrupt_type enable", FAULT_ON_ERROR);
+		if (VALID_MEMBER(hw_interrupt_type_enable))
+	                readmem(handler+OFFSET(hw_interrupt_type_enable),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type enable", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_chip_enable))
+	                readmem(handler+OFFSET(irq_chip_enable),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type enable", FAULT_ON_ERROR);
                 fprintf(fp, "           enable: %lx  ", tmp1);
                 if (is_kernel_text(tmp1))
                         fprintf(fp, "<%s>", value_to_symstr(tmp1, buf, 0));
@@ -3693,9 +3862,14 @@ generic_dump_irq(int irq)
                                         value_to_symstr(tmp2, buf, 0));
                 fprintf(fp, "\n");
 
-                readmem(handler+OFFSET(hw_interrupt_type_disable), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "hw_interrupt_type disable", FAULT_ON_ERROR);
+		if (VALID_MEMBER(hw_interrupt_type_disable))
+	                readmem(handler+OFFSET(hw_interrupt_type_disable),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type disable", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_chip_disable))
+	                readmem(handler+OFFSET(irq_chip_disable),
+				KVADDR, &tmp1, sizeof(void *),
+	                        "hw_interrupt_type disable", FAULT_ON_ERROR);
                 fprintf(fp, "          disable: %lx  ", tmp1);
                 if (is_kernel_text(tmp1))
                         fprintf(fp, "<%s>", value_to_symstr(tmp1, buf, 0));
@@ -3720,6 +3894,84 @@ generic_dump_irq(int irq)
                                 	fprintf(fp, "<%s>",
                                         	value_to_symstr(tmp2, buf, 0));
                 	fprintf(fp, "\n");
+		} else if (VALID_MEMBER(irq_chip_ack)) {
+                	readmem(handler+OFFSET(irq_chip_ack), KVADDR,
+                        	&tmp1, sizeof(void *),
+                        	"irq_chip ack", FAULT_ON_ERROR);
+                	fprintf(fp, "              ack: %lx  ", tmp1);
+                	if (is_kernel_text(tmp1))
+                        	fprintf(fp, "<%s>",
+					value_to_symstr(tmp1, buf, 0));
+                	else if (readmem(tmp1, KVADDR, &tmp2,
+                        	sizeof(ulong), "ack indirection",
+                        	RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                	fprintf(fp, "<%s>",
+                                        	value_to_symstr(tmp2, buf, 0));
+                	fprintf(fp, "\n");
+		}
+
+		if (VALID_MEMBER(irq_chip_mask)) {
+			readmem(handler+OFFSET(irq_chip_mask), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip mask", FAULT_ON_ERROR);
+                        fprintf(fp, "             mask: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "mask indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+		
+		if (VALID_MEMBER(irq_chip_mask_ack)) {
+			readmem(handler+OFFSET(irq_chip_mask_ack), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip mask_ack", FAULT_ON_ERROR);
+                        fprintf(fp, "         mask_ack: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "mask_ack indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+
+		if (VALID_MEMBER(irq_chip_unmask)) {
+			readmem(handler+OFFSET(irq_chip_unmask), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip unmask", FAULT_ON_ERROR);
+                        fprintf(fp, "           unmask: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "unmask indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+
+		if (VALID_MEMBER(irq_chip_eoi)) {
+			readmem(handler+OFFSET(irq_chip_eoi), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip eoi", FAULT_ON_ERROR);
+                        fprintf(fp, "              eoi: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "eoi indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
 		}
 
 		if (VALID_MEMBER(hw_interrupt_type_end)) {
@@ -3729,6 +3981,20 @@ generic_dump_irq(int irq)
                         fprintf(fp, "              end: %lx  ", tmp1);
                         if (is_kernel_text(tmp1))
                                 fprintf(fp, "<%s>", 
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "end indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		} else if (VALID_MEMBER(irq_chip_end)) {
+                	readmem(handler+OFFSET(irq_chip_end), KVADDR,
+                        	&tmp1, sizeof(void *),
+                        	"irq_chip end", FAULT_ON_ERROR);
+                        fprintf(fp, "              end: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
                                         value_to_symstr(tmp1, buf, 0));
                         else if (readmem(tmp1, KVADDR, &tmp2,
                                 sizeof(ulong), "end indirection",
@@ -3749,6 +4015,66 @@ generic_dump_irq(int irq)
                                         value_to_symstr(tmp1, buf, 0));
                         else if (readmem(tmp1, KVADDR, &tmp2,
                                 sizeof(ulong), "set_affinity indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		} else if (VALID_MEMBER(irq_chip_set_affinity)) {
+                	readmem(handler+OFFSET(irq_chip_set_affinity),
+				KVADDR, &tmp1, sizeof(void *),
+                        	"irq_chip set_affinity",
+				FAULT_ON_ERROR);
+                        fprintf(fp, "     set_affinity: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "set_affinity indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+		if (VALID_MEMBER(irq_chip_retrigger)) {
+			readmem(handler+OFFSET(irq_chip_retrigger), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip retrigger", FAULT_ON_ERROR);
+                        fprintf(fp, "        retrigger: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "retrigger indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+		if (VALID_MEMBER(irq_chip_set_type)) {
+			readmem(handler+OFFSET(irq_chip_set_type), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip set_type", FAULT_ON_ERROR);
+                        fprintf(fp, "         set_type: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "set_type indirection",
+                                RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
+                                        fprintf(fp, "<%s>",
+                                                value_to_symstr(tmp2, buf, 0));
+                        fprintf(fp, "\n");
+		}
+		if (VALID_MEMBER(irq_chip_set_wake)) {
+			readmem(handler+OFFSET(irq_chip_set_wake), KVADDR,
+				&tmp1, sizeof(void *),
+				"irq_chip set wake", FAULT_ON_ERROR);
+                        fprintf(fp, "         set_wake: %lx  ", tmp1);
+                        if (is_kernel_text(tmp1))
+                                fprintf(fp, "<%s>",
+                                        value_to_symstr(tmp1, buf, 0));
+                        else if (readmem(tmp1, KVADDR, &tmp2,
+                                sizeof(ulong), "set_wake indirection",
                                 RETURN_ON_ERROR|QUIET) && is_kernel_text(tmp2))
                                         fprintf(fp, "<%s>",
                                                 value_to_symstr(tmp2, buf, 0));
@@ -4977,6 +5303,7 @@ static ulong
 __xen_m2p(ulonglong machine, ulong mfn)
 {
 	ulong mapping, kmfn, pfn, p, i, c;
+	ulong start, end;
 	ulong *mp;
 
 	mp = (ulong *)kt->m2p_page;
@@ -4987,7 +5314,8 @@ __xen_m2p(ulonglong machine, ulong mfn)
 	 */
 	for (c = 0; c < P2M_MAPPING_CACHE; c++) {
 		if (kt->p2m_mapping_cache[c].mapping &&
-		    (kt->p2m_mapping_cache[c].mfn == mfn)) {
+		    ((mfn >= kt->p2m_mapping_cache[c].start) && 
+		     (mfn <= kt->p2m_mapping_cache[c].end))) { 
 
 			if (kt->p2m_mapping_cache[c].mapping != kt->last_mapping_read) {
                         	if (!readmem(kt->p2m_mapping_cache[c].mapping, KVADDR, 
@@ -4997,7 +5325,8 @@ __xen_m2p(ulonglong machine, ulong mfn)
                                     	    "phys_to_machine_mapping page\n");
 				else
 					kt->last_mapping_read = kt->p2m_mapping_cache[c].mapping;
-			}
+			} else
+				kt->p2m_page_cache_hits++;
 
                 	for (i = 0; i < XEN_PFNS_PER_PAGE; i++) {
 				kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
@@ -5010,7 +5339,7 @@ __xen_m2p(ulonglong machine, ulong mfn)
                                         	" i: %ld pfn: %lx (%llx)\n",
 						mfn, machine, p,
 						i, pfn, XEN_PFN_TO_PSEUDO(pfn));
-					kt->p2m_cache_hits++;
+					kt->p2m_mfn_cache_hits++;
 
 					return pfn;
 				}
@@ -5040,24 +5369,21 @@ __xen_m2p(ulonglong machine, ulong mfn)
 
 		kt->p2m_pages_searched++;
 
-		for (i = 0; i < XEN_PFNS_PER_PAGE; i++)
-		{
-			kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
-			if (kmfn == mfn) {
-				pfn = p + i;
-				if (CRASHDEBUG(1))
-				    console("pages: %d mfn: %lx (%llx) p: %ld"
-					" i: %ld pfn: %lx (%llx)\n",
-					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
-					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+		if (search_mapping_page(mfn, &i, &start, &end)) {
+			pfn = p + i;
+			if (CRASHDEBUG(1))
+			    console("pages: %d mfn: %lx (%llx) p: %ld"
+				" i: %ld pfn: %lx (%llx)\n",
+				(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
+				p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
 
-				c = kt->p2m_cache_index;
-				kt->p2m_mapping_cache[c].mfn = mfn;
-				kt->p2m_mapping_cache[c].mapping = mapping;
-				kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
+			c = kt->p2m_cache_index;
+			kt->p2m_mapping_cache[c].start = start;
+			kt->p2m_mapping_cache[c].end = end;
+			kt->p2m_mapping_cache[c].mapping = mapping;
+			kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
 
-				return pfn;
-			}
+			return pfn;
 		}
 
 		mapping += PAGESIZE();
@@ -5068,6 +5394,113 @@ __xen_m2p(ulonglong machine, ulong mfn)
 
 	return (XEN_MFN_NOT_FOUND);
 }
+
+/*
+ *  Search for an mfn in the current mapping page, and if found, 
+ *  determine the range of contiguous mfns that it's contained
+ *  within (if any). 
+ */
+#define PREV_UP    0x1
+#define NEXT_UP    0x2
+#define PREV_DOWN  0x4
+#define NEXT_DOWN  0x8
+
+static int
+search_mapping_page(ulong mfn, ulong *index, ulong *startptr, ulong *endptr)
+{
+	int n, found;
+	ulong i, kmfn;
+	ulong flags, start, end, next, prev, curr;
+	ulong *mp;
+
+	mp = (ulong *)kt->m2p_page;
+
+	for (i = 0, found = FALSE; i < XEN_PFNS_PER_PAGE; i++) {
+		kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
+
+		if (kmfn == mfn) {
+			found = TRUE;
+			*index = i;
+			break;
+		}
+	}
+
+	if (found) {
+		flags = 0;
+		next = prev = XEN_MFN_NOT_FOUND;
+		start = end = kmfn;
+
+		if (i)
+			prev = (*(mp+(i-1))) & ~XEN_FOREIGN_FRAME;
+		if ((i+1) != XEN_PFNS_PER_PAGE)
+			next = (*(mp+(i+1))) & ~XEN_FOREIGN_FRAME;
+
+		if (prev == (kmfn-1))
+			flags |= PREV_UP;
+		else if (prev == (kmfn+1))
+			flags |= PREV_DOWN;
+
+		if (next == (kmfn+1))
+			flags |= NEXT_UP;
+		else if (next == (kmfn-1))
+			flags |= NEXT_DOWN;
+
+		/*  Should be impossible, but just in case... */
+		if ((flags & PREV_UP) && (flags & NEXT_DOWN))
+			flags &= ~NEXT_DOWN;
+		else if ((flags & PREV_DOWN) && (flags & NEXT_UP))
+			flags &= ~NEXT_UP;
+
+		if (flags & (PREV_UP|PREV_DOWN)) {
+			start = prev;
+
+			for (n = (i-2); n >= 0; n--) {
+				curr = (*(mp+n)) & ~XEN_FOREIGN_FRAME;
+				if (flags & PREV_UP) {
+					if (curr == (start-1))
+						start = curr;
+				} else {
+					if (curr == (start+1))
+						start = curr;
+				}
+			}
+
+		}
+
+		if (flags & (NEXT_UP|NEXT_DOWN)) {
+			end = next;
+
+			for (n = (i+2); n < XEN_PFNS_PER_PAGE; n++) {
+				curr = (*(mp+n)) & ~XEN_FOREIGN_FRAME;
+				if (flags & NEXT_UP) {
+					if (curr == (end+1))
+						end = curr;
+				} else {
+					if (curr == (end-1))
+						end = curr;
+				}
+			}
+
+
+		}
+
+		if (start > end) {
+			curr = start;
+			start = end;
+			end = curr;	
+		}
+
+		*startptr = start;
+		*endptr = end;
+
+		if (CRASHDEBUG(2))
+			fprintf(fp, "mfn: %lx -> start: %lx end: %lx (%ld mfns)\n", 
+				mfn, start, end, end - start);
+	}
+
+	return found;
+}
+
 
 
 /*

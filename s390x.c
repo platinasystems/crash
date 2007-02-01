@@ -730,9 +730,9 @@ s390x_back_trace_cmd(struct bt_info *bt)
 		backchain = ULONG(&stack[backchain - stack_base + bc_offset]);
 
 		/* print stack content if -f is specified */
-		if((bt->flags & BT_FULL) && !BT_REFERENCE_CHECK(bt)){
+		if ((bt->flags & BT_FULL) && !BT_REFERENCE_CHECK(bt)) {
 			int frame_size;
-			if(backchain == 0){
+			if (backchain == 0) {
 				frame_size = stack_base - old_backchain 
 					     + KERNEL_STACK_SIZE;
 			} else {
@@ -740,14 +740,15 @@ s390x_back_trace_cmd(struct bt_info *bt)
 					(stack_base - old_backchain +
 					KERNEL_STACK_SIZE));
 			}
-			for(j=0; j< frame_size; j+=4){
+			for (j = 0; j < frame_size; j += 8) {
 				if(j % 16 == 0){
-					fprintf(fp,"\n%08lx: ",old_backchain+j);
+					fprintf(fp, "%s    %016lx: ", 
+                                            j ? "\n" : "", old_backchain + j);
 				}
-				fprintf(fp," %08lx",ULONG(&stack[old_backchain -
-							 stack_base + j]));
+				fprintf(fp," %016lx",
+                                    ULONG(&stack[old_backchain - stack_base + j]));
 			}
-			fprintf(fp,"\n\n");
+			fprintf(fp, "\n");
 		}
 
 		/* Check for interrupt stackframe */

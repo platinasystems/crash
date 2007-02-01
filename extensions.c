@@ -205,7 +205,7 @@ load_extension(char *lib)
         *  _init() function before dlopen() returns below.
 	*/
 	pc->curext = ext;
-	ext->handle = dlopen(ext->filename, RTLD_NOW); 
+	ext->handle = dlopen(ext->filename, RTLD_NOW|RTLD_GLOBAL); 
 
 	if (!ext->handle) {
 		strcpy(buf, dlerror());

@@ -56,7 +56,7 @@
 
 void build_configure(void);
 void release_configure(char *);
-void make_rh_rpm_package(char *);
+void make_rh_rpm_package(char *, int);
 void unconfigure(void);
 void set_warnings(int);
 void show_configuration(void);
@@ -222,7 +222,7 @@ main(int argc, char **argv)
 
 	setup_gdb_defaults();
 
-	while ((c = getopt(argc, argv, "gsqnWwubdr:p:")) > 0) {
+	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:")) > 0) {
 		switch (c) {
 		case 'q':
 			target_data.flags |= QUIET;
@@ -239,7 +239,10 @@ main(int argc, char **argv)
 			release_configure(optarg);
 			break;
 		case 'p':
-			make_rh_rpm_package(optarg);
+			make_rh_rpm_package(optarg, 0);
+			break;
+		case 'P':
+			make_rh_rpm_package(optarg, 1);
 			break;
 		case 'W':
 		case 'w':
@@ -566,10 +569,11 @@ release_configure(char *gdb_version)
  *  Create an .rh_rpm_package file if the passed-in variable is set.
  */
 void 
-make_rh_rpm_package(char *package)
+make_rh_rpm_package(char *package, int release)
 {
-	char *p;
+	char *p, *cur;
 	FILE *fp;
+	char buf[256];
 
 	if ((strcmp(package, "remove") == 0)) {
 		if (file_exists(".rh_rpm_package")) {
@@ -588,6 +592,33 @@ make_rh_rpm_package(char *package)
 	
 	if (!strlen(++p))
 		return;
+
+	if (release) {
+		if (!(fp = popen("./crash -v", "r"))) {
+			fprintf(stderr, "cannot execute \"crash -v\"\n");
+			exit(1);
+		}
+		cur = NULL;
+		while (fgets(buf, 256, fp)) {
+			if (strncmp(buf, "crash ", 6) == 0) {
+				cur = &buf[6];
+				break;
+			} 
+		}
+		fclose(fp);
+	
+		if (!cur) {
+			fprintf(stderr, "cannot get version from \"crash -v\"\n");
+			exit(1);
+		} 
+		strip_linefeeds(cur);
+
+		if (strcmp(cur, p) != 0) {
+			fprintf(stderr, "./crash version: %s\n", cur);
+			fprintf(stderr, "release version: %s\n", p);
+			exit(1);
+		}
+	}
 
         if ((fp = fopen(".rh_rpm_package", "w")) == NULL) {
                 perror("fopen");

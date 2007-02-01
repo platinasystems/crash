@@ -195,11 +195,14 @@ gdb_session_init(void)
 retry:
 	BZERO(req->buf, BUFSIZE);
         req->command = GNU_GET_DATATYPE;
-        req->name = "task_struct";
+	req->name = XEN_HYPER_MODE() ? "page_info" : "task_struct";
         req->flags = GNU_RETURN_ON_ERROR;
         gdb_interface(req);
 
         if (req->flags & GNU_COMMAND_FAILED) {
+		if (XEN_HYPER_MODE())
+			no_debugging_data(WARNING);  /* just bail out */
+
 		if (!debug_data_pulled_in) {
 			if (CRASHDEBUG(1))
 				error(INFO, 
@@ -237,6 +240,11 @@ retry:
 	req->command = GNU_PASS_THROUGH;
 	req->name = NULL, req->flags = 0;
 	sprintf(req->buf, "set height 0");
+	gdb_interface(req);
+
+	req->command = GNU_PASS_THROUGH;
+	req->name = NULL, req->flags = 0;
+	sprintf(req->buf, "set width 0");
 	gdb_interface(req);
 
        /*

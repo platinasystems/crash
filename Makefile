@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
-# Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -62,14 +62,14 @@ INSTALLDIR=${DESTDIR}/usr/bin
 # (2) Or invoke make like so:
 #    make LDFLAGS=-static NAT_CLIBS="-lc -lresolv" GDBSERVER_LIBS="-lc -lresolv"
 
-GENERIC_HFILES=defs.h 
+GENERIC_HFILES=defs.h xen_hyper_defs.h
 MCORE_HFILES=va_server.h vas_crash.h
 REDHAT_HFILES=netdump.h diskdump.h xendump.h
 LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
         lkcd_dump_v7.h lkcd_dump_v8.h lkcd_fix_mem.h
 LKCD_TRACE_HFILES=lkcd_x86_trace.h
 IBM_HFILES=ibm_common.h
-UNWIND_HFILES=unwind.h unwind_i.h rse.h
+UNWIND_HFILES=unwind.h unwind_i.h rse.h unwind_x86.h unwind_x86_64.h
 
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
@@ -77,7 +77,10 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
-	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c
+	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c \
+	unwind_x86_32_64.c \
+ 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
+	xen_hyper_dump_tables.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
@@ -89,7 +92,10 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
-	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o
+	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
+	unwind_x86_32_64.o \
+ 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
+	xen_hyper_dump_tables.o
 
 # These are the current set of crash extensions sources.  They are not built
 # by default unless the third command line of the "all:" stanza is uncommented.
@@ -349,13 +355,13 @@ alpha.o: ${GENERIC_HFILES} alpha.c
 ppc.o: ${GENERIC_HFILES} ppc.c
 	cc -c ${CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-ia64.o: ${GENERIC_HFILES} ia64.c
+ia64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ia64.c
 	cc -c ${CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc64.o: ${GENERIC_HFILES} ppc64.c
 	cc -c ${CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-x86_64.o: ${GENERIC_HFILES} x86_64.c
+x86_64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86_64.c
 	cc -c ${CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
@@ -387,6 +393,9 @@ extensions.o: ${GENERIC_HFILES} extensions.c
 lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c 
 	cc -c ${CFLAGS} -DREDHAT lkcd_x86_trace.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+unwind_x86_32_64.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_x86_32_64.c
+	cc -c ${CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
 	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V1 unwind.c -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -398,6 +407,18 @@ unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
 
 lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
 	cc -c ${CFLAGS} lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+xen_hyper.o: ${GENERIC_HFILES} xen_hyper.c
+	cc -c ${CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+xen_hyper_command.o: ${GENERIC_HFILES} xen_hyper_command.c
+	cc -c ${CFLAGS} xen_hyper_command.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+xen_hyper_global_data.o: ${GENERIC_HFILES} xen_hyper_global_data.c
+	cc -c ${CFLAGS} xen_hyper_global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+xen_hyper_dump_tables.o: ${GENERIC_HFILES} xen_hyper_dump_tables.c
+	cc -c ${CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ${PROGRAM}: force
 	@make --no-print-directory all
@@ -449,12 +470,12 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-3.7
+RELEASE=4.0-3.18
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
 		echo "make release: must be super-user"; exit 1; fi
-	@./configure -p "RPMPKG=${RPMPKG}" -u -g
+	@./configure -P "RPMPKG=${RPMPKG}" -u -g
 	@make --no-print-directory release_configure
 	@echo 
 	@echo "cvs tag this release if necessary"
@@ -492,7 +513,7 @@ do_release:
 	  cp ${PROGRAM}-${RELEASE}.tar.gz /usr/src/redhat/SOURCES; \
 	  /usr/bin/rpmbuild -bs ${PROGRAM}.spec > /dev/null; \
 	  rm -f /usr/src/redhat/SOURCES/${PROGRAM}-${RELEASE}.tar.gz; \
-	  cp /usr/src/redhat/SRPMS/${PROGRAM}-${RELEASE}.src.rpm . ; \
+	  mv /usr/src/redhat/SRPMS/${PROGRAM}-${RELEASE}.src.rpm . ; \
 	  ls -l ${PROGRAM}-${RELEASE}.src.rpm; \
 	exit 0; fi
 

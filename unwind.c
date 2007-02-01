@@ -64,6 +64,8 @@ static int unw_switch_from_osinit_v1(struct unw_frame_info *,
 	struct bt_info *);
 static int unw_switch_from_osinit_v2(struct unw_frame_info *,
 	struct bt_info *);
+static int unw_switch_from_osinit_v3(struct unw_frame_info *,
+	struct bt_info *, char *);
 static unsigned long get_init_stack_ulong(unsigned long addr);
 static void unw_init_frame_info(struct unw_frame_info *, 
 	struct bt_info *, ulong);
@@ -1733,10 +1735,27 @@ restart:
 		 * ia64_init_handler.  
 		 */
 		if (STREQ(name, "ia64_init_handler")) {
-			unw_switch_from_osinit_v2(info, bt);
-			frame++;
-			goto restart;
+			if (symbol_exists("ia64_mca_modify_original_stack")) {
+				/*
+				 * 2.6.14 or later kernels no longer keep
+				 * minstate info in pt_regs/switch_stack.
+				 * unw_switch_from_osinit_v3() will try
+				 * to find the interrupted task and restart
+				 * backtrace itself.
+				 */
+				if (unw_switch_from_osinit_v3(info, bt, "INIT") == FALSE)
+					break;
+			} else {
+				unw_switch_from_osinit_v2(info, bt);
+				frame++;
+				goto restart;
+			}
 		}
+
+		if (STREQ(name, "ia64_mca_handler") &&
+		    symbol_exists("ia64_mca_modify_original_stack"))
+			if (unw_switch_from_osinit_v3(info, bt, "MCA") == FALSE)
+				break;
 
                 frame++;
 
@@ -1976,6 +1995,124 @@ unw_switch_from_osinit_v2(struct unw_frame_info *info, struct bt_info *bt)
 
 	unw_init_from_interruption(info, bt, pt, sw);
 	ia64_exception_frame(pt, bt);
+
+	return TRUE;
+}
+
+/* CPL (current privilege level) is 2-bit field */
+#define IA64_PSR_CPL0_BIT	32
+#define IA64_PSR_CPL_MASK	(3UL << IA64_PSR_CPL0_BIT)
+
+static int
+user_mode(struct bt_info *bt, unsigned long pt)
+{
+	unsigned long cr_ipsr;
+
+	cr_ipsr = IA64_GET_STACK_ULONG(pt + offsetof(struct pt_regs, cr_ipsr));
+	if (cr_ipsr & IA64_PSR_CPL_MASK)
+		return 1;
+	return 0;
+}
+
+/*
+ * Cope with INIT/MCA stack for the kernel 2.6.14 or later
+ *
+ * Returns FALSE if no more unwinding is needed.
+ */
+#define ALIGN16(x) ((x)&~15)
+static int
+unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
+			  char *type)
+{
+	unsigned long pt, sw, pid;
+	int processor;
+	char *p, *q;
+	struct task_context *tc = NULL;
+	struct bt_info clone_bt;
+
+	/*
+	 *    The structure of INIT/MCA stack
+	 *
+	 *    +---------------------------+ <-------- IA64_STK_OFFSET
+	 *    |          pt_regs          |
+	 *    +---------------------------+
+	 *    |        switch_stack       |
+	 *    +---------------------------+
+	 *    |        SAL/OS state       |
+	 *    +---------------------------+
+	 *    |    16 byte scratch area   |
+	 *    +---------------------------+ <-------- SP at start of C handler
+	 *    |           .....           |
+	 *    +---------------------------+
+	 *    | RBS for MCA/INIT handler  |
+	 *    +---------------------------+
+	 *    | struct task for MCA/INIT  |
+	 *    +---------------------------+ <-------- bt->task
+	 */
+	pt = ALIGN16(bt->task + IA64_STK_OFFSET - STRUCT_SIZE("pt_regs"));
+	sw = ALIGN16(pt - STRUCT_SIZE("switch_stack"));
+
+	/*
+	 * 1. Try to find interrupted task from comm
+	 *
+	 *    comm format of INIT/MCA task:
+	 *       - "<type> <pid>"
+	 *       - "<type> <comm> <processor>"
+	 *    where "<type>" is either "INIT" or "MCA".
+	 *    The latter form is chosen if PID is 0.
+	 * 
+	 *    See ia64_mca_modify_comm() in arch/ia64/kernel/mca.c
+	 */
+	if (!bt->tc || !bt->tc->comm)
+		goto find_exframe;
+
+	if ((p = strstr(bt->tc->comm, type))) {
+		p += strlen(type);
+		if (*p != ' ')
+			goto find_exframe;
+		if ((q = strchr(++p, ' '))) {
+			/* "<type> <comm> <processor>" */
+			if (sscanf(++q, "%d", &processor) > 0) {
+				tc = pid_to_context(0);
+				while (tc) {
+					if (tc != bt->tc &&
+					    tc->processor == processor)
+						break;
+					tc = tc->tc_next;
+				}
+			}
+		} else if (sscanf(p, "%lu", &pid) > 0)
+			/* "<type> <pid>" */
+			tc = pid_to_context(pid);
+	}
+
+	if (tc) {
+		/* Clone bt_info and do backtrace */
+		clone_bt_info(bt, &clone_bt, tc);
+		if (!BT_REFERENCE_CHECK(&clone_bt)) {
+			fprintf(fp, "(%s) INTERRUPTED TASK\n", type);
+			print_task_header(fp, tc, 0);
+		}
+		if (!user_mode(bt, pt))
+			back_trace(&clone_bt);
+		else if (!BT_REFERENCE_CHECK(bt)) {
+			fprintf(fp, " #0 [interrupted in user space]\n");
+			/* at least show the incomplete exception frame */
+			bt->flags |= BT_INCOMPLETE_USER_EFRAME;
+			ia64_exception_frame(pt, bt);
+		}
+		return FALSE;
+	}
+
+	/* task matching with INIT/MCA task's comm is not found */
+
+find_exframe:
+	/*
+	 * 2. If step 1 doesn't work, try best to find exception frame
+	 */
+	unw_init_from_interruption(info, bt, pt, sw);
+	if (!BT_REFERENCE_CHECK(bt))
+		ia64_exception_frame(pt, bt);
 
 	return TRUE;
 }

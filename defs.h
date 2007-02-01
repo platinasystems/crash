@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -174,6 +174,9 @@ struct number_option {
 #define NOCRASHRC      (0x10000000000000ULL)
 #define INIT_IFILE     (0x20000000000000ULL)
 #define XENDUMP        (0x40000000000000ULL)
+#define XEN_HYPER      (0x80000000000000ULL)
+#define XEN_CORE      (0x100000000000000ULL)
+#define PLEASE_WAIT   (0x200000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
@@ -189,7 +192,9 @@ struct number_option {
 #define DISKDUMP_DUMPFILE() (pc->flags & DISKDUMP)
 #define KDUMP_DUMPFILE()    (pc->flags & KDUMP)
 #define XENDUMP_DUMPFILE()  (pc->flags & XENDUMP)
+#define XEN_HYPER_MODE()    (pc->flags & XEN_HYPER)
 #define SYSRQ_TASK(X)       ((pc->flags & SYSRQ) && is_task_active(X))
+#define XEN_CORE_DUMPFILE() (pc->flags & XEN_CORE)
 
 #define NETDUMP_LOCAL    (0x1)  /* netdump_data flags */
 #define NETDUMP_REMOTE   (0x2)  
@@ -200,7 +205,6 @@ struct number_option {
 #define KDUMP_ELF32     (0x20)
 #define KDUMP_ELF64     (0x40)
 #define KDUMP_LOCAL     (0x80)  
-#define KDUMP_XEN_HV    (0x100)
 
 #define DUMPFILE_FORMAT(flags) ((flags) & \
 		        (NETDUMP_ELF32|NETDUMP_ELF64|KDUMP_ELF32|KDUMP_ELF64))
@@ -344,6 +348,7 @@ struct program_context {
 	pid_t pipe_pid;                 /* per-cmd output pipe's pid */
 	pid_t pipe_shell_pid;           /* per-cmd output pipe's shell pid */
 	char pipe_command[BUFSIZE];     /* pipe command line */
+	struct command_table_entry *cmd_table;	/* linux/xen command table */
 	char *curcmd;                   /* currently-executing command */
 	char *lastcmd;                  /* previously-executed command */
 	ulong cmdgencur;		/* current command generation number */
@@ -435,6 +440,12 @@ struct new_utsname {
 #define USE_OLD_BT   (0x10000)
 #define ARCH_XEN     (0x20000)
 #define NO_IKCONFIG  (0x40000)
+#define DWARF_UNWIND (0x80000)
+#define NO_DWARF_UNWIND       (0x100000)
+#define DWARF_UNWIND_MEMORY   (0x200000)
+#define DWARF_UNWIND_EH_FRAME (0x400000)
+#define DWARF_UNWIND_CAPABLE  (DWARF_UNWIND_MEMORY|DWARF_UNWIND_EH_FRAME)
+#define DWARF_UNWIND_MODULES  (0x800000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
@@ -487,7 +498,8 @@ struct kernel_table {                   /* kernel data */
 #define P2M_MAPPING_CACHE    (512)
 	struct p2m_mapping_cache {
 		ulong mapping;
-		ulong mfn;
+		ulong start;
+		ulong end;
 	} p2m_mapping_cache[P2M_MAPPING_CACHE];
 #define P2M_MAPPING_TO_PAGE_INDEX(c) \
    (((kt->p2m_mapping_cache[c].mapping - kt->phys_to_machine_mapping)/PAGESIZE()) \
@@ -495,7 +507,8 @@ struct kernel_table {                   /* kernel data */
 	ulong last_mapping_read;
 	ulong p2m_cache_index;
 	ulong p2m_pages_searched;
-	ulong p2m_cache_hits;
+	ulong p2m_mfn_cache_hits;
+	ulong p2m_page_cache_hits;
 };
 
 /*
@@ -639,6 +652,7 @@ struct bt_info {
         ulonglong flags;
         ulong instptr;
         ulong stkptr;
+	ulong bptr;
 	ulong stackbase;
 	ulong stacktop;
 	char *stackbuf;
@@ -739,6 +753,7 @@ struct machdep_table {
 #define DEVMEMRD         (0x8000000)
 #define INIT             (0x4000000)
 #define VM_4_LEVEL       (0x2000000)
+#define MCA              (0x1000000)
 
 extern struct machdep_table *machdep;
 
@@ -779,10 +794,12 @@ extern struct machdep_table *machdep;
             machdep->last_ptbl_read = (ulong)(PTBL); 	                    \
     }
 
+#define SETUP_ENV  (0)
 #define PRE_SYMTAB (1)
 #define PRE_GDB    (2)
 #define POST_GDB   (3)
 #define POST_INIT  (4)
+#define POST_VM    (5)
 
 #define FOREACH_BT     (1)
 #define FOREACH_VM     (2)
@@ -1039,6 +1056,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long block_device_bd_disk;
 	long irq_desc_t_status;
 	long irq_desc_t_handler;
+	long irq_desc_t_chip;
 	long irq_desc_t_action;
 	long irq_desc_t_depth;
 	long irqdesc_action;
@@ -1059,6 +1077,21 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long hw_interrupt_type_ack;
 	long hw_interrupt_type_end;
 	long hw_interrupt_type_set_affinity;
+	long irq_chip_typename;
+	long irq_chip_startup;
+	long irq_chip_shutdown;
+	long irq_chip_enable;
+	long irq_chip_disable;
+	long irq_chip_ack;
+	long irq_chip_end;
+	long irq_chip_set_affinity;
+	long irq_chip_mask;
+	long irq_chip_mask_ack;
+	long irq_chip_unmask;
+	long irq_chip_eoi;
+	long irq_chip_retrigger;
+	long irq_chip_set_type;
+	long irq_chip_set_wake;
 	long irq_cpustat_t___softirq_active;
 	long irq_cpustat_t___softirq_mask;
 	long fdtable_max_fds;
@@ -1317,6 +1350,12 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long cpu_user_regs_esp;
 	long cpu_user_regs_rip;
 	long cpu_user_regs_rsp;
+        long unwind_table_core;
+        long unwind_table_init;
+        long unwind_table_address;
+        long unwind_table_size;
+        long unwind_table_link;
+        long unwind_table_name;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1413,6 +1452,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long cputime_t;
 	long mem_section;
 	long pid_link;
+	long unwind_table;
 };
 
 struct array_table {
@@ -1509,6 +1549,7 @@ struct node_table {
 	ulong pgdat;
 	ulong mem_map;
 	ulong size;
+	ulong present;
 	ulonglong start_paddr;
 	ulong start_mapnr;
 };
@@ -1717,8 +1758,11 @@ struct symbol_table_data {
 	int mods_installed;
 	struct load_module *current;
 	struct load_module *load_modules;
+	off_t dwarf_eh_frame_file_offset;
+	ulong dwarf_eh_frame_size;
 };
 
+/* flags for st */
 #define KERNEL_SYMS        (0x1)
 #define MODULE_SYMS        (0x2)
 #define LOAD_MODULE_SYMS   (0x4)
@@ -1730,6 +1774,7 @@ struct symbol_table_data {
 #define FORCE_DEBUGINFO   (0x80)
 #define CRC_MATCHES      (0x100)
 #define ADD_SYMBOL_FILE  (0x200)
+#define USE_OLD_ADD_SYM  (0x400)
 
 #endif /* !GDB_COMMON */
 
@@ -1744,6 +1789,8 @@ struct symbol_table_data {
 #define MOD_REMOTE      (0x4)
 #define MOD_KALLSYMS    (0x8)
 #define MOD_INITRD     (0x10)
+
+#define SEC_FOUND       (0x10000)
 
 struct mod_section_data {
 #if defined(GDB_6_1)
@@ -1981,6 +2028,15 @@ struct load_module {
                         PAGESIZE(), "init_level4_pgt", FAULT_ON_ERROR); \
                 machdep->machspec->last_pml4_read = (ulong)(vt->kernel_pgd[0]); \
 	}
+
+#define FILL_PML4_HYPER() { \
+	if (!machdep->machspec->last_pml4_read) { \
+		readmem(symbol_value("idle_pg_table_4"), KVADDR, \
+			machdep->machspec->pml4, PAGESIZE(), "idle_pg_table_4", \
+			FAULT_ON_ERROR); \
+		machdep->machspec->last_pml4_read = symbol_value("idle_pg_table_4"); \
+	}\
+}
 
 #define IS_LAST_UPML_READ(pml) ((ulong)(pml) == machdep->machspec->last_upml_read)
 
@@ -2786,7 +2842,7 @@ extern FILE *fp;
 extern struct program_context program_context, *pc;
 extern struct task_table task_table, *tt;
 extern struct kernel_table kernel_table, *kt;
-extern struct command_table_entry base_command_table[];
+extern struct command_table_entry linux_command_table[];
 extern char *args[MAXARGS];      
 extern int argcnt;            
 extern int argerrs;
@@ -3210,6 +3266,7 @@ int cleanup_memory_driver(void);
 void help_init(void);
 void cmd_usage(char *, int);
 void display_version(void);
+void display_help_screen(char *);
 #ifdef X86
 #define dump_machdep_table(X) x86_dump_machdep_table(X)
 #endif
@@ -3364,6 +3421,7 @@ void generic_dump_irq(int);
 int generic_dis_filter(ulong, char *);
 void display_sys_stats(void);
 char *get_uptime(char *, ulonglong *);
+void clone_bt_info(struct bt_info *, struct bt_info *, struct task_context *);
 void dump_kernel_table(int);
 void dump_bt_info(struct bt_info *);
 void dump_log(int);
@@ -3383,6 +3441,7 @@ void back_trace(struct bt_info *);
 #define BT_EXCEPTION_FRAME        (0x80ULL)
 #define BT_LINE_NUMBERS          (0x100ULL)
 #define BT_USER_EFRAME           (0x200ULL)
+#define BT_INCOMPLETE_USER_EFRAME  (BT_USER_EFRAME)
 #define BT_SAVE_LASTSP           (0x400ULL)
 #define BT_FROM_EXCEPTION        (0x800ULL)
 #define BT_FROM_CALLFRAME       (0x1000ULL)
@@ -3565,6 +3624,7 @@ struct machine_specific {
 	ulong last_upml_read;
 	ulong last_pml4_read;
 	char *irqstack;
+	ulong irq_eframe_link;
 	struct x86_64_pt_regs_offsets pto;
 	struct x86_64_stkinfo stkinfo;
 };
@@ -3582,9 +3642,23 @@ struct machine_specific {
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
+
+#define UNINITIALIZED (BADVAL)
+
 #endif
 
-void x86_64_backtrace_notice(ulong);
+#if defined(X86) || defined(X86_64)
+
+/*
+ *  unwind_x86_32_64.c
+ */
+void init_unwind_table(void);
+int dwarf_backtrace(struct bt_info *, int, ulong);
+void dwarf_debug(struct bt_info *);
+int dwarf_print_stack_entry(struct bt_info *, int);
+
+#endif
+
 
 /*
  * ppc64.c
@@ -3821,6 +3895,7 @@ int kdump_free_memory(void);
 int kdump_memory_used(void);
 int kdump_memory_dump(FILE *);
 void get_kdump_regs(struct bt_info *, ulong *, ulong *);
+void xen_kdump_p2m_mfn(char *);
 
 /*
  *  diskdump.c
@@ -3855,6 +3930,7 @@ void get_xendump_regs(struct bt_info *, ulong *, ulong *);
 char *xc_core_mfn_to_page(ulong, char *);
 int xc_core_mfn_to_page_index(ulong);
 void xendump_panic_hook(char *);
+int read_xendump_hyper(int, void *, int, ulong, physaddr_t);
 
 /*
  *  net.c
@@ -4253,5 +4329,9 @@ extern int gdb_main(int, char **);
 #endif
 extern int have_partial_symbols(void); 
 extern int have_full_symbols(void);
+
+#if defined(X86) || defined(X86_64)
+#define XEN_HYPERVISOR_ARCH 
+#endif
 
 #endif /* !GDB_COMMON */

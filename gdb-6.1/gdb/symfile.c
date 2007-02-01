@@ -3,7 +3,7 @@
    Copyright 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998,
    1999, 2000, 2001, 2002, 2003, 2004 Free Software Foundation, Inc.
    Portions Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
-   Copyright (c) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+   Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
 
    Contributed by Cygnus Support, using pieces from other GDB modules.
 
@@ -1678,7 +1678,11 @@ add_symbol_file_command (char *args, int from_tty)
                to load the program. */
 	    sect_opts[section_index].name = ".text";
 	    sect_opts[section_index].value = arg;
+#ifdef CRASH_MERGE
+	    if (++section_index >= num_sect_opts) 
+#else
 	    if (++section_index > num_sect_opts) 
+#endif
 	      {
 		num_sect_opts *= 2;
 		sect_opts = ((struct sect_opt *) 
@@ -1714,7 +1718,11 @@ add_symbol_file_command (char *args, int from_tty)
 		    {
 		      sect_opts[section_index].value = arg;
 		      expecting_sec_addr = 0;
+#ifdef CRASH_MERGE
+		      if (++section_index >= num_sect_opts) 
+#else
 		      if (++section_index > num_sect_opts) 
+#endif
 			{
 			  num_sect_opts *= 2;
 			  sect_opts = ((struct sect_opt *) 

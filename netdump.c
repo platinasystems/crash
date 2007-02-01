@@ -326,6 +326,11 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 					pls->file_offset;
 				break;
 			}
+			if (pls->zero_fill && (paddr >= pls->phys_end) &&
+			    (paddr < pls->zero_fill)) {
+				memset(bufptr, 0, cnt);
+                		return cnt;
+			}
 		}
 	
 		if (!offset) 
@@ -666,8 +671,6 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
-	if (nd->flags & KDUMP_XEN_HV)
-		netdump_print("%sKDUMP_XEN_HV", others++ ? "|" : "");
 	netdump_print(")\n");
 	netdump_print("                   ndfd: %d\n", nd->ndfd);
 	netdump_print("                    ofp: %lx\n", nd->ofp);
@@ -682,6 +685,8 @@ netdump_memory_dump(FILE *fp)
 			pls->phys_start);
 		netdump_print("               phys_end: %llx\n", 
 			pls->phys_end);
+		netdump_print("              zero_fill: %llx\n", 
+			pls->zero_fill);
 	}
 	netdump_print("             elf_header: %lx\n", nd->elf_header);
 	netdump_print("                  elf32: %lx\n", nd->elf32);
@@ -697,8 +702,8 @@ netdump_memory_dump(FILE *fp)
 	netdump_print("              page_size: %d\n", nd->page_size);
 	netdump_print("           switch_stack: %lx\n", nd->switch_stack);
 	netdump_print("         xen_kdump_data: %s\n",
-		nd->flags & KDUMP_XEN_HV ? " " : "(unused)");
-	if (nd->flags & KDUMP_XEN_HV) {
+		XEN_CORE_DUMPFILE() ? " " : "(unused)");
+	if (XEN_CORE_DUMPFILE()) {
 		netdump_print("                    flags: %lx (", nd->xen_kdump_data->flags);
 		others = 0;
         	if (nd->xen_kdump_data->flags & KDUMP_P2M_INIT)
@@ -732,8 +737,8 @@ netdump_memory_dump(FILE *fp)
 				nd->xen_kdump_data->p2m_mfn_frame_list[i]);
 		if (i) netdump_print("\n");
 	}
-	netdump_print("     num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
-	netdump_print("     nt_prstatus_percpu: ");
+	netdump_print("       num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
+	netdump_print("       nt_prstatus_percpu: ");
         wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
         flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
 	if (nd->num_prstatus_notes == 1)
@@ -1135,8 +1140,11 @@ dump_Elf32_Phdr(Elf32_Phdr *prog, int store_pt_load_data)
 		pls->phys_start = prog->p_paddr; 
 	netdump_print("               p_filesz: %lu (%lx)\n", prog->p_filesz, 
 		prog->p_filesz);
-	if (store_pt_load_data)
+	if (store_pt_load_data) {
 		pls->phys_end = pls->phys_start + prog->p_filesz;
+		pls->zero_fill = (prog->p_filesz == prog->p_memsz) ? 
+			0 : pls->phys_start + prog->p_memsz;
+	}
 	netdump_print("                p_memsz: %lu (%lx)\n", prog->p_memsz,
 		prog->p_memsz);
 	netdump_print("                p_flags: %lx (", prog->p_flags);
@@ -1214,8 +1222,11 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 		pls->phys_start = prog->p_paddr; 
 	netdump_print("               p_filesz: %lu (%lx)\n", prog->p_filesz, 
 		prog->p_filesz);
-	if (store_pt_load_data)
+	if (store_pt_load_data) {
 		pls->phys_end = pls->phys_start + prog->p_filesz;
+		pls->zero_fill = (prog->p_filesz == prog->p_memsz) ?
+			0 : pls->phys_start + prog->p_memsz;
+	}
 	netdump_print("                p_memsz: %lu (%lx)\n", prog->p_memsz,
 		prog->p_memsz);
 	netdump_print("                p_flags: %lx (", prog->p_flags);
@@ -1237,18 +1248,20 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 static size_t 
 dump_Elf32_Nhdr(Elf32_Off offset, int store)
 {
-	int i, lf;
+	int i, lf, words;
 	Elf32_Nhdr *note;
 	size_t len;
 	char buf[BUFSIZE];
 	char *ptr;
 	ulong *uptr;
+	int xen_core;
 
 	note = (Elf32_Nhdr *)((char *)nd->elf32 + offset);
 
         netdump_print("Elf32_Nhdr:\n");
         netdump_print("               n_namesz: %ld ", note->n_namesz);
         BZERO(buf, BUFSIZE);
+	xen_core = FALSE;
         ptr = (char *)note + sizeof(Elf32_Nhdr);
         BCOPY(ptr, buf, note->n_namesz);
         netdump_print("(\"%s\")\n", buf);
@@ -1308,26 +1321,69 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		}
 		break;
 #endif
-	case NT_XEN_KDUMP_CR3:
-                netdump_print("(NT_XEN_KDUMP_CR3)\n");
+	default:
+		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
+		if (xen_core) {
+			netdump_print("(unknown Xen n_type)\n"); 
+			if (store)
+				error(WARNING, "unknown Xen n_type: %lx\n\n", 
+					note->n_type);
+		} else
+			netdump_print("(?)\n");
+		break;
+
+	case NT_XEN_KDUMP_CR3: 
+                netdump_print("(NT_XEN_KDUMP_CR3) [obsolete]\n");
+		if (store)
+			error(WARNING, 
+			    "obsolete Xen n_type: %lx (NT_XEN_KDUMP_CR3)\n\n", 
+				note->n_type);
+		/* FALL THROUGH */
+
+	case XEN_ELFNOTE_CRASH_INFO:
+		/*
+		 *  x86 and x86_64: p2m mfn appended to crash_xen_info_t structure
+		 */
+		if (note->n_type == XEN_ELFNOTE_CRASH_INFO)
+                	netdump_print("(XEN_ELFNOTE_CRASH_INFO)\n");
+		xen_core = TRUE;
 		if (store) { 
-			nd->flags |= KDUMP_XEN_HV;
+			pc->flags |= XEN_CORE;
 			nd->xen_kdump_data = &xen_kdump_data;
 			nd->xen_kdump_data->last_mfn_read = BADVAL;
-			nd->xen_kdump_data->flags |= KDUMP_CR3;
-			/*
-			 *  Use the first cr3 found.
-			 */
-			if (!nd->xen_kdump_data->cr3) {
+
+			if ((note->n_type == NT_XEN_KDUMP_CR3) &&
+			    ((note->n_descsz/sizeof(ulong)) == 1)) {
+				nd->xen_kdump_data->flags |= KDUMP_CR3;
+				/*
+				 *  Use the first cr3 found.
+				 */
+				if (!nd->xen_kdump_data->cr3) {
+					uptr = (ulong *)(ptr + note->n_namesz);
+					uptr = (ulong *)roundup((ulong)uptr, 4);
+					nd->xen_kdump_data->cr3 = *uptr;
+				}
+			} else {
+				nd->xen_kdump_data->flags |= KDUMP_MFN_LIST;
 				uptr = (ulong *)(ptr + note->n_namesz);
 				uptr = (ulong *)roundup((ulong)uptr, 4);
-				nd->xen_kdump_data->cr3 = *uptr;
+				words = note->n_descsz/sizeof(ulong);
+				/*
+				 *  If already set, overridden with --pfm_mfn
+				 */
+				if (!nd->xen_kdump_data->p2m_mfn)
+					nd->xen_kdump_data->p2m_mfn = *(uptr+(words-1));
 			}
 		}
 		break;
 
-	default:
-		netdump_print("(?)\n");
+	case XEN_ELFNOTE_CRASH_REGS:
+      		/* 
+		 *  x86 and x86_64: cr0, cr2, cr3, cr4 
+		 */
+		xen_core = TRUE;	
+               	netdump_print("(XEN_ELFNOTE_CRASH_REGS)\n");
+		break;
 	}
 
 	uptr = (ulong *)(ptr + note->n_namesz);
@@ -1338,7 +1394,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	if ((nd->flags & KDUMP_ELF32) && (note->n_namesz == 5))
 		uptr = (ulong *)(ptr + ((note->n_namesz + 3) & ~3));
 
-	if (note->n_type == NT_XEN_KDUMP_CR3)
+	if (xen_core)
 		uptr = (ulong *)roundup((ulong)uptr, 4);
 
 	for (i = lf = 0; i < note->n_descsz/sizeof(ulong); i++) {
@@ -1351,8 +1407,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		netdump_print("%08lx ", *uptr++);
 	}
 	if (!lf || (note->n_type == NT_TASKSTRUCT) ||
-	    (note->n_type == NT_DISKDUMP) || 
-	    (note->n_type == NT_XEN_KDUMP_CR3))
+	    (note->n_type == NT_DISKDUMP) || xen_core)
 		netdump_print("\n");
 
   	len = sizeof(Elf32_Nhdr);
@@ -1366,7 +1421,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 static size_t 
 dump_Elf64_Nhdr(Elf64_Off offset, int store)
 {
-	int i, lf;
+	int i, lf, words;
 	Elf64_Nhdr *note;
 	size_t len;
 	char buf[BUFSIZE];
@@ -1374,6 +1429,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	ulonglong *uptr;
 	int *iptr;
 	ulong *up;
+	int xen_core;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
@@ -1381,6 +1437,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
         netdump_print("               n_namesz: %ld ", note->n_namesz);
         BZERO(buf, BUFSIZE);
         ptr = (char *)note + sizeof(Elf64_Nhdr);
+	xen_core = FALSE;
         BCOPY(ptr, buf, note->n_namesz);
         netdump_print("(\"%s\")\n", buf);
 
@@ -1452,26 +1509,69 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		}
                 break;
 #endif
-	case NT_XEN_KDUMP_CR3:
-                netdump_print("(NT_XEN_KDUMP_CR3)\n");
+	default:
+		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
+                if (xen_core) {
+                        netdump_print("(unknown Xen n_type)\n");
+			if (store)
+                        	error(WARNING, 
+				    "unknown Xen n_type: %lx\n\n", note->n_type);
+                } else
+                        netdump_print("(?)\n");
+                break;
+
+	case NT_XEN_KDUMP_CR3: 
+                netdump_print("(NT_XEN_KDUMP_CR3) [obsolete]\n");
+               	if (store)
+                	error(WARNING,
+                            "obsolete Xen n_type: %lx (NT_XEN_KDUMP_CR3)\n\n",
+                                note->n_type);
+		/* FALL THROUGH */
+
+	case XEN_ELFNOTE_CRASH_INFO:
+		/*
+		 *  x86 and x86_64: p2m mfn appended to crash_xen_info_t structure
+		 */
+		if (note->n_type == XEN_ELFNOTE_CRASH_INFO)
+                	netdump_print("(XEN_ELFNOTE_CRASH_INFO)\n");
+		xen_core = TRUE;
 		if (store) {
-			nd->flags |= KDUMP_XEN_HV;
+			pc->flags |= XEN_CORE;
 			nd->xen_kdump_data = &xen_kdump_data;
 			nd->xen_kdump_data->last_mfn_read = BADVAL;
-			nd->xen_kdump_data->flags |= KDUMP_CR3;
-                        /*
-                         *  Use the first cr3 found.
-                         */
-                        if (!nd->xen_kdump_data->cr3) {
+
+			if ((note->n_type == NT_XEN_KDUMP_CR3) &&
+			    ((note->n_descsz/sizeof(ulong)) == 1)) {
+				nd->xen_kdump_data->flags |= KDUMP_CR3;
+	                        /*
+	                         *  Use the first cr3 found.
+	                         */
+	                        if (!nd->xen_kdump_data->cr3) {
+					up = (ulong *)(ptr + note->n_namesz);
+	                                up = (ulong *)roundup((ulong)up, 4);
+	                                nd->xen_kdump_data->cr3 = *up;
+	                        }
+			} else {
+				nd->xen_kdump_data->flags |= KDUMP_MFN_LIST;
 				up = (ulong *)(ptr + note->n_namesz);
-                                up = (ulong *)roundup((ulong)up, 4);
-                                nd->xen_kdump_data->cr3 = *up;
-                        }
+	                        up = (ulong *)roundup((ulong)up, 4);
+				words = note->n_descsz/sizeof(ulong);
+				/*
+				 *  If already set, overridden with --p2m_mfn
+				 */
+	                        if (!nd->xen_kdump_data->p2m_mfn)
+	                        	nd->xen_kdump_data->p2m_mfn = *(up+(words-1));
+			}
 		}
                 break;
 
-	default:
-		netdump_print("(?)\n");
+        case XEN_ELFNOTE_CRASH_REGS:
+      		/* 
+		 *  x86 and x86_64: cr0, cr2, cr3, cr4 
+		 */
+                xen_core = TRUE;
+                netdump_print("(XEN_ELFNOTE_CRASH_REGS)\n");
+                break;
 	}
 
 	uptr = (ulonglong *)(ptr + note->n_namesz);
@@ -1482,17 +1582,30 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
         if ((nd->flags & KDUMP_ELF64) && (note->n_namesz == 5))
                 uptr = (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3));
 
-       if (note->n_type == NT_XEN_KDUMP_CR3)
+        if (xen_core)
                 uptr = (ulonglong *)roundup((ulong)uptr, 4);
 
-	for (i = lf = 0; i < note->n_descsz/sizeof(ulonglong); i++) {
-		if (((i%2)==0)) {
-			netdump_print("%s                         ", 
-				i ? "\n" : "");
-			lf++;
-		} else
-			lf = 0;
-		netdump_print("%016llx ", *uptr++);
+	if (BITS32() && (xen_core || (note->n_type == NT_PRSTATUS))) {
+		iptr = (int *)uptr;
+		for (i = lf = 0; i < note->n_descsz/sizeof(ulong); i++) {
+			if (((i%4)==0)) {
+				netdump_print("%s                         ", 
+					i ? "\n" : "");
+				lf++;
+			} else
+				lf = 0;
+			netdump_print("%08lx ", *iptr++);
+		}
+	} else {
+		for (i = lf = 0; i < note->n_descsz/sizeof(ulonglong); i++) {
+			if (((i%2)==0)) {
+				netdump_print("%s                         ", 
+					i ? "\n" : "");
+				lf++;
+			} else
+				lf = 0;
+			netdump_print("%016llx ", *uptr++);
+		}
 	}
 	if (!lf)
 		netdump_print("\n");
@@ -1551,19 +1664,31 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	}
 }
 
+struct x86_64_user_regs_struct {
+        unsigned long r15,r14,r13,r12,rbp,rbx,r11,r10;
+        unsigned long r9,r8,rax,rcx,rdx,rsi,rdi,orig_rax;
+        unsigned long rip,cs,eflags;
+        unsigned long rsp,ss;
+        unsigned long fs_base, gs_base;
+        unsigned long ds,es,fs,gs;
+};
+#define offsetof(TYPE, MEMBER) ((ulong)&((TYPE *)0)->MEMBER)
+
 void 
 get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 {
         Elf64_Nhdr *note;
         size_t len;
         char *user_regs;
-        ulong rsp, rip;
+	ulong regs_size, rsp_offset, rip_offset;
 
         if (is_task_active(bt->task)) 
                 bt->flags |= BT_DUMPFILE_SEARCH;
 
-	if ((NETDUMP_DUMPFILE() || KDUMP_DUMPFILE()) &&
-            VALID_STRUCT(user_regs_struct) && (bt->task == tt->panic_task)) {
+	if (((NETDUMP_DUMPFILE() || KDUMP_DUMPFILE()) &&
+   	      VALID_STRUCT(user_regs_struct) && (bt->task == tt->panic_task)) ||
+	      (KDUMP_DUMPFILE() && (kt->flags & DWARF_UNWIND) && 
+	      (bt->flags & BT_DUMPFILE_SEARCH))) {
 		if (nd->num_prstatus_notes > 1)
                 	note = (Elf64_Nhdr *)
 				nd->nt_prstatus_percpu[bt->tc->processor];
@@ -1574,16 +1699,31 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
                 len = roundup(len + note->n_namesz, 4);
                 len = roundup(len + note->n_descsz, 4);
 
-                user_regs = ((char *)note + len)
-                        - SIZE(user_regs_struct) - sizeof(long);
+		regs_size = VALID_STRUCT(user_regs_struct) ?
+			SIZE(user_regs_struct) : 
+			sizeof(struct x86_64_user_regs_struct);
+		rsp_offset = VALID_MEMBER(user_regs_struct_rsp) ?
+			OFFSET(user_regs_struct_rsp) : 
+			offsetof(struct x86_64_user_regs_struct, rsp);
+		rip_offset = VALID_MEMBER(user_regs_struct_rip) ?
+			OFFSET(user_regs_struct_rip) :
+                        offsetof(struct x86_64_user_regs_struct, rip);
 
-		if (CRASHDEBUG(1)) {
-                	rsp = ULONG(user_regs + OFFSET(user_regs_struct_rsp));
-                	rip = ULONG(user_regs + OFFSET(user_regs_struct_rip));
+                user_regs = ((char *)note + len) - regs_size - sizeof(long);
+
+		if (CRASHDEBUG(1))
 			netdump_print("ELF prstatus rsp: %lx rip: %lx\n", 
-				rsp, rip);
-		}
+                		ULONG(user_regs + rsp_offset),
+                		ULONG(user_regs + rip_offset));
 
+		if (KDUMP_DUMPFILE()) {
+			*rspp = ULONG(user_regs + rsp_offset);
+			*ripp = ULONG(user_regs + rip_offset);
+
+			if (*ripp && *rspp)
+				return;
+		}
+			
 		bt->machdep = (void *)user_regs;
 	}
 
@@ -1598,10 +1738,11 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 void
 get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 {
-	int i, search, panic;
+	int i, search, panic, panic_task;
 	char *sym;
 	ulong *up;
 	ulong ipintr_eip, ipintr_esp, ipintr_func;
+	ulong halt_eip, halt_esp;
 	int check_hardirq, check_softirq;
 
 	if (!is_task_active(bt->task)) {
@@ -1609,15 +1750,28 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 		return;
 	}
 
+	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
+
 	ipintr_eip = ipintr_esp = ipintr_func = panic = 0;
+	halt_eip = halt_esp = 0;
 	check_hardirq = check_softirq = tt->flags & IRQSTACKS ? TRUE : FALSE;
 	search = ((bt->flags & BT_TEXT_SYMBOLS) && (tt->flags & TASK_INIT_DONE))
 		|| (machdep->flags & OMIT_FRAME_PTR);
-
 retry:
 	for (i = 0, up = (ulong *)bt->stackbuf; i < LONGS_PER_STACK; i++, up++){
 		sym = closest_symbol(*up);
-		if (STREQ(sym, "netconsole_netdump") || 
+
+		if (XEN_CORE_DUMPFILE()) {
+			if (STREQ(sym, "xen_machine_kexec")) {
+				*eip = *up;
+				*esp = bt->stackbase + ((char *)(up+1) - bt->stackbuf);
+				return;
+			}
+			if (STREQ(sym, "crash_kexec")) {
+                        	halt_eip = *up;
+				halt_esp = bt->stackbase + ((char *)(up+1) - bt->stackbuf);
+			}
+		} else if (STREQ(sym, "netconsole_netdump") || 
 		    STREQ(sym, "netpoll_start_netdump") ||
 		    STREQ(sym, "start_disk_dump") ||
 		    STREQ(sym, "crash_kexec") ||
@@ -1694,6 +1848,18 @@ next_sysrq:
 			    bt->stackbase + ((char *)(up-1) - bt->stackbuf);
 			ipintr_func = *(up - 2);
                 }
+
+                if (XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) &&
+                    STREQ(sym, "safe_halt")) {
+                        halt_eip = *up;
+			halt_esp = bt->stackbase + ((char *)(up+1) - bt->stackbuf);
+                }
+
+                if (XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) &&
+                    !halt_eip && STREQ(sym, "xen_idle")) {
+                        halt_eip = *up;
+			halt_esp = bt->stackbase + ((char *)(up+1) - bt->stackbuf);
+                }
 	}
 
 	if (ipintr_eip) {
@@ -1727,7 +1893,15 @@ next_sysrq:
                 goto retry;
         }
 
-	console("get_netdump_regs_x86: cannot find anything useful for task: %lx\n", bt->task);
+	if (halt_eip && halt_esp) {
+        	*eip = halt_eip;
+        	*esp = halt_esp;
+		return;
+	}
+
+	if (CRASHDEBUG(1))
+		error(INFO, 
+    "get_netdump_regs_x86: cannot find anything useful (task: %lx)\n", bt->task);
  
 	machdep->get_stack_frame(bt, eip, esp);
 }
@@ -1794,7 +1968,7 @@ get_kdump_panic_task(void)
 int
 read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
-	if ((nd->flags & KDUMP_XEN_HV)) {
+	if (XEN_CORE_DUMPFILE() && !XEN_HYPER_MODE()) {
 	    	if (!(nd->xen_kdump_data->flags & KDUMP_P2M_INIT)) {
         		if (!machdep->xen_kdump_p2m_create)
                 		error(FATAL,
@@ -1917,4 +2091,26 @@ get_kdump_vmcore_data(void)
 		return NULL;
 
 	return &vmcore_data;
+}
+
+/*
+ *  Override the dom0 p2m mfn in the XEN_ELFNOTE_CRASH_INFO note
+ *  in order to initiate a crash session of a guest kernel.
+ */
+void
+xen_kdump_p2m_mfn(char *arg)
+{
+	ulong value;
+	int errflag;
+
+	errflag = 0;
+	value = htol(arg, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag) {
+		xen_kdump_data.p2m_mfn = value;
+		if (CRASHDEBUG(1))
+			error(INFO, 
+			    "xen_kdump_data.p2m_mfn override: %lx\n",  
+				value); 
+	} else 
+		error(WARNING, "invalid p2m_mfn argument: %s\n", arg);
 }

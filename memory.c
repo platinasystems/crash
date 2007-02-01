@@ -10150,6 +10150,7 @@ dump_vm_table(int verbose)
 		fprintf(fp, "                   id: %d\n", nt->node_id);
 		fprintf(fp, "                pgdat: %lx\n", nt->pgdat);
 		fprintf(fp, "                 size: %ld\n", nt->size);
+		fprintf(fp, "              present: %ld\n", nt->present);
 		fprintf(fp, "              mem_map: %lx\n", nt->mem_map);
 		fprintf(fp, "          start_paddr: %llx\n", nt->start_paddr);
 		fprintf(fp, "          start_mapnr: %ld\n", nt->start_mapnr);
@@ -10223,12 +10224,16 @@ total_node_memory()
                 	console("           id: %d\n", nt->node_id);
                 	console("        pgdat: %lx\n", nt->pgdat);
                 	console("         size: %ld\n", nt->size);
+                	console("      present: %ld\n", nt->present);
                 	console("      mem_map: %lx\n", nt->mem_map);
                 	console("  start_paddr: %lx\n", nt->start_paddr);
                 	console("  start_mapnr: %ld\n", nt->start_mapnr);
 		}
 
-		total += (uint64_t)((uint64_t)nt->size * (uint64_t)PAGESIZE());
+		if (nt->present)
+			total += (uint64_t)((uint64_t)nt->present * (uint64_t)PAGESIZE());
+		else
+			total += (uint64_t)((uint64_t)nt->size * (uint64_t)PAGESIZE());
         }
 
 	return total;
@@ -11122,7 +11127,7 @@ dump_memory_nodes(int initialize)
         ulong node_start_paddr;
 	ulong node_start_pfn;
         ulong node_start_mapnr;
-	ulong node_spanned_pages;
+	ulong node_spanned_pages, node_present_pages;
         ulong free_pages, zone_size, node_size, cum_zone_size;
 	ulong zone_start_paddr, zone_start_mapnr, zone_mem_map;
 	physaddr_t phys;
@@ -11155,6 +11160,7 @@ dump_memory_nodes(int initialize)
                         fprintf(fp, "             id: %d\n", nt->node_id);
                         fprintf(fp, "          pgdat: %lx\n", nt->pgdat);
                         fprintf(fp, "           size: %ld\n", nt->size);
+                        fprintf(fp, "        present: %ld\n", nt->present);
                         fprintf(fp, "        mem_map: %lx\n", nt->mem_map);
                         fprintf(fp, "    start_paddr: %llx\n", nt->start_paddr);
                         fprintf(fp, "    start_mapnr: %ld\n", nt->start_mapnr);
@@ -11238,6 +11244,13 @@ dump_memory_nodes(int initialize)
 			node_size = node_spanned_pages;
 		} else error(INFO, "cannot determine zone size\n");
 
+		if (VALID_MEMBER(pglist_data_node_present_pages))
+                        readmem(pgdat+OFFSET(pglist_data_node_present_pages),
+                                KVADDR, &node_present_pages, sizeof(ulong),
+                                "pglist node_present_pages", FAULT_ON_ERROR);
+		else
+			node_present_pages = 0;
+
 		readmem(pgdat+OFFSET(pglist_data_bdata), KVADDR, &bdata,
 			sizeof(ulong), "pglist bdata", FAULT_ON_ERROR);
 
@@ -11248,6 +11261,7 @@ dump_memory_nodes(int initialize)
 				nt->size = 0;  /* initialize below */
 			else 
 				nt->size = node_size;
+			nt->present = node_present_pages;
 			nt->mem_map = node_mem_map;
 			nt->start_paddr = node_start_paddr;
 			nt->start_mapnr = node_start_mapnr;
@@ -11257,6 +11271,7 @@ dump_memory_nodes(int initialize)
                 		fprintf(fp, "             id: %d\n", nt->node_id);
                 		fprintf(fp, "          pgdat: %lx\n", nt->pgdat);
                 		fprintf(fp, "           size: %ld\n", nt->size);
+                		fprintf(fp, "        present: %ld\n", nt->present);
                 		fprintf(fp, "        mem_map: %lx\n", nt->mem_map);
                 		fprintf(fp, "    start_paddr: %llx\n", nt->start_paddr);
                 		fprintf(fp, "    start_mapnr: %ld\n", nt->start_mapnr);
@@ -11496,7 +11511,9 @@ node_table_init(void)
 	 *  Override numnodes -- some kernels may leave it at 1 on a system
 	 *  with multiple memory nodes.
 	 */
-	if (vt->flags & NODES) {
+	if ((vt->flags & NODES) && (VALID_MEMBER(pglist_data_node_next) || 
+	    VALID_MEMBER(pglist_data_pgdat_next))) {
+
 	        get_symbol_data("pgdat_list", sizeof(void *), &pgdat);
 	
 	        for (n = 0; pgdat; n++) {
@@ -11511,7 +11528,8 @@ node_table_init(void)
 					vt->numnodes, n);
 			vt->numnodes = n;
 		}
-	}
+	} else
+		vt->flags &= ~NODES;
 
        	if (!(vt->node_table = (struct node_table *)
 	    malloc(sizeof(struct node_table) * vt->numnodes)))
@@ -11631,11 +11649,13 @@ force_page_size(char *s)
 	case 'k':
 	case 'K':
 		LASTCHAR(s) = NULLCHAR;
-		if (decimal(s, 0))
-			k = 1024;
-		else 
+		if (!decimal(s, 0)) {
 			err = TRUE;
-		break;
+			break;
+		}
+		k = 1024;
+
+		/* FALLTHROUGH */
 
 	default:
         	if (decimal(s, 0))

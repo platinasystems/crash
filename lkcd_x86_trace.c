@@ -21,6 +21,9 @@
 
 #include "lkcd_x86_trace.h"
 
+#undef XEN_HYPER_MODE
+static int XEN_HYPER_MODE(void) { return (pc->flags & XEN_HYPER) != 0; }
+
 static void *kl_alloc_block(int, int);
 static void kl_free_block(void *);
 static void GET_BLOCK(kaddr_t, unsigned, void *);
@@ -1417,7 +1420,16 @@ find_trace(
 			}
 		}
 		asp = (uaddr_t*)((uaddr_t)sbp + (STACK_SIZE - (saddr - sp)));
+
 #ifdef REDHAT
+		if (XEN_HYPER_MODE()) {
+			func_name = kl_funcname(pc);
+			if (STREQ(func_name, "idle_loop") || STREQ(func_name, "hypercall")) {
+				UPDATE_FRAME(func_name, pc, 0, sp, bp, asp, 0, 0, bp - sp, 0);
+				return(trace->nframes);
+			}
+		}
+
 		ra = GET_STACK_ULONG(bp + 4);
 		/*
 	  	 *  HACK: The get_framesize() function can return the proper
@@ -1542,7 +1554,8 @@ find_trace(
 			bp = curframe->fp + frame_size;
 		}
 #endif
-		if ((func_name = kl_funcname(pc))) {
+		func_name = kl_funcname(pc);
+		if (func_name && !XEN_HYPER_MODE()) {
 			if (strstr(func_name, "kernel_thread")) {
 				ra = 0;
 				bp = saddr - 4;
@@ -1665,6 +1678,26 @@ find_trace(
 				} else {
 					return trace->nframes;
 				}
+			}
+		}
+		if (func_name && XEN_HYPER_MODE()) {
+			if (STREQ(func_name, "continue_nmi")) {
+				/* Interrupt frame */
+				sp = curframe->fp + 4;
+				asp = (uaddr_t*)((uaddr_t)sbp + (STACK_SIZE - 
+						(saddr - sp)));
+				bp = curframe->fp + (12 * 4);
+				curframe = alloc_sframe(trace, flags);
+				ra = *(asp + 9);
+				UPDATE_FRAME(func_name, pc, ra, sp, bp + 4, asp,
+			       	0, 0, curframe->fp - curframe->sp+4, 12 * 4);
+
+				/* contunue next frame */
+				pc = ra;
+				sp = curframe->fp + 4;
+				bp = sp + get_framesize(pc, bt);
+				func_name = kl_funcname(pc);
+				continue;
 			}
 		}
 
@@ -1912,7 +1945,7 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 	if (kt->flags & RA_SEEK)
 		bt->flags |= BT_SPECULATE;
 
-	if (XENDUMP_DUMPFILE() && is_task_active(bt->task) && 
+	if (XENDUMP_DUMPFILE() && XEN() && is_task_active(bt->task) && 
     	    STREQ(kl_funcname(bt->instptr), "stop_this_cpu")) {
 		/*
 		 *  bt->instptr of "stop_this_cpu" is not a return
@@ -1928,7 +1961,7 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 				kl_funcname(bt->instptr));
 	}
 
-	if (XENDUMP_DUMPFILE() && is_idle_thread(bt->task) &&
+	if (XENDUMP_DUMPFILE() && XEN() && is_idle_thread(bt->task) &&
 	    is_task_active(bt->task) && 
 	    !(kt->xen_flags & XEN_SUSPEND) &&
     	    STREQ(kl_funcname(bt->instptr), "schedule")) {
@@ -1956,7 +1989,7 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 		}
 	}
 
-        if (XENDUMP_DUMPFILE() && is_idle_thread(bt->task) &&
+        if (XENDUMP_DUMPFILE() && XEN() && is_idle_thread(bt->task) &&
             is_task_active(bt->task) &&
             (kt->xen_flags & XEN_SUSPEND) &&
             STREQ(kl_funcname(bt->instptr), "schedule")) {
@@ -1993,7 +2026,7 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
                 }
         }
 
-	if (XENDUMP_DUMPFILE() && !is_idle_thread(bt->task) &&
+	if (XENDUMP_DUMPFILE() && XEN() && !is_idle_thread(bt->task) &&
 	    is_task_active(bt->task) && 
     	    STREQ(kl_funcname(bt->instptr), "schedule")) {
 		/*
@@ -2028,12 +2061,14 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 		return(0);
 #endif
 
-        if (!(tsp = kl_alloc_block(TASK_STRUCT_SZ, K_TEMP))) {
-		return(1);
-	}
-	if (kl_get_task_struct(task, 2, tsp)) {
-		kl_free_block(tsp);
-		return(1);
+	if (!XEN_HYPER_MODE()) {
+	        if (!(tsp = kl_alloc_block(TASK_STRUCT_SZ, K_TEMP))) {
+			return(1);
+		}
+		if (kl_get_task_struct(task, 2, tsp)) {
+			kl_free_block(tsp);
+			return(1);
+		}
 	}
 	trace = (trace_t *)alloc_trace_rec(C_TEMP);
 	if (!trace) {
@@ -2105,7 +2140,9 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 #endif
 		print_trace(trace, flags, ofp);
 	}
-	kl_free_block(tsp);
+	if (!XEN_HYPER_MODE())
+		kl_free_block(tsp);
+
 	free_trace_rec(trace);
 #ifdef REDHAT
 	if (KL_ERROR == KLE_PRINT_TRACE_ERROR) {
@@ -2132,13 +2169,15 @@ verify_back_trace(struct bt_info *bt)
 	errcnt = 0;
         KL_ERROR = 0;
 
-        if (!(tsp = kl_alloc_block(TASK_STRUCT_SZ, K_TEMP))) 
-                return FALSE;
-        
-        if (kl_get_task_struct(bt->task, 2, tsp)) {
-                kl_free_block(tsp);
-                return FALSE;
-        }
+	if (!XEN_HYPER_MODE()) {
+	        if (!(tsp = kl_alloc_block(TASK_STRUCT_SZ, K_TEMP))) 
+	                return FALSE;
+	        
+	        if (kl_get_task_struct(bt->task, 2, tsp)) {
+	                kl_free_block(tsp);
+	                return FALSE;
+	        }
+	}
 
         trace = (trace_t *)alloc_trace_rec(C_TEMP);
 	if (!trace) 
@@ -2183,7 +2222,9 @@ verify_back_trace(struct bt_info *bt)
                 } while (frmp != trace->frame);
 	}
 
-	kl_free_block(tsp);
+	if (!XEN_HYPER_MODE())
+		kl_free_block(tsp);
+
 	free_trace_rec(trace);
         return (errcnt ? FALSE : TRUE);
 }
@@ -2467,6 +2508,9 @@ eframe_label(char *funcname, ulong eip)
 	int i;
 	struct eframe_labels *efp;
 	struct syment *sp;
+
+	if (XEN_HYPER_MODE())
+		return NULL;	/* ODA: need support ? */
 
 	efp = &eframe_labels;
 

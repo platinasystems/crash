@@ -1,8 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -921,7 +921,7 @@ restore_sanity(void)
 
 	wait_for_children(ZOMBIES_ONLY);
 
-	pc->flags &= ~(INIT_IFILE|RUNTIME_IFILE|_SIGINT_);
+	pc->flags &= ~(INIT_IFILE|RUNTIME_IFILE|_SIGINT_|PLEASE_WAIT);
 	pc->sigint_cnt = 0;
 	pc->redirect = 0;
 	pc->pipe_command[0] = NULLCHAR;

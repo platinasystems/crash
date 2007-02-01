@@ -1955,35 +1955,53 @@ do_pci(void)
 	unsigned int      class;
 	unsigned short    device, vendor;
 	unsigned char     busno;
-	ulong             *devlist, bus, devfn, tmp;
+	ulong             *devlist, bus, devfn, prev, next;
 	char 		  buf1[BUFSIZE];
 	char 		  buf2[BUFSIZE];
 	char 		  buf3[BUFSIZE];
 
-	fprintf(fp, "%s BU:SL.FN CLASS: VENDOR-DEVICE\n",
-		mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "PCI_DEV"));
+	if (!symbol_exists("pci_devices"))
+		error(FATAL, "no PCI devices found on this system.\n");
 
 	BZERO(&pcilist_data, sizeof(struct list_data));
 
 	if (VALID_MEMBER(pci_dev_global_list)) {
-                get_symbol_data("pci_devices", sizeof(void *), &tmp);
-                readmem(tmp + OFFSET(list_head_next), KVADDR,
-                        &pcilist_data.start, sizeof(void *), "pci devices",
-                        FAULT_ON_ERROR);
+                get_symbol_data("pci_devices", sizeof(void *), &pcilist_data.start);
                 pcilist_data.end = symbol_value("pci_devices");
                 pcilist_data.list_head_offset = OFFSET(pci_dev_global_list);
+		readmem(symbol_value("pci_devices") + OFFSET(list_head_prev),
+			KVADDR, &prev, sizeof(void *), "list head prev",
+			FAULT_ON_ERROR);
+                /*
+		 * Check if this system does not have any PCI devices.
+		 */
+		if ((pcilist_data.start == pcilist_data.end) &&
+ 		   (prev == pcilist_data.end))
+			error(FATAL, "no PCI devices found on this system.\n");
 
-	} else {
+	} else if (VALID_MEMBER(pci_dev_next)) {
 		get_symbol_data("pci_devices", sizeof(void *),
 				&pcilist_data.start);
 		pcilist_data.member_offset = OFFSET(pci_dev_next);
-	} 
+                /*
+		 * Check if this system does not have any PCI devices.
+		 */
+		readmem(pcilist_data.start + pcilist_data.member_offset,
+			KVADDR, &next, sizeof(void *), "pci dev next",
+			FAULT_ON_ERROR);
+		if (!next)
+			error(FATAL, "no PCI devices found on this system.\n");
+	} else
+		option_not_supported('p');
 
 	hq_open();
 	devcnt = do_list(&pcilist_data);
 	devlist = (ulong *)GETBUF(devcnt * sizeof(ulong));
 	devcnt = retrieve_list(devlist, devcnt);
 	hq_close();
+
+	fprintf(fp, "%s BU:SL.FN CLASS: VENDOR-DEVICE\n",
+		mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "PCI_DEV"));
 
 	for (i = 0; i < devcnt; i++) {
 
