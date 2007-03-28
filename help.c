@@ -1089,7 +1089,7 @@ NULL
 char *help_rd[] = {
 "rd",
 "read memory",
-"[-dDsupxm][-8|-16|-32|-64][-o offs][-e addr] [address|symbol] [count]",
+"[-dDsupxmf][-8|-16|-32|-64][-o offs][-e addr] [address|symbol] [count]",
 "  This command displays the contents of memory, with the output formatted",
 "  in several different manners.  The starting address may be entered either",
 "  symbolically or by address.  The default output size is the size of a long",
@@ -1099,6 +1099,7 @@ char *help_rd[] = {
 "       -u  address argument is a user virtual address; only required on",
 "           processors with common user and kernel virtual address spaces.",
 "       -m  address argument is a xen host machine address.",
+"       -f  address argument is a dumpfile offset.",
 "       -d  display output in signed decimal format (default is hexadecimal).",
 "       -D  display output in unsigned decimal format (default is hexadecimal).",
 "       -s  displays output symbolically when appropriate.",
@@ -1118,7 +1119,8 @@ char *help_rd[] = {
 "             3. -u specifies a user virtual address, but is only necessary on",
 "                processors with common user and kernel virtual address spaces.",
 "   symbol  symbol of starting address to read.",
-"    count  number of memory locations to display (default is 1).",
+"    count  number of memory locations to display (default is 1); if entered,",
+"           must be the last argument on the command line.",
 "\nEXAMPLES",
 "  Display the kernel_version string:\n",
 "    %s> rd kernel_version 4 ",
@@ -3042,7 +3044,7 @@ NULL
 char *help_struct[] = {
 "struct",
 "structure contents",
-"struct_name[.member[,member]] [-o][-l offset][-r] [address | symbol]\n"
+"struct_name[.member[,member]][-o][-l offset][-rfu] [address | symbol]\n"
 "                                       [count | -c count]",
 "  This command displays either a structure definition, or a formatted display",
 "  of the contents of a structure at a specified address.  When no address is",
@@ -3061,6 +3063,9 @@ char *help_struct[] = {
 "                   1. in \"structure.member\" format.",
 "                   2. a number of bytes. ",
 "             -r  raw dump of structure data.",
+"             -f  address argument is a dumpfile offset.",
+"             -u  address argument is a user virtual address in the current",
+"                 context.",
 "        address  hexadecimal address of a structure; if the address points",  
 "                 to an embedded list_head structure contained within the",
 "                 target data structure, then the \"-l\" option must be used.",
@@ -3274,7 +3279,7 @@ NULL
 char *help_union[] = {
 "union",
 "union contents",
-"union_name[.member[,member]] [-o][-l offset][-r] [address | symbol]\n"
+"union_name[.member[,member]] [-o][-l offset][-rfu] [address | symbol]\n"
 "                                     [count | -c count]",
 "  This command displays either a union definition, or a formatted display",
 "  of the contents of a union at a specified address.  When no address is",
@@ -3294,6 +3299,9 @@ char *help_union[] = {
 "                   1. in \"structure.member\" format.",
 "                   2. a number of bytes. ",
 "             -r  raw dump of union data.",
+"             -f  address argument is a dumpfile offset.",
+"             -u  address argument is a user virtual address in the current",
+"                 context.",
 "        address  hexadecimal address of a union; if the address points",
 "                 to an embedded list_head structure contained within the",
 "                 target union structure, then the \"-l\" option must be used.",
@@ -4267,9 +4275,9 @@ char *help_dis[] = {
 "                routine up to and including the designated address.",
 "            -l  displays source code line number data in addition to the ",
 "                disassembly output.", 
-"            -u  address is a user virtual address; otherwise the address is ",
-"                assumed to be a kernel virtual address.  If this option is",
-"                used, then -r and -l are ignored.",
+"            -u  address is a user virtual address in the current context;",
+"                otherwise the address is assumed to be a kernel virtual address.",
+"                If this option is used, then -r and -l are ignored.",
 "       address  starting hexadecimal text address.",
 "        symbol  symbol of starting text address.  On PPC64, the symbol",
 "                preceded by '.' is used.",
@@ -5094,7 +5102,9 @@ char *output_info[] = {
 "The default output radix for gdb output and certain %s commands is",
 "hexadecimal.  This can be changed to decimal by entering \"set radix 10\"",
 "or the alias \"dec\".  It can be reverted back to hexadecimal by entering",
-"\"set radix 16\" or the alias \"hex\".",
+"\"set radix 16\" or the alias \"hex\".\n",
+"To execute an external shell command, precede the command with an \"!\".",
+"To escape to a shell, enter \"!\" alone.",
 " ",
 NULL
 };
@@ -5140,7 +5150,7 @@ char *version_info[] = {
 "Copyright (C) 2004, 2005, 2006  IBM Corporation", 
 "Copyright (C) 1999-2006  Hewlett-Packard Co",
 "Copyright (C) 2005, 2006  Fujitsu Limited",
-"Copyright (C) 2006  VA Linux Systems Japan K.K.",
+"Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.",
 "Copyright (C) 2005  NEC Corporation",
 "Copyright (C) 1999, 2002  Silicon Graphics, Inc.",
 "Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.",

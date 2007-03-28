@@ -1,3 +1,32 @@
+crash (4.0-3.21-1) experimental; urgency=low
+
+  * New upstream version 4.0-3.21 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - support for xensource ELF format dumps
+    - numerous xencrash fixes
+    - vtop fix for x86 PAE kernels
+    - recognize ppc BOOKE processors
+    - Ubuntu uname mismatch fix
+    - 2.6.21 kernel initialization fix
+    - ia64 xen support
+    - mount, net, vm, swap command fixs for 2.6.20 kernels
+
+ -- Troy Heber <troyh@debian.org>  Wed, 28 Mar 2007 15:39:08 -0600
+
+crash (4.0-3.19-1) experimental; urgency=low
+
+  * New upstream version 4.0-3.19 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    -  Fix for support of paravirtual x86 xendumps created on > 4G machines,
+    and active guest task had been assigned a page dir (cr3) with addr > 4GB.
+    - Fix for the "kmem -p [page-struct-address]" command construct
+    - Added a new "struct -u" option
+    - Added new "rd -f" and "struct -f" options
+    - Cosmetic fix to prevent double-printing of "kmem -p" and "kmem -v"
+    headers
+
+ -- Troy Heber <troyh@debian.org>  Wed,  7 Feb 2007 14:08:12 -0700
+
 crash (4.0-3.18-1) experimental; urgency=low
 
   * New upstream version 4.0-3.18 (see

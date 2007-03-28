@@ -1,8 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
  */ 
 #ifdef IA64 
 #include "defs.h"
+#include "xen_hyper_defs.h"
 #include <sys/prctl.h>
 
 static int ia64_verify_symbol(const char *, ulong, char);
@@ -79,6 +80,7 @@ static int ia64_xendump_page_index(ulong, struct xendump_data *);
 static ulong ia64_xendump_panic_task(struct xendump_data *);
 static void ia64_get_xendump_regs(struct xendump_data *, struct bt_info *, ulong *, ulong *);
 
+static void ia64_init_hyper(int);
 
 struct machine_specific ia64_machine_specific = { 0 };
 
@@ -86,6 +88,11 @@ void
 ia64_init(int when)
 {
 	struct syment *sp, *spn;
+
+	if (XEN_HYPER_MODE()) {
+		ia64_init_hyper(when);
+		return;
+	}
 
         switch (when)
         {
@@ -1154,9 +1161,15 @@ ia64_get_thread_ksp(ulong task)
 {
         ulong ksp;
 
-        readmem(task + OFFSET(task_struct_thread_ksp), KVADDR,
-                &ksp, sizeof(void *),
-                "thread_struct ksp", FAULT_ON_ERROR);
+	if (XEN_HYPER_MODE()) {
+        	readmem(task + XEN_HYPER_OFFSET(vcpu_thread_ksp), KVADDR,
+                	&ksp, sizeof(void *),
+                	"vcpu thread ksp", FAULT_ON_ERROR);
+	} else {
+        	readmem(task + OFFSET(task_struct_thread_ksp), KVADDR,
+                	&ksp, sizeof(void *),
+                	"thread_struct ksp", FAULT_ON_ERROR);
+	}
 
         return ksp;
 }
@@ -1511,7 +1524,10 @@ ia64_exception_frame(ulong addr, struct bt_info *bt)
         BZERO(&eframe, sizeof(ulong) * NUM_PT_REGS);
 
         open_tmpfile();
-        dump_struct("pt_regs", addr, RADIX(16));
+	if (XEN_HYPER_MODE())
+        	dump_struct("cpu_user_regs", addr, RADIX(16));
+	else
+        	dump_struct("pt_regs", addr, RADIX(16));
         rewind(pc->tmpfile);
 
 	fval = 0;
@@ -2596,8 +2612,9 @@ ia64_create_memmap(void)
             !readmem(PTOV(efi_memmap), KVADDR, memmap,
 	    ms->efi_memmap_size, "efi_mmap contents", 
 	    QUIET|RETURN_ON_ERROR)) {
-		error(WARNING, "cannot read efi_mmap: " 
-			"EFI memory verification will not be performed\n\n");
+		if (!XEN() || (XEN() && CRASHDEBUG(1)))
+			error(WARNING, "cannot read efi_mmap: " 
+			    "EFI memory verification will not be performed\n\n");
 		free(memmap);
 		return;
 	}
@@ -3876,7 +3893,7 @@ static int
 ia64_xendump_p2m_create(struct xendump_data *xd)
 {
 	if (!symbol_exists("phys_to_machine_mapping")) {
-		xd->flags |= XC_CORE_NO_P2MM;
+		xd->flags |= XC_CORE_NO_P2M;
 		return TRUE;
 	}
 
@@ -3951,5 +3968,248 @@ ia64_get_xendump_regs(struct xendump_data *xd, struct bt_info *bt, ulong *rip, u
 	    STREQ(closest_symbol(*rip), "schedule"))
 		error(INFO, 
 		    "xendump: switch_stack possibly not saved -- try \"bt -t\"\n");
+}
+
+/* for XEN Hypervisor analysis */
+
+static int
+ia64_is_kvaddr_hyper(ulong addr)
+{
+	return (addr >= HYPERVISOR_VIRT_START && addr < HYPERVISOR_VIRT_END);
+}
+
+static int
+ia64_kvtop_hyper(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
+{
+	unsigned long virt_percpu_start, phys_percpu_start;
+
+	if (!IS_KVADDR(kvaddr))
+		return FALSE;
+
+	if (PERCPU_VIRT_ADDR(kvaddr)) {
+		virt_percpu_start = symbol_value("__phys_per_cpu_start");
+		phys_percpu_start = virt_percpu_start - DIRECTMAP_VIRT_START;
+		*paddr = kvaddr - PERCPU_ADDR + phys_percpu_start;
+		return TRUE;
+	} else if (DIRECTMAP_VIRT_ADDR(kvaddr)) {
+		*paddr = kvaddr - DIRECTMAP_VIRT_START;
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+static void
+ia64_post_init_hyper(void)
+{
+	struct machine_specific *ms;
+
+	ms = &ia64_machine_specific;
+
+	if (symbol_exists("unw_init_frame_info")) {
+		machdep->flags |= NEW_UNWIND;
+		if (MEMBER_EXISTS("unw_frame_info", "pt")) {
+			if (MEMBER_EXISTS("cpu_user_regs", "ar_csd")) {
+				machdep->flags |= NEW_UNW_V3;
+				ms->unwind_init = unwind_init_v3;
+				ms->unwind = unwind_v3;
+				ms->unwind_debug = unwind_debug_v3;
+				ms->dump_unwind_stats = dump_unwind_stats_v3;
+			} else {
+				machdep->flags |= NEW_UNW_V2;
+				ms->unwind_init = unwind_init_v2;
+				ms->unwind = unwind_v2;
+				ms->unwind_debug = unwind_debug_v2;
+				ms->dump_unwind_stats = dump_unwind_stats_v2;
+			}
+		} else {
+			machdep->flags |= NEW_UNW_V1;
+			ms->unwind_init = unwind_init_v1;
+			ms->unwind = unwind_v1;
+			ms->unwind_debug = unwind_debug_v1;
+			ms->dump_unwind_stats = dump_unwind_stats_v1;
+		}
+	} else {
+		machdep->flags |= OLD_UNWIND;
+		ms->unwind_init = ia64_old_unwind_init;
+		ms->unwind = ia64_old_unwind;
+	}
+	ms->unwind_init();
+}
+
+int
+ia64_in_mca_stack_hyper(ulong addr, struct bt_info *bt)
+{
+	int plen, i;
+	ulong paddr, stackbase, stacktop;
+	ulong *__per_cpu_mca;
+	struct xen_hyper_vcpu_context *vcc;
+
+	vcc = xen_hyper_vcpu_to_vcpu_context(bt->task);
+	if (!vcc)
+		return 0;
+
+	if (!symbol_exists("__per_cpu_mca") ||
+	    !(plen = get_array_length("__per_cpu_mca", NULL, 0)) ||
+	    (plen < xht->pcpus))
+		return 0;
+
+	if (!machdep->kvtop(NULL, addr, &paddr, 0))
+		return 0;
+
+	__per_cpu_mca = (ulong *)GETBUF(sizeof(ulong) * xht->pcpus);
+
+	if (!readmem(symbol_value("__per_cpu_mca"), KVADDR, __per_cpu_mca,
+	    sizeof(ulong) * xht->pcpus, "__per_cpu_mca", RETURN_ON_ERROR|QUIET))
+		return 0;
+
+	if (CRASHDEBUG(1)) {
+		for (i = 0; i < xht->pcpus; i++) {
+			fprintf(fp, "__per_cpu_mca[%d]: %lx\n", 
+		 		i, __per_cpu_mca[i]);
+		}
+	}
+
+	stackbase = __per_cpu_mca[vcc->processor];
+	stacktop = stackbase + (STACKSIZE() * 2);
+	FREEBUF(__per_cpu_mca);
+
+	if ((paddr >= stackbase) && (paddr < stacktop))
+		return 1;
+	else
+		return 0;
+}
+
+static void
+ia64_init_hyper(int when)
+{
+	struct syment *sp;
+
+        switch (when)
+        {
+	case SETUP_ENV:
+#if defined(PR_SET_FPEMU) && defined(PR_FPEMU_NOPRINT)
+		prctl(PR_SET_FPEMU, PR_FPEMU_NOPRINT, 0, 0, 0);
+#endif
+#if defined(PR_SET_UNALIGN) && defined(PR_UNALIGN_NOPRINT)
+		prctl(PR_SET_UNALIGN, PR_UNALIGN_NOPRINT, 0, 0, 0);
+#endif
+		break;
+
+        case PRE_SYMTAB:
+                machdep->verify_symbol = ia64_verify_symbol;
+		machdep->machspec = &ia64_machine_specific;
+		if (pc->flags & KERNEL_DEBUG_QUERY)
+			return;
+                machdep->pagesize = memory_page_size();
+                machdep->pageshift = ffs(machdep->pagesize) - 1;
+                machdep->pageoffset = machdep->pagesize - 1;
+                machdep->pagemask = ~(machdep->pageoffset);
+		switch (machdep->pagesize)
+		{
+		case 4096:
+			machdep->stacksize = (power(2, 3) * PAGESIZE());
+			break;
+		case 8192:
+			machdep->stacksize = (power(2, 2) * PAGESIZE());
+			break;
+		case 16384:
+			machdep->stacksize = (power(2, 1) * PAGESIZE());
+			break;
+		case 65536:
+			machdep->stacksize = (power(2, 0) * PAGESIZE());
+			break;
+		default:
+			machdep->stacksize = 32*1024;
+			break;
+		}
+                if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc pgd space.");
+		if ((machdep->pud = (char *)malloc(PAGESIZE())) == NULL)
+			error(FATAL, "cannot malloc pud space.");
+                if ((machdep->pmd = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc pmd space.");
+                if ((machdep->ptbl = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc ptbl space.");
+                machdep->last_pgd_read = 0;
+                machdep->last_pud_read = 0;
+                machdep->last_pmd_read = 0;
+                machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = ia64_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
+                machdep->machspec->phys_start = UNKNOWN_PHYS_START;
+		/* ODA: if need make hyper version
+                if (machdep->cmdline_arg) 
+			parse_cmdline_arg(); */
+                break;     
+
+        case PRE_GDB:
+
+		if (pc->flags & KERNEL_DEBUG_QUERY)
+			return;
+		
+                machdep->kvbase = HYPERVISOR_VIRT_START;
+		machdep->identity_map_base = HYPERVISOR_VIRT_START;
+                machdep->is_kvaddr = ia64_is_kvaddr_hyper;
+                machdep->is_uvaddr = generic_is_uvaddr;
+                machdep->eframe_search = ia64_eframe_search;
+                machdep->back_trace = ia64_back_trace_cmd;
+                machdep->processor_speed = xen_hyper_ia64_processor_speed;
+                machdep->uvtop = ia64_uvtop;
+                machdep->kvtop = ia64_kvtop_hyper;
+		machdep->get_stack_frame = ia64_get_stack_frame;
+		machdep->get_stackbase = ia64_get_stackbase;
+		machdep->get_stacktop = ia64_get_stacktop;
+                machdep->translate_pte = ia64_translate_pte;
+                machdep->memory_size = xen_hyper_ia64_memory_size;
+                machdep->dis_filter = ia64_dis_filter;
+		machdep->cmd_mach = ia64_cmd_mach;
+		machdep->get_smp_cpus = xen_hyper_ia64_get_smp_cpus;
+		machdep->line_number_hooks = ia64_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+                machdep->init_kernel_pgd = NULL;
+
+		if ((sp = symbol_search("_stext"))) {
+			machdep->machspec->kernel_region = 
+				VADDR_REGION(sp->value);
+			machdep->machspec->kernel_start = sp->value;
+		} else {
+//			machdep->machspec->kernel_region = KERNEL_CACHED_REGION;
+//			machdep->machspec->kernel_start = KERNEL_CACHED_BASE;
+		}
+
+		/* machdep table for Xen Hypervisor */
+		xhmachdep->pcpu_init = xen_hyper_ia64_pcpu_init;
+                break;
+
+        case POST_GDB:
+		STRUCT_SIZE_INIT(switch_stack, "switch_stack");
+		MEMBER_OFFSET_INIT(thread_struct_fph, "thread_struct", "fph");
+		MEMBER_OFFSET_INIT(switch_stack_b0, "switch_stack", "b0");
+		MEMBER_OFFSET_INIT(switch_stack_ar_bspstore,  
+			"switch_stack", "ar_bspstore");
+		MEMBER_OFFSET_INIT(switch_stack_ar_pfs,  
+			"switch_stack", "ar_pfs");
+		MEMBER_OFFSET_INIT(switch_stack_ar_rnat, 
+			"switch_stack", "ar_rnat");
+		MEMBER_OFFSET_INIT(switch_stack_pr, 
+			"switch_stack", "pr");
+
+		XEN_HYPER_STRUCT_SIZE_INIT(cpuinfo_ia64, "cpuinfo_ia64");
+		XEN_HYPER_MEMBER_OFFSET_INIT(cpuinfo_ia64_proc_freq, "cpuinfo_ia64", "proc_freq");
+		XEN_HYPER_MEMBER_OFFSET_INIT(cpuinfo_ia64_vendor, "cpuinfo_ia64", "vendor");
+		if (symbol_exists("per_cpu__cpu_info")) {
+			xht->cpu_data_address = symbol_value("per_cpu__cpu_info");
+		}
+		/* kakuma Can this be calculated? */
+		if (!machdep->hz) {
+			machdep->hz = XEN_HYPER_HZ;
+		}
+                break;
+
+	case POST_INIT:
+		ia64_post_init_hyper();
+		break;
+	}
 }
 #endif

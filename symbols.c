@@ -4009,7 +4009,7 @@ cmd_datatype_common(ulong flags)
         list_head_offset = 0;
         argc_members = 0;
 
-        while ((c = getopt(argcnt, args, "c:rvol:")) != EOF) {
+        while ((c = getopt(argcnt, args, "fuc:rvol:")) != EOF) {
                 switch (c)
 		{
 		case 'c':
@@ -4038,6 +4038,17 @@ cmd_datatype_common(ulong flags)
 			else
 				error(FATAL, "invalid -l option: %s\n", 
 					optarg);
+			break;
+
+		case 'f':
+			if (!pc->dumpfile)
+				error(FATAL,
+				   	"-f option requires a dumpfile\n");
+			pc->curcmd_flags |= MEMTYPE_FILEADDR;
+			break;
+
+		case 'u':
+			pc->curcmd_flags |= MEMTYPE_UVADDR;
 			break;
 
 		default:
@@ -4071,15 +4082,20 @@ cmd_datatype_common(ulong flags)
 				count = stol(args[optind], 
 					FAULT_ON_ERROR, NULL);
 			else {
-				if (!IS_KVADDR(addr = htol(args[optind], 
+				if (pc->curcmd_flags & MEMTYPE_FILEADDR)
+					pc->curcmd_private = stoll(args[optind], 
+						FAULT_ON_ERROR, NULL);
+				else if (pc->curcmd_flags & MEMTYPE_UVADDR) {
+					addr = htol(args[optind], FAULT_ON_ERROR,
+						NULL);
+				} else if (!IS_KVADDR(addr = htol(args[optind], 
                                     FAULT_ON_ERROR, NULL)))
 					error(FATAL, 
 					"invalid kernel virtual address: %s\n",
 						args[optind]);
 				aflag++;
 			}
-		}
-	        else if ((sp = symbol_search(args[optind]))) {
+		} else if ((sp = symbol_search(args[optind]))) {
 	                addr = sp->value;
 			aflag++;
 	        } else {
@@ -4140,7 +4156,10 @@ cmd_datatype_common(ulong flags)
 		addr += len;
 	}
 
-       	for (c = 0; c < abs(count); c++, addr += len) {
+	if (pc->curcmd_flags & MEMTYPE_FILEADDR)
+		addr = 0;  /* unused, but parsed by gdb */
+
+       	for (c = 0; c < abs(count); c++, addr += len, pc->curcmd_private += len) {
 		if (c) 
 			fprintf(fp,"\n");
 
@@ -5594,6 +5613,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_timestamp));
         fprintf(fp, "       task_struct_thread_info: %ld\n",
                 OFFSET(task_struct_thread_info));
+        fprintf(fp, "           task_struct_nsproxy: %ld\n",
+                OFFSET(task_struct_nsproxy));
 
 	fprintf(fp, "              thread_info_task: %ld\n",
                 OFFSET(thread_info_task));
@@ -5603,6 +5624,13 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(thread_info_flags));
 	fprintf(fp, "      thread_info_previous_esp: %ld\n",
                 OFFSET(thread_info_previous_esp));
+
+	fprintf(fp, "                nsproxy_mnt_ns: %ld\n",
+		OFFSET(nsproxy_mnt_ns));
+	fprintf(fp, "            mnt_namespace_root: %ld\n",
+		OFFSET(mnt_namespace_root));
+	fprintf(fp, "            mnt_namespace_list: %ld\n",
+		OFFSET(mnt_namespace_list));
 
         fprintf(fp, "                  pid_link_pid: %ld\n",
                 OFFSET(pid_link_pid));
@@ -6029,6 +6057,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(file_f_vfsmnt));
         fprintf(fp, "                  file_f_count: %ld\n", 
 		OFFSET(file_f_count));
+        fprintf(fp, "                   file_f_path: %ld\n", 
+		OFFSET(file_f_path));
+        fprintf(fp, "                      path_mnt: %ld\n", 
+		OFFSET(path_mnt));
+        fprintf(fp, "                   path_dentry: %ld\n", 
+		OFFSET(path_dentry));
 	fprintf(fp, "                fs_struct_root: %ld\n",
 		OFFSET(fs_struct_root));
 	fprintf(fp, "                 fs_struct_pwd: %ld\n",
@@ -6380,6 +6414,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(zone_pages_low));
 	fprintf(fp, "               zone_pages_high: %ld\n",
                 OFFSET(zone_pages_high));
+	fprintf(fp, "                  zone_vm_stat: %ld\n",
+                OFFSET(zone_vm_stat));
 
         fprintf(fp, "                neighbour_next: %ld\n", 
 		OFFSET(neighbour_next));

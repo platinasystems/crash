@@ -6,8 +6,8 @@
 /*
  *  unwind.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  *  Adapted from:  
  *
@@ -36,6 +36,7 @@
 /* #include <asm/ptrace.h>  can't include this -- it's changing over time! */
 
 #include "defs.h"
+#include "xen_hyper_defs.h"
 
 typedef unsigned char u8;
 typedef unsigned long long u64;
@@ -1673,8 +1674,13 @@ restart:
                 unw_get_sp(info, &sp);
                 unw_get_bsp(info, &bsp);
 
-                if (ip < GATE_ADDR + PAGE_SIZE)
-                        break;
+		if (XEN_HYPER_MODE()) {
+			if (!IS_KVADDR(ip))
+				break;
+		} else {
+                	if (ip < GATE_ADDR + PAGE_SIZE)
+                       		break;
+		}
 
                 if ((sm = value_search(ip, NULL)))
                         name = sm->name;
@@ -1746,7 +1752,8 @@ restart:
 				if (unw_switch_from_osinit_v3(info, bt, "INIT") == FALSE)
 					break;
 			} else {
-				unw_switch_from_osinit_v2(info, bt);
+				if (unw_switch_from_osinit_v2(info, bt) == FALSE)
+					break;
 				frame++;
 				goto restart;
 			}
@@ -1876,8 +1883,13 @@ unw_init_from_blocked_task(struct unw_frame_info *info, struct bt_info *bt)
 	ulong sw;
 
 	sw = SWITCH_STACK_ADDR(bt->task);
-	if (!INSTACK(sw, bt) && !ia64_in_init_stack(sw))
-		return FALSE;
+	if (XEN_HYPER_MODE()) {
+		if (!INSTACK(sw, bt) && !ia64_in_mca_stack_hyper(sw, bt))
+			return FALSE;
+	} else {
+		if (!INSTACK(sw, bt) && !ia64_in_init_stack(sw))
+			return FALSE;
+	}
 
         unw_init_frame_info(info, bt, sw);
 	return TRUE;

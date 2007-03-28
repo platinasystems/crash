@@ -929,6 +929,8 @@ x86_64_uvtop_level4(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, in
 	if (verbose)
 		fprintf(fp, "   PTE: %lx => %lx\n", (ulong)ptep, pte);
 	if (!(pte & (_PAGE_PRESENT))) {
+		*paddr = pte;
+
 		if (pte && verbose) {
 			fprintf(fp, "\n");
 			x86_64_translate_pte(pte, 0, 0);
@@ -1067,6 +1069,8 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
 	if (verbose)
 		fprintf(fp, "   PTE: %lx => %lx [machine]\n", (ulong)ptep, pte);
 	if (!(pte & (_PAGE_PRESENT))) {
+		*paddr = pte;
+
 		if (pte && verbose) {
 			fprintf(fp, "\n");
 			x86_64_translate_pte(pte, 0, 0);
@@ -1196,6 +1200,8 @@ x86_64_uvtop_level4_rhel4_xen_wpt(struct task_context *tc, ulong uvaddr, physadd
 	if (verbose)
 		fprintf(fp, "   PTE: %lx => %lx [machine]\n", (ulong)ptep, pte);
 	if (!(pte & (_PAGE_PRESENT))) {
+		*paddr = pte;
+
 		if (pte && verbose) {
 			fprintf(fp, "\n");
 			x86_64_translate_pte(pte, 0, 0);
@@ -1300,6 +1306,8 @@ x86_64_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbo
         if (verbose)
                 fprintf(fp, "   PTE: %lx => %lx\n", (ulong)ptep, pte);
         if (!(pte & (_PAGE_PRESENT))) {
+		*paddr = pte;
+
                 if (pte && verbose) {
                         fprintf(fp, "\n");
                         x86_64_translate_pte(pte, 0, 0);
@@ -4516,7 +4524,7 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 	off_t offset; 
 
         if (!symbol_exists("phys_to_machine_mapping")) {
-                xd->flags |= XC_CORE_NO_P2MM;
+                xd->flags |= XC_CORE_NO_P2M;
                 return TRUE;
         }
 
@@ -4868,23 +4876,20 @@ x86_64_is_kvaddr_hyper(ulong addr)
 static ulong
 x86_64_get_stackbase_hyper(ulong task)
 {
-	ulong init_tss, rsp0, base;
-	char *buf;
+	struct xen_hyper_vcpu_context *vcc;
+	struct xen_hyper_pcpu_context *pcc;
+	ulong rsp0, base;
 
-	/* task means pcpu here */
-	if (!xen_hyper_test_pcpu_id(task)) {
+	/* task means vcpu here */
+	vcc = xen_hyper_vcpu_to_vcpu_context(task);
+	if (!vcc)
+		error(FATAL, "invalid vcpu\n");
+
+	pcc = xen_hyper_id_to_pcpu_context(vcc->processor);
+	if (!pcc)
 		error(FATAL, "invalid pcpu number\n");
-	}
-        init_tss = symbol_value("init_tss");
-        buf = GETBUF(XEN_HYPER_SIZE(tss_struct));
-	init_tss += XEN_HYPER_SIZE(tss_struct) * task;
-	if (!readmem(init_tss, KVADDR, buf,
-		     XEN_HYPER_SIZE(tss_struct), "init_tss", RETURN_ON_ERROR)) {
-		error(FATAL, "cannot read init_tss.\n");
-	}
-	rsp0 = ULONG(buf + XEN_HYPER_OFFSET(tss_struct_rsp0));
-        FREEBUF(buf);
 
+	rsp0 = pcc->sp.rsp0;
 	base = rsp0 & (~(STACKSIZE() - 1));
 	return base;
 }
@@ -4895,22 +4900,58 @@ x86_64_get_stacktop_hyper(ulong task)
 	return x86_64_get_stackbase_hyper(task) + STACKSIZE();
 }
 
+#define EXCEPTION_STACKSIZE_HYPER (1024UL)
+
+static ulong
+x86_64_in_exception_stack_hyper(ulong vcpu, ulong rsp)
+{
+	struct xen_hyper_vcpu_context *vcc;
+	struct xen_hyper_pcpu_context *pcc;
+	int i;
+	ulong stackbase;
+
+	vcc = xen_hyper_vcpu_to_vcpu_context(vcpu);
+	if (!vcc)
+		error(FATAL, "invalid vcpu\n");
+
+	pcc = xen_hyper_id_to_pcpu_context(vcc->processor);
+	if (!pcc)
+		error(FATAL, "invalid pcpu number\n");
+
+	for (i = 0; i < XEN_HYPER_TSS_IST_MAX; i++) {
+		if (pcc->ist[i] == 0) {
+			continue;
+		}
+		stackbase = pcc->ist[i] - EXCEPTION_STACKSIZE_HYPER;
+		if ((rsp & ~(EXCEPTION_STACKSIZE_HYPER - 1)) == stackbase) {
+			return stackbase;
+		}
+	}
+
+	return 0;
+}
+
 static void
 x86_64_get_stack_frame_hyper(struct bt_info *bt, ulong *pcp, ulong *spp)
 {
+	struct xen_hyper_vcpu_context *vcc;
         int pcpu;
         ulong *regs;
 	ulong rsp, rip;
 
-	/* task means pcpu here */
-        pcpu = bt->task;
+	/* task means vcpu here */
+	vcc = xen_hyper_vcpu_to_vcpu_context(bt->task);
+	if (!vcc)
+		error(FATAL, "invalid vcpu\n");
+
+	pcpu = vcc->processor;
 	if (!xen_hyper_test_pcpu_id(pcpu)) {
 		error(FATAL, "invalid pcpu number\n");
 	}
 
 	if (bt->flags & BT_TEXT_SYMBOLS_ALL) {
 		if (spp)
-			*spp = x86_64_get_stackbase_hyper(pcpu);
+			*spp = x86_64_get_stackbase_hyper(bt->task);
 		if (pcp)
 			*pcp = 0;
 		bt->flags &= ~BT_TEXT_SYMBOLS_ALL;
@@ -4922,9 +4963,11 @@ x86_64_get_stack_frame_hyper(struct bt_info *bt, ulong *pcp, ulong *spp)
 	rip = XEN_HYPER_X86_64_NOTE_RIP(regs);
 
 	if (spp) {
-		if (rsp < x86_64_get_stackbase_hyper(pcpu) ||
-			rsp >= x86_64_get_stacktop_hyper(pcpu))
-			*spp = x86_64_get_stackbase_hyper(pcpu);
+		if (x86_64_in_exception_stack_hyper(bt->task, rsp))
+			*spp = rsp;
+		else if (rsp < x86_64_get_stackbase_hyper(bt->task) ||
+			rsp >= x86_64_get_stacktop_hyper(bt->task))
+			*spp = x86_64_get_stackbase_hyper(bt->task);
 		else
 			*spp = rsp;
 	}
@@ -4981,18 +5024,58 @@ x86_64_print_stack_entry_hyper(struct bt_info *bt, FILE *ofp, int level,
 	return result;
 }
 
+static void
+x86_64_print_eframe_regs_hyper(struct bt_info *bt)
+{
+	ulong *up;
+	ulong offset;
+	struct syment *sp;
+
+
+	up = (ulong *)(&bt->stackbuf[bt->stacktop - bt->stackbase]);
+	up -= 21;
+
+	fprintf(fp, "    [exception RIP: ");
+	if ((sp = value_search(up[16], &offset))) {
+               	fprintf(fp, "%s", sp->name);
+              	if (offset)
+               		fprintf(fp, (output_radix == 16) ? 
+					"+0x%lx" : "+%ld", offset);
+	} else
+       		fprintf(fp, "unknown or invalid address");
+	fprintf(fp, "]\n");
+
+	fprintf(fp, "    RIP: %016lx  RSP: %016lx  RFLAGS: %08lx\n", 
+		up[16], up[19], up[18]);
+	fprintf(fp, "    RAX: %016lx  RBX: %016lx  RCX: %016lx\n", 
+		up[10], up[5], up[11]);
+	fprintf(fp, "    RDX: %016lx  RSI: %016lx  RDI: %016lx\n", 
+ 		up[11], up[13], up[14]);
+	fprintf(fp, "    RBP: %016lx   R8: %016lx   R9: %016lx\n", 
+		up[4], up[9], up[8]);
+	fprintf(fp, "    R10: %016lx  R11: %016lx  R12: %016lx\n", 
+		up[7], up[6], up[3]);
+	fprintf(fp, "    R13: %016lx  R14: %016lx  R15: %016lx\n", 
+		up[2], up[1], up[0]);
+	fprintf(fp, "    ORIG_RAX: %016lx  CS: %04lx  SS: %04lx\n", 
+		up[15], up[17], up[20]);
+
+	fprintf(fp, "--- <exception stack> ---\n");
+}
+
 /*
  *  simple back tracer for xen hypervisor
- *  irq stack and exception stack does not exist. so relative easy.
+ *  irq stack does not exist. so relative easy.
  */
 static void
 x86_64_simple_back_trace_cmd_hyper(struct bt_info *bt_in)
 {
 	int i, level, done;
-	ulong rsp;
+	ulong rsp, estack, stacktop;
 	ulong *up;
 	FILE *ofp;
 	struct bt_info bt_local, *bt;
+	char ebuf[EXCEPTION_STACKSIZE_HYPER];
 
 	bt = &bt_local;
 	BCOPY(bt_in, bt, sizeof(struct bt_info));
@@ -5014,6 +5097,60 @@ x86_64_simple_back_trace_cmd_hyper(struct bt_info *bt_in)
 		ofp = pc->nullfp;
 	else
 		ofp = fp;
+
+	while ((estack = x86_64_in_exception_stack_hyper(bt->task, rsp))) {
+		bt->flags |= BT_EXCEPTION_STACK;
+		bt->stackbase = estack;
+		bt->stacktop = estack + EXCEPTION_STACKSIZE_HYPER;
+		bt->stackbuf = ebuf;
+
+		if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+		    bt->stacktop - bt->stackbase, "exception stack contents",
+		    RETURN_ON_ERROR))
+			error(FATAL, "read of exception stack at %lx failed\n",
+				bt->stackbase);
+
+		stacktop = bt->stacktop - 168;
+
+        	for (i = (rsp - bt->stackbase)/sizeof(ulong);
+		     !done && (rsp < stacktop); i++, rsp += sizeof(ulong)) {
+	
+			up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+
+			if (!is_kernel_text(*up))
+				continue;
+
+			switch (x86_64_print_stack_entry_hyper(bt, ofp, level, i,*up))
+			{
+			case BACKTRACE_ENTRY_DISPLAYED:
+				level++;
+				break;
+			case BACKTRACE_ENTRY_IGNORED:	
+				break;
+			case BACKTRACE_COMPLETE:
+				done = TRUE;
+				break;
+			}
+        	}
+
+		if (!BT_REFERENCE_CHECK(bt))
+			x86_64_print_eframe_regs_hyper(bt);
+
+		up = (ulong *)(&bt->stackbuf[bt->stacktop - bt->stackbase]);
+		up -= 2;
+		rsp = bt->stkptr = *up;
+		up -= 3;
+		bt->instptr = *up;
+		done = FALSE;
+		bt->frameptr = 0;
+	}
+
+	if (bt->flags & BT_EXCEPTION_STACK) {
+		bt->flags &= ~BT_EXCEPTION_STACK;
+		bt->stackbase = bt_in->stackbase;
+		bt->stacktop = bt_in->stacktop;
+		bt->stackbuf = bt_in->stackbuf;
+	}
 
         for (i = (rsp - bt->stackbase)/sizeof(ulong);
 	     !done && (rsp < bt->stacktop); i++, rsp += sizeof(ulong)) {
@@ -5089,24 +5226,28 @@ x86_64_init_hyper(int when)
 		machdep->get_stackbase = x86_64_get_stackbase_hyper;
 		machdep->get_stacktop = x86_64_get_stacktop_hyper;
 		machdep->translate_pte = x86_64_translate_pte;
-		machdep->memory_size = x86_memory_size_hyper;	/* KAK add */
+		machdep->memory_size = xen_hyper_x86_memory_size;	/* KAK add */
 		machdep->is_task_addr = x86_64_is_task_addr;
 		machdep->dis_filter = x86_64_dis_filter;
 		machdep->cmd_mach = x86_64_cmd_mach;
-		machdep->get_smp_cpus = x86_get_smp_cpus_hyper;	/* KAK add */
+		machdep->get_smp_cpus = xen_hyper_x86_get_smp_cpus;	/* KAK add */
 		machdep->line_number_hooks = x86_64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = x86_64_init_kernel_pgd;
 		machdep->clear_machdep_cache = x86_64_clear_machdep_cache;
 
 		/* machdep table for Xen Hypervisor */
-		xhmachdep->pcpu_init = x86_xen_hyper_pcpu_init;
+		xhmachdep->pcpu_init = xen_hyper_x86_pcpu_init;
 		break;
 
 	case POST_GDB:
 		XEN_HYPER_STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
 		XEN_HYPER_STRUCT_SIZE_INIT(tss_struct, "tss_struct");
 		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_rsp0, "tss_struct", "rsp0");
+		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_ist, "tss_struct", "ist");
+		if (symbol_exists("cpu_data")) {
+			xht->cpu_data_address = symbol_value("cpu_data");
+		}
 /* KAK Can this be calculated? */
 		if (!machdep->hz) {
 			machdep->hz = XEN_HYPER_HZ;

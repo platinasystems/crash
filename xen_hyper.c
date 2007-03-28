@@ -1,8 +1,11 @@
 /*
  *  xen_hyper.c
  *
- *  Portions Copyright (C) 2006 Fujitsu Limited
- *  Portions Copyright (C) 2006 VA Linux Systems Japan K.K.
+ *  Portions Copyright (C) 2006-2007 Fujitsu Limited
+ *  Portions Copyright (C) 2006-2007 VA Linux Systems Japan K.K.
+ *
+ *  Authors: Itsuro Oda <oda@valinux.co.jp>
+ *           Fumihiko Kakuma <kakuma@valinux.co.jp>
  *
  *  This file is part of Xencrash.
  *
@@ -25,6 +28,8 @@
 #ifdef XEN_HYPERVISOR_ARCH
 #include "xen_hyper_defs.h"
 
+static void xen_hyper_schedule_init(void);
+
 /*
  * Do initialization for Xen Hyper system here.
  */
@@ -32,22 +37,54 @@ void
 xen_hyper_init(void)
 {
 	char *buf;
+#if defined(X86) || defined(X86_64)
 	long member_offset;
+#endif
 
-	get_symbol_data("crashing_cpu", sizeof(xht->crashing_cpu),
-		&xht->crashing_cpu);
+	if (symbol_exists("crashing_cpu")) {
+		get_symbol_data("crashing_cpu", sizeof(xht->crashing_cpu),
+			&xht->crashing_cpu);
+	} else {
+		xht->crashing_cpu = XEN_HYPER_PCPU_ID_INVALID;
+	}
 	machdep->get_smp_cpus();
 	machdep->memory_size();
 
-	if (machine_type("X86") || machine_type("X86_64")) {
-		member_offset = MEMBER_OFFSET("cpuinfo_x86", "x86_model_id");
-		buf = GETBUF(XEN_HYPER_SIZE(cpuinfo_x86));	
-		xen_hyper_fill_cpu_data_x86(xht->crashing_cpu, buf);
-		strncpy(xht->utsname.machine, (char *)(buf + member_offset),
-			sizeof(xht->utsname.machine)-1);
-		FREEBUF(buf);
+#ifdef IA64
+	if((xht->__per_cpu_offset = malloc(sizeof(ulong) * XEN_HYPER_MAX_CPUS())) == NULL) {
+		error(FATAL, "cannot malloc __per_cpu_offset space.\n");
 	}
+	if (!readmem(symbol_value("__per_cpu_offset"), KVADDR,
+	xht->__per_cpu_offset, sizeof(ulong) * XEN_HYPER_MAX_CPUS(),
+	"__per_cpu_offset", RETURN_ON_ERROR)) {
+		error(FATAL, "cannot read __per_cpu_offset.\n");
+	}
+#endif
 
+#if defined(X86) || defined(X86_64)
+	member_offset = MEMBER_OFFSET("cpuinfo_x86", "x86_model_id");
+	buf = GETBUF(XEN_HYPER_SIZE(cpuinfo_x86));	
+	if (xen_hyper_test_pcpu_id(XEN_HYPER_CRASHING_CPU())) {
+		xen_hyper_x86_fill_cpu_data(XEN_HYPER_CRASHING_CPU(), buf);
+	} else {
+		xen_hyper_x86_fill_cpu_data(xht->cpu_idxs[0], buf);
+	}
+	strncpy(xht->utsname.machine, (char *)(buf + member_offset),
+		sizeof(xht->utsname.machine)-1);
+	FREEBUF(buf);
+#elif defined(IA64)
+	buf = GETBUF(XEN_HYPER_SIZE(cpuinfo_ia64));
+	if (xen_hyper_test_pcpu_id(XEN_HYPER_CRASHING_CPU())) {
+		xen_hyper_ia64_fill_cpu_data(XEN_HYPER_CRASHING_CPU(), buf);
+	} else {
+		xen_hyper_ia64_fill_cpu_data(xht->cpu_idxs[0], buf);
+	}
+	strncpy(xht->utsname.machine, (char *)(buf + XEN_HYPER_OFFSET(cpuinfo_ia64_vendor)),
+		sizeof(xht->utsname.machine)-1);
+	FREEBUF(buf);
+#endif
+
+#ifndef IA64
 	XEN_HYPER_STRUCT_SIZE_INIT(note_buf_t, "note_buf_t");
 	XEN_HYPER_STRUCT_SIZE_INIT(crash_note_t, "crash_note_t");
 	XEN_HYPER_MEMBER_OFFSET_INIT(crash_note_t_core, "crash_note_t", "core");
@@ -92,12 +129,29 @@ xen_hyper_init(void)
 	XEN_HYPER_STRUCT_SIZE_INIT(ELF_Signifo,"ELF_Signifo");
 	XEN_HYPER_STRUCT_SIZE_INIT(ELF_Gregset,"ELF_Gregset");
 	XEN_HYPER_STRUCT_SIZE_INIT(ELF_Timeval,"ELF_Timeval");
+#endif
 	XEN_HYPER_STRUCT_SIZE_INIT(domain, "domain");
 	XEN_HYPER_STRUCT_SIZE_INIT(vcpu, "vcpu");
+#ifndef IA64
 	XEN_HYPER_STRUCT_SIZE_INIT(cpu_info, "cpu_info");
+#endif
 	XEN_HYPER_STRUCT_SIZE_INIT(cpu_user_regs, "cpu_user_regs");
 
+	/*
+	 * Do some initialization.
+	 */
+#ifndef IA64
 	xen_hyper_dumpinfo_init();
+#endif
+	xhmachdep->pcpu_init();
+	xen_hyper_domain_init();
+	xen_hyper_vcpu_init();
+	xen_hyper_misc_init();
+	/*
+	 * xen_hyper_post_init() have to be called after all initialize
+	 * functions finished.
+	 */
+	xen_hyper_post_init();
 }
 
 /*
@@ -165,6 +219,12 @@ xen_hyper_vcpu_init(void)
 	XEN_HYPER_MEMBER_OFFSET_INIT(vcpu_vcpu_dirty_cpumask, "vcpu", "vcpu_dirty_cpumask");
 	XEN_HYPER_MEMBER_OFFSET_INIT(vcpu_arch, "vcpu", "arch");
 
+#ifdef IA64
+	XEN_HYPER_ASSIGN_OFFSET(vcpu_thread_ksp) =
+		MEMBER_OFFSET("vcpu", "arch") + MEMBER_OFFSET("arch_vcpu", "_thread") +
+		MEMBER_OFFSET("thread_struct", "ksp");
+#endif
+
 	if((xhvct->vcpu_struct = malloc(XEN_HYPER_SIZE(vcpu))) == NULL) {
 		error(FATAL, "cannot malloc vcpu struct space.\n");
 	}
@@ -180,12 +240,13 @@ xen_hyper_vcpu_init(void)
 /*
  * Do initialization for pcpu of Xen Hyper system here.
  */
+#if defined(X86) || defined(X86_64)
 void
-x86_xen_hyper_pcpu_init(void)
+xen_hyper_x86_pcpu_init(void)
 {
 	ulong cpu_info;
 	ulong init_tss_base, init_tss;
-	long sp;
+	ulong sp;
 	struct xen_hyper_pcpu_context *pcc;
 	char *buf, *bp;
 	int i, cpuid;
@@ -223,6 +284,176 @@ x86_xen_hyper_pcpu_init(void)
 		}
 		pcc = &xhpct->context_array[cpuid];
 		xen_hyper_store_pcpu_context(pcc, cpu_info, bp);
+		xen_hyper_store_pcpu_context_tss(pcc, init_tss, buf);
+	}
+	FREEBUF(buf);
+}
+
+#elif defined(IA64)
+void
+xen_hyper_ia64_pcpu_init(void)
+{
+	struct xen_hyper_pcpu_context *pcc;
+	int i, cpuid;
+
+	/* get physical cpu context */
+	xen_hyper_alloc_pcpu_context_space(XEN_HYPER_MAX_CPUS());
+	for_cpu_indexes(i, cpuid)
+	{
+		pcc = &xhpct->context_array[cpuid];
+		pcc->processor_id = cpuid;
+	}
+}
+#endif
+
+/*
+ * Do initialization for some miscellaneous thing
+ * of Xen Hyper system here.
+ */
+void
+xen_hyper_misc_init(void)
+{
+	XEN_HYPER_STRUCT_SIZE_INIT(schedule_data, "schedule_data");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_schedule_lock, "schedule_data", "schedule_lock");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_curr, "schedule_data", "curr");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_idle, "schedule_data", "idle");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_sched_priv, "schedule_data", "sched_priv");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_s_timer, "schedule_data", "s_timer");
+	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_tick, "schedule_data", "tick");
+
+	XEN_HYPER_STRUCT_SIZE_INIT(scheduler, "scheduler");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_name, "scheduler", "name");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_opt_name, "scheduler", "opt_name");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_sched_id, "scheduler", "sched_id");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_init, "scheduler", "init");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_tick, "scheduler", "tick");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_init_vcpu, "scheduler", "init_vcpu");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_destroy_domain, "scheduler", "destroy_domain");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_sleep, "scheduler", "sleep");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_wake, "scheduler", "wake");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_set_affinity, "scheduler", "set_affinity");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_do_schedule, "scheduler", "do_schedule");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_adjust, "scheduler", "adjust");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_dump_settings, "scheduler", "dump_settings");
+	XEN_HYPER_MEMBER_OFFSET_INIT(scheduler_dump_cpu_state, "scheduler", "dump_cpu_state");
+
+	xen_hyper_schedule_init();
+}
+
+/*
+ * Do initialization for scheduler of Xen Hyper system here.
+ */
+#define XEN_HYPER_SCHEDULERS_ARRAY_CNT 10
+#define XEN_HYPER_SCHEDULER_NAME 1024
+
+static void
+xen_hyper_schedule_init(void)
+{
+	ulong addr, opt_sched, schedulers, opt_name;
+	long scheduler_opt_name;
+	long schedulers_buf[XEN_HYPER_SCHEDULERS_ARRAY_CNT];
+	struct xen_hyper_sched_context *schc;
+	char *buf;
+	char opt_name_buf[XEN_HYPER_OPT_SCHED_SIZE];
+	int i, cpuid, flag;
+
+	/* get scheduler information */
+	if((xhscht->scheduler_struct =
+	malloc(XEN_HYPER_SIZE(scheduler))) == NULL) {
+		error(FATAL, "cannot malloc scheduler struct space.\n");
+	}
+	buf = GETBUF(XEN_HYPER_SCHEDULER_NAME);	
+	opt_sched = symbol_value("opt_sched");
+	if (!readmem(opt_sched, KVADDR, xhscht->opt_sched,
+	XEN_HYPER_OPT_SCHED_SIZE, "opt_sched,", RETURN_ON_ERROR)) {
+		error(FATAL, "cannot read opt_sched,.\n");
+	}
+	schedulers = symbol_value("schedulers");
+	scheduler_opt_name = XEN_HYPER_OFFSET(scheduler_opt_name);
+	addr = schedulers;
+	while (xhscht->name == NULL) {
+		if (!readmem(addr, KVADDR, schedulers_buf,
+		sizeof(long) * XEN_HYPER_SCHEDULERS_ARRAY_CNT,
+		"schedulers", RETURN_ON_ERROR)) {
+			error(FATAL, "cannot read schedulers.\n");
+		}
+		for (i = 0; i < XEN_HYPER_SCHEDULERS_ARRAY_CNT; i++) {
+			if (schedulers_buf[i] == 0) {
+				error(FATAL, "schedule data not found.\n");
+			}
+			if (!readmem(schedulers_buf[i], KVADDR,
+			xhscht->scheduler_struct, XEN_HYPER_SIZE(scheduler),
+			"scheduler", RETURN_ON_ERROR)) {
+				error(FATAL, "cannot read scheduler.\n");
+			}
+			opt_name = ULONG(xhscht->scheduler_struct +
+				scheduler_opt_name);
+			if (!readmem(opt_name, KVADDR, opt_name_buf,
+			XEN_HYPER_OPT_SCHED_SIZE, "opt_name", RETURN_ON_ERROR)) {
+				error(FATAL, "cannot read opt_name.\n");
+			}
+			if (strncmp(xhscht->opt_sched, opt_name_buf,
+			XEN_HYPER_OPT_SCHED_SIZE))
+				continue;
+			xhscht->scheduler = schedulers_buf[i];
+			xhscht->sched_id = INT(xhscht->scheduler_struct +
+				XEN_HYPER_OFFSET(scheduler_sched_id));
+			addr = ULONG(xhscht->scheduler_struct +
+				XEN_HYPER_OFFSET(scheduler_name));
+			if (!readmem(addr, KVADDR, buf, XEN_HYPER_SCHEDULER_NAME,
+			"scheduler_name", RETURN_ON_ERROR)) {
+				error(FATAL, "cannot read scheduler_name.\n");
+			}
+			if (strlen(buf) >= XEN_HYPER_SCHEDULER_NAME) {
+				error(FATAL, "cannot read scheduler_name.\n");
+			}
+			if((xhscht->name = malloc(strlen(buf) + 1)) == NULL) {
+				error(FATAL, "cannot malloc scheduler_name space.\n");
+			}
+			BZERO(xhscht->name, strlen(buf) + 1);
+			strncpy(xhscht->name, buf, strlen(buf));
+			break;
+		}
+		addr += sizeof(long) * XEN_HYPER_SCHEDULERS_ARRAY_CNT;
+	}
+	FREEBUF(buf);
+
+	/* get schedule_data information */
+	if((xhscht->sched_context_array =
+	malloc(sizeof(struct xen_hyper_sched_context) * XEN_HYPER_MAX_CPUS())) == NULL) {
+		error(FATAL, "cannot malloc xen_hyper_sched_context struct space.\n");
+	}
+	BZERO(xhscht->sched_context_array,
+		sizeof(struct xen_hyper_sched_context) * XEN_HYPER_MAX_CPUS());
+	buf = GETBUF(XEN_HYPER_SIZE(schedule_data));	
+	if (symbol_exists("per_cpu__schedule_data")) {
+		addr = symbol_value("per_cpu__schedule_data");
+		flag = TRUE;
+	} else {
+		addr = symbol_value("schedule_data");
+		flag = FALSE;
+	}
+	for_cpu_indexes(i, cpuid)
+	{
+		schc = &xhscht->sched_context_array[cpuid];
+		if (flag) {
+			schc->schedule_data =
+				xen_hyper_per_cpu(addr, i);
+		} else {
+			schc->schedule_data = addr +
+				XEN_HYPER_SIZE(schedule_data) * i;
+		}
+		if (!readmem(schc->schedule_data,
+			KVADDR, buf, XEN_HYPER_SIZE(schedule_data),
+		"schedule_data", RETURN_ON_ERROR)) {
+			error(FATAL, "cannot read schedule_data.\n");
+		}
+		schc->cpu_id = cpuid;
+		schc->curr = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_curr));
+		schc->idle = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_idle));
+		schc->sched_priv =
+			ULONG(buf + XEN_HYPER_OFFSET(schedule_data_sched_priv));
+		schc->tick = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_tick));
 	}
 	FREEBUF(buf);
 }
@@ -233,9 +464,22 @@ x86_xen_hyper_pcpu_init(void)
 void
 xen_hyper_post_init(void)
 {
+	struct xen_hyper_pcpu_context *pcc;
+	int i, cpuid;
+
+	/* set current vcpu to pcpu context */
+	for_cpu_indexes(i, cpuid)
+	{
+		pcc = &xhpct->context_array[cpuid];
+		if (!pcc->current_vcpu) {
+			pcc->current_vcpu =
+				xen_hyper_get_active_vcpu_from_pcpuid(cpuid);
+		}
+	}
+
 	/* set pcpu last */
 	if (!(xhpct->last =
-		xen_hyper_id_to_pcpu_context(xht->crashing_cpu))) {
+		xen_hyper_id_to_pcpu_context(XEN_HYPER_CRASHING_CPU()))) {
 		xhpct->last = &xhpct->context_array[xht->cpu_idxs[0]];
 	}
 
@@ -261,7 +505,7 @@ xen_hyper_post_init(void)
 }
 
 /*
- * Do initialization for dump information header here.
+ * Do initialization for dump information here.
  */
 void
 xen_hyper_dumpinfo_init(void)
@@ -273,7 +517,7 @@ xen_hyper_dumpinfo_init(void)
 	int i, cpuid;
 
 	/*
-	 * kakuma NOTE: It is not clear that what ikind of
+	 * NOTE kakuma: It is not clear that what kind of
 	 * a elf note format each one of the xen uses.
 	 * So, we decide it confirming whether a symbol exists.
 	 */
@@ -285,6 +529,10 @@ xen_hyper_dumpinfo_init(void)
 		xhdit->note_ver = XEN_HYPER_ELF_NOTE_V3;
 	else {
 		error(WARNING, "unsupported elf note format.\n");
+		return;
+	}
+	if (!xen_hyper_test_pcpu_id(XEN_HYPER_CRASHING_CPU())) {
+		error(WARNING, "crashing_cpu not found.\n");
 		return;
 	}
 
@@ -306,7 +554,7 @@ xen_hyper_dumpinfo_init(void)
 		
 	/* read a sample note */
 	buf = GETBUF(xhdit->note_size);
-	if (!xen_hyper_fill_elf_notes(xhdit->context_array[xht->crashing_cpu].note,
+	if (!xen_hyper_fill_elf_notes(xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note,
 	buf, XEN_HYPER_ELF_NOTE_FILL_T_NOTE)) {
 		error(FATAL, "cannot read per_cpu__crash_notes.\n");
 	}
@@ -343,9 +591,9 @@ xen_hyper_dumpinfo_init(void)
 		memcpy(xhdit->crash_note_xen_info_ptr,
 			bp + xhdit->core_size, xhdit->xen_info_size);
 		xhdit->context_xen_info.note =
-			xhdit->context_array[xht->crashing_cpu].note +
+			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
 			xhdit->core_size;
-		xhdit->context_xen_info.pcpu_id = xht->crashing_cpu;
+		xhdit->context_xen_info.pcpu_id = XEN_HYPER_CRASHING_CPU();
 		xhdit->context_xen_info.crash_xen_info_ptr =
 			xhdit->crash_note_xen_info_ptr + xhdit->xen_info_offset;
 		break;
@@ -364,9 +612,9 @@ xen_hyper_dumpinfo_init(void)
 		memcpy(xhdit->crash_note_xen_core_ptr,
 			bp + xhdit->core_size, xhdit->xen_core_size);
 		xhdit->context_xen_core.note =
-			xhdit->context_array[xht->crashing_cpu].note +
+			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
 			xhdit->core_size;
-		xhdit->context_xen_core.pcpu_id = xht->crashing_cpu;
+		xhdit->context_xen_core.pcpu_id = XEN_HYPER_CRASHING_CPU();
 		xhdit->context_xen_core.crash_xen_core_ptr =
 			xhdit->crash_note_xen_core_ptr + xhdit->xen_core_offset;
 		/* xen info */
@@ -381,9 +629,9 @@ xen_hyper_dumpinfo_init(void)
 			bp + xhdit->core_size + xhdit->xen_core_size,
 			xhdit->xen_info_size);
 		xhdit->context_xen_info.note =
-			xhdit->context_array[xht->crashing_cpu].note +
+			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
 			xhdit->core_size + xhdit->xen_core_size;
-		xhdit->context_xen_info.pcpu_id = xht->crashing_cpu;
+		xhdit->context_xen_info.pcpu_id = XEN_HYPER_CRASHING_CPU();
 		xhdit->context_xen_info.crash_xen_info_ptr =
 			xhdit->crash_note_xen_info_ptr + xhdit->xen_info_offset;
 		break;
@@ -391,7 +639,7 @@ xen_hyper_dumpinfo_init(void)
 		error(FATAL, "logic error in cheking elf note format occurs.\n");
 	}
 
-	size = xhdit->core_size * XEN_HYPER_MAX_PCPUS();
+	size = xhdit->core_size * XEN_HYPER_NR_PCPUS();
 	if(!(xhdit->crash_note_core_array = malloc(size))) {
 		error(FATAL, "cannot malloc note_buf_t struct space.\n");
 	}
@@ -421,6 +669,8 @@ xen_hyper_dumpinfo_init(void)
 struct xen_hyper_dumpinfo_context *
 xen_hyper_id_to_dumpinfo_context(uint id)
 {
+	if (!xen_hyper_test_pcpu_id(id))
+		return NULL;
 	return &xhdit->context_array[id];
 }
 
@@ -509,9 +759,9 @@ xen_hyper_refresh_domain_context_space(void)
 		return;
 	}
 
-	XEN_HYPER_RUNNING_DOMAINS() = XEN_HYPER_MAX_DOMAINS() =
+	XEN_HYPER_RUNNING_DOMAINS() = XEN_HYPER_NR_DOMAINS() =
 		xen_hyper_get_domains();
-	xen_hyper_alloc_domain_context_space(XEN_HYPER_MAX_DOMAINS());
+	xen_hyper_alloc_domain_context_space(XEN_HYPER_NR_DOMAINS());
 
 	dc = xhdt->context_array;
 	/* restore an idle domain context. */
@@ -624,7 +874,7 @@ xen_hyper_get_domain_next(int mod, ulong *next)
 			xen_hyper_read_domain(*next)) == NULL) {
 			error(FATAL, "cannot get next domain from domain context array.\n");
 		}
-		if (idx > XEN_HYPER_MAX_DOMAINS()) {
+		if (idx > XEN_HYPER_NR_DOMAINS()) {
 			*next = 0;
 		} else {
 			dc = xhdt->context_array;
@@ -707,7 +957,7 @@ xen_hyper_domain_to_domain_context(ulong domain)
 	if (!domain) {
 		return NULL;
 	}
-	for (i = 0, dc = xhdt->context_array; i < XEN_HYPER_MAX_DOMAINS();
+	for (i = 0, dc = xhdt->context_array; i < XEN_HYPER_NR_DOMAINS();
 		i++, dc++) {
 		if (domain == dc->domain) {
 			return dc;
@@ -732,7 +982,7 @@ xen_hyper_id_to_domain_context(domid_t id)
 	if (id == XEN_HYPER_DOMAIN_ID_INVALID) {
 		return NULL;
 	}
-	for (i = 0, dc = xhdt->context_array; i < XEN_HYPER_MAX_DOMAINS();
+	for (i = 0, dc = xhdt->context_array; i < XEN_HYPER_NR_DOMAINS();
 		i++, dc++) {
 		if (id == dc->domain_id) {
 			return dc;
@@ -763,7 +1013,7 @@ xen_hyper_store_domain_context(struct xen_hyper_domain_context *dc,
 	dc->evtchn = ULONG(dp + XEN_HYPER_OFFSET(domain_evtchn));
 	for (i = 0; i < XEN_HYPER_MAX_VIRT_CPUS; i++) {
 		dc->vcpu[i] = ULONG(dp + XEN_HYPER_OFFSET(domain_vcpu) + i*sizeof(void *));
-		if (dc->vcpu[i])	XEN_HYPER_MAX_VCPUS(dc)++;
+		if (dc->vcpu[i])	XEN_HYPER_NR_VCPUS_IN_DOM(dc)++;
 	}
 
 	return dc;
@@ -868,15 +1118,15 @@ xen_hyper_refresh_vcpu_context_space(void)
 		return;
 	}
 
-	xen_hyper_alloc_vcpu_context_arrays_space(XEN_HYPER_MAX_DOMAINS());
+	xen_hyper_alloc_vcpu_context_arrays_space(XEN_HYPER_NR_DOMAINS());
 	for (i = 0, xht->vcpus = 0, dc = xhdt->context_array,
 	vcca = xhvct->vcpu_context_arrays;
-	i < XEN_HYPER_MAX_DOMAINS(); i++, dc++, vcca++) {
+	i < XEN_HYPER_NR_DOMAINS(); i++, dc++, vcca++) {
 		dc->vcpu_context_array = vcca;
 		xen_hyper_alloc_vcpu_context_space(vcca,
-			XEN_HYPER_MAX_VCPUS(dc));
+			XEN_HYPER_NR_VCPUS_IN_DOM(dc));
 		for (j = 0, vcc = vcca->context_array;
-		j < XEN_HYPER_MAX_VCPUS(dc); j++, vcc++) {
+		j < XEN_HYPER_NR_VCPUS_IN_DOM(dc); j++, vcc++) {
 			xen_hyper_read_vcpu(dc->vcpu[j]);
 			xen_hyper_store_vcpu_context(vcc, dc->vcpu[j],
 				xhvct->vcpu_struct);	
@@ -1152,6 +1402,29 @@ xen_hyper_store_pcpu_context(struct xen_hyper_pcpu_context *pcc,
 }
 
 /*
+ * Store init_tss contents.
+ */
+struct xen_hyper_pcpu_context *
+xen_hyper_store_pcpu_context_tss(struct xen_hyper_pcpu_context *pcc,
+       ulong init_tss, char *tss)
+{
+	int i;
+	uint64_t *ist_p;
+
+	pcc->init_tss = init_tss;
+	if (machine_type("X86")) {
+		pcc->sp.esp0 = ULONG(tss + XEN_HYPER_OFFSET(tss_struct_esp0));
+	} else if (machine_type("X86_64")) {
+		pcc->sp.rsp0 = ULONG(tss + XEN_HYPER_OFFSET(tss_struct_rsp0));
+		ist_p = (uint64_t *)(tss + XEN_HYPER_OFFSET(tss_struct_ist));
+		for (i = 0; i < XEN_HYPER_TSS_IST_MAX; i++, ist_p++) {
+			pcc->ist[i] = ULONG(ist_p);
+		}
+	}
+	return pcc;
+}
+
+/*
  * Read pcpu struct.
  */
 char *
@@ -1195,15 +1468,15 @@ xen_hyper_alloc_pcpu_context_space(int pcpus)
 
 /*
  * Fill cpu_data.
- * ia64 has difference cpu_data format.
  */
 char *
-xen_hyper_fill_cpu_data_x86(int idx, char *cpuinfo_x86)
+xen_hyper_x86_fill_cpu_data(int idx, char *cpuinfo_x86)
 {
-	ulong cpu_data_base, cpu_data;
+	ulong cpu_data;
 
-	cpu_data_base = symbol_value("cpu_data");
-	cpu_data = cpu_data_base + XEN_HYPER_SIZE(cpuinfo_x86) *idx;
+	if (!xen_hyper_test_pcpu_id(idx) || !xht->cpu_data_address)
+		return NULL;
+	cpu_data = xht->cpu_data_address + XEN_HYPER_SIZE(cpuinfo_x86) * idx;
 	if (!readmem(cpu_data, KVADDR, cpuinfo_x86, XEN_HYPER_SIZE(cpuinfo_x86),
 		"cpu_data", RETURN_ON_ERROR)) {
 		error(WARNING, "cannot read cpu_data.\n");
@@ -1212,11 +1485,27 @@ xen_hyper_fill_cpu_data_x86(int idx, char *cpuinfo_x86)
 	return cpuinfo_x86;
 }
 
+char *
+xen_hyper_ia64_fill_cpu_data(int idx, char *cpuinfo_ia64)
+{
+	ulong cpu_data;
+
+	if (!xen_hyper_test_pcpu_id(idx) || !xht->cpu_data_address)
+		return NULL;
+	cpu_data = xen_hyper_per_cpu(xht->cpu_data_address, idx);
+	if (!readmem(cpu_data, KVADDR, cpuinfo_ia64, XEN_HYPER_SIZE(cpuinfo_ia64),
+		"cpu_data", RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read cpu_data.\n");
+		return NULL;
+	}
+	return cpuinfo_ia64;
+}
+
 /*
  * Return whether vcpu is crashing.
  */
 int
-is_xen_hyper_vcpu_crash(struct xen_hyper_vcpu_context *vcc)
+xen_hyper_is_vcpu_crash(struct xen_hyper_vcpu_context *vcc)
 {
 	if (vcc == xht->crashing_vcc)
 		return TRUE;
@@ -1232,7 +1521,8 @@ xen_hyper_test_pcpu_id(uint pcpu_id)
 	ulong *cpumask = xht->cpumask;
 	uint i, j;
 
-	if (pcpu_id > XEN_HYPER_MAX_CPUS()) {
+	if (pcpu_id == XEN_HYPER_PCPU_ID_INVALID ||
+	pcpu_id > XEN_HYPER_MAX_CPUS()) {
 		return FALSE;
 	}
 
@@ -1309,9 +1599,11 @@ xen_hyper_get_cpu_info(void)
 	if (xht->cpu_idxs) {
 		free(xht->cpu_idxs);
 	}
-	if((xht->cpu_idxs = malloc(sizeof(uint) * XEN_HYPER_MAX_PCPUS())) == NULL) {
+	if((xht->cpu_idxs = malloc(sizeof(uint) * XEN_HYPER_MAX_CPUS())) == NULL) {
 		error(FATAL, "cannot malloc cpu_idxs space.\n");
 	}
+	memset(xht->cpu_idxs, 0xff, sizeof(uint) * XEN_HYPER_MAX_CPUS());
+
 	for (i = cpus = 0, cpumask = xht->cpumask, cpu_idx = xht->cpu_idxs;
 	i < (XEN_HYPER_SIZE(cpumask_t)/sizeof(ulong)); i++, cpumask++) {
 		for (j = 0; j < sizeof(ulong) * 8; j++) {
@@ -1328,7 +1620,7 @@ xen_hyper_get_cpu_info(void)
  * Calculate the number of physical cpu for x86.
  */
 int
-x86_get_smp_cpus_hyper(void)
+xen_hyper_x86_get_smp_cpus(void)
 {
 	if (xht->pcpus) {
 		return xht->pcpus;
@@ -1338,23 +1630,70 @@ x86_get_smp_cpus_hyper(void)
 }
 
 /*
- * Calculate used memory size.
+ * Calculate used memory size for x86.
  */
 uint64_t
-x86_memory_size_hyper(void)
+xen_hyper_x86_memory_size(void)
 {
 	ulong vaddr;
 
 	if (machdep->memsize) {
 		return machdep->memsize;
 	}
-	vaddr = symbol_value("max_page");
-	if (!readmem(vaddr, KVADDR, &xht->max_page, sizeof(xht->max_page),
-		"max_page", RETURN_ON_ERROR)) {
-		error(WARNING, "cannot read max_page.\n");
+	vaddr = symbol_value("total_pages");
+	if (!readmem(vaddr, KVADDR, &xht->total_pages, sizeof(xht->total_pages),
+		"total_pages", RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read total_pages.\n");
 	}
-	machdep->memsize = (uint64_t)(xht->max_page) * (uint64_t)(machdep->pagesize);
+	machdep->memsize = (uint64_t)(xht->total_pages) * (uint64_t)(machdep->pagesize);
 	return machdep->memsize;
+}
+
+
+/*
+ * Calculate the number of physical cpu for ia64.
+ */
+int
+xen_hyper_ia64_get_smp_cpus(void)
+{
+	return xen_hyper_x86_get_smp_cpus();
+}
+
+/*
+ * Calculate used memory size for ia64.
+ */
+uint64_t
+xen_hyper_ia64_memory_size(void)
+{
+	return xen_hyper_x86_memory_size();
+}
+
+/*      
+ *  Calculate and return the speed of the processor. 
+ */
+ulong 
+xen_hyper_ia64_processor_speed(void)
+{
+	ulong mhz, proc_freq;
+
+	if (machdep->mhz)
+		return(machdep->mhz);
+
+	mhz = 0;
+
+	if (!xht->cpu_data_address ||
+	    !XEN_HYPER_VALID_STRUCT(cpuinfo_ia64) ||
+	    !XEN_HYPER_VALID_MEMBER(cpuinfo_ia64_proc_freq))
+		return (machdep->mhz = mhz);
+
+        readmem(xen_hyper_per_cpu(xht->cpu_data_address, xht->cpu_idxs[0]) + 
+		XEN_HYPER_OFFSET(cpuinfo_ia64_proc_freq),
+        	KVADDR, &proc_freq, sizeof(ulong),
+                "cpuinfo_ia64 proc_freq", FAULT_ON_ERROR);
+
+	mhz = proc_freq/1000000;
+
+	return (machdep->mhz = mhz);
 }
 
 
@@ -1395,11 +1734,61 @@ xen_hyper_fpr_indent(FILE *fp, int len, char *str1, char *str2, int flag)
 	}
 }
 
-void
-print_pcpu_header_hyper(FILE *out, int pcpu, int newline)
+ulong
+xen_hyper_get_active_vcpu_from_pcpuid(ulong pcpuid)
 {
+	struct xen_hyper_pcpu_context *pcc;
+	struct xen_hyper_vcpu_context_array *vcca;
+	struct xen_hyper_vcpu_context *vcc;
+	int i, j;
+
+	if (!xen_hyper_test_pcpu_id(pcpuid))
+		return 0;
+
+	pcc = &xhpct->context_array[pcpuid];
+	if (pcc->current_vcpu)
+		return pcc->current_vcpu;
+
+	for (i = 0, vcca = xhvct->vcpu_context_arrays;
+		i < xhvct->vcpu_context_arrays_cnt; i++, vcca++) {
+		for (j = 0, vcc = vcca->context_array;
+			j < vcca->context_array_cnt; j++, vcc++) {
+			if (vcc->processor == pcpuid && 
+				vcc->state == XEN_HYPER_RUNSTATE_running) {
+				return vcc->vcpu;
+			}
+		}
+	}
+
+	return 0;
+}
+
+ulong
+xen_hyper_pcpu_to_active_vcpu(ulong pcpu)
+{
+	ulong vcpu;
+
+	/* if pcpu is vcpu address, return it. */
+	if (pcpu & (~(PAGESIZE() - 1))) {
+		return pcpu;
+	}
+
+	if(!(vcpu = XEN_HYPER_CURR_VCPU(pcpu)))
+		error(FATAL, "invalid pcpu id\n");
+	return vcpu;
+}
+
+void
+xen_hyper_print_bt_header(FILE *out, ulong vcpu, int newline)
+{
+	struct xen_hyper_vcpu_context *vcc;
+
 	if (newline)
 		fprintf(out, "\n");
-	fprintf(out, "PCPU: %2d\n", pcpu);
+
+	vcc = xen_hyper_vcpu_to_vcpu_context(vcpu);
+	if (!vcc)
+		error(FATAL, "invalid vcpu\n");
+	fprintf(out, "PCPU: %2d  VCPU: %lx\n", vcc->processor, vcpu);
 }
 #endif

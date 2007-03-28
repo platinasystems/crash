@@ -470,7 +470,7 @@ verify_version(void)
 {
 	char buf[BUFSIZE];
 	ulong linux_banner;
-        int argc;
+        int argc, len;
         char *arglist[MAXARGS];
 	char *p1, *p2;
 	struct syment *sp;
@@ -498,7 +498,8 @@ verify_version(void)
 		error(WARNING, "cannot read linux_banner string\n");
 
 	if (ACTIVE()) {
-		if (strlen(kt->proc_version) && !STREQ(buf, kt->proc_version)) {
+		len = strlen(kt->proc_version) - 1;
+		if ((len > 0) && (strncmp(buf, kt->proc_version, len) != 0)) {
                		if (CRASHDEBUG(1)) {
                         	fprintf(fp, "/proc/version:\n%s", 
 					kt->proc_version);
@@ -942,7 +943,7 @@ cmd_dis(void)
 		if (user_mode) {
                 	sprintf(buf1, "x/%ldi 0x%lx",  
 				req->count ? req->count : 1, req->addr);
-			pc->cmdgenspec = pc->cmdgencur;
+			pc->curcmd_flags |= MEMTYPE_UVADDR;
         		gdb_pass_through(buf1, NULL, 0);
 			return;
 		}
@@ -1426,24 +1427,25 @@ cmd_bt(void)
 
 	if (XEN_HYPER_MODE()) {
 #ifdef XEN_HYPERVISOR_ARCH
-		/* "task" means physical cpu id */
+		/* "task" means vcpu for xen hypervisor */
 		if (active) {
 			for (c = 0; c < XEN_HYPER_MAX_CPUS(); c++) {
 				if (!xen_hyper_test_pcpu_id(c))
 					continue;
-				fake_tc.task = c;
+				fake_tc.task = xen_hyper_pcpu_to_active_vcpu(c);
 				BT_SETUP(&fake_tc);
-				print_pcpu_header_hyper(fp, c, subsequent++);
+				xen_hyper_print_bt_header(fp, fake_tc.task, subsequent++);
 				back_trace(bt);
 			}
 		} else {
 			if (args[optind]) {
-				fake_tc.task = atoi(args[optind]);
+				fake_tc.task = xen_hyper_pcpu_to_active_vcpu(
+				    convert(args[optind], 0, NULL, NUM_DEC | NUM_HEX));
 			} else {
-				fake_tc.task = 0; /* ODA: set current */
+				fake_tc.task = XEN_HYPER_VCPU_LAST_CONTEXT()->vcpu;
 			}
 			BT_SETUP(&fake_tc);
-			print_pcpu_header_hyper(fp, fake_tc.task, 0);
+			xen_hyper_print_bt_header(fp, fake_tc.task, 0);
 			back_trace(bt);
 		}
 		return;

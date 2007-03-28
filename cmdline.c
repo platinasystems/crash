@@ -929,6 +929,7 @@ restore_sanity(void)
 	pc->pipe_shell_pid = 0;
 	pc->sbrk = sbrk(0);
 	pc->curcmd_flags = 0;
+	pc->curcmd_private = 0;
 
 	restore_gdb_sanity();
 
