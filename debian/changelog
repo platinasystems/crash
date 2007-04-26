@@ -1,3 +1,14 @@
+crash (4.0-3.22-1) unstable; urgency=low
+
+  * New upstream version 4.0-3.21 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - get filename and line number info from BUG calls > 2.6.20 x86 and x86_64
+    - help -n debug output function for compressed kdump files.
+    - support for recent makedumpfile updates to handle 0 pages
+    - support fo rfully-virtualized x86_64 xendumps of relocatable kernels.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 26 Apr 2007 12:48:00 -0600
+
 crash (4.0-3.21-1) experimental; urgency=low
 
   * New upstream version 4.0-3.21 (see

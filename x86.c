@@ -3760,7 +3760,11 @@ x86_dis_filter(ulong vaddr, char *inbuf)
                             !strstr(buf2, "+"))
                                 sprintf(p1, buf1);
 		}
-	}
+	} 
+	else if (STREQ(argv[2], "ud2a"))
+		pc->curcmd_flags |= UD2A_INSTRUCTION;
+	else if (STREQ(argv[2], "(bad)"))
+		pc->curcmd_flags |= BAD_INSTRUCTION;
 
 	if (CRASHDEBUG(1))
 		console("    %s", inbuf);

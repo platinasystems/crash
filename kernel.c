@@ -46,6 +46,10 @@ static int restore_stack(struct bt_info *);
 static ulong __xen_m2p(ulonglong, ulong);
 static int search_mapping_page(ulong, ulong *, ulong *, ulong *);
 static void read_in_kernel_config_err(int, char *);
+static void BUG_bytes_init(void);
+static int BUG_x86(void);
+static int BUG_x86_64(void);
+
 
 
 /*
@@ -457,6 +461,8 @@ kernel_init()
 
 	if (!(kt->flags & DWARF_UNWIND))
 		kt->flags |= NO_DWARF_UNWIND; 
+
+	BUG_bytes_init();
 }
 
 /*
@@ -837,7 +843,7 @@ cmd_dis(void)
 {
 	int c;
 	int do_load_module_filter, do_machdep_filter, reverse; 
-	int unfiltered, user_mode, count_entered;
+	int unfiltered, user_mode, count_entered, bug_bytes_entered;
 	ulong curaddr;
 	ulong revtarget;
 	ulong count;
@@ -851,7 +857,16 @@ cmd_dis(void)
 	char buf4[BUFSIZE];
 	char buf5[BUFSIZE];
 	
-	reverse = count_entered = FALSE;
+	if ((argcnt == 2) && STREQ(args[1], "-b")) {
+		fprintf(fp, "encoded bytes being skipped after ud2a: ");
+		if (kt->BUG_bytes < 0)
+			fprintf(fp, "undetermined\n");
+		else
+			fprintf(fp, "%d\n", kt->BUG_bytes);
+		return;
+	}
+
+	reverse = count_entered = bug_bytes_entered = FALSE;
 	sp = NULL;
 	unfiltered = user_mode = do_machdep_filter = do_load_module_filter = 0;
 
@@ -860,7 +875,7 @@ cmd_dis(void)
 	req->flags |= GNU_FROM_TTY_OFF|GNU_RETURN_ON_ERROR;
 	req->count = 1;
 
-        while ((c = getopt(argcnt, args, "ulrx")) != EOF) {
+        while ((c = getopt(argcnt, args, "ulrxb:B:")) != EOF) {
                 switch(c)
 		{
 		case 'x':
@@ -881,6 +896,12 @@ cmd_dis(void)
 			else
 				req->flags |= GNU_PRINT_LINE_NUMBERS;
 			BZERO(buf4, BUFSIZE);
+			break;
+
+		case 'B':
+		case 'b':
+			kt->BUG_bytes = atoi(optarg);
+			bug_bytes_entered = TRUE;
 			break;
 
 		default:
@@ -1059,7 +1080,9 @@ cmd_dis(void)
 			close_tmpfile();
 		}
         }
-        else cmd_usage(pc->curcmd, SYNOPSIS);
+        else if (bug_bytes_entered)
+		return;
+	else cmd_usage(pc->curcmd, SYNOPSIS);
 
 	if (!reverse) {
 		FREEBUF(req->buf);
@@ -1148,6 +1171,185 @@ cmd_dis(void)
         close_tmpfile();
 	FREEBUF(req->buf);
 	FREEBUF(req);
+}
+
+/*
+ *  x86 and x86_64 kernels may have file/line-number encoding
+ *  asm()'d in just after the "ud2a" instruction, which confuses
+ *  the disassembler and the x86 backtracer.  Determine the 
+ *  number of bytes to skip.
+ */
+static void
+BUG_bytes_init(void)
+{
+	if (machine_type("X86"))
+		kt->BUG_bytes = BUG_x86();
+	else if (machine_type("X86_64"))
+		kt->BUG_bytes = BUG_x86_64();
+}
+
+static int
+BUG_x86(void)
+{
+	struct syment *sp, *spn;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char *arglist[MAXARGS];
+	ulong vaddr, fileptr;
+	int found;
+
+	/*
+	 *  Prior to 2.4.19, a call to do_BUG() preceded
+	 *  the standalone ud2a instruction.
+	 */ 
+	if (THIS_KERNEL_VERSION < LINUX(2,4,19))
+		return 0;
+
+	/*
+	 *  2.6.20 introduced __bug_table support for i386, 
+	 *  but even if CONFIG_DEBUG_BUGVERBOSE is not configured,
+	 *  the ud2a stands alone.
+	 */
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,20))
+		return 0;
+
+	/*
+	 *  For previous kernel versions, it may depend upon 
+	 *  whether CONFIG_DEBUG_BUGVERBOSE was configured:
+	 *
+	 *   #ifdef CONFIG_DEBUG_BUGVERBOSE
+	 *   #define BUG()                           \
+	 *    __asm__ __volatile__(  "ud2\n"         \
+	 *                           "\t.word %c0\n" \
+	 *                           "\t.long %c1\n" \
+	 *                            : : "i" (__LINE__), "i" (__FILE__))
+	 *   #else
+	 *   #define BUG() __asm__ __volatile__("ud2\n")
+	 *   #endif
+	 *
+  	 *  But that's not necessarily true, since there are
+	 *  pre-2.6.11 versions that force it like so:
+	 *
+         *   #if 1   /- Set to zero for a slightly smaller kernel -/
+         *   #define BUG()                           \
+         *    __asm__ __volatile__(  "ud2\n"         \
+         *                           "\t.word %c0\n" \
+         *                           "\t.long %c1\n" \
+         *                            : : "i" (__LINE__), "i" (__FILE__))
+         *   #else
+         *   #define BUG() __asm__ __volatile__("ud2\n")
+         *   #endif
+	 */
+
+	/*
+	 *  This works if in-kernel config data is available.
+	 */
+	if ((THIS_KERNEL_VERSION >= LINUX(2,6,11)) &&
+	    (kt->flags & BUGVERBOSE_OFF))
+		return 0;
+
+	/*
+	 *  At this point, it's a pretty safe bet that it's configured,
+	 *  but to be sure, disassemble a known BUG() caller and
+	 *  verify that the encoding is there.
+	 */
+
+#define X86_BUG_BYTES (6)  /* sizeof(short) + sizeof(pointer) */
+
+	if (!(sp = symbol_search("do_exit")) ||
+	    !(spn = next_symbol(NULL, sp)))
+		return X86_BUG_BYTES;
+
+	sprintf(buf1, "x/%ldi 0x%lx", spn->value - sp->value, sp->value);
+
+	found = FALSE;
+	open_tmpfile();
+	gdb_pass_through(buf1, pc->tmpfile, GNU_RETURN_ON_ERROR);
+	rewind(pc->tmpfile);
+	while (fgets(buf2, BUFSIZE, pc->tmpfile)) {
+		if (parse_line(buf2, arglist) < 3)
+			continue;
+
+		if ((vaddr = htol(arglist[0], RETURN_ON_ERROR, NULL)) >= spn->value)
+			continue; 
+
+		if (STREQ(arglist[2], "ud2a")) {
+			found = TRUE;
+			break;
+		}
+	}
+	close_tmpfile();
+
+        if (!found || !readmem(vaddr+4, KVADDR, &fileptr, sizeof(ulong),
+            "BUG filename pointer", RETURN_ON_ERROR|QUIET))
+		return X86_BUG_BYTES;
+
+	if (!IS_KVADDR(fileptr)) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "no filename pointer: kt->BUG_bytes: 0\n");
+		return 0;
+	}
+
+	if (!read_string(fileptr, buf1, BUFSIZE-1))
+		error(WARNING, 
+		    "cannot read BUG (ud2a) encoded filename address: %lx\n",
+			fileptr);
+	else if (CRASHDEBUG(1))
+		fprintf(fp, "BUG bytes filename encoding: [%s]\n", buf1);
+
+	return X86_BUG_BYTES;
+}
+
+static int
+BUG_x86_64(void)
+{
+        /*
+         *  2.6.20 introduced __bug_table support for x86_64,
+         *  but even if CONFIG_DEBUG_BUGVERBOSE is not configured,
+	 *  the ud2a stands alone.
+         */
+        if (THIS_KERNEL_VERSION >= LINUX(2,6,20))
+                return 0;
+
+	/*
+	 *  The original bug_frame structure looks like this, which
+	 *  causes the disassembler to go off into the weeds:
+	 *
+	 *    struct bug_frame { 
+	 *        unsigned char ud2[2];          
+	 *        char *filename;  
+	 *        unsigned short line; 
+	 *    } 
+	 *  
+	 *  In 2.6.13, fake push and ret instructions were encoded 
+	 *  into the frame so that the disassembly would at least 
+	 *  "work", although the two fake instructions show nonsensical
+	 *  arguments:
+	 *
+	 *    struct bug_frame {
+	 *        unsigned char ud2[2];
+	 *        unsigned char push;
+	 *        signed int filename;
+	 *        unsigned char ret;
+	 *        unsigned short line;
+	 *    }
+	 */  
+
+	if (STRUCT_EXISTS("bug_frame"))
+		return (int)(STRUCT_SIZE("bug_frame") - 2);
+
+	return 0;
+}
+
+
+/*
+ *  Callback from gdb disassembly code.
+ */
+int
+kernel_BUG_encoding_bytes(void)
+{
+	return kt->BUG_bytes;
 }
 
 #ifdef NOT_USED
@@ -3113,6 +3315,9 @@ display_sys_stats(void)
 		if (NETDUMP_DUMPFILE() && is_partial_netdump())
 			fprintf(fp, "  [PARTIAL DUMP]");
 
+		if (DISKDUMP_DUMPFILE() && is_partial_diskdump())
+			fprintf(fp, "  [PARTIAL DUMP]");
+
 		fprintf(fp, "\n");
 	}
 	
@@ -3514,6 +3719,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sDWARF_UNWIND_EH_FRAME", others++ ? "|" : "");
 	if (kt->flags & DWARF_UNWIND_MODULES)
 		fprintf(fp, "%sDWARF_UNWIND_MODULES", others++ ? "|" : "");
+	if (kt->flags & BUGVERBOSE_OFF)
+		fprintf(fp, "%sBUGVERBOSE_OFF", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -3554,6 +3761,7 @@ dump_kernel_table(int verbose)
 		kt->kernel_version[1], kt->kernel_version[2]);
 	fprintf(fp, "   gcc_version: %d.%d.%d\n", kt->gcc_version[0], 
 		kt->gcc_version[1], kt->gcc_version[2]);
+	fprintf(fp, "     BUG_bytes: %d\n", kt->BUG_bytes);
 	fprintf(fp, " runq_siblings: %d\n", kt->runq_siblings);
 	fprintf(fp, "  __rq_idx[NR_CPUS]: ");
 	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
@@ -5513,6 +5721,7 @@ static char *ikconfig[] = {
         "CONFIG_NR_CPUS",
         "CONFIG_PGTABLE_4",
         "CONFIG_HZ",
+	"CONFIG_DEBUG_BUGVERBOSE",
         NULL,
 };
 
@@ -5646,9 +5855,13 @@ again:
 			while (whitespace(*ln))
 				ln++;
 
-			/* skip comments */
-			if (*ln == '#')
+			/* skip comments -- except when looking for "not set" */
+			if (*ln == '#') {
+				if (strstr(ln, "CONFIG_DEBUG_BUGVERBOSE") &&
+				    strstr(ln, "not set"))
+					kt->flags |= BUGVERBOSE_OFF;
 				continue;
+			}
 
 			/* Find '=' */
 			if ((head = strchr(ln, '=')) != NULL) {

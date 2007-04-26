@@ -72,3 +72,16 @@
  	      augmentation++;
  	    }
  
+--- gdb-6.1/opcodes/i386-dis.c.orig
++++ gdb-6.1/opcodes/i386-dis.c
+@@ -2092,6 +2092,10 @@ print_insn (bfd_vma pc, disassemble_info
+       dp = &dis386_twobyte[*++codep];
+       need_modrm = twobyte_has_modrm[*codep];
+       uses_SSE_prefix = twobyte_uses_SSE_prefix[*codep];
++      if (dp->name && strcmp(dp->name, "ud2a") == 0) {
++	extern int kernel_BUG_encoding_bytes(void);
++	codep += kernel_BUG_encoding_bytes();
++      }
+     }
+   else
+     {

@@ -1523,6 +1523,7 @@ accessible(ulong kva)
 #define SEEK_ERRMSG      "seek error: %s address: %llx  type: \"%s\"\n"
 #define READ_ERRMSG      "read error: %s address: %llx  type: \"%s\"\n"
 #define WRITE_ERRMSG     "write error: %s address: %llx  type: \"%s\"\n"
+#define PAGE_EXCLUDED_ERRMSG  "page excluded: %s address: %llx  type: \"%s\"\n"
 
 int
 readmem(ulonglong addr, int memtype, void *buffer, long size,
@@ -1641,6 +1642,11 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 		case READ_ERROR:
                         if (PRINT_ERROR_MESSAGE)
                         	error(INFO, READ_ERRMSG, memtype_string(memtype, 0), addr, type);
+                        goto readmem_error;
+
+		case PAGE_EXCLUDED:
+                        if (PRINT_ERROR_MESSAGE)
+                        	error(INFO, PAGE_EXCLUDED_ERRMSG, memtype_string(memtype, 0), addr, type);
                         goto readmem_error;
 
 		default:

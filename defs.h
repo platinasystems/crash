@@ -211,6 +211,8 @@ struct number_option {
 
 #define DISKDUMP_LOCAL      (0x1)
 #define KDUMP_CMPRS_LOCAL   (0x2)
+#define ERROR_EXCLUDED      (0x4)
+#define ZERO_EXCLUDED       (0x8)
 #define DISKDUMP_VALID()    (dd->flags & DISKDUMP_LOCAL)
 #define KDUMP_CMPRS_VALID() (dd->flags & KDUMP_CMPRS_LOCAL)
 
@@ -234,6 +236,7 @@ struct number_option {
 #define SEEK_ERROR       (-1)
 #define READ_ERROR       (-2)
 #define WRITE_ERROR      (-3)
+#define PAGE_EXCLUDED    (-4)
 
 #define RESTART()         (longjmp(pc->main_loop_env, 1))
 #define RESUME_FOREACH()  (longjmp(pc->foreach_loop_env, 1))
@@ -360,6 +363,8 @@ struct program_context {
 #define MEMTYPE_UVADDR     (0x10)
 #define MEMTYPE_FILEADDR   (0x20)
 #define HEADER_PRINTED     (0x40)
+#define BAD_INSTRUCTION    (0x80)
+#define UD2A_INSTRUCTION  (0x100)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -446,6 +451,7 @@ struct new_utsname {
 #define DWARF_UNWIND_EH_FRAME (0x400000)
 #define DWARF_UNWIND_CAPABLE  (DWARF_UNWIND_MEMORY|DWARF_UNWIND_EH_FRAME)
 #define DWARF_UNWIND_MODULES  (0x800000)
+#define BUGVERBOSE_OFF       (0x1000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
@@ -486,6 +492,7 @@ struct kernel_table {                   /* kernel data */
 	long __cpu_idx[NR_CPUS];
 	long __per_cpu_offset[NR_CPUS];
 	ulong cpu_flags[NR_CPUS];
+	int BUG_bytes;
 #define NMI 0x1
 	ulong xen_flags;
 #define WRITABLE_PAGE_TABLES    (0x1)
@@ -3453,6 +3460,7 @@ void unlink_module(struct load_module *);
 int is_system_call(char *, ulong);
 void generic_dump_irq(int);
 int generic_dis_filter(ulong, char *);
+int kernel_BUG_encoding_bytes(void);
 void display_sys_stats(void);
 char *get_uptime(char *, ulonglong *);
 void clone_bt_info(struct bt_info *, struct bt_info *, struct task_context *);
@@ -3949,6 +3957,8 @@ int diskdump_memory_dump(FILE *);
 FILE *set_diskdump_fp(FILE *);
 void get_diskdump_regs(struct bt_info *, ulong *, ulong *);
 int diskdump_phys_base(unsigned long *);
+ulong *diskdump_flags;
+int is_partial_diskdump(void);
 
 /*
  * xendump.c
@@ -4315,7 +4325,6 @@ extern unsigned output_radix;
 extern int output_format;
 extern int prettyprint_structs;
 extern int prettyprint_arrays;
-extern int repeat_count_threshold;
 extern int repeat_count_threshold;
 extern unsigned int print_max;
 

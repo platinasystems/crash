@@ -928,6 +928,11 @@ restore_sanity(void)
 	pc->pipe_pid = 0;
 	pc->pipe_shell_pid = 0;
 	pc->sbrk = sbrk(0);
+	if ((pc->curcmd_flags & (UD2A_INSTRUCTION|BAD_INSTRUCTION)) ==
+		(UD2A_INSTRUCTION|BAD_INSTRUCTION))
+		error(WARNING, "A (bad) instruction was noted in last disassembly.\n"
+                     "         Use \"dis -b [number]\" to set/restore the number of\n"
+                     "         encoded bytes to skip after a ud2a (BUG) instruction.\n");
 	pc->curcmd_flags = 0;
 	pc->curcmd_private = 0;
 

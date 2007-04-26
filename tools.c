@@ -2097,6 +2097,31 @@ cmd_set(void)
 			pc->flags |= DATADEBUG;
 			return;
 
+                } else if (STREQ(args[optind], "zero_excluded")) {
+
+                        if (args[optind+1]) {
+                                optind++;
+                                if (STREQ(args[optind], "on"))
+                                        *diskdump_flags |= ZERO_EXCLUDED;
+                                else if (STREQ(args[optind], "off"))
+                                        *diskdump_flags &= ~ZERO_EXCLUDED;
+				else if (IS_A_NUMBER(args[optind])) {
+					value = stol(args[optind],
+                                    		FAULT_ON_ERROR, NULL);
+					if (value)
+                                        	*diskdump_flags |= ZERO_EXCLUDED;
+					else
+                                        	*diskdump_flags &= ~ZERO_EXCLUDED;
+				} else
+					goto invalid_set_command;
+                        }
+
+			if (runtime)
+                        	fprintf(fp, "zero_excluded: %s\n",
+                               	    *diskdump_flags & ZERO_EXCLUDED ? 
+					"on" : "off");
+			return;
+
 		} else if (runtime) {
 			ulong pid, task;
 
@@ -2165,6 +2190,7 @@ show_options(void)
 	fprintf(fp, "      namelist: %s\n", pc->namelist);
 	fprintf(fp, "      dumpfile: %s\n", pc->dumpfile);
 	fprintf(fp, "        unwind: %s\n", kt->flags & DWARF_UNWIND ? "on" : "off");
+	fprintf(fp, " zero_excluded: %s\n", *diskdump_flags & ZERO_EXCLUDED ? "on" : "off");
 }
 
 
