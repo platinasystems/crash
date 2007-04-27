@@ -1393,7 +1393,8 @@ generic_dis_filter(ulong value, char *buf)
 }
 
 #define FRAMESIZE_DEBUG_MESSAGE \
-"usage: bt -F [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n"
+"\nx86 usage: bt -F [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n\nx86_64 usage: bt -F [clear|dump|validate] [-I rip]\n  If rip:  \"validate\" will verbosely recalculate the framesize.\n  If !rip: \"clear\" will clear the framesize cache.\n           \"dump\" will dump the current framesize cache entries.\n"
+
 
 /*
  *  Display a kernel stack backtrace.  Arguments may be any number pid or task
@@ -1461,7 +1462,7 @@ cmd_bt(void)
 			break;
 
 		case 'O':
-			if (!machine_type("X86")) 
+			if (!(machine_type("X86") || machine_type("X86_64"))) 
 				option_not_supported(c);
 			else if (kt->flags & USE_OLD_BT) { 
 				/* 

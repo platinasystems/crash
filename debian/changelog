@@ -1,3 +1,11 @@
+crash (4.0-4.1-1) unstable; urgency=low
+
+  * Dependable backtraces for x86_64
+  * s390 and s390x backtrace commands match rq instead of runqueue
+  * xencrash to use xen-syms instead of vmlinux kernel.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 27 Apr 2007 13:23:36 -0600
+
 crash (4.0-3.22-1) unstable; urgency=low
 
   * New upstream version 4.0-3.21 (see

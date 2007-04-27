@@ -74,9 +74,14 @@
 #define PERCPU_ADDR	      (DEFAULT_SHAREDINFO_ADDR - PERCPU_PAGE_SIZE)
 #define DIRECTMAP_VIRT_START  (0xf000000000000000)
 #define DIRECTMAP_VIRT_END    PERCPU_ADDR
+#define VIRT_FRAME_TABLE_ADDR    (0xf300000000000000)
+#define VIRT_FRAME_TABLE_END     (0xf400000000000000)
 
 #define PERCPU_VIRT_ADDR(vaddr) \
     (((vaddr) >= PERCPU_ADDR) && ((vaddr) < PERCPU_ADDR + PERCPU_PAGE_SIZE))
+
+#define FRAME_TABLE_VIRT_ADDR(vaddr) \
+    ((vaddr) >= VIRT_FRAME_TABLE_ADDR && (vaddr) < VIRT_FRAME_TABLE_END)
 
 #undef IA64_RBS_OFFSET
 #define IA64_RBS_OFFSET   ((XEN_HYPER_SIZE(vcpu) + 15) & ~15)
@@ -147,6 +152,9 @@ typedef uint32_t	Elf_Word;
 /*
  * Domain
  */
+/* Prepared domain ID. */
+#define XEN_HYPER_DOMID_IO		(0x7FF1U)
+#define XEN_HYPER_DOMID_XEN		(0x7FF2U)
 /* Domain flags (domain_flags). */
  /* Is this domain privileged? */
 #define XEN_HYPER__DOMF_privileged       0
@@ -266,9 +274,11 @@ typedef uint32_t	Elf_Word;
 #define XEN_HYPER_STR_PCPU	(0x32)
 #define XEN_HYPER_STR_INVALID	(-1)
 
-#define XEN_HYPER_DOMAIN_TYPE_IDLE	(0x0)
-#define XEN_HYPER_DOMAIN_TYPE_DOM0	(0x1)
-#define XEN_HYPER_DOMAIN_TYPE_GUEST	(0x2)
+#define XEN_HYPER_DOMAIN_TYPE_IO	(0x0)
+#define XEN_HYPER_DOMAIN_TYPE_XEN	(0x1)
+#define XEN_HYPER_DOMAIN_TYPE_IDLE	(0x2)
+#define XEN_HYPER_DOMAIN_TYPE_DOM0	(0x3)
+#define XEN_HYPER_DOMAIN_TYPE_GUEST	(0x4)
 #define XEN_HYPER_DOMAIN_TYPE_INVALID	(-1)
 
 #define XEN_HYPER_ELF_NOTE_FILL_T_NOTE		(0)
@@ -343,6 +353,7 @@ struct xen_hyper_table {
 	int pcpus;			/* number of physical cpu */
 	int vcpus;			/* number of virtual cpu */
 	int domains;			/* number of domain */
+	ulong sys_pages;
 	int crashing_cpu;
 	struct xen_hyper_vcpu_context *crashing_vcc;
 	ulong max_page;
@@ -410,6 +421,8 @@ struct xen_hyper_domain_table {
 	struct xen_hyper_domain_context *context_array;
 	int context_array_cnt;
 	ulong running_domains;
+	struct xen_hyper_domain_context *dom_io;
+	struct xen_hyper_domain_context *dom_xen;
 	struct xen_hyper_domain_context *dom0;
 	struct xen_hyper_domain_context *idle_domain;
 	struct xen_hyper_domain_context *curr_domain;
@@ -503,6 +516,8 @@ struct xen_hyper_size_table {
 	long ELF_Signifo;
 	long ELF_Gregset;
 	long ELF_Timeval;
+	long arch_domain;
+	long arch_shared_info;
 	long cpu_info;
 	long cpu_time;
 	long cpu_user_regs;
@@ -517,9 +532,13 @@ struct xen_hyper_size_table {
 	long crash_xen_core_t;			/* elf note v3 */
 	long crash_xen_info_t;			/* elf note v3 */
 	long domain;
+#ifdef IA64
+	long mm_struct;
+#endif
 	long note_buf_t;			/* elf note v1 */
 	long schedule_data;
 	long scheduler;
+	long shared_info;
 	long timer;
 	long tss_struct;
 	long vcpu;
@@ -545,6 +564,14 @@ struct xen_hyper_offset_table {
 	long ELF_Prstatus_pr_fpvalid;
 	long ELF_Timeval_tv_sec;
 	long ELF_Timeval_tv_usec;
+	/* arch_domain */
+#ifdef IA64
+	long arch_domain_mm;
+#endif
+	/* arch_shared_info */
+	long arch_shared_info_max_pfn;
+	long arch_shared_info_pfn_to_mfn_frame_list_list;
+	long arch_shared_info_nmi_reason;
 	/* cpu_info */
 	long cpu_info_guest_cpu_user_regs;
 	long cpu_info_processor_id;
@@ -588,6 +615,11 @@ struct xen_hyper_offset_table {
 	long domain_domain_flags;
 	long domain_evtchn;
 	long domain_vcpu;
+	long domain_arch;
+#ifdef IA64
+	/* mm_struct */
+	long mm_struct_pgd;
+#endif
 	/* schedule_data */
 	long schedule_data_schedule_lock;
 	long schedule_data_curr;
@@ -610,6 +642,11 @@ struct xen_hyper_offset_table {
 	long scheduler_adjust;
 	long scheduler_dump_settings;
 	long scheduler_dump_cpu_state;
+	/* shared_info */
+	long shared_info_vcpu_info;
+	long shared_info_evtchn_pending;
+	long shared_info_evtchn_mask;
+	long shared_info_arch;
 	/* timer */
 	long timer_expires;
 	long timer_cpu;
@@ -755,7 +792,7 @@ extern char *xen_hyper_help_vcpus[];
 /*
  * Prototype
  */
-ulonglong get_uptime_hyper(void);
+ulonglong xen_hyper_get_uptime_hyper(void);
 
 /*
  * x86

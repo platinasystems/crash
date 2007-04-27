@@ -3489,6 +3489,7 @@ void back_trace(struct bt_info *);
 #define BT_FROM_CALLFRAME       (0x1000ULL)
 #define BT_EFRAME_SEARCH        (0x2000ULL)
 #define BT_SPECULATE            (0x4000ULL)
+#define BT_FRAMESIZE_DISABLE   (BT_SPECULATE)
 #define BT_RESCHEDULE           (0x8000ULL)
 #define BT_SCHEDULE      (BT_RESCHEDULE)
 #define BT_RET_FROM_SMP_FORK   (0x10000ULL)

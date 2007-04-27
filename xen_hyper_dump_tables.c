@@ -217,12 +217,16 @@ xen_hyper_dump_xen_hyper_table(int verbose)
 		(buf, "%d\n", xht->vcpus));
 	XEN_HYPER_PRI(fp, len, "domains: ", buf, flag,
 		(buf, "%d\n", xht->domains));
+	XEN_HYPER_PRI(fp, len, "sys_pages: ", buf, flag,
+		(buf, "%lu\n", xht->sys_pages));
 	XEN_HYPER_PRI(fp, len, "crashing_cpu: ", buf, flag,
 		(buf, "%d\n", xht->crashing_cpu));
 	XEN_HYPER_PRI(fp, len, "crashing_vcc: ", buf, flag,
 		(buf, "%p\n", xht->crashing_vcc));
 	XEN_HYPER_PRI(fp, len, "max_page: ", buf, flag,
 		(buf, "%lu\n", xht->max_page));
+	XEN_HYPER_PRI(fp, len, "total_pages: ", buf, flag,
+		(buf, "%lu\n", xht->total_pages));
 	XEN_HYPER_PRI(fp, len, "cpumask: ", buf, flag,
 		(buf, "%p\n", xht->cpumask));
 	if (verbose && xht->cpumask) {
@@ -327,6 +331,10 @@ xen_hyper_dump_xen_hyper_domain_table(int verbose)
 		(buf, "%d\n", xhdt->context_array_cnt));
 	XEN_HYPER_PRI(fp, len, "running_domains: ", buf, flag,
 		(buf, "%lu\n", xhdt->running_domains));
+	XEN_HYPER_PRI(fp, len, "dom_io: ", buf, flag,
+		(buf, "%p\n", xhdt->dom_io));
+	XEN_HYPER_PRI(fp, len, "dom_xen: ", buf, flag,
+		(buf, "%p\n", xhdt->dom_xen));
 	XEN_HYPER_PRI(fp, len, "dom0: ", buf, flag,
 		(buf, "%p\n", xhdt->dom0));
 	XEN_HYPER_PRI(fp, len, "idle_domain: ", buf, flag,
@@ -488,6 +496,10 @@ xen_hyper_dump_xen_hyper_size_table(char *spec, ulong makestruct)
 		(buf, "%ld\n", xen_hyper_size_table.ELF_Gregset));
 	XEN_HYPER_PRI(fp, len, "ELF_Timeval: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.ELF_Timeval));
+	XEN_HYPER_PRI(fp, len, "arch_domain: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_size_table.arch_domain));
+	XEN_HYPER_PRI(fp, len, "arch_shared_info: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_size_table.arch_shared_info));
 	XEN_HYPER_PRI(fp, len, "cpu_info: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.cpu_info));
 	XEN_HYPER_PRI(fp, len, "cpu_time: ", buf, flag,
@@ -516,12 +528,18 @@ xen_hyper_dump_xen_hyper_size_table(char *spec, ulong makestruct)
 		(buf, "%ld\n", xen_hyper_size_table.crash_xen_info_t));
 	XEN_HYPER_PRI(fp, len, "domain: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.domain));
+#ifdef IA64
+	XEN_HYPER_PRI(fp, len, "mm_struct: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_size_table.mm_struct));
+#endif
 	XEN_HYPER_PRI(fp, len, "note_buf_t: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.note_buf_t));
 	XEN_HYPER_PRI(fp, len, "schedule_data: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.schedule_data));
 	XEN_HYPER_PRI(fp, len, "scheduler: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.scheduler));
+	XEN_HYPER_PRI(fp, len, "shared_info: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_size_table.shared_info));
 	XEN_HYPER_PRI(fp, len, "timer: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_size_table.timer));
 	XEN_HYPER_PRI(fp, len, "tss_struct: ", buf, flag,
@@ -543,7 +561,7 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 	char buf[XEN_HYPER_CMD_BUFSIZE];
 	int len, flag;
 
-	len = 37;
+	len = 45;
 	flag = XEN_HYPER_PRI_R;
 
 	XEN_HYPER_PRI(fp, len, "ELF_Prstatus_pr_info: ", buf, flag,
@@ -576,6 +594,18 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 		(buf, "%ld\n", xen_hyper_offset_table.ELF_Timeval_tv_sec));
 	XEN_HYPER_PRI(fp, len, "ELF_Timeval_tv_usec: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.ELF_Timeval_tv_usec));
+
+#ifdef IA64
+	XEN_HYPER_PRI(fp, len, "arch_domain_mm: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.arch_domain_mm));
+#endif
+
+	XEN_HYPER_PRI(fp, len, "arch_shared_info_max_pfn: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.arch_shared_info_max_pfn));
+	XEN_HYPER_PRI(fp, len, "arch_shared_info_pfn_to_mfn_frame_list_list: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.arch_shared_info_pfn_to_mfn_frame_list_list));
+	XEN_HYPER_PRI(fp, len, "arch_shared_info_nmi_reason: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.arch_shared_info_nmi_reason));
 
 	XEN_HYPER_PRI(fp, len, "cpu_info_guest_cpu_user_regs: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.cpu_info_guest_cpu_user_regs));
@@ -649,6 +679,11 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 	XEN_HYPER_PRI(fp, len, "domain_vcpu: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_vcpu));
 
+#ifdef IA64
+	XEN_HYPER_PRI(fp, len, "mm_struct_pgd: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.mm_struct_pgd));
+#endif
+
 	XEN_HYPER_PRI(fp, len, "schedule_data_schedule_lock: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.schedule_data_schedule_lock));
 	XEN_HYPER_PRI(fp, len, "schedule_data_curr: ", buf, flag,
@@ -690,6 +725,15 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 		(buf, "%ld\n", xen_hyper_offset_table.scheduler_dump_settings));
 	XEN_HYPER_PRI(fp, len, "scheduler_dump_cpu_state: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.scheduler_dump_cpu_state));
+
+	XEN_HYPER_PRI(fp, len, "shared_info_vcpu_info: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.shared_info_vcpu_info));
+	XEN_HYPER_PRI(fp, len, "shared_info_evtchn_pending: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.shared_info_evtchn_pending));
+	XEN_HYPER_PRI(fp, len, "shared_info_evtchn_mask: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.shared_info_evtchn_mask));
+	XEN_HYPER_PRI(fp, len, "shared_info_arch: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.shared_info_arch));
 
 	XEN_HYPER_PRI(fp, len, "timer_expires: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.timer_expires));
