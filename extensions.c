@@ -107,6 +107,7 @@ cmd_extend(void)
 void 
 dump_extension_table(int verbose)
 {
+	int i;
 	struct extension_table *ext;
 	struct command_table_entry *cp;
 	char buf[BUFSIZE];
@@ -117,23 +118,37 @@ dump_extension_table(int verbose)
 
 	if (verbose) {
        		for (ext = extension_table; ext; ext = ext->next) {
-                        fprintf(fp, "     filename: %s\n", ext->filename);
-                        fprintf(fp, "       handle: %lx\n", (ulong)ext->handle);
-                        fprintf(fp, "command_table: %lx (", 
-				(ulong)ext->command_table);
-                        for (others = 0, cp = ext->command_table; cp->name;cp++)
-                                fprintf(fp, "%s%s%s", others++ ? " " : "",
-                                        cp->name, cp->help_data ? "*" : "");
-                        fprintf(fp, ")\n");
-			fprintf(fp, "        flags: %lx (", ext->flags);
+                        fprintf(fp, "        filename: %s\n", ext->filename);
+                        fprintf(fp, "          handle: %lx\n", (ulong)ext->handle);
+
+
+			fprintf(fp, "           flags: %lx (", ext->flags);
 			others = 0;
 			if (ext->flags & REGISTERED)
 				fprintf(fp, "%sREGISTERED", others++ ?
 					"|" : "");
 			fprintf(fp, ")\n");
-                        fprintf(fp, "         next: %lx\n", (ulong)ext->next);
-                        fprintf(fp, "         prev: %lx\n%s", 
-				(ulong)ext->prev, ext->next ? "\n" : "");
+                        fprintf(fp, "            next: %lx\n", (ulong)ext->next);
+                        fprintf(fp, "            prev: %lx\n", (ulong)ext->prev);
+
+                        for (i = 0, cp = ext->command_table; cp->name; cp++, i++) {
+                        	fprintf(fp, "command_table[%d]: %lx\n", i, (ulong)cp); 
+				fprintf(fp, "                  name: %s\n", cp->name);
+				fprintf(fp, "                  func: %lx\n", (ulong)cp->func);
+				fprintf(fp, "             help_data: %lx\n", (ulong)cp->help_data); 
+				fprintf(fp, "                 flags: %lx (", cp->flags);
+				others = 0;
+				if (cp->flags & CLEANUP)
+					fprintf(fp, "%sCLEANUP", others++ ? "|" : "");
+				if (cp->flags & REFRESH_TASK_TABLE)
+					fprintf(fp, "%sREFRESH_TASK_TABLE", others++ ? "|" : "");
+				if (cp->flags & HIDDEN_COMMAND)
+					fprintf(fp, "%sHIDDEN_COMMAND", others++ ? "|" : "");
+				fprintf(fp, ")\n");
+			}
+
+			if (ext->next) 
+				fprintf(fp, "\n");
 		}
 		return;
 	}

@@ -34,8 +34,10 @@ link_defs:
 	  ln -s ../defs.h; fi 
 
 echo.so: ../defs.h echo.c
-	gcc -nostartfiles -shared -rdynamic -o echo.so echo.c -fPIC -D$(TARGET)
+	gcc -nostartfiles -shared -rdynamic -o echo.so echo.c -fPIC \
+				 		-D$(TARGET) $(TARGET_CFLAGS)
 
 dminfo.so: ../defs.h dminfo.c
-	gcc -nostartfiles -shared -rdynamic -o dminfo.so dminfo.c -fPIC -D$(TARGET)
+	gcc -nostartfiles -shared -rdynamic -o dminfo.so dminfo.c -fPIC \
+				 		-D$(TARGET) $(TARGET_CFLAGS)
 	

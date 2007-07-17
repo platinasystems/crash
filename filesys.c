@@ -230,7 +230,7 @@ memory_source_init(void)
 static void
 match_proc_version(void)
 {
-	char buffer[BUFSIZE];
+	char buffer[BUFSIZE], *p1, *p2;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
@@ -249,6 +249,24 @@ match_proc_version(void)
 	error(WARNING, "%s%sand /proc/version do not match!\n\n", 
 		pc->namelist, 
 		strlen(pc->namelist) > 39 ? "\n         " : " ");
+
+	/*
+	 *  find_booted_system_map() requires VTOP(), which used to be a 
+	 *  hardwired masking of the kernel address.  But some architectures 
+	 *  may not know what their physical base address is at this point, 
+	 *  and others may have different machdep->kvbase values, so for all
+	 *  but the 0-based kernel virtual address architectures, bail out
+	 *  here with a relevant error message.
+	 */
+	if (!machine_type("S390") && !machine_type("S390X")) {
+		p1 = &kt->proc_version[strlen("Linux version ")];
+		p2 = strstr(p1, " ");
+		*p2 = NULLCHAR;
+		error(WARNING, "/proc/version indicates kernel version: %s\n", p1);
+		error(FATAL, "please use the vmlinux file for that kernel version, or try using\n"
+			"       the System.map for that kernel version as an additional argument.\n", p1);
+		clean_exit(1);
+	}
 
 	if (find_booted_system_map())
                 pc->flags |= SYSMAP;

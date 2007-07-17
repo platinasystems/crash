@@ -152,8 +152,10 @@ help_init(void)
 	}
 
         for (ext = extension_table; ext; ext = ext->next) {
-		for (cp = ext->command_table; cp->name; cp++)
-			pc->ncmds++;
+		for (cp = ext->command_table; cp->name; cp++) {
+			if (!(cp->flags & (CLEANUP|HIDDEN_COMMAND)))
+				pc->ncmds++;
+		}
 	}
 
         if (!pc->cmdlist) {
@@ -193,8 +195,10 @@ reshuffle_cmdlist(void)
 	}
 
         for (ext = extension_table; ext; ext = ext->next) {
-                for (cp = ext->command_table; cp->name; cp++)
-                	pc->cmdlist[cnt++] = cp->name;
+                for (cp = ext->command_table; cp->name; cp++) {
+			if (!(cp->flags & (CLEANUP|HIDDEN_COMMAND)))
+				pc->cmdlist[cnt++] = cp->name;
+		}
         }
 
 	if (cnt > pc->cmdlistsz)
@@ -794,7 +798,7 @@ NULL
 char *help_ps[] = {
 "ps",
 "display process status information",
-"[-k|-u][-s][-p|-c|-t|-l|-a|-g] [pid | taskp | command] ...",
+"[-k|-u][-s][-p|-c|-t|-l|-a|-g|-r] [pid | taskp | command] ...",
 "  This command displays process status for selected, or all, processes" ,
 "  in the system.  If no arguments are entered, the process data is",
 "  is displayed for all processes.  Selected process identifiers can be",
@@ -830,8 +834,8 @@ char *help_ps[] = {
 "  angle bracket (\">\") preceding its information.",
 " ",
 "  Alternatively, information regarding parent-child relationships,",
-"  per-task time usage data, argument/environment data, or thread groups",
-"  may be displayed:",
+"  per-task time usage data, argument/environment data, thread groups,",
+"  or resource limits may be displayed:",
 " ",
 "       -p  display the parental hierarchy of selected, or all, tasks.",  
 "       -c  display the children of selected, or all, tasks.",
@@ -843,6 +847,7 @@ char *help_ps[] = {
 "       -a  display the command line arguments and environment strings of",
 "           selected, or all, user-mode tasks.",
 "       -g  display tasks by thread group, of selected, or all, tasks.",
+"       -r  display resource limits (rlimits) of selected, or all, tasks.",
 "\nEXAMPLES",
 "  Show the process status of all current tasks:\n",
 "    %s> ps",
@@ -1086,6 +1091,22 @@ char *help_ps[] = {
 "      PID: 2529   TASK: 1003f0c37f0       CPU: 1   COMMAND: \"multi-thread\"",
 "      PID: 2530   TASK: 10035597030       CPU: 1   COMMAND: \"multi-thread\"",
 "      PID: 2531   TASK: 100184be7f0       CPU: 1   COMMAND: \"multi-thread\"",
+" ",
+"  Display the resource limits of \"bash\" task 13896:\n",
+"    %s> ps -r 13896",
+"    PID: 13896  TASK: cf402000  CPU: 0   COMMAND: \"bash\"",
+"       RLIMIT     CURRENT       MAXIMUM",
+"          CPU   (unlimited)   (unlimited)",
+"        FSIZE   (unlimited)   (unlimited)",
+"         DATA   (unlimited)   (unlimited)",
+"        STACK    10485760     (unlimited)",
+"         CORE   (unlimited)   (unlimited)",
+"          RSS   (unlimited)   (unlimited)",
+"        NPROC      4091          4091",
+"       NOFILE      1024          1024",
+"      MEMLOCK      4096          4096",
+"           AS   (unlimited)   (unlimited)",
+"        LOCKS   (unlimited)   (unlimited)",
 NULL               
 };
 

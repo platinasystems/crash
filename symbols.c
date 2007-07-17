@@ -3507,6 +3507,34 @@ symbol_value(char *symbol)
 }
 
 /*
+ *  Return the value of a symbol from a specific module.
+ */
+ulong
+symbol_value_module(char *symbol, char *module)
+{
+	int i;
+	struct syment *sp, *sp_end;
+	struct load_module *lm;
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+
+		if (!STREQ(module, lm->mod_name))
+			continue;
+
+		sp = lm->mod_symtable;
+		sp_end = lm->mod_symend;
+
+		for ( ; sp < sp_end; sp++) {
+			if (STREQ(symbol, sp->name))
+				return(sp->value);
+		}
+	}
+
+	return 0;
+}
+
+/*
  *  Return the symbol name of a given value, with no allowance for offsets.
  *  Returns NULL on failure to allow for testing of a value.
  */
@@ -5615,6 +5643,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_thread_info));
         fprintf(fp, "           task_struct_nsproxy: %ld\n",
                 OFFSET(task_struct_nsproxy));
+        fprintf(fp, "              task_struct_rlim: %ld\n",
+                OFFSET(task_struct_rlim));
 
 	fprintf(fp, "              thread_info_task: %ld\n",
                 OFFSET(thread_info_task));
@@ -5663,6 +5693,9 @@ dump_offset_table(char *spec, ulong makestruct)
         	OFFSET(signal_struct_action));
 	fprintf(fp, "  signal_struct_shared_pending: %ld\n",
         	OFFSET(signal_struct_shared_pending));
+	fprintf(fp, "            signal_struct_rlim: %ld\n",
+        	OFFSET(signal_struct_rlim));
+
         fprintf(fp, "        task_struct_start_time: %ld\n",
                 OFFSET(task_struct_start_time));
         fprintf(fp, "             task_struct_times: %ld\n",
@@ -6731,6 +6764,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(pid_link));
 	fprintf(fp, "                  unwind_table: %ld\n", 
 		SIZE(unwind_table));
+	fprintf(fp, "                        rlimit: %ld\n", 
+		SIZE(rlimit));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

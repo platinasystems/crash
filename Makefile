@@ -470,7 +470,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-4.1
+RELEASE=4.0-4.3
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
@@ -543,4 +543,5 @@ extensions: make_configure
 	@make --no-print-directory do_extensions
 
 do_extensions:
-	@(cd extensions; make -i OBJECTS="$(EXTENSION_OBJECT_FILES)" TARGET=$(TARGET))
+	@(cd extensions; make -i OBJECTS="$(EXTENSION_OBJECT_FILES)" \
+				TARGET=$(TARGET) TARGET_CFLAGS=$(TARGET_CFLAGS))

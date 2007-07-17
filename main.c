@@ -49,6 +49,7 @@ static struct option long_options[] = {
         {"hyper", 0, 0, 0},
 	{"p2m_mfn", 1, 0, 0},
 	{"zero_excluded", 0, 0, 0},
+	{"no_panic", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -156,6 +157,8 @@ main(int argc, char **argv)
 		        if (STREQ(long_options[option_index].name, "zero_excluded")) 
 				*diskdump_flags |= ZERO_EXCLUDED;
 
+		        if (STREQ(long_options[option_index].name, "no_panic")) 
+				tt->flags |= PANIC_TASK_NOT_FOUND;
 			break;
 
 		case 'f':
@@ -302,8 +305,14 @@ main(int argc, char **argv)
                                 }
                                 pc->flags |= NETDUMP;
                                 pc->dumpfile = argv[optind];
-                                pc->readmem = read_netdump;
-                                pc->writemem = write_netdump;
+
+				if (is_sadump_xen()) {
+					pc->readmem = read_kdump;
+					pc->writemem = write_kdump;
+				} else {
+					pc->readmem = read_netdump;
+					pc->writemem = write_netdump;
+				}
 
                         } else if (is_kdump(argv[optind], KDUMP_LOCAL)) {
                                 if (pc->flags & MEMORY_SOURCES) {
@@ -993,6 +1002,9 @@ dump_program_context(void)
         if (pc->flags & PLEASE_WAIT)
                 sprintf(&buf[strlen(buf)],
                         "%sPLEASE_WAIT", others++ ? "|" : "");
+        if (pc->flags & IFILE_ERROR)
+                sprintf(&buf[strlen(buf)],
+                        "%sIFILE_ERROR", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");
@@ -1056,6 +1068,20 @@ dump_program_context(void)
 	fprintf(fp, "       ifile_pipe: %lx\n", (ulong)pc->ifile_pipe);
 	fprintf(fp, "      ifile_ofile: %lx\n", (ulong)pc->ifile_ofile);
 	fprintf(fp, "       input_file: %s\n", pc->input_file);
+	fprintf(fp, "ifile_in_progress: %lx (", pc->ifile_in_progress);
+	others = 0;
+	if (pc->ifile_in_progress & RCHOME_IFILE)
+		fprintf(fp, "%sRCHOME_IFILE", others++ ? "|" : "");
+	if (pc->ifile_in_progress & RCLOCAL_IFILE)
+		fprintf(fp, "%sRCLOCAL_IFILE", others++ ? "|" : "");
+	if (pc->ifile_in_progress & CMDLINE_IFILE)
+		fprintf(fp, "%sCMDLINE_IFILE", others++ ? "|" : "");
+	if (pc->ifile_in_progress & RUNTIME_IFILE)
+		fprintf(fp, "%sRUNTIME_IFILE", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+	fprintf(fp, "     ifile_offset: %lld\n", (ulonglong)pc->ifile_offset);
+	fprintf(fp, "runtime_ifile_cmd: %s\n", pc->runtime_ifile_cmd ?
+                pc->runtime_ifile_cmd : "(unused)");
 	fprintf(fp, "   scroll_command: %s\n", 
 		pc->scroll_command == SCROLL_NONE ? "(none)" :
 		    pc->scroll_command == SCROLL_LESS ? 

@@ -34,6 +34,7 @@ static void parent_list(ulong);
 static void child_list(ulong);
 static void show_task_times(struct task_context *, ulong);
 static void show_task_args(struct task_context *);
+static void show_task_rlimit(struct task_context *);
 static void show_tgid_list(ulong);
 static int compare_start_time(const void *, const void *);
 static int start_time_timespec(void);
@@ -160,8 +161,15 @@ task_init(void)
 		get_idle_threads(&tt->idle_threads[0], kt->cpus);
 	}
 
-        MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", 
-		"thread_info");
+	if (MEMBER_EXISTS("task_struct", "thread_info"))
+        	MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", 
+			"thread_info");
+	else if (MEMBER_EXISTS("task_struct", "stack"))
+        	MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", 
+			"stack");
+	else
+		ASSIGN_OFFSET(task_struct_thread_info) = INVALID_OFFSET;
+
 	if (VALID_MEMBER(task_struct_thread_info)) {
         	MEMBER_OFFSET_INIT(thread_info_task, "thread_info", "task"); 
         	MEMBER_OFFSET_INIT(thread_info_cpu, "thread_info", "cpu");
@@ -2173,7 +2181,7 @@ cmd_ps(void)
 	BZERO(&psinfo, sizeof(struct psinfo));
 	flag = 0;
 
-        while ((c = getopt(argcnt, args, "gstcpkula")) != EOF) {
+        while ((c = getopt(argcnt, args, "gstcpkular")) != EOF) {
                 switch(c)
 		{
 		case 'k':
@@ -2228,6 +2236,11 @@ cmd_ps(void)
 
 		case 's':
 			flag |= PS_KSTACKP;
+			break;
+
+		case 'r':
+			flag &= ~(PS_EXCLUSIVE);
+			flag |= PS_RLIMIT;
 			break;
 
 		default:
@@ -2312,6 +2325,10 @@ cmd_ps(void)
         }                                                             \
         if (flag & PS_ARGV_ENVP) {                                    \
                 show_task_args(tc);                                   \
+                continue;                                             \
+        }                                                             \
+        if (flag & PS_RLIMIT) {                                       \
+                show_task_rlimit(tc);                                 \
                 continue;                                             \
         }                                                             \
         if (flag & PS_TGID_LIST) {                                    \
@@ -2558,6 +2575,120 @@ show_task_args(struct task_context *tc)
 
 bailout:
 	FREEBUF(buf);
+}
+
+char *rlim_names[] = {
+	/* 0 */	 "CPU",  
+	/* 1 */  "FSIZE",
+	/* 2 */  "DATA",
+	/* 3 */  "STACK",
+	/* 4 */  "CORE",
+	/* 5 */  "RSS",
+	/* 6 */  "NPROC",
+	/* 7 */  "NOFILE",
+	/* 8 */  "MEMLOCK",
+	/* 9 */  "AS",
+	/* 10 */ "LOCKS",
+	/* 11 */ "SIGPENDING",
+	/* 12 */ "MSGQUEUE",
+	/* 13 */ "NICE",
+	/* 14 */ "RTPRIO",
+	NULL,
+};
+
+#ifndef RLIM_INFINITY
+#define RLIM_INFINITY (~0UL)
+#endif
+
+/*
+ *  Show the current and maximum rlimit values.
+ */
+static void
+show_task_rlimit(struct task_context *tc)
+{
+	int i, j, len1, len2, rlimit_index;
+	int in_task_struct, in_signal_struct;
+	char *rlimit_buffer;
+	ulong *p1, rlim_addr;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+
+	if (!VALID_MEMBER(task_struct_rlim) && !VALID_MEMBER(signal_struct_rlim)) {
+		MEMBER_OFFSET_INIT(task_struct_rlim, "task_struct", "rlim");
+		MEMBER_OFFSET_INIT(signal_struct_rlim, "signal_struct", "rlim");
+		STRUCT_SIZE_INIT(rlimit, "rlimit");
+		if (!VALID_MEMBER(task_struct_rlim) && 
+	  	    !VALID_MEMBER(signal_struct_rlim))
+			error(FATAL, "cannot determine rlimit array location\n");
+	} else if (!VALID_STRUCT(rlimit))
+		error(FATAL, "cannot determine rlimit structure definition\n");
+
+	in_task_struct = in_signal_struct = FALSE;
+
+	if (VALID_MEMBER(task_struct_rlim)) {
+		rlimit_index = get_array_length("task_struct.rlim", NULL, 0);
+		in_task_struct = TRUE;
+	} else if (VALID_MEMBER(signal_struct_rlim)) {
+		if (!VALID_MEMBER(task_struct_signal))
+			error(FATAL, "cannot determine rlimit array location\n");
+		rlimit_index = get_array_length("signal_struct.rlim", NULL, 0);
+		in_signal_struct = TRUE;
+	}
+
+	if (!rlimit_index)
+		error(FATAL, "cannot determine rlimit array size\n");
+
+	for (i = len1 = 0; i < rlimit_index; i++) {
+		if ((j = strlen(rlim_names[i])) > len1)
+			len1 = j;
+	}
+	len2 = strlen("(unlimited)");
+
+	rlimit_buffer = GETBUF(rlimit_index * SIZE(rlimit));
+
+	print_task_header(fp, tc, 0);
+
+	fill_task_struct(tc->task);
+
+	if (in_task_struct) {
+		BCOPY(tt->task_struct + OFFSET(task_struct_rlim),
+			rlimit_buffer, rlimit_index * SIZE(rlimit));
+	} else if (in_signal_struct) {
+		rlim_addr = ULONG(tt->task_struct + OFFSET(task_struct_signal));
+        	if (!readmem(rlim_addr + OFFSET(signal_struct_rlim), 
+		    KVADDR, rlimit_buffer, rlimit_index * SIZE(rlimit),
+                    "signal_struct rlimit array", RETURN_ON_ERROR)) {
+			FREEBUF(rlimit_buffer);
+			return;
+		}
+	}
+	
+	fprintf(fp, "  %s   %s   %s\n",
+		mkstring(buf1, len1, RJUST, "RLIMIT"),
+		mkstring(buf2, len2, CENTER|RJUST, "CURRENT"),
+		mkstring(buf3, len2, CENTER|RJUST, "MAXIMUM"));
+		
+	for (p1 = (ulong *)rlimit_buffer, i = 0; i < rlimit_index; i++) {
+		fprintf(fp, "  %s   ", mkstring(buf1, len1, RJUST, 
+			rlim_names[i] ? rlim_names[i] : "(unknown)"));
+		if (*p1 == (ulong)RLIM_INFINITY)
+			fprintf(fp, "(unlimited)   ");
+		else
+			fprintf(fp, "%s   ", mkstring(buf1, len2, 
+				CENTER|LJUST|LONG_DEC, MKSTR(*p1)));
+		p1++;
+		if (*p1 == (ulong)RLIM_INFINITY)
+			fprintf(fp, "(unlimited)\n");
+		else
+			fprintf(fp, "%s\n", mkstring(buf1, len2, 
+				CENTER|LJUST|LONG_DEC, MKSTR(*p1)));
+		p1++;
+	}
+
+	fprintf(fp, "\n");
+
+	FREEBUF(rlimit_buffer);
 }
 
 /*
@@ -3459,7 +3590,8 @@ show_context(struct task_context *tc)
 			fprintf(fp, "(ACTIVE)");
 	}
 
-	if (!(pc->flags & RUNTIME) && (tt->flags & PANIC_TASK_NOT_FOUND) &&
+	if (!(pc->flags & RUNTIME) && !ACTIVE() && 
+	    (tt->flags & PANIC_TASK_NOT_FOUND) &&
 	    !SYSRQ_TASK(tc->task)) {
 		fprintf(fp, "\n"); INDENT(indent);
 		if (machine_type("S390") || machine_type("S390X"))
@@ -3892,6 +4024,12 @@ get_panic_context(void)
 	tt->panic_processor = -1;
 	task = NO_TASK;
         tc = FIRST_CONTEXT();
+
+	/* 
+	 *  --no_panic command line option
+	 */
+	if (tt->flags & PANIC_TASK_NOT_FOUND) 
+		goto use_task_0;
 
 	if (symbol_exists("panic_threads") &&
 	    symbol_exists("panicmsg") &&

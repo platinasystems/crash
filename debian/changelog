@@ -1,3 +1,22 @@
+crash (4.0-4.3-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.3 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - fixed "keme -f" command on DISCONTIGMEM kernels
+    - Fixed segmentation violation when using the wrong vmlinux
+
+  * New upstream version 4.0-4.2 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Added support for 2.6.22 kernels
+    - account for case when number of pgdata nodes < nr_cpus
+    - implement support for ia64 dom0/HV kdump dumpfile support
+    - add --no_panic command line option to skip panic-task search
+    - new "ps -r" command
+    - implement CLEANUP extenson commands for "help -e"
+    - implement new symbol_value_module() lookup for extensions
+
+ -- Troy Heber <troyh@debian.org>  Tue, 17 Jul 2007 12:40:37 -0600
+
 crash (4.0-4.1-2) unstable; urgency=low
 
   * Added patch to support 2.6.22 kernels where task_struct.thread_info was

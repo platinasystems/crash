@@ -755,11 +755,13 @@ netdump_memory_dump(FILE *fp)
 			nd->xen_kdump_data->cr3);
 		netdump_print("            last_mfn_read: %lx\n", 
 			nd->xen_kdump_data->last_mfn_read);
+		netdump_print("            last_pmd_read: %lx\n", 
+			nd->xen_kdump_data->last_pmd_read);
 		netdump_print("                     page: %lx\n", 
 			nd->xen_kdump_data->page);
-		netdump_print("                 accesses: %lx\n", 
+		netdump_print("                 accesses: %ld\n", 
 			nd->xen_kdump_data->accesses);
-		netdump_print("               cache_hits: %lx ", 
+		netdump_print("               cache_hits: %ld ", 
 			nd->xen_kdump_data->cache_hits);
       		if (nd->xen_kdump_data->accesses)
                 	netdump_print("(%ld%%)", 
@@ -1386,7 +1388,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		if (store) { 
 			pc->flags |= XEN_CORE;
 			nd->xen_kdump_data = &xen_kdump_data;
-			nd->xen_kdump_data->last_mfn_read = BADVAL;
+			nd->xen_kdump_data->last_mfn_read = UNINITIALIZED;
+			nd->xen_kdump_data->last_pmd_read = UNINITIALIZED;
 
 			if ((note->n_type == NT_XEN_KDUMP_CR3) &&
 			    ((note->n_descsz/sizeof(ulong)) == 1)) {
@@ -1574,7 +1577,8 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		if (store) {
 			pc->flags |= XEN_CORE;
 			nd->xen_kdump_data = &xen_kdump_data;
-			nd->xen_kdump_data->last_mfn_read = BADVAL;
+			nd->xen_kdump_data->last_mfn_read = UNINITIALIZED;
+			nd->xen_kdump_data->last_pmd_read = UNINITIALIZED;
 
 			if ((note->n_type == NT_XEN_KDUMP_CR3) &&
 			    ((note->n_descsz/sizeof(ulong)) == 1)) {
@@ -2091,11 +2095,17 @@ xen_kdump_p2m(physaddr_t pseudo)
 	if (pc->curcmd_flags & XEN_MACHINE_ADDR)
 		return pseudo;
 
+#ifdef IA64
+	return ia64_xen_kdump_p2m(xkd, pseudo);
+#endif
+
 	xkd->accesses++;
 
 	pfn = (ulong)BTOP(pseudo);
 	mfn_idx = pfn / (PAGESIZE()/sizeof(ulong));
 	frame_idx = pfn % (PAGESIZE()/sizeof(ulong));
+	if (mfn_idx >= xkd->p2m_frames)
+		return P2M_FAILURE;
 	mfn_frame = xkd->p2m_mfn_frame_list[mfn_idx];
 
 	if (mfn_frame == xkd->last_mfn_read)
@@ -2149,4 +2159,25 @@ xen_kdump_p2m_mfn(char *arg)
 				value); 
 	} else 
 		error(WARNING, "invalid p2m_mfn argument: %s\n", arg);
+}
+
+/*
+ *  Fujitsu dom0/HV sadump-generated dumpfile, which requires
+ *  the --p2m_mfn command line argument.
+ */
+int
+is_sadump_xen(void)
+{
+	if (xen_kdump_data.p2m_mfn) {
+		if (!XEN_CORE_DUMPFILE()) {
+			pc->flags |= XEN_CORE;
+			nd->xen_kdump_data = &xen_kdump_data;
+			nd->xen_kdump_data->last_mfn_read = UNINITIALIZED;
+			nd->xen_kdump_data->last_pmd_read = UNINITIALIZED;
+			nd->xen_kdump_data->flags |= KDUMP_MFN_LIST;
+		}
+		return TRUE;
+	}
+
+	return FALSE;
 }

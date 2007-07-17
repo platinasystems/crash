@@ -177,6 +177,7 @@ struct number_option {
 #define XEN_HYPER      (0x80000000000000ULL)
 #define XEN_CORE      (0x100000000000000ULL)
 #define PLEASE_WAIT   (0x200000000000000ULL)
+#define IFILE_ERROR   (0x400000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
@@ -385,6 +386,9 @@ struct program_context {
 	struct extension_table *curext; /* extension being loaded */
         int (*readmem)(int, void *, int, ulong, physaddr_t); /* memory access */
         int (*writemem)(int, void *, int, ulong, physaddr_t);/* memory access */
+	ulong ifile_in_progress;        /* original xxx_IFILE flags */
+	off_t ifile_offset;             /* current offset into input file */
+	char *runtime_ifile_cmd;        /* runtime command using input file */
 };
 
 #define READMEM  pc->readmem
@@ -400,6 +404,7 @@ struct command_table_entry {               /* one for each command in menu */
 
 #define REFRESH_TASK_TABLE (0x1)           /* command_table_entry flags */
 #define HIDDEN_COMMAND     (0x2)
+#define CLEANUP            (0x4)           /* for extensions only */
 
 /*
  *  A linked list of extension table structures keeps track of the current
@@ -921,6 +926,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_struct_timestamp;
 	long task_struct_thread_info;
 	long task_struct_nsproxy;
+	long task_struct_rlim;
 	long thread_info_task;
 	long thread_info_cpu;
 	long thread_info_previous_esp;
@@ -945,6 +951,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long signal_struct_count;
 	long signal_struct_action;
 	long signal_struct_shared_pending;
+	long signal_struct_rlim;
 	long k_sigaction_sa;
 	long sigaction_sa_handler;
 	long sigaction_sa_flags;
@@ -1469,6 +1476,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long mem_section;
 	long pid_link;
 	long unwind_table;
+	long rlimit;
 };
 
 struct array_table {
@@ -2602,6 +2610,8 @@ struct efi_memory_desc_t {
 #define BADVAL   ((ulong)(-1))
 #define UNUSED   (-1)
 
+#define UNINITIALIZED (BADVAL)
+
 #define BITS_PER_BYTE (8)
 #define BITS_PER_LONG (BITS_PER_BYTE * sizeof(long))
 
@@ -2850,8 +2860,9 @@ extern long _ZOMBIE_;
 #define PS_LAST_RUN   (0x400)
 #define PS_ARGV_ENVP  (0x800)
 #define PS_TGID_LIST (0x1000)
+#define PS_RLIMIT    (0x2000)
 
-#define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN)
+#define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT)
 
 #define MAX_PS_ARGS    (100)   /* maximum command-line specific requests */
 
@@ -3154,6 +3165,7 @@ int try_get_symbol_data(char *, long, void *);
 char *value_to_symstr(ulong, char *, ulong);
 char *value_symbol(ulong);
 ulong symbol_value(char *);
+ulong symbol_value_module(char *, char *);
 int symbol_exists(char *s);
 int kernel_symbol_exists(char *s);
 int get_syment_array(char *, struct syment **, int);
@@ -3685,8 +3697,6 @@ struct machine_specific {
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
 
-#define UNINITIALIZED (BADVAL)
-
 #endif
 
 #if defined(X86) || defined(X86_64)
@@ -3809,6 +3819,7 @@ int ia64_IS_VMALLOC_ADDR(ulong);
 	error(FATAL, "-d option TBD on ia64 architecture\n");
 int ia64_in_init_stack(ulong addr);
 int ia64_in_mca_stack_hyper(ulong addr, struct bt_info *bt);
+physaddr_t ia64_xen_kdump_p2m(struct xen_kdump_data *xkd, physaddr_t pseudo);
 
 #define OLD_UNWIND       (0x1)   /* CONFIG_IA64_NEW_UNWIND not turned on */
 #define NEW_UNWIND       (0x2)   /* CONFIG_IA64_NEW_UNWIND turned on */
@@ -3941,6 +3952,7 @@ int kdump_memory_used(void);
 int kdump_memory_dump(FILE *);
 void get_kdump_regs(struct bt_info *, ulong *, ulong *);
 void xen_kdump_p2m_mfn(char *);
+int is_sadump_xen(void);
 
 /*
  *  diskdump.c

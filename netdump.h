@@ -104,6 +104,7 @@ struct xen_kdump_data {
 	ulong p2m_mfn;
 	char *page;
 	ulong last_mfn_read;
+	ulong last_pmd_read;
 	ulong cache_hits;
 	ulong accesses;
 	int p2m_frames;
