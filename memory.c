@@ -408,6 +408,9 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_list3_free_objects, 
 			"kmem_list3", "free_objects");
 		MEMBER_OFFSET_INIT(kmem_list3_shared, "kmem_list3", "shared");
+	} else if (MEMBER_EXISTS("kmem_cache", "cpu_slab") &&
+		STRUCT_EXISTS("kmem_cache_node")) {
+		vt->flags |= KMALLOC_SLUB;
 	} else {
 		MEMBER_OFFSET_INIT(kmem_cache_s_c_nextp,  
 			"kmem_cache_s", "c_nextp");
@@ -706,6 +709,8 @@ vm_init(void)
                 vt->dump_kmem_cache = dump_kmem_cache_percpu_v1;
 	else if (vt->flags & PERCPU_KMALLOC_V2) 
                 vt->dump_kmem_cache = dump_kmem_cache_percpu_v2;
+	else if (vt->flags & KMALLOC_SLUB)
+		vt->flags |= KMEM_CACHE_UNAVAIL;  /* TBD */
 	else 
                 vt->dump_kmem_cache = dump_kmem_cache;
 
@@ -10286,6 +10291,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sPERCPU_KMALLOC_V2_NODES", others++ ? "|" : "");\
 	if (vt->flags & VM_STAT)
 		fprintf(fp, "%sVM_STAT", others++ ? "|" : "");\
+	if (vt->flags & KMALLOC_SLUB)
+		fprintf(fp, "%sKMALLOC_SLUB", others++ ? "|" : "");\
 
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
@@ -12257,8 +12264,12 @@ get_nodes_online(void)
 	if (!symbol_exists("node_online_map")) 
 		return 0;
 
-	len = get_symbol_type("node_online_map", NULL, &req) == TYPE_CODE_UNDEF ?
-		sizeof(ulong) : req.length;
+	if (LKCD_KERNTYPES()) {
+                if ((len = STRUCT_SIZE("nodemask_t")) < 0)
+       			error(FATAL, "cannot determine type nodemask_t\n");
+	} else
+		len = get_symbol_type("node_online_map", NULL, &req)
+			== TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
 
        	if (!(vt->node_online_map = (ulong *)malloc(len)))
        		error(FATAL, "cannot malloc node_online_map\n");
@@ -12327,27 +12338,36 @@ next_online_pgdat(int node)
 	/*
   	 *  Default -- look for type: struct pglist_data node_data[]
 	 */
-	if (get_symbol_type("node_data", NULL, NULL) != TYPE_CODE_ARRAY)
-		goto pgdat2;
+	if (LKCD_KERNTYPES()) {
+		if (!kernel_symbol_exists("node_data"))
+			goto pgdat2;
+		/* 
+		 *  Just index into node_data[] without checking that it is
+		 *  an array; kerntypes have no such symbol information.
+	 	 */
+	} else {
+		if (get_symbol_type("node_data", NULL, NULL) != TYPE_CODE_ARRAY)
+			goto pgdat2;
 
-        open_tmpfile();
-        sprintf(buf, "whatis node_data");
-        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
-                close_tmpfile();
-		goto pgdat2;
-        }
-        rewind(pc->tmpfile);
-        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-                if (STRNEQ(buf, "type = "))
-                        break;
-        }
-        close_tmpfile();
+	        open_tmpfile();
+	        sprintf(buf, "whatis node_data");
+	        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+	                close_tmpfile();
+			goto pgdat2;
+	        }
+	        rewind(pc->tmpfile);
+	        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+	                if (STRNEQ(buf, "type = "))
+	                        break;
+	        }
+	        close_tmpfile();
 
-	if ((!strstr(buf, "struct pglist_data *") &&
-	     !strstr(buf, "pg_data_t *")) ||
-	    (count_chars(buf, '[') != 1) ||
-	    (count_chars(buf, ']') != 1))
-		goto pgdat2;
+		if ((!strstr(buf, "struct pglist_data *") &&
+		     !strstr(buf, "pg_data_t *")) ||
+		    (count_chars(buf, '[') != 1) ||
+		    (count_chars(buf, ']') != 1))
+			goto pgdat2;
+	}
 
 	if (!readmem(symbol_value("node_data") + (node * sizeof(void *)), 
 	    KVADDR, &pgdat, sizeof(void *), "node_data", RETURN_ON_ERROR) ||
@@ -12357,27 +12377,32 @@ next_online_pgdat(int node)
 	return pgdat;
 
 pgdat2:
-	if (get_symbol_type("pgdat_list", NULL, NULL) != TYPE_CODE_ARRAY)
-		goto pgdat3;
+	if (LKCD_KERNTYPES()) {
+		if (!kernel_symbol_exists("pgdat_list"))
+			goto pgdat3;
+	} else {
+		if (get_symbol_type("pgdat_list",NULL,NULL) != TYPE_CODE_ARRAY)
+			goto pgdat3;
 
-        open_tmpfile();
-        sprintf(buf, "whatis pgdat_list");
-        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
-                close_tmpfile();
-		goto pgdat3;
-        }
-        rewind(pc->tmpfile);
-        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-                if (STRNEQ(buf, "type = "))
-                        break;
-        }
-        close_tmpfile();
+	        open_tmpfile();
+	        sprintf(buf, "whatis pgdat_list");
+	        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+	                close_tmpfile();
+			goto pgdat3;
+	        }
+	        rewind(pc->tmpfile);
+	        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+	                if (STRNEQ(buf, "type = "))
+	                        break;
+	        }
+	        close_tmpfile();
 
-	if ((!strstr(buf, "struct pglist_data *") &&
-	     !strstr(buf, "pg_data_t *")) ||
-	    (count_chars(buf, '[') != 1) ||
-	    (count_chars(buf, ']') != 1))
-		goto pgdat3;
+		if ((!strstr(buf, "struct pglist_data *") &&
+		     !strstr(buf, "pg_data_t *")) ||
+		    (count_chars(buf, '[') != 1) ||
+		    (count_chars(buf, ']') != 1))
+			goto pgdat3;
+	}
 
 	if (!readmem(symbol_value("pgdat_list") + (node * sizeof(void *)), 
 	    KVADDR, &pgdat, sizeof(void *), "pgdat_list", RETURN_ON_ERROR) ||
@@ -12414,27 +12439,36 @@ vm_stat_init(void)
         /*
          *  look for type: type = atomic_long_t []
          */
-        if (!symbol_exists("vm_stat") || 
-	    get_symbol_type("vm_stat", NULL, NULL) != TYPE_CODE_ARRAY)
-		goto bailout;
+	if (LKCD_KERNTYPES()) {
+        	if (!symbol_exists("vm_stat"))
+			goto bailout;
+		/* 
+		 *  Just assume that vm_stat is an array; there is
+		 *  no symbol info in a kerntypes file. 
+		 */
+	} else {
+		if (!symbol_exists("vm_stat") ||
+		    get_symbol_type("vm_stat", NULL, NULL) != TYPE_CODE_ARRAY)
+			goto bailout;
 
-        open_tmpfile();
-        sprintf(buf, "whatis vm_stat");
-        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
-                close_tmpfile();
-		goto bailout;
-        }
-        rewind(pc->tmpfile);
-        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-                if (STRNEQ(buf, "type = "))
-                        break;
-        }
-        close_tmpfile();
+	        open_tmpfile();
+	        sprintf(buf, "whatis vm_stat");
+	        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+	                close_tmpfile();
+			goto bailout;
+	        }
+	        rewind(pc->tmpfile);
+	        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+	                if (STRNEQ(buf, "type = "))
+	                        break;
+	        }
+	        close_tmpfile();
 
-        if (!strstr(buf, "atomic_long_t") ||
-            (count_chars(buf, '[') != 1) ||
-            (count_chars(buf, ']') != 1))
-                goto bailout;
+	        if (!strstr(buf, "atomic_long_t") ||
+	            (count_chars(buf, '[') != 1) ||
+	            (count_chars(buf, ']') != 1))
+	                goto bailout;
+	}
 
         open_tmpfile();
         req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));

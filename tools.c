@@ -18,7 +18,6 @@
 #include "defs.h"
 #include <ctype.h>
 
-static int calculate(char *, ulong *, ulonglong *, ulong);
 static void print_number(struct number_option *, int, int);
 static long alloc_hq_entry(void);
 struct hq_entry;
@@ -1845,7 +1844,14 @@ cmd_set(void)
                                         pc->flags |= SCROLL;
                                 else if (STREQ(args[optind], "off"))
                                         pc->flags &= ~SCROLL;
-                                else if (IS_A_NUMBER(args[optind])) {
+				else if (STREQ(args[optind], "more"))
+					pc->scroll_command = SCROLL_MORE;
+				else if (STREQ(args[optind], "less"))
+					pc->scroll_command = SCROLL_LESS;
+				else if (STREQ(args[optind], "CRASHPAGER")) {
+					if (CRASHPAGER_valid())
+						pc->scroll_command = SCROLL_CRASHPAGER;
+				} else if (IS_A_NUMBER(args[optind])) {
                                         value = stol(args[optind],
                                                 FAULT_ON_ERROR, NULL);
                                         if (value)
@@ -1856,9 +1862,25 @@ cmd_set(void)
 					goto invalid_set_command;
                         }
 
-			if (runtime)
-                        	fprintf(fp, "scroll: %s\n",
-                                	pc->flags & SCROLL ? "on" : "off");
+			if (runtime) {
+				fprintf(fp, "scroll: %s ",
+					pc->flags & SCROLL ? "on" : "off");
+				switch (pc->scroll_command)
+				{
+				case SCROLL_LESS:
+					fprintf(fp, "(/usr/bin/less)\n");
+					break;
+				case SCROLL_MORE:
+					fprintf(fp, "(/bin/more)\n");
+					break;
+				case SCROLL_NONE:
+					fprintf(fp, "(none)\n");
+					break;
+				case SCROLL_CRASHPAGER:
+					fprintf(fp, "(CRASHPAGER: %s)\n", getenv("CRASHPAGER"));
+					break;
+				}
+			}
 
 			return;
 
@@ -2174,7 +2196,23 @@ invalid_set_command:
 static void
 show_options(void)
 {
-	fprintf(fp, "        scroll: %s\n", pc->flags & SCROLL ? "on" : "off"); 
+	fprintf(fp, "        scroll: %s ",
+		pc->flags & SCROLL ? "on" : "off");
+	switch (pc->scroll_command)
+	{
+	case SCROLL_LESS:
+		fprintf(fp, "(/usr/bin/less)\n");
+		break;
+	case SCROLL_MORE:
+		fprintf(fp, "(/bin/more)\n");
+		break;
+	case SCROLL_NONE:
+		fprintf(fp, "(none)\n");
+		break;
+	case SCROLL_CRASHPAGER:
+		fprintf(fp, "(CRASHPAGER: %s)\n", getenv("CRASHPAGER"));
+		break;
+	}
         fprintf(fp, "         radix: %d (%s)\n", pc->output_radix,
                 pc->output_radix == 10 ? "decimal" :
                 pc->output_radix == 16 ? "hexadecimal" : "unknown");
@@ -2621,7 +2659,7 @@ malformed:
  *  its real value.  The allowable multipliers are k, K, m, M, g and G, for
  *  kilobytes, megabytes and gigabytes.
  */
-static int
+int
 calculate(char *s, ulong *value, ulonglong *llvalue, ulong flags)
 {
 	ulong factor, bias;

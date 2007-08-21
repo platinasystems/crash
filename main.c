@@ -27,12 +27,12 @@ static int is_input_file(void);
 static void check_xen_hyper(void);
 
 static struct option long_options[] = {
-        {"memory_module", 1, 0, 0},
-        {"memory_device", 1, 0, 0},
+        {"memory_module", required_argument, 0, 0},
+        {"memory_device", required_argument, 0, 0},
         {"no_kallsyms", 0, 0, 0},
         {"no_modules", 0, 0, 0},
         {"no_namelist_gzip", 0, 0, 0},
-        {"help", 0, 0, 0},
+        {"help", optional_argument, 0, 'h'},
 	{"data_debug", 0, 0, 0},
 	{"no_data_debug", 0, 0, 0},
 	{"no_crashrc", 0, 0, 0},
@@ -40,16 +40,21 @@ static struct option long_options[] = {
 	{"kmem_cache_delay", 0, 0, 0},
 	{"readnow", 0, 0, 0},
 	{"smp", 0, 0, 0},
-	{"machdep", 1, 0, 0},
+	{"machdep", required_argument, 0, 0},
 	{"version", 0, 0, 0},
 	{"buildinfo", 0, 0, 0},
 	{"shadow_page_tables", 0, 0, 0},
-        {"cpus", 1, 0, 0},
+        {"cpus", required_argument, 0, 0},
         {"no_ikconfig", 0, 0, 0},
         {"hyper", 0, 0, 0},
-	{"p2m_mfn", 1, 0, 0},
+	{"p2m_mfn", required_argument, 0, 0},
 	{"zero_excluded", 0, 0, 0},
 	{"no_panic", 0, 0, 0},
+        {"more", 0, 0, 0},
+        {"less", 0, 0, 0},
+        {"CRASHPAGER", 0, 0, 0},
+        {"no_scroll", 0, 0, 0},
+        {"reloc", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -65,7 +70,7 @@ main(int argc, char **argv)
 	 */
 	opterr = 0;
 	optind = 0;
-	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tfp:m:",
+	while((c = getopt_long(argc, argv, "Lgh::e:i:sSvc:d:tfp:m:",
        		long_options, &option_index)) != -1) {
 		switch (c)
 		{
@@ -74,60 +79,55 @@ main(int argc, char **argv)
 			    "memory_module")) 
 				pc->memory_module = optarg;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "memory_device")) 
 				pc->memory_device = optarg;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_kallsyms")) 
 				kt->flags |= NO_KALLSYMS;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_modules")) 
 				kt->flags |= NO_MODULE_ACCESS;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_ikconfig")) 
 				kt->flags |= NO_IKCONFIG;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_namelist_gzip")) 
 				pc->flags |= NAMELIST_NO_GZIP;
 
-		        if (STREQ(long_options[option_index].name, "help")) {
-				program_usage(LONG_FORM);
-				clean_exit(0);
-			}
-
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "data_debug")) 
 				pc->flags |= DATADEBUG;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_data_debug")) 
 				pc->flags &= ~DATADEBUG;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "no_kmem_cache")) 
 				vt->flags |= KMEM_CACHE_UNAVAIL;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "kmem_cache_delay")) 
 				vt->flags |= KMEM_CACHE_DELAY;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "readnow")) 
 				pc->flags |= READNOW;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "smp")) 
 				kt->flags |= SMP;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "machdep")) 
 				machdep->cmdline_arg = optarg;
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "version")) { 
 				pc->flags |= VERSION_QUERY;
                         	display_version();
@@ -135,30 +135,69 @@ main(int argc, char **argv)
                         	clean_exit(0);
 			}
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "buildinfo")) {
 				dump_build_data();
 				clean_exit(0);
 			}
 
-		        if (STREQ(long_options[option_index].name, 
+		        else if (STREQ(long_options[option_index].name, 
 			    "shadow_page_tables")) 
 				kt->xen_flags |= SHADOW_PAGE_TABLES;
 
-		        if (STREQ(long_options[option_index].name, "cpus")) 
+		        else if (STREQ(long_options[option_index].name, "cpus")) 
 				kt->cpus_override = optarg;
 
-			if (STREQ(long_options[option_index].name, "hyper"))
+			else if (STREQ(long_options[option_index].name, "hyper"))
 				pc->flags |= XEN_HYPER;
 
-		        if (STREQ(long_options[option_index].name, "p2m_mfn")) 
+		        else if (STREQ(long_options[option_index].name, "p2m_mfn")) 
 				xen_kdump_p2m_mfn(optarg);
 
-		        if (STREQ(long_options[option_index].name, "zero_excluded")) 
+		        else if (STREQ(long_options[option_index].name, "zero_excluded")) 
 				*diskdump_flags |= ZERO_EXCLUDED;
 
-		        if (STREQ(long_options[option_index].name, "no_panic")) 
+		        else if (STREQ(long_options[option_index].name, "no_panic")) 
 				tt->flags |= PANIC_TASK_NOT_FOUND;
+
+		        else if (STREQ(long_options[option_index].name, "more")) {
+				if ((pc->scroll_command != SCROLL_NONE) &&
+				    file_exists("/bin/more", NULL))
+					pc->scroll_command = SCROLL_MORE;
+			}
+
+		        else if (STREQ(long_options[option_index].name, "less")) {
+				if ((pc->scroll_command != SCROLL_NONE) &&
+				    file_exists("/usr/bin/less", NULL))
+					pc->scroll_command = SCROLL_LESS;
+			}
+
+		        else if (STREQ(long_options[option_index].name, "CRASHPAGER")) {
+				if ((pc->scroll_command != SCROLL_NONE) && 
+				    CRASHPAGER_valid())
+					pc->scroll_command = SCROLL_CRASHPAGER;
+			}
+
+		        else if (STREQ(long_options[option_index].name, "no_scroll"))
+				 pc->flags &= ~SCROLL;
+
+		        else if (STREQ(long_options[option_index].name, "no_crashrc"))
+				pc->flags |= NOCRASHRC;
+
+		        else if (STREQ(long_options[option_index].name, "reloc")) {
+				if (!calculate(optarg, &kt->relocate, NULL, 0)) {
+					error(INFO, "invalid --reloc argument: %s\n",
+						optarg);
+					program_usage(SHORT_FORM);
+				} 
+				kt->flags |= RELOC_SET;
+			}
+
+			else {
+				error(INFO, "internal error: option %s unhandled\n",
+					long_options[option_index].name);
+				program_usage(SHORT_FORM);
+			}
 			break;
 
 		case 'f':
@@ -169,12 +208,19 @@ main(int argc, char **argv)
 			pc->flags |= KERNEL_DEBUG_QUERY;
 			break;
 
-		case 'H':
-			cmd_usage(optarg, COMPLETE_HELP);
-			clean_exit(0);
-
 		case 'h':
-			cmd_usage(optarg, COMPLETE_HELP|PIPE_TO_LESS);
+			/* note: long_getopt's handling of optional arguments is weak.
+			 * To it, an optional argument must be part of the same argument
+			 * as the flag itself (eg. --help=commands or -hcommands).
+			 * We want to accept "--help commands" or "-h commands".
+			 * So we must do that part ourselves.
+			 */
+			if (optarg != NULL)
+				cmd_usage(optarg, COMPLETE_HELP|PIPE_TO_SCROLL|MUST_HELP);
+			else if (argv[optind] != NULL && argv[optind][0] != '-')
+				cmd_usage(argv[optind++], COMPLETE_HELP|PIPE_TO_SCROLL|MUST_HELP);
+			else
+				program_usage(LONG_FORM);
 			clean_exit(0);
 			
 		case 'e':
@@ -238,13 +284,9 @@ main(int argc, char **argv)
 			break;
 
 		default:
-			if (STREQ(argv[optind-1], "-h"))
-				program_usage(LONG_FORM);
-			else {
-				error(INFO, "invalid option: %s\n",
-					argv[optind-1]);
-				program_usage(SHORT_FORM);
-			}
+			error(INFO, "invalid option: %s\n",
+				argv[optind-1]);
+			program_usage(SHORT_FORM);
 		}
 	}
 	opterr = 1;
@@ -745,7 +787,10 @@ setup_environment(int argc, char **argv)
 	 *  Set up the default scrolling behavior for terminal output.
 	 */
 	if (isatty(fileno(stdout))) {
-        	if (file_exists("/usr/bin/less", NULL)) {
+		if (CRASHPAGER_valid()) {
+			pc->flags |= SCROLL;
+			pc->scroll_command = SCROLL_CRASHPAGER;
+		} else if (file_exists("/usr/bin/less", NULL)) {
 			pc->flags |= SCROLL;
 			pc->scroll_command = SCROLL_LESS;
 		} else if (file_exists("/bin/more", NULL)) {
@@ -1082,10 +1127,22 @@ dump_program_context(void)
 	fprintf(fp, "     ifile_offset: %lld\n", (ulonglong)pc->ifile_offset);
 	fprintf(fp, "runtime_ifile_cmd: %s\n", pc->runtime_ifile_cmd ?
                 pc->runtime_ifile_cmd : "(unused)");
-	fprintf(fp, "   scroll_command: %s\n", 
-		pc->scroll_command == SCROLL_NONE ? "(none)" :
-		    pc->scroll_command == SCROLL_LESS ? 
-			"/usr/bin/less" : "/bin/more");
+	fprintf(fp, "   scroll_command: ");
+	switch (pc->scroll_command) 
+	{
+	case SCROLL_NONE:
+		fprintf(fp, "SCROLL_NONE\n");
+		break;
+	case SCROLL_LESS:
+		fprintf(fp, "SCROLL_LESS\n");
+		break;
+	case SCROLL_MORE:
+		fprintf(fp, "SCROLL_MORE\n");
+		break;
+	case SCROLL_CRASHPAGER:
+		fprintf(fp, "SCROLL_CRASHPAGER (%s)\n", getenv("CRASHPAGER"));
+		break;
+	}
 
 	buf[0] = NULLCHAR;
 	fprintf(fp, "         redirect: %lx ", pc->redirect);
@@ -1187,6 +1244,8 @@ dump_program_context(void)
 		fprintf(fp, "%sBAD_INSTRUCTION", others ? "|" : "");
         if (pc->curcmd_flags & UD2A_INSTRUCTION)
 		fprintf(fp, "%sUD2A_INSTRUCTION", others ? "|" : "");
+        if (pc->curcmd_flags & IRQ_IN_USE)
+		fprintf(fp, "%sIRQ_IN_USE", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

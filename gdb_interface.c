@@ -251,7 +251,7 @@ retry:
         *  Patch gdb's symbol values with the correct values from either
         *  the System.map or non-debug vmlinux, whichever is in effect.
         */
-	if ((pc->flags & SYSMAP) || 
+	if ((pc->flags & SYSMAP) || (kt->flags & (RELOC_SET|RELOC_FORCE)) || 
 	    (pc->namelist_debug && !pc->debuginfo_file)) {
 		req->command = GNU_PATCH_SYMBOL_VALUES;
         	req->flags = GNU_RETURN_ON_ERROR;

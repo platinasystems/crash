@@ -5,7 +5,7 @@
 .TH CRASH 8
 .SH NAME
 crash \- Analyze Linux crash data or a live system
-.SH SYNAPSIS
+.SH SYNOPSIS
 .B crash
 [
 .B -h
@@ -42,9 +42,13 @@ crash \- Analyze Linux crash data or a live system
 is a tool for interactively analyzing the state of the Linux system
 while it is running, or after a kernel crash has occurred and a 
 core dump has been created by the Red Hat 
-.I netdump
-facility.  It is loosely based on the SVR4 UNIX crash 
-command, but has been signficantly enhanced
+.I netdump,
+.I diskdump,
+.I kdump,
+or
+.I xendump
+facilities.  It is loosely based on the SVR4 UNIX crash 
+command, but has been significantly enhanced
 by completely merging it with the 
 .I gdb
 debugger. The marriage of the two effectively combines the 
@@ -207,15 +211,15 @@ assignments, I/O port usage, I/O memory usage, and PCI device data.
 .I dis
 disassembles memory, either entire kernel functions, from a
 location for a specified number of instructions, or from the start of a
-fuction up to a specified memory location.
+function up to a specified memory location.
 .TP
 .I eval
 evalues an expression or numeric type and displays the result
-in hexidecimal, decimal, octal and binary.
+in hexadecimal, decimal, octal and binary.
 .TP
 .I exit
 causes
-.I crash
+.B crash
 to exit.
 .TP
 .I extend
@@ -230,7 +234,7 @@ repeats a specified command for the specified (or all) tasks
 in the system.
 .TP
 .I fuser
-displays the tasks using the specifed file or socket.
+displays the tasks using the specified file or socket.
 .TP
 .I gdb
 passes its argument to the underlying
@@ -274,7 +278,7 @@ displays information about the currently-mounted filesystems.
 display various network related data.
 .TP
 .I p
-passes its argumnts to the
+passes its arguments to the
 .I gdb
 "print" command for evaluation and display.
 .TP
@@ -361,11 +365,85 @@ text/data symbols.
 .I wr
 modifies the contents of memory.  When writing to memory on
 a live system, this command should obviously be used with great care.
+.SH FILES
+.TP
+.I .crashrc
+Initialization commands.  The file can be located in the user's
+.B HOME 
+directory and/or the current directory.  Commands found in the
+.I .crashrc
+file in the 
+.B HOME
+directory are executed before those in the current directory's 
+.I .crashrc
+file.
+.SH ENVIRONMENT
+.TP
+.B EDITOR
+Command input is read using
+.BR readline(3).
+If
+.B EDITOR
+is set to
+.I emacs
+or
+.I vi
+then suitable keybindings are used.  If 
+.B EDITOR
+is not set, then
+.I vi
+is used.  This can be overridden by
+.B set vi
+or 
+.B set emacs
+commands located in a
+.IR .crashrc 
+file, or by entering
+.B -e emacs
+on the
+.B crash
+command line.
+.TP
+.B CRASHPAGER
+If
+.B CRASHPAGER
+is set, its value is used as the name of the program to which command output will be sent. 
+If not, then command output is sent to 
+.B /usr/bin/less -E -X 
+by default.
+.SH NOTES
+.PP
+If
+.B crash
+does not work, look for a newer version: kernel evolution frequently makes
+.B crash
+updates necessary.
+.PP
+The command
+.B set scroll off
+will cause output to be sent directly to
+the terminal rather than through a paging program.  This is useful,
+for example, if you are running
+.B crash
+in a window of
+.BR emacs .
 .SH AUTHOR
 Dave Anderson <anderson@redhat.com> wrote
-.B Crash
+.B crash
 .TP
 Jay Fenlason <fenlason@redhat.com> wrote this man page.
 .SH "SEE ALSO"
-netdump(8)
-gdb(1)
+.PP
+The
+.I help
+command within
+.B crash
+provides more complete and accurate documentation than this man page.
+.PP
+.I http://people.redhat.com/anderson
+- the home page of the
+.B crash
+utility.
+.PP
+.BR netdump (8),
+.BR gdb (1)

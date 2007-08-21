@@ -266,11 +266,15 @@ x86_64_init(int when)
                 if ((machdep->machspec->irqstack = (char *)
 		    malloc(machdep->machspec->stkinfo.isize)) == NULL)
                         error(FATAL, "cannot malloc irqstack space.");
-               if (symbol_exists("irq_desc"))
-                        ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
-                                "irq_desc", NULL, 0);
-                else
-                        machdep->nr_irqs = 224;  /* NR_IRQS (at least) */
+		if (symbol_exists("irq_desc")) {
+			if (LKCD_KERNTYPES())
+				ARRAY_LENGTH_INIT_ALT(machdep->nr_irqs,
+				    "irq_desc", "kernel_stat.irqs", NULL, 0);
+			else
+				ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
+					"irq_desc", NULL, 0);
+		} else
+			machdep->nr_irqs = 224; /* NR_IRQS (at least) */
 		machdep->vmalloc_start = x86_64_vmalloc_start;
 		machdep->dump_irq = x86_64_dump_irq;
 		if (!machdep->hz) {
@@ -521,14 +525,22 @@ x86_64_cpu_pda_init(void)
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	if (symbol_exists("_cpu_pda")) {
-		if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
-			nr_pda = NR_CPUS;
-		_cpu_pda = TRUE;
+	if (LKCD_KERNTYPES()) {
+		if (symbol_exists("_cpu_pda"))
+			_cpu_pda = TRUE;
+		else
+ 			_cpu_pda = FALSE;
+		nr_pda = get_cpus_possible();
 	} else {
-		if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
-			nr_pda = NR_CPUS;
-		_cpu_pda = FALSE;
+		if (symbol_exists("_cpu_pda")) {
+			if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
+				nr_pda = NR_CPUS;
+			_cpu_pda = TRUE;
+		} else {
+			if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+				nr_pda = NR_CPUS;
+			_cpu_pda = FALSE;
+		}
 	}
 
 	for (i = cpus = 0; i < nr_pda; i++) {
@@ -566,8 +578,8 @@ x86_64_cpu_pda_init(void)
 				i, level4_pgt, data_offset);
 	}
 
-
-	if ((i = get_array_length("boot_cpu_stack", NULL, 0))) {
+	if (!LKCD_KERNTYPES() &&
+	    (i = get_array_length("boot_cpu_stack", NULL, 0))) {
 		istacksize = i;
 	} else if ((sp = symbol_search("boot_cpu_stack")) &&
  	    (nsp = next_symbol(NULL, sp))) {
@@ -3656,7 +3668,7 @@ x86_64_dump_irq(int irq)
                 return(generic_dump_irq(irq));
         }
 
-        error(FATAL, "ia64_dump_irq: irq_desc[] does not exist?\n");
+        error(FATAL, "x86_64_dump_irq: irq_desc[] does not exist?\n");
 }
 
 /* 
@@ -3827,14 +3839,22 @@ x86_64_get_smp_cpus(void)
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	if (symbol_exists("_cpu_pda")) {
-		if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
-        	       nr_pda = NR_CPUS;
-		_cpu_pda = TRUE;
+	if (LKCD_KERNTYPES()) {
+		if (symbol_exists("_cpu_pda"))
+ 			_cpu_pda = TRUE;
+		else
+	 		_cpu_pda = FALSE;
+		nr_pda = get_cpus_possible();
 	} else {
-		if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
-        	       nr_pda = NR_CPUS;
-		_cpu_pda = FALSE;
+		if (symbol_exists("_cpu_pda")) {
+			if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
+				nr_pda = NR_CPUS;
+			_cpu_pda = TRUE;
+		} else {
+			if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+				nr_pda = NR_CPUS;
+			_cpu_pda = FALSE;
+		}
 	}
 	for (i = cpus = 0; i < nr_pda; i++) {
 		if (_cpu_pda) {

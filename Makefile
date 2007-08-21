@@ -446,7 +446,7 @@ gdb_files: make_configure
 
 show_files:
 	@if [ -f ${PROGRAM}  ]; then \
-		./${PROGRAM} --no_crashrc -h README > README; fi
+		./${PROGRAM} --no_scroll --no_crashrc -h README > README; echo $?; fi
 	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING README \
 	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES}
 
@@ -459,7 +459,7 @@ tar: make_configure
 
 do_tar:
 	@if [ -f ${PROGRAM}  ]; then \
-		./${PROGRAM} --no_crashrc -h README > README; fi
+		./${PROGRAM} --no_scroll --no_crashrc -h README > README; fi
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
@@ -470,7 +470,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-4.3
+RELEASE=4.0-4.5
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
@@ -498,7 +498,7 @@ do_release:
 	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING \
 	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${RELEASE}; tar xf -)
 	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${RELEASE}
-	@./${PROGRAM} --no_crashrc -h README > ./RELDIR/${PROGRAM}-${RELEASE}/README
+	@./${PROGRAM} --no_scroll --no_crashrc -h README > ./RELDIR/${PROGRAM}-${RELEASE}/README
 	@(cd ./RELDIR; find . -exec chown root {} ";")
 	@(cd ./RELDIR; find . -exec chgrp root {} ";")
 	@(cd ./RELDIR; find . -exec touch {} ";")

@@ -306,6 +306,106 @@ dump_history(void)
 }
 
 /*
+ *  Pager arguments.
+ */
+
+static char *less_argv[5] = {
+	"/usr/bin/less",
+	"-E",
+	"-X",
+        "-Ps -- MORE --  forward\\: <SPACE>, <ENTER> or j  backward\\: b or k  quit\\: q",
+	NULL
+};
+
+static char *more_argv[2] = {
+	"/bin/more",
+	NULL
+};
+
+static char **CRASHPAGER_argv = NULL;
+
+int
+CRASHPAGER_valid(void)
+{
+	int i, c;
+	char *env, *CRASHPAGER_buf;
+	char *arglist[MAXARGS];
+
+	if (CRASHPAGER_argv)
+		return TRUE;
+
+	if (!(env = getenv("CRASHPAGER")))
+		return FALSE;
+
+	if (strstr(env, "|") || strstr(env, "<") || strstr(env, ">")) {	
+		error(INFO, 
+		    "CRASHPAGER ignored: contains invalid character: \"%s\"\n", 
+			env);
+		return FALSE;
+	}
+
+	if ((CRASHPAGER_buf = (char *)malloc(strlen(env)+1)) == NULL)
+		return FALSE;
+
+	strcpy(CRASHPAGER_buf, env);
+
+	if (!(c = parse_line(CRASHPAGER_buf, arglist)) ||
+	    !file_exists(arglist[0], NULL) || access(arglist[0], X_OK) || 
+	    !(CRASHPAGER_argv = (char **)malloc(sizeof(char *) * (c+1)))) {
+		free(CRASHPAGER_buf);
+		if (strlen(env))
+			error(INFO, 
+		    		"CRASHPAGER ignored: \"%s\"\n", env);
+		return FALSE;
+	}
+
+	for  (i = 0; i < c; i++)
+		CRASHPAGER_argv[i] = arglist[i];
+	CRASHPAGER_argv[i] = NULL;
+	
+	return TRUE;
+}
+
+/*
+ *  Set up a command string buffer for error/help output.
+ */
+char *
+setup_scroll_command(void)
+{
+	char *buf;
+	long i, len;
+
+	if (!(pc->flags & SCROLL))
+		return NULL;
+
+	switch (pc->scroll_command)
+	{
+	case SCROLL_LESS:
+ 		buf = GETBUF(strlen(less_argv[0])+1);
+		strcpy(buf, less_argv[0]);
+		break;
+	case SCROLL_MORE:
+ 		buf = GETBUF(strlen(more_argv[0])+1);
+		strcpy(buf, more_argv[0]);
+		break;
+	case SCROLL_CRASHPAGER:
+		for (i = len = 0; CRASHPAGER_argv[i]; i++)
+			len += strlen(CRASHPAGER_argv[i])+1;
+
+		buf = GETBUF(len);
+		
+        	for  (i = 0; CRASHPAGER_argv[i]; i++) {
+			sprintf(&buf[strlen(buf)], "%s%s", 
+				i ? " " : "",
+				CRASHPAGER_argv[i]);
+		}
+		break;
+        }
+
+	return buf;
+}
+
+/*
  *  Parse the command line for pipe or redirect characters:  
  *
  *   1. if a "|" character is found, popen() what comes after it, and 
@@ -497,10 +597,13 @@ setup_redirect(int origin)
 		switch (pc->scroll_command)
 		{
 		case SCROLL_LESS:
-			strcpy(pc->pipe_command, "/usr/bin/less");
+			strcpy(pc->pipe_command, less_argv[0]);
 			break;
 		case SCROLL_MORE:
-			strcpy(pc->pipe_command, "/bin/more");
+			strcpy(pc->pipe_command, more_argv[0]);
+			break;
+		case SCROLL_CRASHPAGER:
+			strcpy(pc->pipe_command, CRASHPAGER_argv[0]);
 			break;
 		}
 
@@ -880,7 +983,7 @@ restore_sanity(void)
                 pc->stdpipe = NULL;
 		if (pc->stdpipe_pid && PID_ALIVE(pc->stdpipe_pid)) {
 			while (!waitpid(pc->stdpipe_pid, &waitstatus, WNOHANG))
-				;
+				stall(1000);
 		}
 		pc->stdpipe_pid = 0;
         }
@@ -890,12 +993,16 @@ restore_sanity(void)
 		console("wait for redirect %d->%d to finish...\n",
 			pc->pipe_shell_pid, pc->pipe_pid);
 		if (pc->pipe_pid)
-			while (PID_ALIVE(pc->pipe_pid)) 
+			while (PID_ALIVE(pc->pipe_pid)) {
 				waitpid(pc->pipe_pid, &waitstatus, WNOHANG);
+				stall(1000);
+			}
                 if (pc->pipe_shell_pid)
-		        while (PID_ALIVE(pc->pipe_shell_pid)) 
+		        while (PID_ALIVE(pc->pipe_shell_pid)) {
                         	waitpid(pc->pipe_shell_pid, 
 					&waitstatus, WNOHANG);
+				stall(1000);
+			}
 		pc->pipe_pid = 0;
 	}
 	if (pc->ifile_pipe) {
@@ -907,12 +1014,16 @@ restore_sanity(void)
                     (FROM_INPUT_FILE|REDIRECT_TO_PIPE|REDIRECT_PID_KNOWN))) {
 			console("wait for redirect %d->%d to finish...\n",
 				pc->pipe_shell_pid, pc->pipe_pid);
-                	while (PID_ALIVE(pc->pipe_pid))
+                	while (PID_ALIVE(pc->pipe_pid)) {
 				waitpid(pc->pipe_pid, &waitstatus, WNOHANG);
+				stall(1000);
+			}
                         if (pc->pipe_shell_pid) 
-                                while (PID_ALIVE(pc->pipe_shell_pid))
+                                while (PID_ALIVE(pc->pipe_shell_pid)) {
                                         waitpid(pc->pipe_shell_pid,
                                                 &waitstatus, WNOHANG);
+					stall(1000);
+				}
 			if (pc->redirect & (REDIRECT_MULTI_PIPE))
 				wait_for_children(ALL_CHILDREN);
 		}
@@ -1915,19 +2026,6 @@ interruptible(void)
  *  Set up the standard output pipe using whichever was selected during init.
  */
 
-static char *less_argv[5] = {
-	"/usr/bin/less",
-	"-E",
-	"-X",
-        "-Ps -- MORE --  forward\\: <SPACE>, <ENTER> or j  backward\\: b or k  quit\\: q",
-	NULL
-};
-
-static char *more_argv[2] = {
-	"/bin/more",
-	NULL
-};
-
 static int
 setup_stdpipe(void)
 {
@@ -1963,6 +2061,9 @@ setup_stdpipe(void)
                 case SCROLL_MORE:
                         strcpy(pc->pipe_command, more_argv[0]);
                         break;
+		case SCROLL_CRASHPAGER:
+                        strcpy(pc->pipe_command, CRASHPAGER_argv[0]);
+                        break;
                 }
 
 		if (CRASHDEBUG(2))
@@ -1991,10 +2092,16 @@ setup_stdpipe(void)
 			path = more_argv[0];
 			execv(path, more_argv);
 			break;
+
+		case SCROLL_CRASHPAGER:
+			path = CRASHPAGER_argv[0];
+			execv(path, CRASHPAGER_argv);
+			break;
 		}
 
-		perror("child execv failed"); 
-		return(clean_exit(1));
+		perror(path); 
+		fprintf(stderr, "execv of scroll command failed\n");
+		exit(1);
 	}
 }
 
@@ -2025,5 +2132,6 @@ wait_for_children(ulong waitflag)
 			    fprintf(fp, "wait_for_children: reaped %d\n", pid);
                 	break;
         	}
+		stall(1000);
 	}
 }

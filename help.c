@@ -105,34 +105,33 @@ NULL
 void
 program_usage(int form)
 {
-	int i;
-	char **p;
-	FILE *less;
-
-	if (form == LONG_FORM)
-		less = popen("/usr/bin/less", "w");
-	else
-		less = NULL;
-
-	p = program_usage_info;
-
-	if (form == LONG_FORM) {
-		if (less)
-			fp = less;
-        	for (i = 0; program_usage_info[i]; i++, p++) {
-                	fprintf(fp, *p, pc->program_name);
-			fprintf(fp, "\n");
-		}
-	} else {
-               	fprintf(fp, *p, pc->program_name);
+	if (form == SHORT_FORM) {
+		fprintf(fp, program_usage_info[0], pc->program_name);
 		fprintf(fp, "\nEnter \"%s -h\" for details.\n",
 			pc->program_name);
-	}
-	fflush(fp);
-	if (less)
-		pclose(less);
+		clean_exit(1);
+	} else {
+		FILE *scroll;
+		char *scroll_command;
+		char **p;
 
-	clean_exit(1);
+		if ((scroll_command = setup_scroll_command()) &&
+		    (scroll = popen(scroll_command, "w")))
+			fp = scroll;
+		else
+			scroll = NULL;
+
+		for (p = program_usage_info; *p; p++) {
+			fprintf(fp, *p, pc->program_name);
+			fprintf(fp, "\n");
+		}
+		fflush(fp);
+
+		if (scroll)
+			pclose(scroll);
+
+		clean_exit(0);
+	}
 }
 
 
@@ -397,7 +396,7 @@ cmd_help(void)
 		if (oflag) 
 			dump_offset_table(args[optind], FALSE);
 		else	
-        		cmd_usage(args[optind], COMPLETE_HELP);
+        		cmd_usage(args[optind], COMPLETE_HELP|MUST_HELP);
 		optind++;
         } while (args[optind]);
 }
@@ -659,6 +658,10 @@ char *help_set[] = {
 "  argument is entered, the current value of the %s variable is shown.  These",
 "  are the %s variables, acceptable arguments, and purpose:\n",
 "          scroll  on | off     controls output scrolling.",
+"          scroll  less         /usr/bin/less as the output scrolling program.",
+"          scroll  more         /bin/more as the output scrolling program.",
+"          scroll  CRASHPAGER   use CRASHPAGER environment variable as the",
+"                               output scrolling program.",
 "           radix  10 | 16      sets output radix to 10 or 16.",
 "         refresh  on | off     controls internal task list refresh.",
 "       print_max  number       set maximum number of array elements to print.",
@@ -704,11 +707,11 @@ char *help_set[] = {
 "       STATE: TASK_RUNNING (PANIC)\n",
 "  Turn off output scrolling:\n",
 "    %s> set scroll off",
-"    scroll: off",
+"    scroll: off (/usr/bin/less)",
 " ",
 "  Show the current state of %s internal variables:\n", 
 "    %s> set -v",
-"            scroll: on",
+"            scroll: on (/usr/bin/less)",
 "             radix: 10 (decimal)",
 "           refresh: on",
 "         print_max: 256",
@@ -2027,7 +2030,7 @@ NULL
 char *help_irq[] = {
 "irq",
 "IRQ data",
-"[-d | -b | [index ...]]",
+"[[[index ...] | -u] | -d | -b]",
 "  This command collaborates the data in an irq_desc_t, along with its",
 "  associated hw_interrupt_type and irqaction structure data, into a",
 "  consolidated per-IRQ display.  Alternatively, the intel interrupt",
@@ -2035,6 +2038,7 @@ char *help_irq[] = {
 "  If no index value argument(s) nor any options are entered, the IRQ",
 "  data for all IRQs will be displayed.\n",
 "    index   a valid IRQ index.",
+"       -u   dump data for in-use IRQs only.",  
 "       -d   dump the intel interrupt descriptor table.",
 "       -b   dump bottom half data.",
 "\nEXAMPLES",
@@ -4902,21 +4906,22 @@ NULL
 void
 cmd_usage(char *cmd, int helpflag)
 {
-	int i;
-        int found;
-	char **p;
+	char **p, *scroll_command;
 	struct command_table_entry *cp;
 	char buf[BUFSIZE];
-	struct alias_data *ad;
-	FILE *less;
+	FILE *scroll;
+	int i;
 
-	if (helpflag & PIPE_TO_LESS) {
-	        if ((less = popen("/usr/bin/less", "w")) != NULL)
-			fp = less;
-		helpflag &= ~PIPE_TO_LESS;
-	} else
-		less = NULL;
-		
+	if (helpflag & PIPE_TO_SCROLL) {
+		if ((scroll_command = setup_scroll_command()) &&
+                    (scroll = popen(scroll_command, "w")))
+			fp = scroll;
+                else
+                        scroll = NULL;
+	} else {
+		scroll_command = NULL;
+		scroll = NULL;
+	}
 
 	if (STREQ(cmd, "copying")) {
 		display_copying_info();
@@ -4959,46 +4964,50 @@ cmd_usage(char *cmd, int helpflag)
 		goto done_usage;
 	}
 
-	found = FALSE;
-retry:
-	if ((cp = get_command_table_entry(cmd))) {
-		if ((p = cp->help_data))
-			found = TRUE;
+	/* look up command, possibly through an alias */
+	for (;;) {
+		struct alias_data *ad;
+
+		cp = get_command_table_entry(cmd);
+		if (cp != NULL)
+			break;	/* found command */
+
+		/* try for an alias */
+		ad = is_alias(cmd);
+		if (ad == NULL)
+			break;	/* neither command nor alias */
+
+		cmd = ad->args[0];
+		cp = get_command_table_entry(cmd);
 	}
 
-       /*
-	*  Check for alias names or gdb commands.
-	*/
-	if (!found) {
-		if ((ad = is_alias(cmd))) {
-			cmd = ad->args[0];
-			goto retry;
-		}
-
-		if (helpflag == SYNOPSIS) { 
-                	fprintf(fp,
-                         "No usage data for the \"%s\" command is available.\n",
+	if (cp == NULL || (p = cp->help_data) == NULL) {
+		if (helpflag & SYNOPSIS) { 
+			fprintf(fp,
+				"No usage data for the \"%s\" command"
+				" is available.\n",
 				cmd);
 			RESTART();
 		}
 
-		if (STREQ(pc->curcmd, "help")) {
-			if (cp)
-                		fprintf(fp,
-                          "No help data for the \"%s\" command is available.\n",
+		if (helpflag & MUST_HELP) {
+			if (cp || !(pc->flags & GDB_INIT))
+				fprintf(fp,
+				    "No help data for the \"%s\" command"
+				    " is available.\n",
 					cmd);
 			else if (!gdb_pass_through(concat_args(buf, 0, FALSE), 
 				NULL, GNU_RETURN_ON_ERROR))
 				fprintf(fp, 
-				    "No help data for \"%s\" is available.\n",
-                                	cmd);
+					"No help data for \"%s\" is available.\n",
+					cmd);
 		}
 		goto done_usage;
         }
 
 	p++;
 
-        if (helpflag == SYNOPSIS) {
+        if (helpflag & SYNOPSIS) {
                 p++;
                 fprintf(fp, "Usage: %s ", cmd);
 		fprintf(fp, *p, pc->program_name, pc->program_name);
@@ -5029,10 +5038,12 @@ retry:
 
 done_usage:
 
-	if (less) {
-		fflush(less);
-		pclose(less);
+	if (scroll) {
+		fflush(scroll);
+		pclose(scroll);
 	}
+	if (scroll_command)
+		FREEBUF(scroll_command);
 }
 
 
@@ -5180,7 +5191,7 @@ char *version_info[] = {
 "Copyright (C) 2005, 2006  Fujitsu Limited",
 "Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.",
 "Copyright (C) 2005  NEC Corporation",
-"Copyright (C) 1999, 2002  Silicon Graphics, Inc.",
+"Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.",
 "Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.",
 "This program is free software, covered by the GNU General Public License,",
 "and you are welcome to change it and/or distribute copies of it under",
