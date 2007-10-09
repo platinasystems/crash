@@ -1,3 +1,34 @@
+crash (4.0-4.7-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.6 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Add SAIL (Simple Image Access Language) interpreter
+    - Removed hardwired-dependencies in the top-level and extensions
+    directories
+    - Enhance the "kmem <address" option to search for task_struct and kernel
+    stack addresses.
+    - Fix for determining rip/rsp backtrace hooks for panic task in x86_64 xen
+    dom0 kdumps.
+    - Fix for ia64 LKCD dumps to find the next task when the task is in the
+    "fixup list"
+    - Fix for potential "mod -[sS]" failures  for mods with a large number of
+    sections.
+    - Fix to prevent dumpfile reads beyond EOF when reading new xen ELF core
+    xendumps.
+  * Fix FTBFS twice in a row bug (Closes: #442528).
+
+ -- Troy Heber <troyh@debian.org>  Tue, 09 Oct 2007 13:30:44 -0600
+
+crash (4.0-4.6-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.6 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - support "runq" on 2.6.20 and > kernles
+    - inital support for LKCD kerntypes created by dwarfextract
+    - "xencrash" update to handle dom0 kdumps. 
+
+ -- Troy Heber <troyh@debian.org>  Mon, 27 Aug 2007 13:25:57 -0600
+
 crash (4.0-4.5-1) unstable; urgency=low
 
   * New upstream version 4.0-4.5 (see

@@ -50,6 +50,15 @@ static long cpu_idx(int);
 static void dump_runq(void);
 static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
+struct rb_root;
+static struct rb_node *rb_first(struct rb_root *);
+struct rb_node;
+static struct rb_node *rb_next(struct rb_node *);
+static struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
+static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
+static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
+static void dump_CFS_runqueues(void);
+static void dump_RT_prio_array(int, ulong, char *);
 static void task_struct_member(struct task_context *,ulong,struct reference *);
 static void signal_reference(struct task_context *, ulong, struct reference *);
 static void do_sig_thread_group(ulong);
@@ -3458,6 +3467,25 @@ str_to_context(char *string, ulong *value, struct task_context **tcp)
 
 
 /*
+ *  Return the task if the vaddr is part of a task's task_struct.
+ */
+ulong
+vaddr_in_task_struct(ulong vaddr)
+{
+        int i;
+        struct task_context *tc;
+
+        tc = FIRST_CONTEXT();
+        for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+		if ((vaddr >= tc->task) && 
+		    (vaddr < (tc->task + SIZE(task_struct))))
+                        return tc->task;
+        }
+
+	return NO_TASK;
+}
+
+/*
  *  Verify whether any task is running a command.
  */
 int
@@ -5834,6 +5862,11 @@ dump_runq(void)
 	ulong *tlist;
 	struct task_context *tc;
 
+	if (VALID_MEMBER(rq_cfs)) {
+		dump_CFS_runqueues();
+		return;
+	}
+ 
 	if (VALID_MEMBER(runqueue_arrays)) {
 		dump_runqueues();
 		return;
@@ -5994,6 +6027,222 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 		hq_close();
 		console("%d entries\n", cnt);
         	tlist = (ulong *)GETBUF((cnt) * sizeof(ulong));
+		cnt = retrieve_list(tlist, cnt);
+		for (c = 0; c < cnt; c++) {
+			if (!(tc = task_to_context(tlist[c])))
+				continue;
+			if (c)
+				INDENT(8);
+			print_task_header(fp, tc, FALSE);
+		}
+		FREEBUF(tlist);
+	}
+}
+
+/*
+ *  CFS scheduler uses Red-Black trees to maintain run queue.
+ */
+struct rb_node
+{
+        unsigned long  rb_parent_color;
+#define RB_RED          0
+#define RB_BLACK        1
+        struct rb_node *rb_right;
+        struct rb_node *rb_left;
+};
+
+struct rb_root
+{
+        struct rb_node *rb_node;
+};
+
+static struct rb_node *
+rb_first(struct rb_root *root)
+{
+        struct rb_root rloc;
+        struct rb_node *n;
+	struct rb_node nloc;
+
+	readmem((ulong)root, KVADDR, &rloc, sizeof(struct rb_root), 
+		"rb_root", FAULT_ON_ERROR);
+
+        n = rloc.rb_node;
+        if (!n)
+                return NULL;
+        while (rb_left(n, &nloc))
+		n = nloc.rb_left;
+
+        return n;
+}
+
+static struct rb_node *
+rb_parent(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return (struct rb_node *)(nloc->rb_parent_color & ~3);
+}
+
+static struct rb_node *
+rb_right(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return nloc->rb_right;
+}
+
+static struct rb_node *
+rb_left(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return nloc->rb_left;
+}
+
+static struct rb_node *
+rb_next(struct rb_node *node)
+{
+	struct rb_node nloc;
+        struct rb_node *parent;
+
+	parent = rb_parent(node, &nloc);
+
+	if (parent == node)
+		return NULL;
+
+        if (nloc.rb_right) {
+		node = nloc.rb_right;
+		while (rb_left(node, &nloc))
+			node = nloc.rb_left;
+		return node;
+	}
+
+        while ((parent = rb_parent(node, &nloc)) && (node == rb_right(parent, &nloc)))
+                node = parent;
+
+        return parent;
+}
+
+static void
+dump_CFS_runqueues(void)
+{
+	int cpu;
+	ulong runq;
+	char *runqbuf;
+	ulong leftmost, tasks_timeline;
+	struct task_context *tc;
+	long nr_running, cfs_rq_nr_running;
+	struct rb_root *root;
+	struct rb_node *node;
+
+	if (INVALID_MEMBER(rq_rt)) {
+		MEMBER_OFFSET_INIT(rq_rt, "rq", "rt");
+		MEMBER_OFFSET_INIT(rq_nr_running, "rq", "nr_running");
+		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
+		MEMBER_OFFSET_INIT(sched_entity_run_node, "sched_entity", 
+			"run_node");
+		MEMBER_OFFSET_INIT(cfs_rq_rb_leftmost, "cfs_rq", "rb_leftmost");
+		MEMBER_OFFSET_INIT(cfs_rq_nr_running, "cfs_rq", "nr_running");
+		MEMBER_OFFSET_INIT(cfs_rq_tasks_timeline, "cfs_rq", 
+			"tasks_timeline");
+		MEMBER_OFFSET_INIT(rt_rq_active, "rt_rq", "active");
+                MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
+                        "run_list");
+	}
+
+	if (!symbol_exists("per_cpu__runqueues"))
+		error(FATAL, "per_cpu__runqueues does not exist\n");
+
+        runq = symbol_value("per_cpu__runqueues");
+
+        runqbuf = GETBUF(SIZE(runqueue));
+
+        for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+			runq = symbol_value("per_cpu__runqueues") +
+			kt->__per_cpu_offset[cpu];
+		} else
+			runq = symbol_value("per_cpu__runqueues");
+
+                fprintf(fp, "RUNQUEUES[%d]: %lx\n", cpu, runq);
+
+                readmem(runq, KVADDR, runqbuf, SIZE(runqueue),
+                        "per-cpu rq", FAULT_ON_ERROR);
+                leftmost = ULONG(runqbuf + OFFSET(rq_cfs) + 
+			OFFSET(cfs_rq_rb_leftmost));
+                tasks_timeline = ULONG(runqbuf + OFFSET(rq_cfs) + 
+			OFFSET(cfs_rq_tasks_timeline));
+		nr_running = LONG(runqbuf + OFFSET(rq_nr_running));
+                cfs_rq_nr_running = ULONG(runqbuf + OFFSET(rq_cfs) + 
+			OFFSET(cfs_rq_nr_running));
+
+		dump_RT_prio_array(nr_running != cfs_rq_nr_running,
+			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
+			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
+
+		root = (struct rb_root *)(runq + OFFSET(rq_cfs) + OFFSET(cfs_rq_tasks_timeline));
+		fprintf(fp, " CFS RB_ROOT: %lx\n", (ulong)root);
+
+		if (!leftmost)
+			continue;
+
+		for (node = rb_first(root); node; node = rb_next(node)) {
+			tc = task_to_context((ulong)node - OFFSET(task_struct_se) -
+			     OFFSET(sched_entity_run_node));
+			if (!tc)
+				continue;
+			INDENT(2);
+			print_task_header(fp, tc, FALSE);
+		}
+	}
+}
+
+static void
+dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
+{
+	int i, c, cnt, qheads;
+	ulong offset, kvaddr, uvaddr;
+	ulong list_head[2];
+        struct list_data list_data, *ld;
+	struct task_context *tc;
+	ulong *tlist;
+
+	fprintf(fp, " RT PRIO_ARRAY: %lx\n",  k_prio_array);
+
+	if (!active)
+		return;
+
+        qheads = (i = ARRAY_LENGTH(prio_array_queue)) ?
+                i : get_array_length("prio_array.queue", NULL, SIZE(list_head));
+
+	ld = &list_data;
+
+	for (i = 0; i < qheads; i++) {
+		offset =  OFFSET(prio_array_queue) + (i * SIZE(list_head));
+		kvaddr = k_prio_array + offset;
+		uvaddr = (ulong)u_prio_array + offset;
+		BCOPY((char *)uvaddr, (char *)&list_head[0], sizeof(ulong)*2);
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, "prio_array[%d] @ %lx => %lx/%lx\n", 
+				i, kvaddr, list_head[0], list_head[1]);
+
+		if ((list_head[0] == kvaddr) && (list_head[1] == kvaddr))
+			continue;
+
+		fprintf(fp, "  [%3d] ", i);
+
+		BZERO(ld, sizeof(struct list_data));
+		ld->start = list_head[0];
+		ld->list_head_offset = OFFSET(task_struct_run_list);
+		ld->end = kvaddr;
+		hq_open();
+		cnt = do_list(ld);
+		hq_close();
+		tlist = (ulong *)GETBUF((cnt) * sizeof(ulong));
 		cnt = retrieve_list(tlist, cnt);
 		for (c = 0; c < cnt; c++) {
 			if (!(tc = task_to_context(tlist[c])))

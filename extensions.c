@@ -354,4 +354,23 @@ register_extension(struct command_table_entry *command_table)
 	pc->curext->flags |= REGISTERED;             /* Mark of approval */
 }
 
+/* 
+ *  Hooks for sial.
+ */
+unsigned long 
+get_curtask(void) 
+{ 
+	return CURRENT_TASK(); 
+}
 
+char *
+crash_global_cmd(void) 
+{ 
+	return pc->curcmd;
+}
+
+struct command_table_entry *
+crash_cmd_table(void) 
+{ 
+	return pc->cmd_table; 
+}

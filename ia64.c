@@ -4063,7 +4063,7 @@ ia64_kvtop_hyper(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int v
 	}
 
 	/* frametable virtual address */
-	addr = kvaddr - VIRT_FRAME_TABLE_ADDR;
+	addr = kvaddr - xhmachdep->frame_table;
 
 	dirp = symbol_value("frametable_pg_dir");
 	dirp += ((addr >> PGDIR_SHIFT_3L) & (PTRS_PER_PGD - 1)) * sizeof(ulong);
@@ -4095,6 +4095,7 @@ static void
 ia64_post_init_hyper(void)
 {
 	struct machine_specific *ms;
+	ulong frame_table;
 
 	ms = &ia64_machine_specific;
 
@@ -4127,6 +4128,14 @@ ia64_post_init_hyper(void)
 		ms->unwind = ia64_old_unwind;
 	}
 	ms->unwind_init();
+
+	if (symbol_exists("frame_table")) {
+		frame_table = symbol_value("frame_table");
+		readmem(frame_table, KVADDR, &xhmachdep->frame_table, sizeof(ulong),
+			"frame_table virtual address", FAULT_ON_ERROR);
+	} else {
+		error(FATAL, "cannot find frame_table virtual address.");
+	}
 }
 
 int

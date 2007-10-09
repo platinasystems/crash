@@ -1386,6 +1386,15 @@ struct offset_table {                    /* stash of commonly-used offsets */
         long unwind_table_size;
         long unwind_table_link;
         long unwind_table_name;
+	long rq_cfs;
+	long rq_rt;
+	long rq_nr_running;
+	long cfs_rq_rb_leftmost;
+	long cfs_rq_nr_running;
+	long cfs_rq_tasks_timeline;
+	long task_struct_se;
+	long sched_entity_run_node;
+	long rt_rq_active;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -3429,6 +3438,7 @@ ulong task_state(ulong);
 ulong task_mm(ulong, int);
 ulong task_tgid(ulong);
 ulonglong task_last_run(ulong);
+ulong vaddr_in_task_struct(ulong);
 int comm_exists(char *);
 struct task_context *task_to_context(ulong);
 struct task_context *pid_to_context(ulong);
@@ -3474,6 +3484,10 @@ void register_extension(struct command_table_entry *);
 void dump_extension_table(int);
 void load_extension(char *);
 void unload_extension(char *);
+/* Hooks for sial */
+unsigned long get_curtask(void);
+char *crash_global_cmd(void);
+struct command_table_entry *crash_cmd_table(void);
 
 /*
  *  kernel.c 

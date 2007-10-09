@@ -647,7 +647,7 @@ static char *restricted_list[] = {
 };
 
 #define RESTRICTED_GDB_COMMAND \
-        "restricted gdb command: %s\n%s\"%s\" may only be used in a .gdbinit file or in a command file.\n%sThe .gdbinit file is read automatically during %s initialization.\n%sOther user-defined command files may be read interactively during\n%s%s runtime by using the gdb \"source\" command."
+        "restricted gdb command: %s\n%s\"%s\" may only be used in a .gdbinit file or in a command file.\n%sThe .gdbinit file is read automatically during %s initialization.\n%sOther user-defined command files may be read interactively during\n%s%s runtime by using the gdb \"source\" command.\n"
 
 static int
 is_restricted_command(char *cmd, ulong flags)

@@ -4141,9 +4141,9 @@ x86_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 		
 	        if (CRASHDEBUG(7)) {
 	                up = (ulong *)xkd->page;
-	                for (i = 0; i < 256; i++) {
+	                for (j = 0; j < 256; j++) {
 	                        fprintf(fp, "%08lx: %08lx %08lx %08lx %08lx\n",
-	                                (ulong)((i * 4) * sizeof(ulong)),
+	                                (ulong)((j * 4) * sizeof(ulong)),
 	                                *up, *(up+1), *(up+2), *(up+3));
 	                        up += 4;
 	                }

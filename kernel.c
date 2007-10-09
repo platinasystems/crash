@@ -219,6 +219,8 @@ kernel_init()
 	STRUCT_SIZE_INIT(runqueue, rqstruct); 
 	STRUCT_SIZE_INIT(prio_array, "prio_array"); 
 
+	MEMBER_OFFSET_INIT(rq_cfs, "rq", "cfs");
+
        /*
         *  In 2.4, smp_send_stop() sets smp_num_cpus back to 1
         *  in some, but not all, architectures.  So if a count

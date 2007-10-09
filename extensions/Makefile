@@ -1,8 +1,8 @@
 #
 # Makefile for building crash shared object extensions
 #
-# Copyright (C) 2005 David Anderson
-# Copyright (C) 2005 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2005, 2007 David Anderson
+# Copyright (C) 2005, 2007 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,27 +17,31 @@
 # To build the extension shared objects in this directory, run 
 # "make extensions" from the top-level directory.
 #
-# To add a new extension object: 
-#
-#  - add the new source file to the EXTENSION_SOURCE_FILES list 
-#    in the top-level Makefile
-#  - add the object file name to the EXTENSION_OBJECT_FILES list
-#    in the top-level Makefile
-#  - create a compile stanza below, typically using "echo.so" as 
-#    a base template.
+# To add a new extension object, simply copy your module's .c file
+# to this directory, and it will be built automatically using
+# the "standard" compile line.  If that compile line does not 
+# suffice, create a .mk file with the same prefix as the .c file,
+# and that makefile will be invoked. 
 # 
 
-all: link_defs $(OBJECTS)
+CONTRIB_SO := $(patsubst %.c,%.so,$(wildcard *.c))
+
+all: link_defs $(CONTRIB_SO)
 	
 link_defs:
 	@if [ ! -f defs.h ]; then \
 	  ln -s ../defs.h; fi 
 
-echo.so: ../defs.h echo.c
-	gcc -nostartfiles -shared -rdynamic -o echo.so echo.c -fPIC \
-				 		-D$(TARGET) $(TARGET_CFLAGS)
+$(CONTRIB_SO): %.so: %.c
+	@if [ -f $*.mk ]; then \
+		make -f $*.mk; \
+	else \
+		echo "gcc -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS)"; \
+		gcc -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS); \
+	fi
 
-dminfo.so: ../defs.h dminfo.c
-	gcc -nostartfiles -shared -rdynamic -o dminfo.so dminfo.c -fPIC \
-				 		-D$(TARGET) $(TARGET_CFLAGS)
-	
+clean:
+	rm -f $(CONTRIB_SO)
+	@for MAKEFILE in `grep -sl "^clean:" *.mk`; \
+	  do make --no-print-directory -f $$MAKEFILE clean; \
+	done

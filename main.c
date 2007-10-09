@@ -70,7 +70,7 @@ main(int argc, char **argv)
 	 */
 	opterr = 0;
 	optind = 0;
-	while((c = getopt_long(argc, argv, "Lgh::e:i:sSvc:d:tfp:m:",
+	while((c = getopt_long(argc, argv, "Lkgh::e:i:sSvc:d:tfp:m:",
        		long_options, &option_index)) != -1) {
 		switch (c)
 		{
@@ -223,6 +223,10 @@ main(int argc, char **argv)
 				program_usage(LONG_FORM);
 			clean_exit(0);
 			
+		case 'k':
+			pc->flags |= KERNTYPES;
+			break;
+
 		case 'e':
 			if (STREQ(optarg, "vi"))
 				pc->editing_mode = "vi";

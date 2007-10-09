@@ -51,13 +51,16 @@ xen_hyper_init(void)
 	machdep->memory_size();
 
 #ifdef IA64
-	if((xht->__per_cpu_offset = malloc(sizeof(ulong) * XEN_HYPER_MAX_CPUS())) == NULL) {
-		error(FATAL, "cannot malloc __per_cpu_offset space.\n");
-	}
-	if (!readmem(symbol_value("__per_cpu_offset"), KVADDR,
-	xht->__per_cpu_offset, sizeof(ulong) * XEN_HYPER_MAX_CPUS(),
-	"__per_cpu_offset", RETURN_ON_ERROR)) {
-		error(FATAL, "cannot read __per_cpu_offset.\n");
+	if (symbol_exists("__per_cpu_offset")) {
+		xht->flags |= XEN_HYPER_SMP;
+		if((xht->__per_cpu_offset = malloc(sizeof(ulong) * XEN_HYPER_MAX_CPUS())) == NULL) {
+			error(FATAL, "cannot malloc __per_cpu_offset space.\n");
+		}
+		if (!readmem(symbol_value("__per_cpu_offset"), KVADDR,
+		xht->__per_cpu_offset, sizeof(ulong) * XEN_HYPER_MAX_CPUS(),
+		"__per_cpu_offset", RETURN_ON_ERROR)) {
+			error(FATAL, "cannot read __per_cpu_offset.\n");
+		}
 	}
 #endif
 
@@ -169,6 +172,14 @@ xen_hyper_domain_init(void)
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_next_in_list, "domain", "next_in_list");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_domain_flags, "domain", "domain_flags");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_evtchn, "domain", "evtchn");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_hvm, "domain", "is_hvm");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_privileged, "domain", "is_privileged");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_debugger_attached, "domain", "debugger_attached");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_polling, "domain", "is_polling");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_dying, "domain", "is_dying");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_paused_by_controller, "domain", "is_paused_by_controller");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_shutting_down, "domain", "is_shutting_down");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_shut_down, "domain", "is_shut_down");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_vcpu, "domain", "vcpu");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_arch, "domain", "arch");
 
@@ -533,9 +544,10 @@ xen_hyper_dumpinfo_init(void)
 {
 	Elf32_Nhdr *note;
 	char *buf, *bp, *np, *upp;
+	char *nccp, *xccp;
 	ulong addr;
 	long size;
-	int i, cpuid;
+	int i, cpuid, samp_cpuid;
 
 	/*
 	 * NOTE kakuma: It is not clear that what kind of
@@ -546,10 +558,13 @@ xen_hyper_dumpinfo_init(void)
 		xhdit->note_ver = XEN_HYPER_ELF_NOTE_V1;
 	else if (STRUCT_EXISTS("crash_note_xen_t"))
 		xhdit->note_ver = XEN_HYPER_ELF_NOTE_V2;
-	else if (STRUCT_EXISTS("crash_note_xen_core_t"))
-		xhdit->note_ver = XEN_HYPER_ELF_NOTE_V3;
-	else {
-		error(WARNING, "unsupported elf note format.\n");
+	else if (STRUCT_EXISTS("crash_xen_core_t")) {
+		if (STRUCT_EXISTS("crash_note_xen_core_t"))
+			xhdit->note_ver = XEN_HYPER_ELF_NOTE_V3;
+		else
+			xhdit->note_ver = XEN_HYPER_ELF_NOTE_V4;
+	} else {
+		error(WARNING, "found unsupported elf note format while checking of xen dumpinfo.\n");
 		return;
 	}
 	if (!xen_hyper_test_pcpu_id(XEN_HYPER_CRASHING_CPU())) {
@@ -557,30 +572,55 @@ xen_hyper_dumpinfo_init(void)
 		return;
 	}
 
+	/* allocate a context area */
 	size = sizeof(struct xen_hyper_dumpinfo_context) * XEN_HYPER_MAX_CPUS();
 	if((xhdit->context_array = malloc(size)) == NULL) {
 		error(FATAL, "cannot malloc dumpinfo table context space.\n");
 	}
 	BZERO(xhdit->context_array, size);
+	size = sizeof(struct xen_hyper_dumpinfo_context_xen_core) * XEN_HYPER_MAX_CPUS();
+	if((xhdit->context_xen_core_array = malloc(size)) == NULL) {
+		error(FATAL, "cannot malloc dumpinfo table context_xen_core_array space.\n");
+	}
+	BZERO(xhdit->context_xen_core_array, size);
 	addr = symbol_value("per_cpu__crash_notes");
 	for (i = 0; i < XEN_HYPER_MAX_CPUS(); i++) {
-		xhdit->context_array[i].note = xen_hyper_per_cpu(addr, i);
+		ulong addr_notes;
+
+		addr_notes = xen_hyper_per_cpu(addr, i);
+		if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V4) {
+			if (!readmem(addr_notes, KVADDR, &(xhdit->context_array[i].note),
+			sizeof(ulong), "per_cpu__crash_notes", RETURN_ON_ERROR)) {
+				error(WARNING, "cannot read per_cpu__crash_notes.\n");
+				return;
+			}
+		} else {
+			xhdit->context_array[i].note = addr_notes;
+		}
 	}
 
 	if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V1) {
 		xhdit->note_size = XEN_HYPER_SIZE(note_buf_t);
+	} else if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V4) {
+		xhdit->note_size = XEN_HYPER_ELF_NOTE_V4_NOTE_SIZE;
 	} else {
 		xhdit->note_size = XEN_HYPER_SIZE(crash_note_t);
 	}
-		
+
 	/* read a sample note */
 	buf = GETBUF(xhdit->note_size);
-	if (!xen_hyper_fill_elf_notes(xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note,
+	if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V4)
+		samp_cpuid = xht->cpu_idxs[0];
+	else
+		samp_cpuid = XEN_HYPER_CRASHING_CPU();
+	xhdit->xen_info_cpu = samp_cpuid;
+	if (!xen_hyper_fill_elf_notes(xhdit->context_array[samp_cpuid].note,
 	buf, XEN_HYPER_ELF_NOTE_FILL_T_NOTE)) {
 		error(FATAL, "cannot read per_cpu__crash_notes.\n");
 	}
 	bp = buf;
 
+	/* Get elf format information for each version. */
 	switch (xhdit->note_ver) {
 	case XEN_HYPER_ELF_NOTE_V1:
 		/* core data */
@@ -604,19 +644,6 @@ xen_hyper_dumpinfo_init(void)
 		/* xen core */
 		xhdit->xen_info_offset = XEN_HYPER_OFFSET(crash_note_xen_t_desc);
 		xhdit->xen_info_size = XEN_HYPER_SIZE(crash_note_xen_t);
-		if((xhdit->crash_note_xen_info_ptr =
-		malloc(xhdit->xen_info_size)) == NULL) {
-			error(FATAL, "cannot malloc dumpinfo table "
-				"crash_note_xen_info_ptr space.\n");
-		}
-		memcpy(xhdit->crash_note_xen_info_ptr,
-			bp + xhdit->core_size, xhdit->xen_info_size);
-		xhdit->context_xen_info.note =
-			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
-			xhdit->core_size;
-		xhdit->context_xen_info.pcpu_id = XEN_HYPER_CRASHING_CPU();
-		xhdit->context_xen_info.crash_xen_info_ptr =
-			xhdit->crash_note_xen_info_ptr + xhdit->xen_info_offset;
 		break;
 	case XEN_HYPER_ELF_NOTE_V3:
 		/* core data */
@@ -625,22 +652,57 @@ xen_hyper_dumpinfo_init(void)
 		/* xen core */
 		xhdit->xen_core_offset = XEN_HYPER_OFFSET(crash_note_xen_core_t_desc);
 		xhdit->xen_core_size = XEN_HYPER_SIZE(crash_note_xen_core_t);
-		if((xhdit->crash_note_xen_core_ptr =
-		malloc(xhdit->xen_core_size)) == NULL) {
-			error(FATAL, "cannot malloc dumpinfo table "
-				"crash_note_xen_core_ptr space.\n");
-		}
-		memcpy(xhdit->crash_note_xen_core_ptr,
-			bp + xhdit->core_size, xhdit->xen_core_size);
-		xhdit->context_xen_core.note =
-			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
-			xhdit->core_size;
-		xhdit->context_xen_core.pcpu_id = XEN_HYPER_CRASHING_CPU();
-		xhdit->context_xen_core.crash_xen_core_ptr =
-			xhdit->crash_note_xen_core_ptr + xhdit->xen_core_offset;
 		/* xen info */
 		xhdit->xen_info_offset = XEN_HYPER_OFFSET(crash_note_xen_info_t_desc);
 		xhdit->xen_info_size = XEN_HYPER_SIZE(crash_note_xen_info_t);
+		break;
+	case XEN_HYPER_ELF_NOTE_V4:
+		/* core data */
+		note = (Elf32_Nhdr *)bp;
+		np = bp + sizeof(Elf32_Nhdr);
+		upp = np + note->n_namesz;
+		upp = (char *)roundup((ulong)upp, 4);
+		xhdit->core_offset = (Elf_Word)((ulong)upp - (ulong)note);
+		upp = upp + note->n_descsz;
+		xhdit->core_size = (Elf_Word)((ulong)upp - (ulong)note);
+		if (XEN_HYPER_ELF_NOTE_V4_NOTE_SIZE < xhdit->core_size + 32) {
+			error(WARNING, "note size is assumed on crash is incorrect.(core data)\n");
+			return;
+		}
+		/* xen core */
+		note = (Elf32_Nhdr *)upp;
+		np = (char *)note + sizeof(Elf32_Nhdr);
+		upp = np + note->n_namesz;
+		upp = (char *)roundup((ulong)upp, 4);
+		xhdit->xen_core_offset = (Elf_Word)((ulong)upp - (ulong)note);
+		upp = upp + note->n_descsz;
+		xhdit->xen_core_size = (Elf_Word)((ulong)upp - (ulong)note);
+		if (XEN_HYPER_ELF_NOTE_V4_NOTE_SIZE <
+		xhdit->core_size + xhdit->xen_core_size + 32) {
+			error(WARNING, "note size is assumed on crash is incorrect.(xen core)\n");
+			return;
+		}
+		/* xen info */
+		note = (Elf32_Nhdr *)upp;
+		np = (char *)note + sizeof(Elf32_Nhdr);
+		upp = np + note->n_namesz;
+		upp = (char *)roundup((ulong)upp, 4);
+		xhdit->xen_info_offset = (Elf_Word)((ulong)upp - (ulong)note);
+		upp = upp + note->n_descsz;
+		xhdit->xen_info_size =  (Elf_Word)((ulong)upp - (ulong)note);
+		if (XEN_HYPER_ELF_NOTE_V4_NOTE_SIZE <
+		xhdit->core_size + xhdit->xen_core_size + xhdit->xen_info_size) {
+			error(WARNING, "note size is assumed on crash is incorrect.(xen info)\n");
+			return;
+		}
+		xhdit->note_size = xhdit->core_size + xhdit->xen_core_size + xhdit->xen_info_size;
+		break;
+	default:
+		error(FATAL, "logic error in cheking elf note format occurs.\n");
+	}
+
+	/* fill xen info context. */
+	if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V3) {
 		if((xhdit->crash_note_xen_info_ptr =
 		malloc(xhdit->xen_info_size)) == NULL) {
 			error(FATAL, "cannot malloc dumpinfo table "
@@ -650,37 +712,75 @@ xen_hyper_dumpinfo_init(void)
 			bp + xhdit->core_size + xhdit->xen_core_size,
 			xhdit->xen_info_size);
 		xhdit->context_xen_info.note =
-			xhdit->context_array[XEN_HYPER_CRASHING_CPU()].note +
+			xhdit->context_array[samp_cpuid].note +
 			xhdit->core_size + xhdit->xen_core_size;
-		xhdit->context_xen_info.pcpu_id = XEN_HYPER_CRASHING_CPU();
+		xhdit->context_xen_info.pcpu_id = samp_cpuid;
 		xhdit->context_xen_info.crash_xen_info_ptr =
 			xhdit->crash_note_xen_info_ptr + xhdit->xen_info_offset;
-		break;
-	default:
-		error(FATAL, "logic error in cheking elf note format occurs.\n");
 	}
-
+		
+	/* allocate note core */
 	size = xhdit->core_size * XEN_HYPER_NR_PCPUS();
 	if(!(xhdit->crash_note_core_array = malloc(size))) {
-		error(FATAL, "cannot malloc note_buf_t struct space.\n");
+		error(FATAL, "cannot malloc crash_note_core_array space.\n");
 	}
-	bp = xhdit->crash_note_core_array;
-	BZERO(bp, size);
+	nccp = xhdit->crash_note_core_array;
+	BZERO(nccp, size);
+
+	/* allocate xen core */
+	if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V2) {
+		size = xhdit->xen_core_size * XEN_HYPER_NR_PCPUS();
+		if(!(xhdit->crash_note_xen_core_array = malloc(size))) {
+			error(FATAL, "cannot malloc dumpinfo table "
+				"crash_note_xen_core_array space.\n");
+		}
+		xccp = xhdit->crash_note_xen_core_array;
+		BZERO(xccp, size);
+	}
+
+	/* fill a context. */
 	for_cpu_indexes(i, cpuid)
 	{
+		/* fill core context. */
 		addr = xhdit->context_array[cpuid].note;
-		if (!xen_hyper_fill_elf_notes(addr, bp,
+		if (!xen_hyper_fill_elf_notes(addr, nccp,
 		XEN_HYPER_ELF_NOTE_FILL_T_CORE)) {
-			error(FATAL, "cannot read ELF_Prstatus.\n");
+			error(FATAL, "cannot read elf note core.\n");
 		}
 		xhdit->context_array[cpuid].pcpu_id = cpuid;
 		xhdit->context_array[cpuid].ELF_Prstatus_ptr =
-			bp + xhdit->core_offset;
+			nccp + xhdit->core_offset;
 		xhdit->context_array[cpuid].pr_reg_ptr =
-			bp + xhdit->core_offset +
+			nccp + xhdit->core_offset +
 			XEN_HYPER_OFFSET(ELF_Prstatus_pr_reg);
-		bp += xhdit->core_size;
+
+		/* Is there xen core data? */
+		if (xhdit->note_ver < XEN_HYPER_ELF_NOTE_V2) {
+			nccp += xhdit->core_size;
+			continue;
+		}
+		if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V2 &&
+		cpuid != samp_cpuid) {
+			xccp += xhdit->xen_core_size;
+			nccp += xhdit->core_size;
+			continue;
+		}
+
+		/* fill xen core context, in case of more elf note V2. */
+		xhdit->context_xen_core_array[cpuid].note =
+			xhdit->context_array[cpuid].note +
+			xhdit->core_size;
+		xhdit->context_xen_core_array[cpuid].pcpu_id = cpuid;
+		xhdit->context_xen_core_array[cpuid].crash_xen_core_ptr =
+			xccp + xhdit->xen_core_offset;
+		if (!xen_hyper_fill_elf_notes(xhdit->context_xen_core_array[cpuid].note,
+		xccp, XEN_HYPER_ELF_NOTE_FILL_T_XEN_CORE)) {
+			error(FATAL, "cannot read elf note xen core.\n");
+		}
+		xccp += xhdit->xen_core_size;
+		nccp += xhdit->core_size;
 	}
+
 	FREEBUF(buf);
 }
 
@@ -713,11 +813,14 @@ xen_hyper_note_to_dumpinfo_context(ulong note)
 
 /*
  * Fill ELF Notes header here.
+ * This assume that variable note has a top address of an area for
+ * specified type.
  */
 char *
 xen_hyper_fill_elf_notes(ulong note, char *note_buf, int type)
 {
 	long size;
+	ulong rp = note;
 
 	if (type == XEN_HYPER_ELF_NOTE_FILL_T_NOTE)
 		size = xhdit->note_size;
@@ -725,6 +828,8 @@ xen_hyper_fill_elf_notes(ulong note, char *note_buf, int type)
 		size = xhdit->core_size;
 	else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_CORE)
 		size = xhdit->xen_core_size;
+	else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_CORE_M)
+		size = xhdit->core_size + xhdit->xen_core_size;
 	else if (type == XEN_HYPER_ELF_NOTE_FILL_T_PRS)
 		size = XEN_HYPER_SIZE(ELF_Prstatus);
 	else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_REGS)
@@ -732,7 +837,7 @@ xen_hyper_fill_elf_notes(ulong note, char *note_buf, int type)
 	else
 		return NULL;
 
-	if (!readmem(note, KVADDR, note_buf, size,
+	if (!readmem(rp, KVADDR, note_buf, size,
 		"note_buf_t or crash_note_t", RETURN_ON_ERROR)) {
 		if (type == XEN_HYPER_ELF_NOTE_FILL_T_NOTE)
 			error(WARNING, "cannot fill note_buf_t or crash_note_t.\n");
@@ -740,6 +845,8 @@ xen_hyper_fill_elf_notes(ulong note, char *note_buf, int type)
 			error(WARNING, "cannot fill note core.\n");
 		else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_CORE)
 			error(WARNING, "cannot fill note xen core.\n");
+		else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_CORE_M)
+			error(WARNING, "cannot fill note core & xen core.\n");
 		else if (type == XEN_HYPER_ELF_NOTE_FILL_T_PRS)
 			error(WARNING, "cannot fill ELF_Prstatus.\n");
 		else if (type == XEN_HYPER_ELF_NOTE_FILL_T_XEN_REGS)
@@ -1051,8 +1158,28 @@ xen_hyper_store_domain_context(struct xen_hyper_domain_context *dc,
 	dc->next_in_list = ULONG(dp + XEN_HYPER_OFFSET(domain_next_in_list));
 	if (XEN_HYPER_VALID_MEMBER(domain_domain_flags))
 		dc->domain_flags = ULONG(dp + XEN_HYPER_OFFSET(domain_domain_flags));
-	else
+	else if (XEN_HYPER_VALID_MEMBER(domain_is_shut_down)) {
+		dc->domain_flags = 0;
+		if (*(dp + XEN_HYPER_OFFSET(domain_is_hvm))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_HVM;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_privileged))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_privileged;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_debugger_attached))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_debugging;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_polling))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_polling;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_paused_by_controller))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_ctrl_pause;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_dying))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_dying;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_shutting_down))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_shuttingdown;
+		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_shut_down))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_shutdown;
+		}
+	} else {
 		dc->domain_flags = XEN_HYPER_DOMF_ERROR;
+	}
 	dc->evtchn = ULONG(dp + XEN_HYPER_OFFSET(domain_evtchn));
 	for (i = 0; i < XEN_HYPER_MAX_VIRT_CPUS; i++) {
 		dc->vcpu[i] = ULONG(dp + XEN_HYPER_OFFSET(domain_vcpu) + i*sizeof(void *));

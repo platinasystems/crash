@@ -9948,6 +9948,8 @@ kmem_search(struct meminfo *mi)
 	ulong vaddr, orig_flags;
 	physaddr_t paddr;
 	ulong offset;
+	ulong task;
+	struct task_context *tc;
 
 	switch (mi->memtype)
 	{
@@ -9982,7 +9984,7 @@ kmem_search(struct meminfo *mi)
 	if ((mi->memtype == KVADDR) && IS_VMALLOC_ADDR(mi->spec_addr)) {
 		if (kvtop(NULL, mi->spec_addr, &paddr, 0)) {
 			mi->flags = orig_flags;
-        		dump_vmlist(mi);
+			dump_vmlist(mi);
 			fprintf(fp, "\n");
 			mi->spec_addr = paddr;
 			mi->memtype = PHYSADDR;
@@ -10046,8 +10048,22 @@ kmem_search(struct meminfo *mi)
 			fprintf(fp, "\n");
 	}
 
+	/*
+	 *  Check whether it's a current task or stack address.
+	 */
+	if ((mi->memtype == KVADDR) && (task = vaddr_in_task_struct(vaddr)) &&
+	    (tc = task_to_context(task))) {
+		show_context(tc);
+		fprintf(fp, "\n");
+	} else if ((mi->memtype == KVADDR) && (task = stkptr_to_task(vaddr)) &&
+	    (tc = task_to_context(task))) {
+		show_context(tc);
+		fprintf(fp, "\n");
+	}
+
 mem_map:
 	mi->flags = orig_flags;
+	pc->curcmd_flags &= ~HEADER_PRINTED;
         dump_mem_map(mi);
 
 	if (!mi->retval)

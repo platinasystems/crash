@@ -9,11 +9,17 @@ include /usr/share/dpatch/dpatch.make
 
 build: patch build-stamp
 
-clean: unpatch
+pre-stamp:
+	cp -a $(CURDIR)/gdb-6.1 $(CURDIR)/debian/gdb-6.1.back
+	touch pre-stamp
+
+clean: pre-stamp unpatch
 	dh_testdir
 	dh_testroot
 	rm -f build-stamp configure-stamp	
-	-$(MAKE) clean
+	rm -Rf $(CURDIR)/gdb-6.1 configure
+	cp -a $(CURDIR)/debian/gdb-6.1.back $(CURDIR)/gdb-6.1 
+	$(MAKE) clean
 	find . -name "*~" -exec rm {} \;
 
 	dh_clean
