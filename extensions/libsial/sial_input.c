@@ -797,6 +797,6 @@ int found=0;
 
 	} else {
 
-		sial_error("Include file not found: %s", name);
+		sial_msg("Include file not found: '%s' [include path is '%s']", name, sial_getipath());
 	}
 }

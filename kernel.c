@@ -2102,6 +2102,11 @@ get_lkcd_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		return;
 	}
 
+	/* try to get it from the header */
+	if (get_lkcd_regs_for_cpu(bt, eip, esp) == 0)
+		return;
+
+	/* if that fails: do guessing */
 	sysrq_eip = sysrq_esp = 0;
 
 	for (i = 0, up = (ulong *)bt->stackbuf; i < LONGS_PER_STACK; i++, up++){
@@ -3111,7 +3116,7 @@ void
 dump_log(int msg_level)
 {
 	int i;
-	ulong log_buf, log_start, logged_chars;
+	ulong log_buf, logged_chars;
 	char *buf;
 	char last;
 	ulong index;
@@ -3138,13 +3143,16 @@ dump_log(int msg_level)
 
 	buf = GETBUF(log_buf_len);
 	log_wrap = FALSE;
-	get_symbol_data("log_start", sizeof(ulong), &log_start);
 	get_symbol_data("logged_chars", sizeof(ulong), &logged_chars);
         readmem(log_buf, KVADDR, buf,
         	log_buf_len, "log_buf contents", FAULT_ON_ERROR);
 
-	log_start &= log_buf_len-1;
-	index = (logged_chars < log_buf_len) ? 0 : log_start;
+	if (logged_chars < log_buf_len) {
+		index = 0;
+	} else {
+		get_symbol_data("log_end", sizeof(ulong), &index);
+		index &= log_buf_len-1;
+	} 
 
 	if ((logged_chars < log_buf_len) && (index == 0) && (buf[index] == '<'))
 		loglevel = TRUE;

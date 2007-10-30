@@ -22,6 +22,7 @@
 
 #define retok(t) return(t)
 int needvar=0, instruct=0;
+node_t *lastv;
 static char *lastvar=0;
 char *sial_lastvar(void) { return lastvar; }
 extern void sial_skip_directive(void);
@@ -38,7 +39,13 @@ N		[0-9]
 X		[0-9a-fA-F]
 W		[ \t\n]
 P		#[ \t]*
+OP              [(]
+CP              [)]
 
+%s var1
+%s var2
+%s var3
+%s var4
 %%
 
 {W}		{ ; }
@@ -158,6 +165,11 @@ printd		{ retok(PRINTD); }
 printx		{ retok(PRINTX); }
 take_array	{ retok(TAKE_ARR); }
 
+__var__              { BEGIN(var1); }
+<var1>{W}*{OP}{W}*   { BEGIN(var2); }
+<var2>{ABC}{ABCN}*   { BEGIN(var3); goto forcevar; }
+<var3>{W}*{CP}{W}*   { BEGIN(INITIAL); }
+
 
 {ABC}{ABCN}*	{ 
 				if((!needvar) && (yylval.t=sial_getctype(V_TYPEDEF, yytext, 1)))
@@ -169,6 +181,7 @@ take_array	{ retok(TAKE_ARR); }
 					needvar++;
 					retok(TYPEDEF);
 				}
+forcevar:
 				needvar=0;
 				if(strlen(yytext) > MAX_SYMNAMELEN) {
 

@@ -1,3 +1,5 @@
+/* OBSOLETE */
+
 #ifdef IA64
 
 #define UTSNAME_ENTRY_SZ 65

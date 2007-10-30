@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.1 2007/09/24 19:53:32 anderson Exp $
+ * $Id: sial.c,v 1.3 2007/10/30 15:50:57 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -137,25 +137,37 @@ apigetctype(int ctype, char *name, TYPE_S *tout)
 {
     struct symbol *sym;
     struct type *type;
-    static int a=0;
-
+    int v=0;
+    
+    sial_dbg_named(DBG_TYPE, name, 2, "Looking for type %d name [%s] in struct domain...", ctype, name);
     sym = lookup_symbol(name, 0, STRUCT_DOMAIN, 0, (struct symtab **) NULL);
-    if(!sym)
+    if(!sym) {
+            sial_dbg_named(DBG_TYPE, name, 2, "Not found.\nLooking for type %d name [%s] in var domain...", ctype, name);
             sym = lookup_symbol(name, 0, VAR_DOMAIN, 0, (struct symtab **) NULL);
+            if(sym) {
+                sial_dbg_named(DBG_TYPE, name, 2, "found class=%d\n", sym->aclass);
+                if(sym->aclass == LOC_TYPEDEF) v=1;
+            }
+    }
         
     if (sym) {
         type=sym->type;
+        if(sial_is_typedef(ctype) && v) goto match;
         switch(TYPE_CODE(type)) {
-            case TYPE_CODE_TYPEDEF: if(sial_is_typedef(ctype))  goto match; break;
+            case TYPE_CODE_TYPEDEF: case TYPE_CODE_INT: 
+                                    if(sial_is_typedef(ctype))  goto match; break;
             case TYPE_CODE_ENUM:    if(sial_is_enum(ctype))     goto match; break;
             case TYPE_CODE_STRUCT:  if(sial_is_struct(ctype))   goto match; break;
             case TYPE_CODE_UNION:   if(sial_is_union(ctype))    goto match; break;
         }
+        sial_dbg_named(DBG_TYPE, name, 2, "Found but no match.\n");
     }
+    else sial_dbg_named(DBG_TYPE, name, 2, "Not Found.\n");
+
     return 0;
 
 match:
-
+    sial_dbg_named(DBG_TYPE, name, 2, "Found.\n");
     /* populate */
     sial_type_settype(tout, ctype);
     sial_type_setsize(tout, TYPE_LENGTH(type));
@@ -451,13 +463,14 @@ apigetdefs(void)
 {
 DEF_S *dt=0;
 int i;
-struct linuxdefs_s {
+static struct linuxdefs_s {
 
 	char *name;
 	char *value;
 
 } linuxdefs[] = {
 
+	{"crash",		"1"},
 	{"linux",		"1"},
 	{"__linux",		"1"},
 	{"__linux__",		"1"},
@@ -486,7 +499,7 @@ struct linuxdefs_s {
 	 {"__s390x",     "1"},
 	 {"__s390x__",   "1"},
 #endif
-#ifdef ia64
+#ifdef __ia64__
 	{"ia64",         "1"},
 	{"__ia64",       "1"},
 	{"__ia64__",     "1"},
@@ -494,7 +507,25 @@ struct linuxdefs_s {
 	{"_LONGLONG",    "1"},
 	{"__LONG_MAX__", "9223372036854775807L"},
 #endif
+#ifdef ppc64
+	 {"ppc64",       "1"},
+	 {"__ppc64",     "1"},
+	 {"__ppc64__",   "1"},
+#endif
 	};
+        
+static char *untdef[] = { 
+    "clock",  
+    "mode",  
+    "pid",  
+    "uid",  
+    "xtime",  
+    "init_task", 
+    "size", 
+    "type",
+    "level",
+    0 
+};
 
 #if 0
 How to extract basic set of -D flags from the kernel image
@@ -526,6 +557,22 @@ How to extract basic set of -D flags from the kernel image
 		}
 	}
 #endif	
+
+        /* remove some tdef with very usual identifier.
+           could also be cases where the kernel defined a type and variable with same name e.g. xtime.
+           the same can be accomplished in source using #undef <tdefname> or forcing the evaluation of 
+           a indentifier as a variable name ex: __var(xtime).
+           
+           I tried to make the grammar as unambiqguous as I could.
+           
+           If this becomes to much of a problem I might diable usage of all image typedefs usage in sial!
+        */ 
+        {
+            char **tdefname=untdef;
+            while(*tdefname) sial_addneg(*tdefname++);;
+            
+        }
+        
 	/* insert constant defines from list above */
 	for(i=0;i<sizeof(linuxdefs)/sizeof(linuxdefs[0]);i++) {
 
@@ -604,6 +651,7 @@ int c, file=0;
                 {
                 case 'l':
                     sial_vilast();
+                    return;
                 break;
                 case 'f':
                     file++;
@@ -633,11 +681,13 @@ char *edit_help[]={
                 "where frequent editing->run->editing sequences are executed.",
                 "To edit a known sial macro file use the -f option. To edit the file",
                 "at the location of a known function's declaration omit the -f option.",
+                "Use a single -l option to be brought to the last compile error location.",
                 "",
                 "EXAMPLES:",
                 "  %s> edit -f ps",
                 "  %s> edit ps",
                 "  %s> edit ps_opt",
+                "  %s> edit -l",
                 NULL
 };
 
@@ -681,12 +731,74 @@ char *unload_help[]={
                 NULL
 };
 
+void
+sdebug_cmd(void)
+{
+	if(argcnt < 2) sial_msg("Current sial debug level is %d\n", sial_getdbg());
+	else sial_setdbg(atoi(args[1]));
+}
+
+char *sdebug_help[]={
+		"sdebug",
+                "Print or set sial debug level",
+                "<Debug level 0..9>",
+                "  Set the debug of sial. Without any parameter, shows the current debug level.",
+                NULL
+};
+
+void
+sname_cmd(void)
+{
+	if(argcnt < 2) {
+            if(sial_getname()) sial_msg("Current sial name match is '%s'\n", sial_getname());
+            else sial_msg("No name match specified yet.\n");
+	} else sial_setname(args[1]);
+}
+
+char *sname_help[]={
+		"sname",
+                "Print or set sial name match.",
+                "<name>",
+                "  Set sial name string for matches. Debug messages that are object oriented",
+                "  will only be displayed if the object name (struct, type, ...) matches this",
+		"  value.",
+                NULL
+};
+
+void
+sclass_cmd(void)
+{
+	if(argcnt < 2) {
+            char **classes=sial_getclass();
+            sial_msg("Current sial classes are :");
+            while(*classes) sial_msg("'%s' ", *classes++);
+            sial_msg("\n");
+	
+        }
+        else {
+            int i;
+            for(i=1; i<argcnt; i++) sial_setclass(args[i]);
+        }
+}
+
+char *sclass_help[]={
+		"sclass",
+                "Print or set sial debug message class(es).",
+                "<className>[, <className>]",
+                "  Set sial debug classes. Only debug messages that are in the specified classes",
+                "  will be displayed.",
+                NULL
+};
+
 #define NCMDS 100
 static struct command_table_entry command_table[NCMDS] =  {
 
 	{"edit", edit_cmd, edit_help},
 	{"load", load_cmd, load_help},
 	{"unload", unload_cmd, unload_help},
+	{"sdebug", sdebug_cmd, sdebug_help},
+	{"sname", sname_cmd, sname_help},
+	{"sclass", sclass_cmd, sclass_help},
 	{(char *)0 }
 };
 
@@ -808,13 +920,25 @@ _init() /* Register the command set. */
 #ifdef i386
 #define SIAL_ABI  ABI_INTEL_X86
 #else 
-#ifdef ia64
+#ifdef __ia64__
 #define SIAL_ABI  ABI_INTEL_IA
 #else
 #ifdef __x86_64__
 #define SIAL_ABI  ABI_INTEL_IA
 #else
+#ifdef __s390__
+#define SIAL_ABI  ABI_S390
+#else
+#ifdef __s390x__
+#define SIAL_ABI  ABI_S390X
+#else
+#ifdef PPC64
+#define SIAL_ABI  ABI_PPC64
+#else
 #error sial: Unkown ABI 
+#endif
+#endif
+#endif
 #endif
 #endif
 #endif

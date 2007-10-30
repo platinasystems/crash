@@ -1,6 +1,17 @@
+crash (4.0-4.8-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.8 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Add support for kernel with the SLUB allocator
+    - Pull backtrace registers on LKCD v8 and later LKCD dumps
+    - SAIL support for ia64, ppc, s390 and s390x
+    - Output the kernel ring buffer in the proper order
+
+ -- Troy Heber <troyh@debian.org>  Tue, 30 Oct 2007 12:49:08 -0600
+
 crash (4.0-4.7-1) unstable; urgency=low
 
-  * New upstream version 4.0-4.6 (see
+  * New upstream version 4.0-4.7 (see
     http://people.redhat.com/anderson/crash.changelog)
     - Add SAIL (Simple Image Access Language) interpreter
     - Removed hardwired-dependencies in the top-level and extensions

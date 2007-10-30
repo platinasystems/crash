@@ -219,9 +219,9 @@ term:
 	| term DECR			{ $$ = sial_newop(POSTDECR, 1, $1); }
 	| term INCR			{ $$ = sial_newop(POSTINCR, 1, $1); }
 	| term INDIRECT var		{ $$ = sial_newmem(INDIRECT, $1, $3); }
+	| term INDIRECT tdef		{ $$ = sial_newmem(INDIRECT, $1, sial_tdeftovar($3)); } // resolve ambiguity
 	| term DIRECT var		{ $$ = sial_newmem(DIRECT, $1, $3); }
-	| term INDIRECT tdef		{ $$ = sial_newmem(INDIRECT, $1, sial_tdeftovar($3)); }
-	| term DIRECT tdef		{ $$ = sial_newmem(DIRECT, $1, sial_tdeftovar($3)); }
+	| term DIRECT tdef		{ $$ = sial_newmem(DIRECT, $1, sial_tdeftovar($3)); } // resolve ambiguity
 	| term  '[' term ']' %prec ARRAY	
 					{ $$ = sial_newindex($1, $3); }
 	| NUMBER
@@ -262,12 +262,11 @@ decl_list:
 
 
 var_decl:
-	type_decl dvarlist		{ needvar=0; $$ = sial_vardecl($2, $1); }
-	| type_decl tdef		{ needvar=0; $$ = sial_vardecl(sial_newdvar(sial_tdeftovar($2)), $1); }
+	type_decl dvarlist	{ needvar=0; $$ = sial_vardecl($2, $1); }
 	;
 
 one_var_decl:
-	type_decl dvar			{ needvar=0; $$ = sial_vardecl($2, $1); }
+	type_decl dvar	{ needvar=0; $$ = sial_vardecl($2, $1); }
 	;
 
 type_decl:
@@ -290,8 +289,8 @@ type:
 ctype_decl:
 	ctype_tok var '{' {sial_startctype(sial_toctype($1),$2);instruct++;} var_decl_list '}'
 		 			{ instruct--; $$ = sial_ctype_decl(sial_toctype($1), $2, $5); }
-	| ctype_tok tdef '{' {sial_startctype(sial_toctype($1),sial_tdeftovar($2));instruct++;} var_decl_list '}'
-		 			{ instruct--; $$ = sial_ctype_decl(sial_toctype($1), sial_tdeftovar($2), $5); }
+	| ctype_tok tdef '{' {sial_startctype(sial_toctype($1),lastv=sial_tdeftovar($2));instruct++;} var_decl_list '}'
+		 			{ instruct--; $$ = sial_ctype_decl(sial_toctype($1), lastv, $5); }
 	| ctype_tok var '{' dvarlist '}'
 		 			{ $$ = sial_enum_decl(sial_toctype($1), $2, $4); }
 	| ctype_tok tdef '{' dvarlist '}'
@@ -389,7 +388,6 @@ dvarini:
 
 dvar:
 	opt_var				{ $$ = sial_newdvar($1); needvar=0; }
-	| tdef				{ $$ = sial_newdvar(sial_tdeftovar($1)); needvar=0; }
 	| ':' term 			{ $$ = sial_dvarfld(sial_newdvar(0), $2); }
 	| dvar ':' term 		{ $$ = sial_dvarfld($1, $3); }
 	| dvar '[' opt_term ']'		{ $$ = sial_dvaridx($1, $3); }

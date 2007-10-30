@@ -1401,3 +1401,15 @@ lkcd_dumpfile_complaint(uint32_t realpages, uint32_t dh_num_pages, int retval)
 	}
 }
 
+int
+get_lkcd_regs_for_cpu(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	switch (lkcd->version) {
+	case LKCD_DUMP_V8:
+	case LKCD_DUMP_V9:
+		return get_lkcd_regs_for_cpu_v8(bt, eip, esp);
+	default:
+		return -1;
+	}
+}
+

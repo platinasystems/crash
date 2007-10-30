@@ -14,14 +14,14 @@
 #include <sys/mman.h>
 #include <setjmp.h>
 
-#if linux
-#define __return_address (void*)0
+#ifdef __GNUC__
 #       if __LP64__
 #               define NKPC	16
 #       else
 #               define NKPC	4
 #       endif
 #else
+// must be the SGI Mips compiler.
 #       if (_MIPS_SZLONG == 64)
 #               define NKPC	16
 #       else
@@ -50,6 +50,20 @@ typedef struct blklist {
 } blist;
 
 #define SIZEBL   (((sizeof(blist)+8)/8)*8)
+
+void pbl(void *p)
+{
+blist *bl=(blist*)(((char*)p)-SIZEBL);
+    sial_msg("struct blklist *%p {", bl);
+    sial_msg("      next=%p", bl->next);
+    sial_msg("      prev=%p", bl->prev);
+    sial_msg("      size=%d", bl->size);
+    sial_msg("      istmp=%d", bl->istmp);
+    sial_msg("      level=%d", bl->level);
+    sial_msg("      caller=%p", bl->caller);
+    sial_msg("      freer=%p", bl->freer);
+}
+
 static blist temp={ &temp, &temp, 0, 0, 0, 0, 0 };
 
 value_t*
@@ -150,7 +164,9 @@ static int dir=0;
 void
 sial_caller(char *p, void *retaddr)
 {
-	
+blist *bl=(blist*)(((char*)p)-SIZEBL);
+
+    bl->caller=retaddr;
 }
 
 #define PAGEMASK 0xfffffffffffff000ll

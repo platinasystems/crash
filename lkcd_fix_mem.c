@@ -20,21 +20,13 @@
 
 #define LKCD_COMMON
 #include "defs.h"
-#include "lkcd_fix_mem.h"
+#include "lkcd_dump_v8.h"
 
 static int fix_addr(dump_header_asm_t *); 
     
 int
-fix_addr_v8(int fd)
+fix_addr_v8(dump_header_asm_t *dha)
 {
-    static dump_header_asm_t dump_header_asm_v8 = { 0 };
-    dump_header_asm_t *dha;
-    dha = &dump_header_asm_v8;
-    
-    if (read(lkcd->fd, dha, sizeof(dump_header_asm_t)) !=
-	    sizeof(dump_header_asm_t))
-	return -1;
-    
     fix_addr(dha);
 
     return 0;
@@ -59,14 +51,6 @@ fix_addr_v7(int fd)
 static int
 fix_addr(dump_header_asm_t *dha)  
 {
-    
-
-    if (dha->dha_header_size != sizeof(dump_header_asm_t)) {
-	error(INFO, "LKCD machine specific dump header doesn't match crash version\n");
-	error(INFO, "traceback of currently executing threads may not work\n\n");
-    }
-    
-
     lkcd->dump_header_asm = dha;
     
 
@@ -83,7 +67,7 @@ fix_addr(dump_header_asm_t *dha)
 		if (dha->dha_stack[i] && dha->dha_smp_current_task[i]) {
 		    lkcd->fix_addr[i].task = (ulong)dha->dha_smp_current_task[i];
 		    lkcd->fix_addr[i].saddr = (ulong)dha->dha_stack[i]; 
-		    lkcd->fix_addr[i].sw = (ulong)dha->dha_switch_stack[i];
+		    lkcd->fix_addr[i].sw = (ulong)dha->dha_stack_ptr[i];
 		    /* remember the highest non-zero entry */
 		    lkcd->fix_addr_num = i + 1;
 		} else {

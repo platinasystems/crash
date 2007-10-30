@@ -23,10 +23,187 @@
 #include "lkcd_dump_v8.h"				/* REMIND */
 
 static dump_header_t dump_header_v8 = { 0 };
-// static dump_header_asm_t dump_header_asm_v8 = { 0 };
+#ifndef HAVE_NO_DUMP_HEADER_ASM
+static dump_header_asm_t dump_header_asm_v8 = { 0 };
+#endif
 static dump_page_t dump_page = { 0 };
 static void mclx_cache_page_headers_v8(void);
 static off_t lkcd_offset_to_first_page = LKCD_OFFSET_TO_FIRST_PAGE;
+
+#if defined(X86_64)
+
+int
+get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp)
+{
+	if (eip)
+		*eip = dump_header_asm_v8.dha_smp_regs[cpu].rip;
+	if (esp)
+		*esp = dump_header_asm_v8.dha_smp_regs[cpu].rsp;
+
+	return 0;
+}
+
+#elif defined(X86)
+
+int
+get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp)
+{
+	if (eip)
+		*eip = dump_header_asm_v8.dha_smp_regs[cpu].eip;
+	if (esp)
+		*esp = dump_header_asm_v8.dha_smp_regs[cpu].esp;
+
+	return 0;
+}
+
+#else
+
+int
+get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp)
+{
+	return -1;
+}
+
+#endif
+
+
+
+int
+get_lkcd_regs_for_cpu_v8(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	int cpu;
+
+	if (!bt || !bt->tc) {
+		fprintf(stderr, "get_lkcd_regs_for_cpu_v8: invalid tc "
+				"(CPU=%d)\n", cpu);
+		return -EINVAL;
+	}
+
+	cpu = bt->tc->processor;
+
+	if (cpu >= NR_CPUS) {
+		fprintf(stderr, "get_lkcd_regs_for_cpu_v8, cpu (%d) too high\n", cpu);
+		return -EINVAL;
+	}
+
+	return get_lkcd_regs_for_cpu_arch(cpu, eip, esp);
+}
+
+
+#ifndef HAVE_NO_DUMP_HEADER_ASM
+int
+lkcd_dump_init_v8_arch(dump_header_t *dh)
+{
+	off_t 			ret_of;
+	ssize_t 		ret_sz;
+	uint32_t 		hdr_size, offset, nr_cpus;
+	dump_header_asm_t 	arch_hdr;
+	char 			*hdr_buf = NULL;
+
+	ret_of = lseek(lkcd->fd, dh->dh_header_size +
+			offsetof(dump_header_asm_t, dha_header_size),
+			SEEK_SET);
+	if (ret_of < 0) {
+		perror("lseek failed in " __FILE__ ":" STR(__LINE__));
+		goto err;
+	}
+
+	ret_sz = read(lkcd->fd, (char *)&hdr_size, sizeof(hdr_size));
+	if (ret_sz != sizeof(hdr_size)) {
+		perror("Reading hdr_size failed in " __FILE__ ":" STR(__LINE__));
+		goto err;
+	}
+
+	ret_of = lseek(lkcd->fd, dh->dh_header_size, SEEK_SET);
+	if (ret_of < 0) {
+		perror("lseek failed in " __FILE__ ":" STR(__LINE__));
+		goto err;
+	}
+
+	hdr_buf = (char *)malloc(hdr_size);
+	if (!hdr_buf) {
+		perror("Could not allocate memory for dump header\n");
+		goto err;
+	}
+
+	ret_sz = read(lkcd->fd, (char *)hdr_buf, hdr_size);
+	if (ret_sz != hdr_size) {
+		perror("Could not read header " __FILE__ ":" STR(__LINE__));
+		goto err;
+	}
+
+
+	/*
+         * Though we have KL_NR_CPUS is 128, the header size is different
+         * CONFIG_NR_CPUS might be different in the kernel. Hence, need
+         * to find out how many CPUs are configured.
+         */
+        offset = offsetof(dump_header_asm_t, dha_smp_regs[0]);
+        nr_cpus = (hdr_size - offset) / sizeof(dump_CPU_info_t);
+
+	/* check for CPU overflow */
+	if (nr_cpus > NR_CPUS) {
+		fprintf(stderr, "CPU number too high %d (%s:%d)\n",
+				nr_cpus, __FILE__, __LINE__);
+		goto err;
+	}
+
+	/* parts that don't depend on the number of CPUs */
+	memcpy(&arch_hdr, (void *)hdr_buf, offset);
+
+	/* registers */
+	memcpy(&arch_hdr.dha_smp_regs, (void *)&hdr_buf[offset],
+			nr_cpus * sizeof(struct pt_regs));
+	offset += nr_cpus * sizeof(struct pt_regs);
+
+	/* current task */
+	memcpy(&arch_hdr.dha_smp_current_task, (void *)&hdr_buf[offset],
+			nr_cpus * sizeof(&arch_hdr.dha_smp_current_task[0]));
+	offset += nr_cpus * sizeof(&arch_hdr.dha_smp_current_task[0]);
+
+	/* stack */
+	memcpy(&arch_hdr.dha_stack, (void *)&hdr_buf[offset],
+			nr_cpus * sizeof(&arch_hdr.dha_stack[0]));
+	offset += nr_cpus * sizeof(&arch_hdr.dha_stack[0]);
+
+	/* stack_ptr */
+	memcpy(&arch_hdr.dha_stack_ptr, (void *)&hdr_buf[offset],
+			nr_cpus * sizeof(&arch_hdr.dha_stack_ptr[0]));
+	offset += nr_cpus * sizeof(&arch_hdr.dha_stack_ptr[0]);
+
+	if (arch_hdr.dha_magic_number != DUMP_ASM_MAGIC_NUMBER) {
+		fprintf(stderr, "Invalid magic number for x86_64\n");
+		goto err;
+	}
+
+	/*
+	 * read the kernel load address on IA64 -- other architectures have
+	 * no relocatable kernel at the lifetime of LKCD
+	 */
+#ifdef IA64
+	memcpy(&arch_hdr.dha_kernel_addr, (void *)&hdr_buf[offset], sizeof(uint64_t));
+#endif
+
+	memcpy(&dump_header_asm_v8, &arch_hdr, sizeof(dump_header_asm_t));
+
+	return 0;
+
+err:
+	free(hdr_buf);
+	return -1;
+}
+
+#else /* architecture that has no lkcd_dump_init_v8 */
+
+int
+lkcd_dump_init_v8_arch(dump_header_t *dh)
+{
+	return 0;
+}
+
+#endif
+
+
 
 /*
  *  Verify and initialize the LKCD environment, storing the common data
@@ -69,8 +246,14 @@ lkcd_dump_init_v8(FILE *fp, int fd, char *dumpfile)
         lkcd->dump_header = dh;
 	if (lkcd->debug) 
 		dump_lkcd_environment(LKCD_DUMP_HEADER_ONLY);
+
+	if (lkcd_dump_init_v8_arch(dh) != 0) {
+		fprintf(stderr, "Warning: Failed to initialise "
+				"arch specific dump code\n");
+	}
+
 #ifdef IA64
-	if ( (fix_addr_v8(fd) == -1) )
+	if ( (fix_addr_v8(&dump_header_asm_v8) == -1) )
 	    return FALSE;
 #endif
 

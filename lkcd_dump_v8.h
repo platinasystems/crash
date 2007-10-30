@@ -235,4 +235,304 @@ typedef struct lkcdinfo_s {
 	int             stack_offset;
 } lkcdinfo_t;
 
+/*
+ *
+ * machine specific dump headers
+ *
+ */
+
+/*
+ * IA64 ---------------------------------------------------------
+ */
+
+#if defined(IA64)
+
+#define DUMP_ASM_MAGIC_NUMBER     0xdeaddeadULL  /* magic number */
+#define DUMP_ASM_VERSION_NUMBER   0x5            /* version number          */
+
+
+struct pt_regs {
+	/* The following registers are saved by SAVE_MIN: */
+	unsigned long b6;		/* scratch */
+	unsigned long b7;		/* scratch */
+
+	unsigned long ar_csd;           /* used by cmp8xchg16 (scratch) */
+	unsigned long ar_ssd;           /* reserved for future use (scratch) */
+
+	unsigned long r8;		/* scratch (return value register 0) */
+	unsigned long r9;		/* scratch (return value register 1) */
+	unsigned long r10;		/* scratch (return value register 2) */
+	unsigned long r11;		/* scratch (return value register 3) */
+
+	unsigned long cr_ipsr;		/* interrupted task's psr */
+	unsigned long cr_iip;		/* interrupted task's instruction pointer */
+	unsigned long cr_ifs;		/* interrupted task's function state */
+
+	unsigned long ar_unat;		/* interrupted task's NaT register (preserved) */
+	unsigned long ar_pfs;		/* prev function state  */
+	unsigned long ar_rsc;		/* RSE configuration */
+	/* The following two are valid only if cr_ipsr.cpl > 0: */
+	unsigned long ar_rnat;		/* RSE NaT */
+	unsigned long ar_bspstore;	/* RSE bspstore */
+
+	unsigned long pr;		/* 64 predicate registers (1 bit each) */
+	unsigned long b0;		/* return pointer (bp) */
+	unsigned long loadrs;		/* size of dirty partition << 16 */
+
+	unsigned long r1;		/* the gp pointer */
+	unsigned long r12;		/* interrupted task's memory stack pointer */
+	unsigned long r13;		/* thread pointer */
+
+	unsigned long ar_fpsr;		/* floating point status (preserved) */
+	unsigned long r15;		/* scratch */
+
+	/* The remaining registers are NOT saved for system calls.  */
+
+	unsigned long r14;		/* scratch */
+	unsigned long r2;		/* scratch */
+	unsigned long r3;		/* scratch */
+
+	/* The following registers are saved by SAVE_REST: */
+	unsigned long r16;		/* scratch */
+	unsigned long r17;		/* scratch */
+	unsigned long r18;		/* scratch */
+	unsigned long r19;		/* scratch */
+	unsigned long r20;		/* scratch */
+	unsigned long r21;		/* scratch */
+	unsigned long r22;		/* scratch */
+	unsigned long r23;		/* scratch */
+	unsigned long r24;		/* scratch */
+	unsigned long r25;		/* scratch */
+	unsigned long r26;		/* scratch */
+	unsigned long r27;		/* scratch */
+	unsigned long r28;		/* scratch */
+	unsigned long r29;		/* scratch */
+	unsigned long r30;		/* scratch */
+	unsigned long r31;		/* scratch */
+
+	unsigned long ar_ccv;		/* compare/exchange value (scratch) */
+
+	/*
+	 * Floating point registers that the kernel considers scratch:
+	 */
+	struct ia64_fpreg f6;		/* scratch */
+	struct ia64_fpreg f7;		/* scratch */
+	struct ia64_fpreg f8;		/* scratch */
+	struct ia64_fpreg f9;		/* scratch */
+	struct ia64_fpreg f10;		/* scratch */
+	struct ia64_fpreg f11;		/* scratch */
+};
+
+
+
+/*
+ * Structure: dump_header_asm_t
+ *  Function: This is the header for architecture-specific stuff.  It
+ *            follows right after the dump header.
+ *
+ */
+typedef struct _dump_header_asm_s {
+
+        /* the dump magic number -- unique to verify dump is valid */
+        uint64_t             dha_magic_number;
+
+        /* the version number of this dump */
+        uint32_t             dha_version;
+
+        /* the size of this header (in case we can't read it) */
+        uint32_t             dha_header_size;
+
+        /* pointer to pt_regs, (OLD: (struct pt_regs *, NEW: (uint64_t)) */
+	uint64_t             dha_pt_regs;
+
+	/* the dump registers */
+	struct pt_regs       dha_regs;
+
+        /* the rnat register saved after flushrs */
+        uint64_t             dha_rnat;
+
+	/* the pfs register saved after flushrs */
+	uint64_t             dha_pfs;
+
+	/* the bspstore register saved after flushrs */
+	uint64_t             dha_bspstore;
+
+	/* smp specific */
+	uint32_t	     dha_smp_num_cpus;
+	uint32_t	     dha_dumping_cpu;
+	struct pt_regs	     dha_smp_regs[NR_CPUS];
+	uint64_t	     dha_smp_current_task[NR_CPUS];
+	uint64_t	     dha_stack[NR_CPUS];
+	uint64_t	     dha_stack_ptr[NR_CPUS];
+
+	/* load address of kernel */
+        uint64_t             dha_kernel_addr;
+
+} __attribute__((packed)) dump_header_asm_t;
+
+struct dump_CPU_info_ia64 {
+	struct pt_regs	     dha_smp_regs;
+	uint64_t	     dha_smp_current_task;
+	uint64_t	     dha_stack;
+	uint64_t	     dha_stack_ptr;
+} __attribute__((packed)) dump_CPU_info_ia64_t;
+
+typedef struct dump_CPU_info_ia64 dump_CPU_info_t;
+
+/*
+ * i386 ---------------------------------------------------------
+ */
+
+#elif defined(X86)
+
+#define DUMP_ASM_MAGIC_NUMBER	0xdeaddeadULL	/* magic number            */
+#define DUMP_ASM_VERSION_NUMBER	0x5	/* version number          */
+
+
+struct pt_regs {
+	long ebx;
+	long ecx;
+	long edx;
+	long esi;
+	long edi;
+	long ebp;
+	long eax;
+	int  xds;
+	int  xes;
+	long orig_eax;
+	long eip;
+	int  xcs;
+	long eflags;
+	long esp;
+	int  xss;
+};
+
+/*
+ * Structure: __dump_header_asm
+ *  Function: This is the header for architecture-specific stuff.  It
+ *            follows right after the dump header.
+ */
+typedef struct _dump_header_asm_s {
+	/* the dump magic number -- unique to verify dump is valid */
+	uint64_t	dha_magic_number;
+
+	/* the version number of this dump */
+	uint32_t	dha_version;
+
+	/* the size of this header (in case we can't read it) */
+	uint32_t	dha_header_size;
+
+	/* the esp for i386 systems */
+	uint32_t	dha_esp;
+
+	/* the eip for i386 systems */
+	uint32_t	dha_eip;
+
+	/* the dump registers */
+	struct pt_regs	dha_regs;
+
+	/* smp specific */
+	uint32_t	dha_smp_num_cpus;
+	uint32_t	dha_dumping_cpu;
+	struct pt_regs	dha_smp_regs[NR_CPUS];
+	uint32_t	dha_smp_current_task[NR_CPUS];
+	uint32_t	dha_stack[NR_CPUS];
+	uint32_t	dha_stack_ptr[NR_CPUS];
+} __attribute__((packed)) dump_header_asm_t;
+
+/*
+ * CPU specific part of dump_header_asm_t
+ */
+typedef struct dump_CPU_info_s {
+	struct pt_regs	dha_smp_regs;
+	uint64_t	dha_smp_current_task;
+	uint64_t	dha_stack;
+	uint64_t	dha_stack_ptr;
+} __attribute__ ((packed)) dump_CPU_info_t;
+
+
+/*
+ * x86-64 ---------------------------------------------------------
+ */
+
+#elif defined(X86_64)
+
+/* definitions */
+#define DUMP_ASM_MAGIC_NUMBER     0xdeaddeadULL  /* magic number            */
+#define DUMP_ASM_VERSION_NUMBER   0x2            /* version number          */
+
+
+struct pt_regs {
+	unsigned long r15;
+	unsigned long r14;
+	unsigned long r13;
+	unsigned long r12;
+	unsigned long rbp;
+	unsigned long rbx;
+/* arguments: non interrupts/non tracing syscalls only save upto here*/
+ 	unsigned long r11;
+	unsigned long r10;
+	unsigned long r9;
+	unsigned long r8;
+	unsigned long rax;
+	unsigned long rcx;
+	unsigned long rdx;
+	unsigned long rsi;
+	unsigned long rdi;
+	unsigned long orig_rax;
+/* end of arguments */
+/* cpu exception frame or undefined */
+	unsigned long rip;
+	unsigned long cs;
+	unsigned long eflags;
+	unsigned long rsp;
+	unsigned long ss;
+/* top of stack page */
+};
+
+/*
+ * Structure: dump_header_asm_t
+ *  Function: This is the header for architecture-specific stuff.  It
+ *            follows right after the dump header.
+ */
+typedef struct _dump_header_asm_s {
+
+        /* the dump magic number -- unique to verify dump is valid */
+        uint64_t             dha_magic_number;
+
+        /* the version number of this dump */
+        uint32_t             dha_version;
+
+        /* the size of this header (in case we can't read it) */
+        uint32_t             dha_header_size;
+
+	/* the dump registers */
+	struct pt_regs       dha_regs;
+
+	/* smp specific */
+	uint32_t	     dha_smp_num_cpus;
+	int		     dha_dumping_cpu;
+	struct pt_regs	     dha_smp_regs[NR_CPUS];
+	uint64_t	     dha_smp_current_task[NR_CPUS];
+	uint64_t	     dha_stack[NR_CPUS];
+	uint64_t	     dha_stack_ptr[NR_CPUS];
+} __attribute__((packed)) dump_header_asm_t;
+
+
+/*
+ * CPU specific part of dump_header_asm_t
+ */
+typedef struct dump_CPU_info_s {
+	struct pt_regs	     dha_smp_regs;
+	uint64_t	     dha_smp_current_task;
+	uint64_t	     dha_stack;
+	uint64_t	     dha_stack_ptr;
+} __attribute__ ((packed)) dump_CPU_info_t;
+
+#else
+
+#define HAVE_NO_DUMP_HEADER_ASM 1
+
+#endif
+
 #endif /* _DUMP_H */

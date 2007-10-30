@@ -134,7 +134,7 @@ var_t*var;
                     if(t) {
                     
                         sial_freetype(t);
-                        sial_error("Variable '%s' already defined as typedef.\n");
+                        sial_warning("Variable '%s' already defined as typedef.\n");
                     }
                 }
 
@@ -673,7 +673,6 @@ sial_newvlist()
 var_t*p=sial_newvar("");
 	TAG(p);
 	TAG(p->name);
-	TAG(p->array);
 	return p;
 }
 
