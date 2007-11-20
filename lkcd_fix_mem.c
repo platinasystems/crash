@@ -97,4 +97,14 @@ get_lkcd_switch_stack(ulong task)
 	return 0;
 }
 
+int lkcd_get_kernel_start_v8(ulong *addr)
+{
+	if (!addr)
+		return 0;
+
+	*addr = ((dump_header_asm_t *)lkcd->dump_header_asm)->dha_kernel_addr;
+
+	return 1;
+}
+
 #endif // IA64

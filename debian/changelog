@@ -1,3 +1,21 @@
+crash (4.0-4.9-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.9 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - kmem -p fix for kernels using anonymous structure
+    - kmem -p fir for SPARSEMEM kernels
+    - mod command now looks in /lib/module/<release>/updates first
+    - SAIL fix for "operation on 'v1' may be undefined"
+    - Fix for 'crash -h [command] > outfile' failures
+    - LKCD compiler warning fixups
+    - kmem -s fix to display a non-fatal warning message
+    - LKCD ia64 get physical start from dump header
+    - s390[x] 4 level page table support
+    - LKCD do not abort() on phys mem zone error, use non-fatal warning
+    instead.
+
+ -- Troy Heber <troyh@debian.org>  Tue, 20 Nov 2007 09:33:25 -0700
+
 crash (4.0-4.8-1) unstable; urgency=low
 
   * New upstream version 4.0-4.8 (see

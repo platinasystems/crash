@@ -400,6 +400,8 @@ setup_scroll_command(void)
 				CRASHPAGER_argv[i]);
 		}
 		break;
+	default:
+		return NULL;
         }
 
 	return buf;

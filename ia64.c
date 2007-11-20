@@ -3810,7 +3810,16 @@ ia64_calc_phys_start(void)
 					phys_start);
 		}
                 return;
-        }
+        } else if (LKCD_DUMPFILE()) {
+
+		if (lkcd_get_kernel_start(&phys_start)) {
+                        machdep->machspec->phys_start = phys_start;
+			if (CRASHDEBUG(1))
+				fprintf(fp,
+				    "LKCD dump: phys_start: %lx\n",
+					phys_start);
+		}
+	}
 
 	if ((vd = get_kdump_vmcore_data())) {
 		/*

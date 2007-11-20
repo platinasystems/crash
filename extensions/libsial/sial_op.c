@@ -28,15 +28,15 @@ typedef struct {
 #define V3 (v3?v3:(v3=NODE_EXE(P3)))
 #define V4 (v4?v4:(v4=NODE_EXE(P4)))
 
-#define L1 (unival(v1?v1:V1))
-#define L2 (unival(v2?v2:V2))
-#define L3 (unival(v3?v3:V3))
-#define L4 (unival(v4?v4:V4))
+#define L1 (unival(V1))
+#define L2 (unival(V2))
+#define L3 (unival(V3))
+#define L4 (unival(V4))
 
-#define S1 ((v1?v1:V1)->v.data)
-#define S2 ((v2?v2:V2)->v.data)
-#define S3 ((v3?v3:V3)->v.data)
-#define S4 ((v4?v4:V4)->v.data)
+#define S1 ((V1)->v.data)
+#define S2 ((V2)->v.data)
+#define S3 ((V3)->v.data)
+#define S4 ((V4)->v.data)
 
 void sial_do_deref(int n, value_t *v, value_t *ref);
 ul
@@ -545,39 +545,53 @@ inval:
 			case ADD: {	/* expr + expr */
 				/* adding two pointers ? */
 				if(V2->type.type == V_REF) goto inval;
-				sial_transfer(v=sial_newval(), V1, L1 + L2*size);
+
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) + L2 * size);
 			}
 			break;
 			case SUB: {	/* expr - expr */
-				
 				/* different results if mixed types.
 				   if both are pointers then result is a V_BASE */
 				if(V2->type.type == V_REF)
 					v=sial_makebtype(L1 - L2);
 
-				else sial_transfer(v=sial_newval(), V1, L1 - L2*size);
+				else {
+					V1;
+					sial_transfer(v=sial_newval(), v1,
+						      unival(v1) - L2 * size);
+				}
 			}
 			break;
 			case PREDECR: { /* pre is easy */
-				sial_transfer(v=sial_newval(), V1, L1-size);
-				sial_setval(V1, v);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) - size);
+				sial_setval(v1, v);
 			}
 			break;
 			case PREINCR: {
-				sial_transfer(v=sial_newval(), V1, L1+size);
-				sial_setval(V1, v);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) + size);
+				sial_setval(v1, v);
 			}
 			break;
 			case POSTINCR: {
-				sial_transfer(v=sial_newval(), V1, L1+size);
-				sial_setval(V1, v);
-				sial_transfer(v, V1, L1);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) + size);
+				sial_setval(v1, v);
+				sial_transfer(v, v1, unival(v1));
 			}
 			break;
 			case POSTDECR: {
-				sial_transfer(v=sial_newval(), V1, L1-size);
-				sial_setval(V1, v);
-				sial_transfer(v, V1, L1);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) - size);
+				sial_setval(v1, v);
+				sial_transfer(v, v1, unival(v1));
 			}
 			break;
 			default:
@@ -625,26 +639,33 @@ inval:
 			}
 			break;
 			case PREDECR: { /* pre is easy */
-				sial_transfer(v=sial_newval(), V1, L1-1);
-				sial_setval(V1, v);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) - 1);
+				sial_setval(v1, v);
 			}
 			break;
 			case PREINCR: {
 				V1;
-				sial_transfer(v=sial_newval(), V1, L1+1);
-				sial_setval(V1, v);
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) + 1);
+				sial_setval(v1, v);
 			}
 			break;
 			case POSTINCR: {
-				sial_transfer(v=sial_newval(), V1, L1+1);
-				sial_setval(V1, v);
-				sial_transfer(v, V1, L1);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) + 1);
+				sial_setval(v1, v);
+				sial_transfer(v, v1, unival(v1));
 			}
 			break;
 			case POSTDECR: {
-				sial_transfer(v=sial_newval(), V1, L1-1);
-				sial_setval(V1, v);
-				sial_transfer(v, V1, L1);
+				V1;
+				sial_transfer(v=sial_newval(), v1,
+					      unival(v1) - 1);
+				sial_setval(v1, v);
+				sial_transfer(v, v1, unival(v1));
 			}
 			break;
 			default: sial_rerror(&P1->pos, "Oops ops ! [%d]", top);
@@ -682,12 +703,14 @@ doop:
 			else {
 
 				/* if it's a Me-op then v is already set */
-				if(top != o->op) { sial_setval(V1, v); }
-				else {
-
-					sial_setval(V1, V2);
+				V1;
+				if(top != o->op) {
+					sial_setval(v1, v);
+				} else {
+					sial_setval(v1, V2);
 					v=sial_cloneval(V2);
 				}
+
 			}
 		}
 		/* the result of a assignment if not an Lvalue_t */

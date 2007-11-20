@@ -16,6 +16,9 @@
 
 #include "defs.h"		/* From the crash source top-level directory */
 
+int _init(void);
+int _fini(void);
+
 /*
  * Indices of size-offset array (Used by GET_xxx macros)
  *
@@ -1508,7 +1511,7 @@ static struct command_table_entry command_table[] = {
 	{NULL, NULL, NULL, 0},
 };
 
-int _init()
+int _init(void)
 {
 	register_extension(command_table);
 
@@ -1525,7 +1528,7 @@ int _init()
 	return 0;
 }
 
-int _fini()
+int _fini(void)
 {
 	return 0;
 }
