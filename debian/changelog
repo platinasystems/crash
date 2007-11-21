@@ -1,3 +1,12 @@
+crash (4.0-4.10-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.10 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Fix a regression introduced in 4.0-4.9 that causes the "kmem -p" command
+    to fail in SPARSEMEM kernels using anonymous structures.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 21 Nov 2007 09:10:29 -0700
+
 crash (4.0-4.9-1) unstable; urgency=low
 
   * New upstream version 4.0-4.9 (see

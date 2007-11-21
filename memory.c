@@ -286,7 +286,7 @@ vm_init(void)
 			STRUCT_SIZE("atomic_t") + sizeof(ulong);
         MEMBER_OFFSET_INIT(page_index, "page", "index");
 	if (INVALID_MEMBER(page_index))
-		ANON_MEMBER_OFFSET_INIT(page_mapping, "page", "index");
+		ANON_MEMBER_OFFSET_INIT(page_index, "page", "index");
         MEMBER_OFFSET_INIT(page_buffers, "page", "buffers");
 	MEMBER_OFFSET_INIT(page_lru, "page", "lru");
 	MEMBER_OFFSET_INIT(page_pte, "page", "pte");
