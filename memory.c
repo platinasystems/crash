@@ -654,7 +654,7 @@ vm_init(void)
 		if (symbol_exists("numnodes"))
 			get_symbol_data("numnodes", sizeof(int), &vt->numnodes);
 
-		if ((vt->numnodes = get_nodes_online()))
+		if (get_nodes_online())
 			vt->flags |= NODES_ONLINE;
 
 		MEMBER_OFFSET_INIT(pglist_data_node_zones, 
@@ -9653,7 +9653,7 @@ dump_slab_objects_percpu(struct meminfo *si)
 		if (on_free_list && on_cpudata_list) {
 			error(INFO, 
 		    "\"%s\" cache: object %lx on both free and cpu %d lists\n",
-				si->curname, si->cpu, obj);
+				si->curname, obj, si->cpu);
 			si->errors++;
 		}
 		if (on_free_list && on_shared_list) {
@@ -10234,7 +10234,7 @@ is_page_ptr(ulong addr, physaddr_t *phys)
 					if (phys) {
 						section_paddr = PTOB(section_nr_to_pfn(nr));
 						pgnum = (addr - mem_map) / SIZE(page);
-						*phys = section_paddr + (pgnum * PAGESIZE());
+						*phys = section_paddr + ((physaddr_t)pgnum * PAGESIZE());
 					} 
 					return TRUE;
 				}
@@ -10264,7 +10264,7 @@ is_page_ptr(ulong addr, physaddr_t *phys)
 
 		if (phys) {
 			pgnum = (addr - nt->mem_map) / SIZE(page);
-			*phys = (pgnum * PAGESIZE()) + nt->start_paddr;
+			*phys = ((physaddr_t)pgnum * PAGESIZE()) + nt->start_paddr;
 		}
 
 		return TRUE;
@@ -12447,6 +12447,9 @@ get_nodes_online(void)
 			fprintf(fp, "%s%lx", i ? ", " : "",  vt->node_online_map[i]);
 		fprintf(fp, "] -> nodes online: %d\n", online);
 	}
+
+	if (online)
+		vt->numnodes = online;
 
 	return online;
 }

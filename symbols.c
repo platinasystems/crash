@@ -5851,6 +5851,19 @@ dump_offset_table(char *spec, ulong makestruct)
         fprintf(fp, "                pid_hash_chain: %ld\n",
                 OFFSET(pid_hash_chain));
 
+	fprintf(fp, "                   pid_numbers: %ld\n",
+		OFFSET(pid_numbers));
+
+	fprintf(fp, "                       upid_nr: %ld\n",
+		OFFSET(upid_nr));
+	fprintf(fp, "                       upid_ns: %ld\n",
+		OFFSET(upid_ns));
+	fprintf(fp, "                upid_pid_chain: %ld\n",
+		OFFSET(upid_pid_chain));
+
+	fprintf(fp, "                     pid_tasks: %ld\n",
+		OFFSET(pid_tasks));
+
         fprintf(fp, "               hlist_node_next: %ld\n",
 		OFFSET(hlist_node_next));
         fprintf(fp, "              hlist_node_pprev: %ld\n",
@@ -7013,6 +7026,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(mem_section));
 	fprintf(fp, "                      pid_link: %ld\n", 
 		SIZE(pid_link));
+	fprintf(fp, "                          upid: %ld\n", 
+		SIZE(upid));
 	fprintf(fp, "                  unwind_table: %ld\n", 
 		SIZE(unwind_table));
 	fprintf(fp, "                        rlimit: %ld\n", 

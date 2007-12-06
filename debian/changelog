@@ -1,3 +1,16 @@
+crash (4.0-4.11-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.11 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Fix for 2.6.24 pid_namespace (allows crash to come up on 2.6.24 kernels,
+    but most of the kmem commands do not work correctly)
+    - Fix incorrect free page list with "kmem [-f] <addr>" on x86 kernels.
+    - Fix x86 bt command for active tasks in Egenera dumpfiles.
+    - Fix for potential seg fault if a task's kernel stack is overrun.
+    - Fix for "kmem -S" error message
+
+ -- Troy Heber <troyh@debian.org>  Thu, 06 Dec 2007 09:44:40 -0700
+
 crash (4.0-4.10-1) unstable; urgency=low
 
   * New upstream version 4.0-4.10 (see

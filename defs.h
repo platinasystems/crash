@@ -608,6 +608,7 @@ struct task_table {                      /* kernel/local task table data */
 	char *task_struct;
 	char *thread_info;
 	char *mm_struct;
+	ulong init_pid_ns;
 };
 
 #define TASK_INIT_DONE       (0x1)
@@ -1421,6 +1422,11 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long kmem_cache_node_nr_slabs;
 	long kmem_cache_node_partial;
 	long kmem_cache_node_full;
+	long pid_numbers;
+	long upid_nr;
+	long upid_ns;
+	long upid_pid_chain;
+	long pid_tasks;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1521,6 +1527,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long rlimit;
 	long kmem_cache;
 	long kmem_cache_node;
+	long upid;
 };
 
 struct array_table {

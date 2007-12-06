@@ -503,7 +503,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-4.10
+RELEASE=4.0-4.11
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

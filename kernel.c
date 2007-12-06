@@ -2139,6 +2139,18 @@ get_lkcd_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 				((char *)(up-1) - bt->stackbuf);
                         return;
                 }
+		if (STREQ(sym, "dump_execute")) {
+                        *eip = *up;
+                        *esp = bt->stackbase + 
+				((char *)(up) - bt->stackbuf);
+                        return;
+		}
+		if (STREQ(sym, "vmdump_nmi_callback")) {
+                        *eip = *up;
+                        *esp = bt->stackbase + 
+				((char *)(up) - bt->stackbuf);
+                        return;
+		}
                 if (STREQ(sym, "smp_stop_cpu_interrupt")) {
                         *eip = *up;
                         *esp = bt->task + 
