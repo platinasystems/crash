@@ -1414,7 +1414,6 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long kmem_cache_cpu_slab;
 	long page_inuse;
 /*	long page_offset;  use "old" page->offset */
-	long page_lockless_freelist;
 	long page_slab;
 	long page_first_page;
 	long page_freelist;
@@ -1427,6 +1426,9 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long upid_ns;
 	long upid_pid_chain;
 	long pid_tasks;
+        long kmem_cache_cpu_freelist;
+        long kmem_cache_cpu_page;
+        long kmem_cache_cpu_node;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1528,6 +1530,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long kmem_cache;
 	long kmem_cache_node;
 	long upid;
+	long kmem_cache_cpu;
+	long cfs_rq;
 };
 
 struct array_table {
@@ -1572,7 +1576,9 @@ struct array_table {
 #define MEMBER_OFFSET(X,Y)  datatype_info((X), (Y), NULL)
 #define MEMBER_EXISTS(X,Y)  (datatype_info((X), (Y), NULL) >= 0)
 #define MEMBER_SIZE_REQUEST ((struct datatype_member *)(-1))
+#define MEMBER_TYPE_REQUEST ((struct datatype_member *)(-3))
 #define MEMBER_SIZE(X,Y)    datatype_info((X), (Y), MEMBER_SIZE_REQUEST)
+#define MEMBER_TYPE(X,Y)    datatype_info((X), (Y), MEMBER_TYPE_REQUEST)
 
 #define ANON_MEMBER_OFFSET_REQUEST ((struct datatype_member *)(-2))
 #define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
@@ -1687,6 +1693,7 @@ struct vm_table {                /* kernel VM-related data */
 	int node_online_map_len;
 	int nr_vm_stat_items;
 	char **vm_stat_items;
+	int cpu_slab_type;
 };
 
 #define NODES                       (0x1)
@@ -2064,6 +2071,8 @@ struct load_module {
 #define PAGE_OFFSET     (machdep->machspec->page_offset)
 #define VMALLOC_START   (machdep->machspec->vmalloc_start_addr)
 #define VMALLOC_END     (machdep->machspec->vmalloc_end)
+#define VMEMMAP_VADDR   (machdep->machspec->vmemmap_vaddr)
+#define VMEMMAP_END     (machdep->machspec->vmemmap_end)
 #define MODULES_VADDR   (machdep->machspec->modules_vaddr)
 #define MODULES_END     (machdep->machspec->modules_end)
 
@@ -2083,6 +2092,9 @@ struct load_module {
 #define VMALLOC_END_2_6_11         0xffffe1ffffffffff
 #define MODULES_VADDR_2_6_11       0xffffffff88000000
 #define MODULES_END_2_6_11         0xfffffffffff00000
+
+#define VMEMMAP_VADDR_2_6_24       0xffffe20000000000
+#define VMEMMAP_END_2_6_24         0xffffe2ffffffffff
 
 #define USERSPACE_TOP_XEN          0x0000800000000000
 #define PAGE_OFFSET_XEN            0xffff880000000000
@@ -3746,6 +3758,8 @@ struct machine_specific {
 	ulong page_offset;
 	ulong vmalloc_start_addr;
 	ulong vmalloc_end;
+	ulong vmemmap_vaddr;
+	ulong vmemmap_end;
 	ulong modules_vaddr;
 	ulong modules_end;
 	ulong phys_base;
@@ -3768,6 +3782,7 @@ struct machine_specific {
 #define SCHED_TEXT    (0x40)
 #define PHYS_BASE     (0x80)
 #define VM_XEN_RHEL4 (0x100)
+#define VMEMMAP      (0x200)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 

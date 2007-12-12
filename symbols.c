@@ -3795,6 +3795,7 @@ datatype_init(void)
  *   #define STRUCT_EXISTS(X)    (datatype_info((X), NULL, NULL) >= 0)
  *   #define MEMBER_EXISTS(X,Y)  (datatype_info((X), (Y), NULL) >= 0)
  *   #define MEMBER_SIZE(X,Y)    datatype_info((X), (Y), MEMBER_SIZE_REQUEST)
+ *   #define MEMBER_TYPE(X,Y)    datatype_info((X), (Y), MEMBER_TYPE_REQUEST)
  *   #define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
  *
  *  to determine structure or union sizes, or member offsets.
@@ -3934,7 +3935,7 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 
 	FREEBUF(req);
 
-        if (dm && (dm != MEMBER_SIZE_REQUEST)) {
+        if (dm && (dm != MEMBER_SIZE_REQUEST) && (dm != MEMBER_TYPE_REQUEST)) {
                 dm->type = type_found;
                 dm->size = size;
 		dm->member_size = member_size;
@@ -3954,7 +3955,9 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 
 	if (dm == MEMBER_SIZE_REQUEST)
 		return member_size;
-        else if (member) 
+	else if (dm == MEMBER_TYPE_REQUEST)
+		return member_typecode;
+        else if (member)
 		return offset;
 	else
                 return size;
@@ -6143,8 +6146,6 @@ dump_offset_table(char *spec, ulong makestruct)
 
         fprintf(fp, "                    page_inuse: %ld\n",
                 OFFSET(page_inuse));
-        fprintf(fp, "        page_lockless_freelist: %ld\n",
-                OFFSET(page_lockless_freelist));
         fprintf(fp, "                     page_slab: %ld\n",
                 OFFSET(page_slab));
         fprintf(fp, "               page_first_page: %ld\n",
@@ -6514,6 +6515,13 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(kmem_cache_node_partial));
         fprintf(fp, "          kmem_cache_node_full: %ld\n",
                 OFFSET(kmem_cache_node_full));
+
+        fprintf(fp, "       kmem_cache_cpu_freelist: %ld\n",
+                OFFSET(kmem_cache_cpu_freelist));
+        fprintf(fp, "           kmem_cache_cpu_page: %ld\n",
+                OFFSET(kmem_cache_cpu_page));
+        fprintf(fp, "           kmem_cache_cpu_node: %ld\n",
+                OFFSET(kmem_cache_cpu_node));
 
 	fprintf(fp, "               net_device_next: %ld\n",
         	OFFSET(net_device_next));
@@ -6899,6 +6907,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(kmem_bufctl_t));
         fprintf(fp, "                    kmem_cache: %ld\n", SIZE(kmem_cache));
         fprintf(fp, "               kmem_cache_node: %ld\n", SIZE(kmem_cache_node));
+        fprintf(fp, "                kmem_cache_cpu: %ld\n", SIZE(kmem_cache_cpu));
 
         fprintf(fp, "              swap_info_struct: %ld\n", 
 		SIZE(swap_info_struct));
@@ -7032,6 +7041,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(unwind_table));
 	fprintf(fp, "                        rlimit: %ld\n", 
 		SIZE(rlimit));
+	fprintf(fp, "                        cfs_rq: %ld\n", 
+		SIZE(cfs_rq));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

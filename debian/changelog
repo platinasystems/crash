@@ -1,3 +1,11 @@
+crash (4.0-4.12-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.12 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Enable kmem and runq command to correctly function on 2.6.24 kernels.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 12 Dec 2007 12:26:14 -0700
+
 crash (4.0-4.11-1) unstable; urgency=low
 
   * New upstream version 4.0-4.11 (see

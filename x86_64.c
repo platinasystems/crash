@@ -184,6 +184,12 @@ x86_64_init(int when)
 			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_11;
 			machdep->machspec->modules_end = MODULES_END_2_6_11;
 
+			/* 2.6.24 layout */
+			machdep->machspec->vmemmap_vaddr = VMEMMAP_VADDR_2_6_24;
+			machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_24;
+			if (symbol_exists("vmemmap_populate"))
+				machdep->flags |= VMEMMAP;
+
 	        	machdep->uvtop = x86_64_uvtop_level4;
 			break;
 
@@ -342,6 +348,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_XEN", others++ ? "|" : "");
 	if (machdep->flags & VM_XEN_RHEL4)
 		fprintf(fp, "%sVM_XEN_RHEL4", others++ ? "|" : "");
+	if (machdep->flags & VMEMMAP)
+		fprintf(fp, "%sVMEMMAP", others++ ? "|" : "");
 	if (machdep->flags & NO_TSS)
 		fprintf(fp, "%sNO_TSS", others++ ? "|" : "");
 	if (machdep->flags & SCHED_TEXT)
@@ -438,6 +446,10 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "              vmalloc_end: %016lx\n", (ulong)ms->vmalloc_end);
 	fprintf(fp, "            modules_vaddr: %016lx\n", (ulong)ms->modules_vaddr);
 	fprintf(fp, "              modules_end: %016lx\n", (ulong)ms->modules_end);
+	fprintf(fp, "            vmemmap_vaddr: %016lx %s\n", (ulong)ms->vmemmap_vaddr,
+		machdep->flags & VMEMMAP ? "" : "(unused)");
+	fprintf(fp, "              vmemmap_end: %016lx %s\n", (ulong)ms->vmemmap_end,
+		machdep->flags & VMEMMAP ? "" : "(unused)");
 	fprintf(fp, "                phys_base: %lx\n", (ulong)ms->phys_base);
 	fprintf(fp, "                     pml4: %lx\n", (ulong)ms->pml4);
 	fprintf(fp, "           last_pml4_read: %lx\n", (ulong)ms->last_pml4_read);
@@ -827,6 +839,8 @@ int
 x86_64_IS_VMALLOC_ADDR(ulong vaddr)
 {
 	return ((vaddr >= VMALLOC_START && vaddr <= VMALLOC_END) ||
+                ((machdep->flags & VMEMMAP) && 
+		 (vaddr >= VMEMMAP_VADDR && vaddr <= VMEMMAP_END)) ||
                 (vaddr >= MODULES_VADDR && vaddr <= MODULES_END));
 }
 
@@ -3952,6 +3966,8 @@ x86_64_display_machine_stats(void)
 //      fprintf(fp, "      L1 CACHE SIZE: %d\n", l1_cache_size());
         fprintf(fp, "KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
         fprintf(fp, "KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
+	if (machdep->flags & VMEMMAP)
+        	fprintf(fp, "KERNEL VMEMMAP BASE: %lx\n", machdep->machspec->vmemmap_vaddr);
 	fprintf(fp, "   KERNEL START MAP: %lx\n", __START_KERNEL_map);
         fprintf(fp, "KERNEL MODULES BASE: %lx\n", MODULES_VADDR);
         fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
