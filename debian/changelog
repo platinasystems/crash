@@ -1,3 +1,20 @@
+crash (4.0-4.13-1) unstable; urgency=low
+
+  * New upstream version 4.0-4.13 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Fix generic error message because of endianness mismatch
+    - update for "kmem -V" to display vm_event_states.
+    - Implement new "kmem -z" option for per-zone memory stats.
+    - Fix RSS ammounts displayed by "ps" and "vm" commands, pre 2.6.13 kernels
+    - x86 "bt" fix when analyzing a post 2.6.20 dump on a pre 2.6.20 machine
+    - Fix for FC8 xen x86 kernel that failed initializatoin
+    - Set default "phys_base" for fully virt relocatable kernels.
+    - New crash "--active" command line option to only gather active tasks
+    from each runqueue, skipping traversal of kernel's pid_hash.
+    - "help -n" formats and display ASCII VMCOREINOF data
+
+ -- Troy Heber <troyh@debian.org>  Tue, 15 Jan 2008 08:40:25 -0700
+
 crash (4.0-4.12-1) unstable; urgency=low
 
   * New upstream version 4.0-4.12 (see

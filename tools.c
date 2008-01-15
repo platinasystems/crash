@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -4523,6 +4523,23 @@ machine_type(char *type)
 	return STREQ(MACHINE_TYPE, type);
 }
 
+int 
+machine_type_mismatch(char *file, char *e_machine, char *alt, ulong query)
+{
+	if (machine_type(e_machine) || machine_type(alt))
+		return FALSE;
+
+	if (query == KDUMP_LOCAL)  /* already printed by NETDUMP_LOCAL */
+		return TRUE;
+
+	error(WARNING, "machine type mismatch:\n");
+
+	fprintf(fp, "         crash utility: %s\n", MACHINE_TYPE);
+	fprintf(fp, "         %s: %s%s%s\n\n", file, e_machine,
+		alt ? " or " : "", alt ? alt : "");
+		
+	return TRUE;
+}
 void
 command_not_supported()
 {
@@ -4580,4 +4597,66 @@ pathcmp(char *p1, char *p2)
         } while (c1 == c2);
 
         return ((c2 == '\0') && (c1 == '/') && (*p1 == '\0')) ? 0 : c1 - c2;
+}
+
+#include <elf.h>
+
+/*
+ *  Check the byte-order of an ELF file vs. the host byte order.
+ */
+int
+endian_mismatch(char *file, char dumpfile_endian, ulong query)
+{
+	char *endian;
+
+	switch (dumpfile_endian)
+	{
+	case ELFDATA2LSB:
+		if (__BYTE_ORDER == __LITTLE_ENDIAN)
+			return FALSE;
+		endian = "big-endian";
+		break;
+	case ELFDATA2MSB:
+		if (__BYTE_ORDER == __BIG_ENDIAN)	
+			return FALSE;
+		endian = "little-endian";
+		break;
+	default:
+		endian = "unknown";	
+		break;
+	}
+
+	if (query == KDUMP_LOCAL)  /* already printed by NETDUMP_LOCAL */
+		return TRUE;
+
+        error(WARNING, "endian mismatch:\n");
+
+        fprintf(fp, "         crash utility: %s\n", 
+		(__BYTE_ORDER == __LITTLE_ENDIAN) ?
+		"little-endian" : "big-endian");
+        fprintf(fp, "         %s: %s\n\n", file, endian);
+
+	return TRUE;	
+}
+
+uint16_t
+swap16(uint16_t val, int swap)
+{
+	if (swap) 
+        	return (((val & 0x00ff) << 8) |
+                	((val & 0xff00) >> 8));
+	else
+		return val;
+}
+
+uint32_t
+swap32(uint32_t val, int swap)
+{
+	if (swap)
+        	return (((val & 0x000000ffU) << 24) |
+                	((val & 0x0000ff00U) <<  8) |
+                	((val & 0x00ff0000U) >>  8) |
+                	((val & 0xff000000U) >> 24));
+	else
+		return val;
 }

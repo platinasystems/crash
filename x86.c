@@ -1009,22 +1009,22 @@ static void x86_init_hyper(int);
 static ulong x86_get_stackbase_hyper(ulong);
 static ulong x86_get_stacktop_hyper(ulong);
 
-static int INT_EFRAME_SS = 14;
-static int INT_EFRAME_ESP = 13;
-static int INT_EFRAME_EFLAGS = 12;   /* CS lcall7 */
-static int INT_EFRAME_CS = 11;       /* EIP lcall7 */
-static int INT_EFRAME_EIP = 10;      /* EFLAGS lcall7 */
-static int INT_EFRAME_ERR = 9;
-static int INT_EFRAME_ES = 8;
-static int INT_EFRAME_DS = 7;
-static int INT_EFRAME_EAX = 6;
-static int INT_EFRAME_EBP = 5;
-static int INT_EFRAME_EDI = 4;
-static int INT_EFRAME_ESI = 3;
-static int INT_EFRAME_EDX = 2;
-static int INT_EFRAME_ECX = 1;
-static int INT_EFRAME_EBX = 0;
-static int INT_EFRAME_GS = -1;
+int INT_EFRAME_SS = 14;
+int INT_EFRAME_ESP = 13;
+int INT_EFRAME_EFLAGS = 12;   /* CS lcall7 */
+int INT_EFRAME_CS = 11;       /* EIP lcall7 */
+int INT_EFRAME_EIP = 10;      /* EFLAGS lcall7 */
+int INT_EFRAME_ERR = 9;
+int INT_EFRAME_ES = 8;
+int INT_EFRAME_DS = 7;
+int INT_EFRAME_EAX = 6;
+int INT_EFRAME_EBP = 5;
+int INT_EFRAME_EDI = 4;
+int INT_EFRAME_ESI = 3;
+int INT_EFRAME_EDX = 2;
+int INT_EFRAME_ECX = 1;
+int INT_EFRAME_EBX = 0;
+int INT_EFRAME_GS = -1;
 
 #define MAX_USER_EFRAME_SIZE   (16)
 #define KERNEL_EFRAME_SIZE (INT_EFRAME_EFLAGS+1)

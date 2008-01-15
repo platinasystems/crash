@@ -35,6 +35,25 @@ typedef struct syment syment_t;
 
 typedef uint32_t kaddr_t; 
 
+extern int INT_EFRAME_SS;
+extern int INT_EFRAME_ESP;
+extern int INT_EFRAME_EFLAGS;
+extern int INT_EFRAME_CS;
+extern int INT_EFRAME_EIP;
+extern int INT_EFRAME_ERR;
+extern int INT_EFRAME_ES;
+extern int INT_EFRAME_DS;
+extern int INT_EFRAME_EAX;
+extern int INT_EFRAME_EBP;
+extern int INT_EFRAME_EDI;
+extern int INT_EFRAME_ESI;
+extern int INT_EFRAME_EDX;
+extern int INT_EFRAME_ECX;
+extern int INT_EFRAME_EBX;
+extern int INT_EFRAME_GS;
+
+extern ulong int_eframe[];
+
 #endif  /* REDHAT */
 
 

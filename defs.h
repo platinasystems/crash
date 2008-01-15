@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -625,6 +625,7 @@ struct task_table {                      /* kernel/local task table data */
 #define IRQSTACKS          (0x800)
 #define TIMESPEC          (0x1000)
 #define NO_TIMESPEC       (0x2000)
+#define ACTIVE_ONLY       (0x4000)
 
 #define TASK_SLUSH (20)
 
@@ -1010,6 +1011,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mm_struct_pgd;
 	long mm_struct_rss;
 	long mm_struct_anon_rss;
+	long mm_struct_file_rss;
 	long mm_struct_total_vm;
 	long mm_struct_start_code;
 	long mm_struct_arg_start;
@@ -1429,6 +1431,12 @@ struct offset_table {                    /* stash of commonly-used offsets */
         long kmem_cache_cpu_freelist;
         long kmem_cache_cpu_page;
         long kmem_cache_cpu_node;
+	long zone_nr_active;
+	long zone_nr_inactive;
+	long zone_all_unreclaimable;
+	long zone_present_pages;
+	long zone_flags;
+	long zone_pages_scanned;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1694,6 +1702,8 @@ struct vm_table {                /* kernel VM-related data */
 	int nr_vm_stat_items;
 	char **vm_stat_items;
 	int cpu_slab_type;
+	int nr_vm_event_items;
+	char **vm_event_items;
 };
 
 #define NODES                       (0x1)
@@ -1714,6 +1724,7 @@ struct vm_table {                /* kernel VM-related data */
 #define VM_STAT                  (0x8000)
 #define KMALLOC_SLUB            (0x10000)
 #define CONFIG_NUMA             (0x20000)
+#define VM_EVENT                (0x40000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -1994,7 +2005,7 @@ struct load_module {
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
 #define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
-#define KVBASE_MASK        (0x7fffff)
+#define KVBASE_MASK        (0x1ffffff)
 
 #define PGDIR_SHIFT_2LEVEL   (22)
 #define PTRS_PER_PTE_2LEVEL  (1024)
@@ -3199,13 +3210,16 @@ char *pages_to_size(ulong, char *);
 int clean_arg(void);
 int empty_list(ulong);
 int machine_type(char *);
+int machine_type_mismatch(char *, char *, char *, ulong);
 void command_not_supported(void);
 void option_not_supported(int);
 void please_wait(char *);
 void please_wait_done(void);
 int pathcmp(char *, char *);
 int calculate(char *, ulong *, ulonglong *, ulong);
-
+int endian_mismatch(char *, char, ulong);
+uint16_t swap16(uint16_t, int);
+uint32_t swap32(uint32_t, int);
 
 /* 
  *  symbols.c 
@@ -3260,6 +3274,7 @@ void dump_symbol_table(void);
 void dump_struct_table(ulong);
 void dump_offset_table(char *, ulong);
 int is_elf_file(char *);
+int is_kernel(char *);
 int file_elf_version(char *);
 int is_system_map(char *);
 int select_namelist(char *);
@@ -4091,6 +4106,7 @@ char *xc_core_mfn_to_page(ulong, char *);
 int xc_core_mfn_to_page_index(ulong);
 void xendump_panic_hook(char *);
 int read_xendump_hyper(int, void *, int, ulong, physaddr_t);
+struct xendump_data *get_xendump_data(void);
 
 /*
  *  net.c

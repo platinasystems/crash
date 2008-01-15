@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -55,6 +55,7 @@ static struct option long_options[] = {
         {"CRASHPAGER", 0, 0, 0},
         {"no_scroll", 0, 0, 0},
         {"reloc", required_argument, 0, 0},
+	{"active", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -183,6 +184,9 @@ main(int argc, char **argv)
 
 		        else if (STREQ(long_options[option_index].name, "no_crashrc"))
 				pc->flags |= NOCRASHRC;
+
+		        else if (STREQ(long_options[option_index].name, "active"))
+				tt->flags |= ACTIVE_ONLY;
 
 		        else if (STREQ(long_options[option_index].name, "reloc")) {
 				if (!calculate(optarg, &kt->relocate, NULL, 0)) {
@@ -319,7 +323,7 @@ main(int argc, char **argv)
         	} else if (!is_readable(argv[optind])) 
 			program_usage(SHORT_FORM);
 
-		if (is_elf_file(argv[optind])) {
+		if (is_kernel(argv[optind])) {
 			if (pc->namelist || pc->server_namelist) {
 				if (!select_namelist(argv[optind])) {
                                		error(INFO, 

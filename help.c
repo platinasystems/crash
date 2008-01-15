@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3861,7 +3861,7 @@ NULL
 char *help_kmem[] = {
 "kmem",
 "kernel memory",
-"[-f|-F|-p|-c|-C|-i|-s|-S|-v|-V|-n] [-[l|L][a|i]] [slab] [[-P] address]",
+"[-f|-F|-p|-c|-C|-i|-s|-S|-v|-V|-n|-z] [-[l|L][a|i]] [slab] [[-P] address]",
 "  This command displays information about the use of kernel memory.\n",
 "        -f  displays the contents of the system free memory headers.",
 "            also verifies that the page count equals nr_free_pages.",
@@ -3878,8 +3878,11 @@ char *help_kmem[] = {
 "            address of each kmem_cache_node, its count of full and partial",
 "            slabs, and a list of all tracked slabs.",
 "        -v  displays the vmlist entries.",
-"        -V  displays the kernel vm_stat table.",
+"        -V  displays the kernel vm_stat table if it exists, the cumulative",
+"            page_states counter values if they exist, and/or the cumulative",
+"            vm_event_states counter values if they exist.",
 "        -n  display memory node data (if supported).",
+"        -z  displays per-zone memory statistics.",
 "       -la  walks through the active_list and verifies nr_active_pages.",
 "       -li  walks through the inactive_list and verifies nr_inactive_pages.",
 "       -La  same as -la, but also dumps each page in the active_list.",
@@ -5198,7 +5201,7 @@ display_version(void)
 static 
 char *version_info[] = {
 
-"Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007  Red Hat, Inc.",
+"Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008  Red Hat, Inc.",
 "Copyright (C) 2004, 2005, 2006  IBM Corporation", 
 "Copyright (C) 1999-2006  Hewlett-Packard Co",
 "Copyright (C) 2005, 2006  Fujitsu Limited",

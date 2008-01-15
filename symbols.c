@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2494,6 +2494,96 @@ is_elf_file(char *s)
 		return FALSE;
 
 	return(is_bfd_format(s));
+}
+
+/*
+ *  Verify a vmlinux file, issuing a warning for processor and endianness
+ *  mismatches.
+ */
+int
+is_kernel(char *file)
+{
+	int fd, swap;
+	char eheader[BUFSIZE];
+	Elf32_Ehdr *elf32;
+	Elf64_Ehdr *elf64;
+
+	if ((fd = open(file, O_RDONLY)) < 0) {
+		error(INFO, "%s: %s\n", file, strerror(errno));
+		return FALSE;
+	}
+	if (read(fd, eheader, BUFSIZE) != BUFSIZE) {
+                /* error(INFO, "%s: %s\n", file, strerror(errno)); */
+		close(fd);
+		return FALSE;
+	}  
+	close(fd);
+
+	if (!STRNEQ(eheader, ELFMAG) || eheader[EI_VERSION] != EV_CURRENT)
+		return FALSE;
+
+	elf32 = (Elf32_Ehdr *)&eheader[0];
+	elf64 = (Elf64_Ehdr *)&eheader[0];
+
+	swap = (((eheader[EI_DATA] == ELFDATA2LSB) && 
+	     (__BYTE_ORDER == __BIG_ENDIAN)) ||
+	    ((eheader[EI_DATA] == ELFDATA2MSB) && 
+	     (__BYTE_ORDER == __LITTLE_ENDIAN)));
+
+        if ((elf32->e_ident[EI_CLASS] == ELFCLASS32) &&
+	    (swap16(elf32->e_type, swap) == ET_EXEC) &&
+	    (swap32(elf32->e_version, swap) == EV_CURRENT)) {
+		switch (swap16(elf32->e_machine, swap))
+		{
+		case EM_386:
+			if (machine_type_mismatch(file, "X86", NULL, 0))
+				goto bailout;
+			break;
+
+		default:
+			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
+				goto bailout;
+		}
+
+		if (endian_mismatch(file, elf32->e_ident[EI_DATA], 0))
+			goto bailout;
+
+	} else if ((elf64->e_ident[EI_CLASS] == ELFCLASS64) &&
+	    (swap16(elf64->e_type, swap) == ET_EXEC) &&
+	    (swap32(elf64->e_version, swap) == EV_CURRENT)) {
+		switch (swap16(elf64->e_machine, swap))
+		{
+		case EM_IA_64:
+			if (machine_type_mismatch(file, "IA64", NULL, 0))
+				goto bailout;
+			break;
+
+		case EM_PPC64:
+			if (machine_type_mismatch(file, "PPC64", NULL, 0))
+				goto bailout;
+			break;
+
+		case EM_X86_64:
+			if (machine_type_mismatch(file, "X86_64", NULL, 0)) 
+				goto bailout;
+			break;
+
+		case EM_386:
+			if (machine_type_mismatch(file, "X86", NULL, 0))
+				goto bailout;
+			break;
+
+		default:
+			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
+				goto bailout;
+		}
+
+		if (endian_mismatch(file, elf64->e_ident[EI_DATA], 0))
+			goto bailout;
+	}
+
+bailout:
+	return(is_bfd_format(file));
 }
 
 /*
@@ -6017,6 +6107,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mm_struct_rss));
 	fprintf(fp, "            mm_struct_anon_rss: %ld\n", 
 		OFFSET(mm_struct_anon_rss));
+	fprintf(fp, "            mm_struct_file_rss: %ld\n", 
+		OFFSET(mm_struct_file_rss));
 	fprintf(fp, "            mm_struct_total_vm: %ld\n", 
 		OFFSET(mm_struct_total_vm));
 	fprintf(fp, "          mm_struct_start_code: %ld\n", 
@@ -6689,6 +6781,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(zone_name));
 	fprintf(fp, "            zone_spanned_pages: %ld\n",
                 OFFSET(zone_spanned_pages));
+	fprintf(fp, "            zone_present_pages: %ld\n",
+                OFFSET(zone_present_pages));
 	fprintf(fp, "           zone_zone_start_pfn: %ld\n",
                 OFFSET(zone_zone_start_pfn));
 	fprintf(fp, "                zone_pages_min: %ld\n",
@@ -6699,6 +6793,16 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(zone_pages_high));
 	fprintf(fp, "                  zone_vm_stat: %ld\n",
                 OFFSET(zone_vm_stat));
+	fprintf(fp, "                zone_nr_active: %ld\n",
+                OFFSET(zone_nr_active));
+	fprintf(fp, "              zone_nr_inactive: %ld\n",
+                OFFSET(zone_nr_inactive));
+	fprintf(fp, "        zone_all_unreclaimable: %ld\n",
+                OFFSET(zone_all_unreclaimable));
+	fprintf(fp, "                    zone_flags: %ld\n",
+                OFFSET(zone_flags));
+	fprintf(fp, "            zone_pages_scanned: %ld\n",
+                OFFSET(zone_pages_scanned));
 
         fprintf(fp, "                neighbour_next: %ld\n", 
 		OFFSET(neighbour_next));
