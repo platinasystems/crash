@@ -1,8 +1,8 @@
 /* configure.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1176,7 +1176,7 @@ make_spec_file(void)
 	printf("offered by Mission Critical Linux, or the LKCD kernel patch.\n");
 	printf("\n");
 	printf("%%package devel\n");
-	printf("Requires: %%{name} = %%{version}\n");
+	printf("Requires: %%{name} = %%{version}, zlib-devel\n");
 	printf("Summary: crash utility for live systems; netdump, diskdump, kdump, LKCD or mcore dumpfiles\n");
 	printf("Group: Development/Debuggers\n");
 	printf("\n");

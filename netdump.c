@@ -2039,6 +2039,12 @@ next_sysrq:
 		return;
 	}
 
+	if (halt_eip && halt_esp) {
+        	*eip = halt_eip;
+        	*esp = halt_esp;
+		return;
+	}
+
 	if (panic)
 		return;
 
@@ -2063,12 +2069,6 @@ next_sysrq:
                 check_softirq = FALSE;
                 goto retry;
         }
-
-	if (halt_eip && halt_esp) {
-        	*eip = halt_eip;
-        	*esp = halt_esp;
-		return;
-	}
 
 	if (CRASHDEBUG(1))
 		error(INFO, 

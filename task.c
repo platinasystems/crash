@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -212,8 +212,13 @@ task_init(void)
         MEMBER_OFFSET_INIT(task_struct_pids, "task_struct", "pids");
         MEMBER_OFFSET_INIT(task_struct_last_run, "task_struct", "last_run");
         MEMBER_OFFSET_INIT(task_struct_timestamp, "task_struct", "timestamp");
+        MEMBER_OFFSET_INIT(task_struct_sched_info, "task_struct", "sched_info");
+	if (VALID_MEMBER(task_struct_sched_info))
+		MEMBER_OFFSET_INIT(sched_info_last_arrival, 
+			"sched_info", "last_arrival");
 	if (VALID_MEMBER(task_struct_last_run) || 
-	    VALID_MEMBER(task_struct_timestamp)) {
+	    VALID_MEMBER(task_struct_timestamp) ||
+	    VALID_MEMBER(sched_info_last_arrival)) {
 		char buf[BUFSIZE];
 	        strcpy(buf, "alias last ps -l");
         	alias_init(buf);
@@ -2114,6 +2119,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
 		do_verify = 1;
 	else if (tt->refresh_task_table == refresh_pid_hash_task_table)
 		do_verify = 2;
+	else if (tt->refresh_task_table == refresh_hlist_task_table)
+		do_verify = 2;
 	else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
 		do_verify = 2;
 	else if (tt->refresh_task_table == refresh_hlist_task_table_v3)
@@ -2636,9 +2643,10 @@ cmd_ps(void)
 			
 		case 'l':
 			if (INVALID_MEMBER(task_struct_last_run) &&
-			    INVALID_MEMBER(task_struct_timestamp)) {
+			    INVALID_MEMBER(task_struct_timestamp) &&
+			    INVALID_MEMBER(sched_info_last_arrival)) {
 				error(INFO, 
-"neither task_struct.last_run nor task_struct.timestamp exist in this kernel\n");
+                            "last-run timestamps do not exist in this kernel\n");
 				argerrs++;
 				break;
 			}
@@ -4289,6 +4297,10 @@ task_last_run(ulong task)
 	} else if (VALID_MEMBER(task_struct_timestamp))
         	timestamp = tt->last_task_read ?  ULONGLONG(tt->task_struct + 
 			OFFSET(task_struct_timestamp)) : 0;
+	else if (VALID_MEMBER(sched_info_last_arrival))
+        	timestamp = tt->last_task_read ?  ULONGLONG(tt->task_struct + 
+			OFFSET(task_struct_sched_info) + 
+			OFFSET(sched_info_last_arrival)) : 0;
 	
         return timestamp;
 }
@@ -5831,6 +5843,16 @@ get_idle_threads(ulong *tasklist, int nr_cpus)
 			cnt++;
 		else
                 	BZERO(tasklist, sizeof(ulong) * NR_CPUS);
+	} else if (OPENVZ()) {
+		runq = symbol_value("pcpu_info");
+		runqbuf = GETBUF(SIZE(pcpu_info));
+		for (i = 0; i < nr_cpus; i++, runq += SIZE(pcpu_info)) {
+			readmem(runq, KVADDR, runqbuf, SIZE(pcpu_info),
+				"pcpu info", FAULT_ON_ERROR);
+			tasklist[i] = ULONG(runqbuf + OFFSET(pcpu_info_idle));
+			if (IS_KVADDR(tasklist[i]))
+				cnt++;
+		}
 	}
 
 	if (runqbuf)
@@ -5924,14 +5946,38 @@ get_active_set(void)
 	} else if (symbol_exists("per_cpu__runqueues")) {
 		runq = symbol_value("per_cpu__runqueues");
 		per_cpu = TRUE;
-	} else
+	} else if (OPENVZ())
+		runq = symbol_value("pcpu_info");
+	else
 		return FALSE;
 
         BZERO(tt->active_set, sizeof(ulong) * NR_CPUS);
         runqbuf = GETBUF(SIZE(runqueue));
 	cnt = 0;
 
-	if (VALID_MEMBER(runqueue_curr) && per_cpu) {
+	if (OPENVZ()) {
+		ulong vcpu_struct; 
+		char *pcpu_info_buf, *vcpu_struct_buf;
+
+		pcpu_info_buf   = GETBUF(SIZE(pcpu_info));
+		vcpu_struct_buf = GETBUF(SIZE(vcpu_struct));
+
+		for (i = 0; i < kt->cpus; i++, runq += SIZE(pcpu_info)) {
+			readmem(runq, KVADDR, pcpu_info_buf, 
+				SIZE(pcpu_info), "pcpu_info", FAULT_ON_ERROR);
+			vcpu_struct= ULONG(pcpu_info_buf +
+				OFFSET(pcpu_info_vcpu));
+			readmem(vcpu_struct, KVADDR, vcpu_struct_buf, 
+				SIZE(vcpu_struct), "pcpu_info->vcpu",
+				FAULT_ON_ERROR);
+			tt->active_set[i] = ULONG(vcpu_struct_buf +
+				OFFSET(vcpu_struct_rq) + OFFSET(runqueue_curr));
+			if (IS_KVADDR(tt->active_set[i]))
+				cnt++;
+		}
+		FREEBUF(pcpu_info_buf);
+		FREEBUF(vcpu_struct_buf);
+	} else if (VALID_MEMBER(runqueue_curr) && per_cpu) {
                	for (i = 0; i < kt->cpus; i++) {
                         if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
                                 runq = symbol_value("per_cpu__runqueues") +
@@ -5949,7 +5995,8 @@ get_active_set(void)
 				cnt++;
 		}
 	} else if (VALID_MEMBER(runqueue_curr)) {
-	        for (i = 0; i < NR_CPUS; i++, runq += SIZE(runqueue)) {
+	        for (i = 0; i < MAX(kt->cpus, kt->kernel_NR_CPUS); i++, 
+		    runq += SIZE(runqueue)) {
 	                readmem(runq, KVADDR, runqbuf,
 	                	SIZE(runqueue), "(old) runqueues curr",
 	                        FAULT_ON_ERROR);

@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -474,6 +474,19 @@ kernel_init()
 
 	if (!(kt->flags & DWARF_UNWIND))
 		kt->flags |= NO_DWARF_UNWIND; 
+
+	/* 
+	 *  OpenVZ 
+	 */
+	if (kernel_symbol_exists("pcpu_info") && 
+	    STRUCT_EXISTS("pcpu_info") && STRUCT_EXISTS("vcpu_struct")) {
+		MEMBER_OFFSET_INIT(pcpu_info_vcpu, "pcpu_info", "vcpu");
+		MEMBER_OFFSET_INIT(pcpu_info_idle, "pcpu_info", "idle");
+		MEMBER_OFFSET_INIT(vcpu_struct_rq, "vcpu_struct", "rq");
+		STRUCT_SIZE_INIT(pcpu_info, "pcpu_info");
+		STRUCT_SIZE_INIT(vcpu_struct, "vcpu_struct");
+		kt->flags |= ARCH_OPENVZ;
+	}
 
 	BUG_bytes_init();
 }
@@ -3757,6 +3770,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
 	if (kt->flags & ARCH_XEN)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
+	if (kt->flags & ARCH_OPENVZ)
+		fprintf(fp, "%sARCH_OPENVZ", others++ ? "|" : "");
 	if (kt->flags & NO_IKCONFIG)
 		fprintf(fp, "%sNO_IKCONFIG", others++ ? "|" : "");
 	if (kt->flags & DWARF_UNWIND)

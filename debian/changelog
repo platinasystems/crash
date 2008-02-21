@@ -1,3 +1,18 @@
+crash (4.0-5.1-1) unstable; urgency=low
+
+  * New upstream version 4.0-5.1 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - 4.0-5.1 was released ontop of 4.0-5.0 thus I'm including its changes
+    here as well.
+    - Update ps -l to support kernels > 2.6.23
+    - Fix init time failure when running with 2.4 x86 netdump files.
+    - Fix to utalize do_raidx_tree() function
+    - Fix potential seg fault during init if the tasks kernel stack was
+    overrun, thus corrupting the thread_info structure.
+    - Fix for "bt" command when run on xen x86 dom0.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 21 Feb 2008 08:22:18 -0700
+
 crash (4.0-4.13-1) unstable; urgency=low
 
   * New upstream version 4.0-4.13 (see
