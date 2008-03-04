@@ -8999,7 +8999,8 @@ datatype_error(ulong *retaddr, char *errmsg, char *func, char *file, int line)
         if (pc->flags & DROP_CORE)
         	drop_core("DROP_CORE flag set: forcing a segmentation fault\n");
 	
-	gdb_readnow_warning();
+	if (CRASHDEBUG(1))
+		gdb_readnow_warning();
 
 	if (pc->flags & RUNTIME) {
 		sprintf(buf, "%s\n%s  FILE: %s  LINE: %d  FUNCTION: %s()\n",

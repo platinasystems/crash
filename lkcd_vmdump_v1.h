@@ -34,6 +34,7 @@
 #include <linux/utsname.h>              /* for utsname structure            */
 #endif
 #ifndef IA64
+typedef unsigned int u32;
 #include <asm/ptrace.h>                 /* for pt_regs                      */
 #endif
 

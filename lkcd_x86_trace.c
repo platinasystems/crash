@@ -5,8 +5,8 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  *  Adapted as noted from the following LKCD files:
  *
@@ -2534,7 +2534,8 @@ eframe_label(char *funcname, ulong eip)
 			efp->tracesys_exit = symbol_search("tracesys_exit");
 		}
 
-		if ((efp->sysenter = symbol_search("sysenter_entry"))) {
+		if ((efp->sysenter = symbol_search("sysenter_entry")) ||
+		    (efp->sysenter = symbol_search("ia32_sysenter_target"))) {
                 	if ((sp = symbol_search("sysexit_ret_end_marker")))
                         	efp->sysenter_end = sp;
                 	else if ((sp = symbol_search("system_call")))

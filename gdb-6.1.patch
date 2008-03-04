@@ -85,3 +85,13 @@
      }
    else
      {
+--- gdb-6.1/gdb/amd64-linux-nat.c.orig	2008-02-19 08:59:33.000000000 -0500
++++ gdb-6.1/gdb/amd64-linux-nat.c	2008-02-19 09:27:23.000000000 -0500
+@@ -28,6 +28,7 @@
+ 
+ #include "gdb_assert.h"
+ #include "gdb_string.h"
++typedef unsigned int u32;
+ #include <sys/ptrace.h>
+ #include <sys/debugreg.h>
+ #include <sys/syscall.h>
