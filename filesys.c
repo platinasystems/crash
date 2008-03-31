@@ -240,7 +240,7 @@ match_proc_version(void)
 
 	if (match_file_string(pc->namelist, kt->proc_version, buffer)) {
                 if (CRASHDEBUG(1)) {
-			fprintf(fp, "/proc/version:\n%s", kt->proc_version);
+			fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
 			fprintf(fp, "%s:\n%s", pc->namelist, buffer);
 		}
 		return;
@@ -708,6 +708,8 @@ get_proc_version(void)
                 return FALSE;
         
         fclose(version);
+
+	strip_linefeeds(kt->proc_version);
 
 	return TRUE;
 }

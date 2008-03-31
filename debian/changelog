@@ -1,3 +1,16 @@
+crash (4.0-6.2-1) unstable; urgency=low
+
+  * New upstream version 4.0-6.2 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - new "rd -S" optoin recognizes the VA of slab objects
+    - "keme -[sS]" directly show containing object and add SLUB support
+    - Fix init time failure with Ubuntu kernels becasue of /proc/version and
+    linux_banner mismatch
+    - Fix "net" command >= 2.6.22 kernels.
+    - "search -k" workaround for ia64 SPARSMEM kernels
+
+ -- Troy Heber <troyh@debian.org>  Mon, 31 Mar 2008 12:24:01 -0600
+
 crash (4.0-6.1-1) unstable; urgency=low
 
   * New upstream version 4.0-6.1 (see

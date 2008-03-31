@@ -1234,6 +1234,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long net_device_type;
 	long net_device_addr_len;
 	long net_device_ip_ptr;
+	long net_device_dev_list;
+	long net_dev_base_head;
 	long device_next;
 	long device_name;
 	long device_type;
@@ -1433,6 +1435,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
         long kmem_cache_cpu_freelist;
         long kmem_cache_cpu_page;
         long kmem_cache_cpu_node;
+	long kmem_cache_flags;
 	long zone_nr_active;
 	long zone_nr_inactive;
 	long zone_all_unreclaimable;
