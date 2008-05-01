@@ -64,6 +64,9 @@
 #define DIRECTMAP_VIRT_START  (0xffff830000000000)
 #define DIRECTMAP_VIRT_END    (0xffff840000000000)
 #define PAGE_OFFSET_XEN_HYPER DIRECTMAP_VIRT_START
+#define XEN_VIRT_START        (0xffff828c80000000)
+#define XEN_VIRT_ADDR(vaddr) \
+    (((vaddr) >= XEN_VIRT_START) && ((vaddr) < DIRECTMAP_VIRT_START))
 #endif
 
 #ifdef IA64

@@ -49,6 +49,7 @@ static void read_in_kernel_config_err(int, char *);
 static void BUG_bytes_init(void);
 static int BUG_x86(void);
 static int BUG_x86_64(void);
+static void cpu_maps_init(void);
 
 
 /*
@@ -65,6 +66,8 @@ kernel_init()
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
+
+	cpu_maps_init();
 
 	kt->stext = symbol_value("_stext");
 	kt->etext = symbol_value("_etext");
@@ -500,6 +503,104 @@ kernel_init()
 
 	BUG_bytes_init();
 }
+
+/*
+ *  If the cpu_present_map, cpu_online_map and cpu_possible_maps exist,
+ *  set up the kt->cpu_flags[NR_CPUS] with their settings.
+ */ 
+static void
+cpu_maps_init(void)
+{
+        int i, c, m, cpu, len;
+        char *buf;
+        ulong *maskptr;
+	struct mapinfo {
+		ulong cpu_flag;
+		char *name;
+	} mapinfo[] = {
+		{ POSSIBLE, "cpu_possible_map" },
+		{ PRESENT, "cpu_present_map" },
+		{ ONLINE, "cpu_online_map" },
+	};
+
+	if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+		len = sizeof(ulong);
+
+	buf = GETBUF(len);
+
+	for (m = 0; m < sizeof(mapinfo)/sizeof(struct mapinfo); m++) {
+		if (!kernel_symbol_exists(mapinfo[m].name))
+			continue;
+
+		if (!readmem(symbol_value(mapinfo[m].name), KVADDR, buf, len,
+		    mapinfo[m].name, RETURN_ON_ERROR)) {
+			error(WARNING, "cannot read %s\n", mapinfo[m].name);
+			continue;
+		}
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++) {
+			if (*maskptr == 0)
+				continue;
+			for (c = 0; c < BITS_PER_LONG; c++)
+				if (*maskptr & (0x1UL << c)) {
+					cpu = (i * BITS_PER_LONG) + c;
+					kt->cpu_flags[cpu] |= mapinfo[m].cpu_flag;
+				}
+		}
+
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "%s: ", mapinfo[m].name);
+			for (i = 0; i < NR_CPUS; i++) {
+				if (kt->cpu_flags[i] & mapinfo[m].cpu_flag)
+					fprintf(fp, "%d ", i);
+			}
+			fprintf(fp, "\n");
+		}
+
+	}
+
+	FREEBUF(buf);
+}
+
+/*
+ *  Determine whether a cpu is in one of the cpu masks.
+ */
+int
+in_cpu_map(int map, int cpu)
+{
+	if (cpu >= (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS)) {
+		error(INFO, "in_cpu_map: invalid cpu: %d\n", cpu);
+		return FALSE;
+	}
+
+	switch (map)
+	{
+	case POSSIBLE:
+		if (!kernel_symbol_exists("cpu_possible_map")) {
+			error(INFO, "cpu_possible_map does not exist\n");
+			return FALSE;
+		}
+		return (kt->cpu_flags[cpu] & POSSIBLE);
+
+	case PRESENT:
+		if (!kernel_symbol_exists("cpu_present_map")) {
+			error(INFO, "cpu_present_map does not exist\n");
+			return FALSE;
+		}
+		return (kt->cpu_flags[cpu] & PRESENT);
+
+	case ONLINE:
+		if (!kernel_symbol_exists("cpu_online_map")) {
+			error(INFO, "cpu_online_map does not exist\n");
+			return FALSE;
+		}
+		return (kt->cpu_flags[cpu] & ONLINE);
+	}
+
+	return FALSE;
+}
+
 
 /*
  *  For lack of a better manner of verifying that the namelist and dumpfile
@@ -3854,11 +3955,39 @@ dump_kernel_table(int verbose)
 	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%s%.*lx ", (i % 4) == 0 ? "\n    " : "",
 			LONG_PRLEN, kt->__per_cpu_offset[i]);
-	fprintf(fp, "\n cpu_flags[NR_CPUS]:");
+	fprintf(fp, "\n cpu_flags[NR_CPUS]: ");
 	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%lx ", kt->cpu_flags[i]);
+	fprintf(fp, "\n");
+	fprintf(fp, "       cpu_possible_map: ");
+	if (kernel_symbol_exists("cpu_possible_map")) {
+		for (i = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & POSSIBLE)
+				fprintf(fp, "%d ", i);
+		}
+		fprintf(fp, "\n");
+	} else
+		fprintf(fp, "(does not exist)\n");
+	fprintf(fp, "        cpu_present_map: ");
+	if (kernel_symbol_exists("cpu_present_map")) {
+		for (i = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & PRESENT)
+				fprintf(fp, "%d ", i);
+		}
+		fprintf(fp, "\n");
+	} else
+		fprintf(fp, "(does not exist)\n");
+	fprintf(fp, "         cpu_online_map: ");
+	if (kernel_symbol_exists("cpu_online_map")) {
+		for (i = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & ONLINE)
+				fprintf(fp, "%d ", i);
+		}
+		fprintf(fp, "\n");
+	} else
+		fprintf(fp, "(does not exist)\n");
 	others = 0;
-	fprintf(fp, "\n     xen_flags: %lx (", kt->xen_flags);
+	fprintf(fp, "     xen_flags: %lx (", kt->xen_flags);
         if (kt->xen_flags & WRITABLE_PAGE_TABLES)
                 fprintf(fp, "%sWRITABLE_PAGE_TABLES", others++ ? "|" : "");
         if (kt->xen_flags & SHADOW_PAGE_TABLES)
@@ -5560,8 +5689,7 @@ clear_machdep_cache(void)
 }
 
 /*
- *  For kernels containing at least the cpu_online_map, use it
- *  to determine the cpu count.
+ *  If it exists, return the number of cpus in the cpu_online_map.
  */
 int
 get_cpus_online()
@@ -5600,8 +5728,46 @@ get_cpus_online()
 }
 
 /*
- *  For kernels containing at least the cpu_possible_map, used
- *  to determine the cpu count (of online and offline cpus).
+ *  If it exists, return the number of cpus in the cpu_present_map.
+ */
+int
+get_cpus_present()
+{
+	int i, len, present;
+	struct gnu_request req;
+	char *buf;
+	ulong *maskptr;
+
+	if (!symbol_exists("cpu_present_map")) 
+		return 0;
+
+	if (LKCD_KERNTYPES()) {
+		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+			error(FATAL, "cannot determine type cpumask_t\n");
+	} else
+		len = get_symbol_type("cpu_present_map", NULL, &req) ==
+			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+	buf = GETBUF(len);
+
+	present = 0;
+
+        if (readmem(symbol_value("cpu_present_map"), KVADDR, buf, len,
+            "cpu_present_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
+			present += count_bits_long(*maskptr);
+
+		FREEBUF(buf);
+		if (CRASHDEBUG(1))
+			error(INFO, "get_cpus_present: present: %d\n", present);
+	}
+
+	return present;
+}
+
+/*
+ *  If it exists, return the number of cpus in the cpu_possible_map.
  */
 int
 get_cpus_possible()

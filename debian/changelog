@@ -1,3 +1,17 @@
+crash (4.0-6.3-1) unstable; urgency=low
+
+  * New upstream version 4.0-6.3 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Support FC9 kernels with the utrace patch.
+    - Improve "search -k" scalability
+    - Change how ppc64 examines the cpu map.
+    - Fix for ppc64 "bt" command on panic/active task when cpus were offline
+    - vtop support of 1MB large pages on z10 (s390)
+    - Layout fix to crash man page
+    - Support for xen 3.1.2 hypervisor on x86 and amd64
+
+ -- Troy Heber <troyh@debian.org>  Thu, 01 May 2008 09:20:21 -0600
+
 crash (4.0-6.2-1) unstable; urgency=low
 
   * New upstream version 4.0-6.2 (see

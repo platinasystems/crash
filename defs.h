@@ -509,8 +509,11 @@ struct kernel_table {                   /* kernel data */
 	long __cpu_idx[NR_CPUS];
 	long __per_cpu_offset[NR_CPUS];
 	ulong cpu_flags[NR_CPUS];
+#define POSSIBLE  (0x1)
+#define PRESENT   (0x2)
+#define ONLINE    (0x4)
+#define NMI       (0x8)
 	int BUG_bytes;
-#define NMI 0x1
 	ulong xen_flags;
 #define WRITABLE_PAGE_TABLES    (0x1)
 #define SHADOW_PAGE_TABLES      (0x2)
@@ -2162,10 +2165,13 @@ struct load_module {
 
 #define FILL_PML4_HYPER() { \
 	if (!machdep->machspec->last_pml4_read) { \
-		readmem(symbol_value("idle_pg_table_4"), KVADDR, \
-			machdep->machspec->pml4, PAGESIZE(), "idle_pg_table_4", \
+		unsigned long idle_pg_table = \
+		    symbol_exists("idle_pg_table_4") ? symbol_value("idle_pg_table_4") : \
+			symbol_value("idle_pg_table"); \
+		readmem(idle_pg_table, KVADDR, \
+			machdep->machspec->pml4, PAGESIZE(), "idle_pg_table", \
 			FAULT_ON_ERROR); \
-		machdep->machspec->last_pml4_read = symbol_value("idle_pg_table_4"); \
+		machdep->machspec->last_pml4_read = idle_pg_table; \
 	}\
 }
 
@@ -3597,7 +3603,9 @@ void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
 int get_cpus_online(void);
+int get_cpus_present(void);
 int get_cpus_possible(void);
+int in_cpu_map(int, int);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
 void back_trace(struct bt_info *);
 #define BT_RAW                     (0x1ULL)
@@ -4081,6 +4089,8 @@ int kdump_memory_dump(FILE *);
 void get_kdump_regs(struct bt_info *, ulong *, ulong *);
 void xen_kdump_p2m_mfn(char *);
 int is_sadump_xen(void);
+void set_xen_phys_start(char *);
+ulong xen_phys_start(void);
 
 /*
  *  diskdump.c

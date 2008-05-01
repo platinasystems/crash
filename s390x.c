@@ -337,6 +337,11 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 		level--;
 	}
 
+	/* Check if this is a large page. */
+	if (entry & 0x400ULL)
+		/* Add the 1MB page offset and return the final value. */
+		return table + (vaddr & 0xfffffULL);
+
 	/* Get the page table entry */
 	entry = _kl_pg_table_deref_s390x(vaddr, entry & ~0x7ffULL);
 	if (!entry)

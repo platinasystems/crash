@@ -12,22 +12,18 @@ Depends: ${shlibs:Depends}
 Suggests: kernel-patch-lkcd, dumputils
 Description: kernel debugging utility, allowing gdb like syntax
  The core analysis suite is a self-contained tool that can be used to
- investigate either live systems, LKCD (Linux Kernel Crash Dumps) and Red Hat
- Netdump and Diskdump core dumps. 
- .
- For complete LKCD crash dump support you will need the LKCD kernel patch,
- dumputils, and a debugger that can be used to analyze the crash, such as the
- "lcrash" or "crash" (this package) packages.
+ investigate either live systems, or multiple different core dump formats
+ including kdump, LKCD, netdump and diskdump.
  .
  o  The tool is loosely based on the SVR4 crash command, but has been
-    completely integrated with gdb in order to be able to display 
+    completely integrated with gdb in order to be able to display
     formatted kernel data structures, disassemble source code, etc.
- .    
+ .
  o  The current set of available commands consist of common kernel core
     analysis tools such as a context-specific stack traces, source code
-    disassembly, kernel variable displays, memory display, dumps of 
+    disassembly, kernel variable displays, memory display, dumps of
     linked-lists, etc.  In addition, any gdb command may be entered,
-    which in turn will be passed onto the gdb module for execution.  
+    which in turn will be passed onto the gdb module for execution.
  .
  o  There are several commands that delve deeper into specific kernel
     subsystems, which also serve as templates for kernel developers
@@ -36,6 +32,6 @@ Description: kernel debugging utility, allowing gdb like syntax
     adds it to the command menu.
  .
  o  The intent is to make the tool independent of Linux version dependencies,
-    building in recognition of major kernel code changes so as to adapt to 
+    building in recognition of major kernel code changes so as to adapt to
     new kernel versions, while maintaining backwards compatibility.
 

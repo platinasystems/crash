@@ -1401,6 +1401,10 @@ x86_64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbo
                 return FALSE;
 
 	if (XEN_HYPER_MODE()) {
+		if (XEN_VIRT_ADDR(kvaddr)) {
+			*paddr = kvaddr - XEN_VIRT_START + xen_phys_start();
+			return TRUE;
+		}
 		if (DIRECTMAP_VIRT_ADDR(kvaddr)) {
 			*paddr = kvaddr - DIRECTMAP_VIRT_START;
 			return TRUE;

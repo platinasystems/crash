@@ -41,6 +41,12 @@ xen_hyper_init(void)
 	long member_offset;
 #endif
 
+	if (machine_type("X86_64") &&
+	    symbol_exists("xen_phys_start") && !xen_phys_start())
+		error(WARNING, 
+	 	    "This hypervisor is relocatable; if initialization fails below, try\n"
+                    "         using the \"--xen_phys_start <address>\" command line option.\n\n");
+
 	if (symbol_exists("crashing_cpu")) {
 		get_symbol_data("crashing_cpu", sizeof(xht->crashing_cpu),
 			&xht->crashing_cpu);

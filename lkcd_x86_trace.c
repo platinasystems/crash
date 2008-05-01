@@ -1423,6 +1423,7 @@ find_trace(
 		if (XEN_HYPER_MODE()) {
 			func_name = kl_funcname(pc);
 			if (STREQ(func_name, "idle_loop") || STREQ(func_name, "hypercall")
+				|| STREQ(func_name, "tracing_off")
 				|| STREQ(func_name, "handle_exception")) {
 				UPDATE_FRAME(func_name, pc, 0, sp, bp, asp, 0, 0, bp - sp, 0);
 				return(trace->nframes);
@@ -1682,6 +1683,7 @@ find_trace(
 		if (func_name && XEN_HYPER_MODE()) {
 			if (STREQ(func_name, "continue_nmi") ||
 			    STREQ(func_name, "vmx_asm_vmexit_handler") ||
+			    STREQ(func_name, "handle_nmi_mce") ||
 			    STREQ(func_name, "deferred_nmi")) {
 				/* Interrupt frame */
 				sp = curframe->fp + 4;
