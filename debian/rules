@@ -5,15 +5,13 @@
 # Uncomment this to turn on verbose mode.
 #export DH_VERBOSE=1
 
-include /usr/share/dpatch/dpatch.make
-
-build: patch build-stamp
+build: build-stamp
 
 pre-stamp:
 	cp -a $(CURDIR)/gdb-6.1 $(CURDIR)/debian/gdb-6.1.back
 	touch pre-stamp
 
-clean: pre-stamp unpatch
+clean: pre-stamp
 	dh_testdir
 	dh_testroot
 	rm -f build-stamp configure-stamp	
@@ -24,7 +22,7 @@ clean: pre-stamp unpatch
 
 	dh_clean
 
-configure: patch configure-stamp
+configure: configure-stamp
 configure-stamp:
 	dh_testdir
 	# Add here commands to configure the package.

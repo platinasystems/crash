@@ -1156,7 +1156,7 @@ make_spec_file(void)
 	printf("Name: %s\n", lower_case(target_data.program, buf));
 	printf("Version: %s\n", Version);
 	printf("Release: %s\n", Release);
-	printf("License: GPL\n");
+	printf("License: GPLv2\n");
 	printf("Group: Development/Debuggers\n");
 	printf("Source: %%{name}-%%{version}-%%{release}.tar.gz\n");
 	printf("URL: http://people.redhat.com/anderson\n");

@@ -1,3 +1,28 @@
+crash (4.0-7.1-1) unstable; urgency=low
+
+  * New upstream version 4.0-6.3 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Fix for RT kernel address_space.nrpages renaming
+    - Fix for backtraces displayed in error conditions
+    - Fix for ia64 hypervisor backtraces with non contiguous cpu map
+    - Fix to make shell-escaped crash commands output correctly
+    - Fix to allow "-i inputfile" cmd line option when operating from an  init
+    script. 
+    - Fix for "kmem -P <addr> option where <addr> is invalid.
+    - Fix for SIGFPE cascade during session init with mismatch vmcore and
+    vmlinux.
+    - Improved "search -u" command error messages when no user context exists
+    in the core.
+    - Improved "search" with the Xen hypervisor, allow symbolic address with
+    the -s option, remove the -u and -k option.
+    - Fix for init-time segfault due to module allocation and creating an
+    exported symbol list ouside the virtual address space.
+    - New --minimal command line option to bring up crash on a corrupted or
+    truncated dump file.
+  * removed dpatch
+
+ -- Troy Heber <troyh@debian.org>  Wed, 20 Aug 2008 04:43:52 -0600
+
 crash (4.0-6.3-1) unstable; urgency=low
 
   * New upstream version 4.0-6.3 (see

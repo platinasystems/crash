@@ -4167,14 +4167,14 @@ ia64_in_mca_stack_hyper(ulong addr, struct bt_info *bt)
 	if (!machdep->kvtop(NULL, addr, &paddr, 0))
 		return 0;
 
-	__per_cpu_mca = (ulong *)GETBUF(sizeof(ulong) * xht->pcpus);
+	__per_cpu_mca = (ulong *)GETBUF(sizeof(ulong) * plen);
 
 	if (!readmem(symbol_value("__per_cpu_mca"), KVADDR, __per_cpu_mca,
-	    sizeof(ulong) * xht->pcpus, "__per_cpu_mca", RETURN_ON_ERROR|QUIET))
+	    sizeof(ulong) * plen, "__per_cpu_mca", RETURN_ON_ERROR|QUIET))
 		return 0;
 
 	if (CRASHDEBUG(1)) {
-		for (i = 0; i < xht->pcpus; i++) {
+		for (i = 0; i < plen; i++) {
 			fprintf(fp, "__per_cpu_mca[%d]: %lx\n", 
 		 		i, __per_cpu_mca[i]);
 		}

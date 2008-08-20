@@ -41,11 +41,11 @@ __error(int type, char *fmt, ...)
 {
 	int end_of_line, new_line;
         char buf[BUFSIZE];
-        ulong retaddr[4] = { 0 };
+        ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
 	va_list ap;
 
 	if (CRASHDEBUG(1) || (pc->flags & DROP_CORE)) {
-		save_return_address(retaddr);
+		SAVE_RETURN_ADDRESS(retaddr);
 		console("error() trace: %lx => %lx => %lx => %lx\n",
 			retaddr[3], retaddr[2], retaddr[1], retaddr[0]);
 	}
@@ -4435,6 +4435,11 @@ convert_time(ulonglong count, char *buf)
 
 	if (CRASHDEBUG(2))
 		error(INFO, "convert_time: %lld (%llx)\n", count, count);
+
+	if (!machdep->hz) {
+		sprintf(buf, "(cannot calculate: unknown HZ value)");
+		return buf;
+	}
 
         total = (count)/(ulonglong)machdep->hz;
 

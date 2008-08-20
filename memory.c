@@ -320,6 +320,9 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(block_device_bd_disk, "block_device", "bd_disk");
 	MEMBER_OFFSET_INIT(inode_i_mapping, "inode", "i_mapping");
 	MEMBER_OFFSET_INIT(address_space_nrpages, "address_space", "nrpages");
+	if (INVALID_MEMBER(address_space_nrpages))
+		MEMBER_OFFSET_INIT(address_space_nrpages, "address_space", "__nrpages");
+
 	MEMBER_OFFSET_INIT(gendisk_major, "gendisk", "major");
 	MEMBER_OFFSET_INIT(gendisk_fops, "gendisk", "fops");
 	MEMBER_OFFSET_INIT(gendisk_disk_name, "gendisk", "disk_name");
@@ -10379,7 +10382,10 @@ kmem_search(struct meminfo *mi)
 mem_map:
 	mi->flags = orig_flags;
 	pc->curcmd_flags &= ~HEADER_PRINTED;
-        dump_mem_map(mi);
+	if (vaddr != BADADDR)
+		dump_mem_map(mi);
+	else
+		mi->retval = FALSE;
 
 	if (!mi->retval)
 		fprintf(fp, "%llx: %s address not found in mem map\n", 
@@ -10934,6 +10940,11 @@ cmd_search(void)
                 switch(c)
                 {
 		case 'u':
+			if (XEN_HYPER_MODE())
+				error(FATAL, 
+ 			 	    "-u option is not applicable to the "
+				    "Xen hypervisor\n");
+
 			if (!sflag) {
 				address_space_start(CURRENT_CONTEXT(),&start);
 				sflag++;
@@ -10943,6 +10954,11 @@ cmd_search(void)
 			break;
 
 		case 'k':
+			if (XEN_HYPER_MODE())
+				error(FATAL, 
+ 			 	    "-k option is not applicable to the "
+				    "Xen hypervisor\n");
+
 			if (!sflag) {
 				start = machdep->kvbase;
 				if (machine_type("IA64") &&
@@ -10984,6 +11000,14 @@ cmd_search(void)
                 }
         }
 
+	if (XEN_HYPER_MODE()) {
+		memtype = KVADDR;
+		if (!sflag)
+			error(FATAL, 
+				"the \"-s start\" option is required for"
+				" the Xen hypervisor\n");
+	}
+
         if (argerrs || !sflag || !args[optind] || (len && end))
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
@@ -11023,7 +11047,9 @@ cmd_search(void)
 			break;
 
 		case KVADDR:
-			if (vt->vmalloc_start < machdep->identity_map_base)
+			if (XEN_HYPER_MODE())
+				end = (ulong)(-1);
+			else if (vt->vmalloc_start < machdep->identity_map_base)
 				end = (ulong)(-1);
 			else {
 				meminfo.memtype = KVADDR;
@@ -11042,6 +11068,8 @@ cmd_search(void)
 	switch (memtype)
 	{
 	case UVADDR:
+		if (is_kernel_thread(CURRENT_TASK()) || !task_mm(CURRENT_TASK(), TRUE))
+			error(FATAL, "current context has no user address space\n");
 		if (end > uvaddr_end) {
 			error(INFO, 
 	          "address range starts in user space and ends kernel space\n");
@@ -11097,6 +11125,20 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
 		if (LKCD_DUMPFILE())
 			set_lkcd_nohash();
 
+		/*
+		 *  Keep it virtual for Xen hypervisor.
+		 */
+		if (XEN_HYPER_MODE()) {
+                	if (!readmem(pp, KVADDR, pagebuf, PAGESIZE(),
+                    	    "search page", RETURN_ON_ERROR|QUIET)) {
+				if (CRASHDEBUG(1))
+					fprintf(fp, 
+					    "search suspended at: %lx\n", pp);
+				return;
+			}
+			goto virtual;
+		}
+
                 switch (memtype)
                 {
                 case UVADDR:
@@ -11123,7 +11165,7 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
 			pp += PAGESIZE();
 			continue;
 		}
-
+virtual:
 		ubp = (ulong *)&pagebuf[next - pp];
 		if (lastpage) {
 			if (end == (ulong)(-1))
