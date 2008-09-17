@@ -79,7 +79,8 @@ kernel_init()
 	kt->end = symbol_value("_end");
 	
 	/*
-	 *  For the Xen architecture, default to writable page tables unless:
+	 *  For the traditional (non-pv_ops) Xen architecture, default to writable 
+         *  page tables unless:
 	 *  
 	 *  (1) it's an "xm save" CANONICAL_PAGE_TABLES dumpfile,  or
 	 *  (2) the --shadow_page_tables option was explicitly entered.  
@@ -88,7 +89,7 @@ kernel_init()
          *  it's not an "xm save" canonical dumpfile, then we have no choice 
          *  but to presume shadow page tables.
 	 */ 
-	if (symbol_exists("xen_start_info")) {
+	if (!PVOPS() && symbol_exists("xen_start_info")) {
 		kt->flags |= ARCH_XEN;
 		if (!(kt->xen_flags & (SHADOW_PAGE_TABLES|CANONICAL_PAGE_TABLES)))
 			kt->xen_flags |= WRITABLE_PAGE_TABLES;
@@ -3887,6 +3888,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
 	if (kt->flags & ARCH_OPENVZ)
 		fprintf(fp, "%sARCH_OPENVZ", others++ ? "|" : "");
+	if (kt->flags & ARCH_PVOPS)
+		fprintf(fp, "%sARCH_PVOPS", others++ ? "|" : "");
 	if (kt->flags & NO_IKCONFIG)
 		fprintf(fp, "%sNO_IKCONFIG", others++ ? "|" : "");
 	if (kt->flags & DWARF_UNWIND)
@@ -6288,5 +6291,26 @@ read_in_kernel_config_err(int e, char *msg)
 		default: 
 			fprintf(fp, "UNKNOWN ERROR: %d\n", e);
 			break;
+	}
+}
+
+/*
+ *  With the evidence available, attempt to pre-determine whether
+ *  this is a paravirt-capable kernel running as bare-metal, xen, 
+ *  kvm, etc. 
+ *
+ *  NOTE: Only bare-metal pv_ops kernels are supported so far. 
+ */
+void
+paravirt_init(void)
+{
+	/*
+	 *  pv_init_ops appears to be (as of 2.6.27) an arch-common
+	 *  symbol.  This may have to change.
+	 */
+	if (kernel_symbol_exists("pv_init_ops")) {
+		if (CRASHDEBUG(1))
+			error(INFO, "pv_init_ops exists: ARCH_PVOPS\n");
+		kt->flags |= ARCH_PVOPS;
 	}
 }

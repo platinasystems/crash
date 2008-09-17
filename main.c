@@ -467,6 +467,7 @@ main(int argc, char **argv)
        	hq_init();
 	machdep_init(PRE_SYMTAB);
         symtab_init();
+	paravirt_init();
 	machdep_init(PRE_GDB);
         datatype_init();
 

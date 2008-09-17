@@ -1,6 +1,21 @@
+crash (4.0-7.2-1) unstable; urgency=low
+
+  * New upstream version 4.0-7.2 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix for init time failure when running 2.6.27 amd64.
+  - Allow symbol lookup in striped binary with improper struct member offset
+  or struct size.
+  - Fix LKCD kerntype debuginfo to use "note_states" when "node_online_map" is
+  not in use.
+  - Support for s390[x] SPARSEMEM.
+  - Fix for "kmem -[sS]" with 2.6.27 SLUB kernels.
+  - Increase SAIL command limit from 100 to 200
+
+ -- Troy Heber <troyh@debian.org>  Wed, 17 Sep 2008 13:37:21 -0600
+
 crash (4.0-7.1-1) unstable; urgency=low
 
-  * New upstream version 4.0-6.3 (see
+  * New upstream version 4.0-7.1 (see
     http://people.redhat.com/anderson/crash.changelog)
     - Fix for RT kernel address_space.nrpages renaming
     - Fix for backtraces displayed in error conditions

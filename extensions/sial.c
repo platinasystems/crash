@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.5 2007/11/13 21:03:15 anderson Exp $
+ * $Id: sial.c,v 1.6 2008/09/15 14:33:56 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -800,7 +800,7 @@ char *sclass_help[]={
                 NULL
 };
 
-#define NCMDS 100
+#define NCMDS 200
 static struct command_table_entry command_table[NCMDS] =  {
 
 	{"edit", edit_cmd, edit_help},

@@ -147,7 +147,9 @@ x86_64_init(int when)
 	case PRE_GDB:
 		if (!(machdep->flags & VM_FLAGS)) {
 			if (symbol_exists("xen_start_info")) {
-				if (symbol_exists("low_pml4") && 
+				if (PVOPS())
+					machdep->flags |= VM_2_6_11;
+				else if (symbol_exists("low_pml4") && 
 				    symbol_exists("swap_low_mappings"))
 					machdep->flags |= VM_XEN_RHEL4;
 				else
@@ -178,7 +180,6 @@ x86_64_init(int when)
 		case VM_2_6_11:
 			/* 2.6.11 layout */
 			machdep->machspec->userspace_top = USERSPACE_TOP_2_6_11;
-			machdep->machspec->page_offset = PAGE_OFFSET_2_6_11;
 			machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_11;
 			machdep->machspec->vmalloc_end = VMALLOC_END_2_6_11;
 			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_11;
@@ -189,6 +190,13 @@ x86_64_init(int when)
 			machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_24;
 			if (symbol_exists("vmemmap_populate"))
 				machdep->flags |= VMEMMAP;
+
+			if (kernel_symbol_exists("end_pfn"))
+				/* 2.6.11 layout */
+				machdep->machspec->page_offset = PAGE_OFFSET_2_6_11;
+			else
+				/* 2.6.27 layout */
+				machdep->machspec->page_offset = PAGE_OFFSET_2_6_27;
 
 	        	machdep->uvtop = x86_64_uvtop_level4;
 			break;
@@ -534,7 +542,7 @@ x86_64_dump_machdep_table(ulong arg)
 static void 
 x86_64_cpu_pda_init(void)
 {
-	int i, cpus, nr_pda, cpunumber, _cpu_pda;
+	int i, cpus, nr_pda, cpunumber, _cpu_pda, _boot_cpu_pda;
 	char *cpu_pda_buf;
 	ulong level4_pgt, data_offset, cpu_pda_addr;
 	struct syment *sp, *nsp;
@@ -569,11 +577,21 @@ x86_64_cpu_pda_init(void)
 			_cpu_pda = FALSE;
 		}
 	}
-
+	if (_cpu_pda) {
+		if (symbol_exists("_boot_cpu_pda"))
+			_boot_cpu_pda = TRUE;
+		else
+			_boot_cpu_pda = FALSE;
+	}
 	for (i = cpus = 0; i < nr_pda; i++) {
 		if (_cpu_pda) {
-			if (!_CPU_PDA_READ(i, cpu_pda_buf))
-				break;
+			if (_boot_cpu_pda) {
+				if (!_CPU_PDA_READ2(i, cpu_pda_buf))
+					break;
+			} else {
+				if (!_CPU_PDA_READ(i, cpu_pda_buf))
+					break;
+			}
 		} else {
 			if (!CPU_PDA_READ(i, cpu_pda_buf))
 				break;
@@ -3914,7 +3932,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 int
 x86_64_get_smp_cpus(void)
 {
-	int i, cpus, nr_pda, cpunumber, _cpu_pda;
+	int i, cpus, nr_pda, cpunumber, _cpu_pda, _boot_cpu_pda;
 	char *cpu_pda_buf;
 	ulong level4_pgt, cpu_pda_addr;
 
@@ -3940,10 +3958,21 @@ x86_64_get_smp_cpus(void)
 			_cpu_pda = FALSE;
 		}
 	}
+	if (_cpu_pda) {
+		if (symbol_exists("_boot_cpu_pda"))
+			_boot_cpu_pda = TRUE;
+		else
+			_boot_cpu_pda = FALSE;
+	}
 	for (i = cpus = 0; i < nr_pda; i++) {
 		if (_cpu_pda) {
-			if (!_CPU_PDA_READ(i, cpu_pda_buf))
-				break;
+			if (_boot_cpu_pda) {
+				if (!_CPU_PDA_READ2(i, cpu_pda_buf))
+					break;
+			} else {
+				if (!_CPU_PDA_READ(i, cpu_pda_buf))
+					break;
+			}
 		} else {
 			if (!CPU_PDA_READ(i, cpu_pda_buf))
 				break;
