@@ -876,6 +876,10 @@ netdump_memory_dump(FILE *fp)
 			nd->xen_kdump_data->p2m_frames);
 		netdump_print("           xen_phys_start: %lx\n", 
 			nd->xen_kdump_data->xen_phys_start);
+		netdump_print("        xen_major_version: %d\n", 
+			nd->xen_kdump_data->xen_major_version);
+		netdump_print("        xen_minor_version: %d\n", 
+			nd->xen_kdump_data->xen_minor_version);
 		netdump_print("       p2m_mfn_frame_list: %lx\n", 
 			nd->xen_kdump_data->p2m_mfn_frame_list);
 		for (i = 0; i < nd->xen_kdump_data->p2m_frames; i++)
@@ -1525,6 +1529,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 					nd->xen_kdump_data->p2m_mfn = *(uptr+(words-1));
 				if (words > 9 && !nd->xen_kdump_data->xen_phys_start)
 					nd->xen_kdump_data->xen_phys_start = *(uptr+(words-2));
+				nd->xen_kdump_data->xen_major_version = *uptr;
+				nd->xen_kdump_data->xen_minor_version = *(uptr+1);
 			}
 		}
 		break;
@@ -1730,6 +1736,8 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	                        	nd->xen_kdump_data->p2m_mfn = *(up+(words-1));
 				if (words > 9 && !nd->xen_kdump_data->xen_phys_start)
 					nd->xen_kdump_data->xen_phys_start = *(up+(words-2));
+				nd->xen_kdump_data->xen_major_version = *up;
+				nd->xen_kdump_data->xen_minor_version = *(up+1);
 			}
 		}
                 break;
@@ -2342,4 +2350,16 @@ ulong
 xen_phys_start(void)
 {
 	return nd->xen_kdump_data->xen_phys_start;
+}
+
+int
+xen_major_version(void)
+{
+	return nd->xen_kdump_data->xen_major_version;
+}
+
+int
+xen_minor_version(void)
+{
+	return nd->xen_kdump_data->xen_minor_version;
 }

@@ -3741,7 +3741,10 @@ x86_64_get_pc(struct bt_info *bt)
                         OFFSET(thread_struct_rip), KVADDR,
                         &rip, sizeof(void *),
                         "thread_struct rip", FAULT_ON_ERROR);
-                return rip;
+		if (rip)
+			return rip;
+		else
+			return symbol_value("thread_return");
         }
 
         offset = OFFSET(task_struct_thread) + OFFSET(thread_struct_rip);
@@ -3784,6 +3787,10 @@ x86_64_display_idt_table(void)
 	char buf[BUFSIZE];
 	ulong *ip;
 
+	if (INVALID_SIZE(gate_struct)) {
+		option_not_supported('d');
+		return;
+	}
 	idt_table_buf = GETBUF(SIZE(gate_struct) * 256);
         readmem(symbol_value("idt_table"), KVADDR, idt_table_buf, 
 		SIZE(gate_struct) * 256, "idt_table", FAULT_ON_ERROR);

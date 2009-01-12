@@ -693,8 +693,9 @@ ppc64_processor_speed(void)
         ulong res, value, ppc_md, md_setup_res;
         ulong we_have_of, prep_setup_res;
         ulong node, type, name, properties;
-        char str_buf[16];
-        uint len, mhz = 0;
+	char str_buf[32];
+	uint len;
+	ulong mhz = 0;
 
         if (machdep->mhz)
                 return(machdep->mhz);
@@ -764,6 +765,23 @@ ppc64_processor_speed(void)
                                         mhz /= 1000000;
                                         break;
                                 }
+				else if(len && (strcasecmp(str_buf,
+				    "ibm,extended-clock-frequency") == 0)){
+					/* found the right cpu property */
+
+					readmem(properties+
+					    OFFSET(property_value),
+					    KVADDR, &value, sizeof(ulong),
+					    "clock freqency pointer",
+					    FAULT_ON_ERROR);
+					readmem(value, KVADDR, &mhz,
+					    sizeof(ulong),
+					    "clock frequency value",
+					    FAULT_ON_ERROR);
+					mhz /= 1000000;
+					break;
+                                }
+
                                 /* keep looking */
 
                                 readmem(properties+

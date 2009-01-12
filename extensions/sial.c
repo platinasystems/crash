@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.6 2008/09/15 14:33:56 anderson Exp $
+ * $Id: sial.c,v 1.7 2008/10/28 18:53:10 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -363,7 +363,7 @@ int midx;
 			sial_member_soffset(m, TYPE_FIELD_BITPOS(type, midx)/8);
 			sial_member_ssize(m, TYPE_FIELD_TYPE(type, midx)->length);
 			sial_member_snbits(m, TYPE_FIELD_BITSIZE(type, midx));
-			sial_member_sfbit(m, TYPE_FIELD_BITSIZE(type, midx));
+			sial_member_sfbit(m, TYPE_FIELD_BITPOS(type, midx)%8);
 			sial_member_sname(m, TYPE_FIELD_NAME(type, midx));
 			LASTNUM=midx+1;
 			return drilldowntype(TYPE_FIELD_TYPE(type, midx), tm);

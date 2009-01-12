@@ -775,8 +775,10 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 		(buf, "%ld\n", xen_hyper_offset_table.domain_is_privileged));
 	XEN_HYPER_PRI(fp, len, "domain_debugger_attached: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_debugger_attached));
-	XEN_HYPER_PRI(fp, len, "domain_is_polling: ", buf, flag,
-		(buf, "%ld\n", xen_hyper_offset_table.domain_is_polling));
+	if (XEN_HYPER_VALID_MEMBER(domain_is_polling)) {
+		XEN_HYPER_PRI(fp, len, "domain_is_polling: ", buf, flag,
+			(buf, "%ld\n", xen_hyper_offset_table.domain_is_polling));
+	}
 	XEN_HYPER_PRI(fp, len, "domain_is_dying: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_is_dying));
 	XEN_HYPER_PRI(fp, len, "domain_is_paused_by_controller: ", buf, flag,

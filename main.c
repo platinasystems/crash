@@ -1086,6 +1086,9 @@ dump_program_context(void)
         if (pc->flags & MINIMAL_MODE)
                 sprintf(&buf[strlen(buf)],
                         "%sMINIMAL_MODE", others++ ? "|" : "");
+        if (pc->flags & CRASHBUILTIN)
+                sprintf(&buf[strlen(buf)], 
+			"%sCRASHBUILTIN", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");

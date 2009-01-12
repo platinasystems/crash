@@ -110,6 +110,8 @@ struct xen_kdump_data {
 	int p2m_frames;
         ulong *p2m_mfn_frame_list;
 	ulong xen_phys_start;
+	int xen_major_version;
+	int xen_minor_version;
 };
 
 #define KDUMP_P2M_INIT  (0x1)

@@ -1,3 +1,46 @@
+crash (4.0-7.6-1) experimental; urgency=low
+
+  * New upstream version 4.0-7.4 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix failure if the kernel was built without CONFIG_SWAP
+  - Fix "bt" command on x86_64 kernels that contain the x86/x86_64 merger
+  patch.
+  - Fix infinite loop when using an input file, where more than one command in
+  the input file results in a fatal error.
+  - Clean up causes for warning messages when compiling with gcc 4.3.2.
+  - Fix to prevent a segmentation violation during initialization when parsing
+  (corrupted) module symbols.
+  - Accept tasks with corrupted CPU fields. 
+  - Modification of "files" command to display open file descriports that have
+  an NULL in the f_dentry field.
+  -  Fix the "bt" command on x86 Xen architectures when the backtrace starts
+  on the hard IRQ stack. 
+
+ -- Troy Heber <troyh@debian.org>  Mon, 12 Jan 2009 10:18:11 -0700
+
+crash (4.0-7.4-1) unstable; urgency=low
+
+  * New upstream version 4.0-7.4 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix build regression for non-xen arches ppc64, s390 and s390x.
+  - Fix for nonsensical user of the "set" command when running with the xen
+  hypervisor.
+  - Fix for "bt" command on x86 arch when the backtrace starts on the hard IRQ
+  stack.
+  - Fix for "search -k" on some ia64 hardware, depending on the underlying
+  physical memory layout.
+  - Fixes for the "bt" command when running with the xen hypervisor.
+  - Remove "foreach" from the commands that won't work with the xen hypervisor
+  - Fir "irq -d" on x86_64 xen kernels.
+  - Avoid symbolicy translation of ia64 unity-mapped regin 7 kernel virtual
+  addresses as they are displayed with "bt -r" and "rd -[sS]".
+  - Remove redundatnt storage of "swapper_pg_dir" symbol value durnign x86
+  initalization
+  - Do not use "ifffies" when running with xen hypevisor
+  - Fix to read correct PERCPU_SHIFT value with x86 and amd64 xen hypervisors.
+
+ -- Troy Heber <troyh@debian.org>  Tue, 14 Oct 2008 08:24:54 -0600
+
 crash (4.0-7.2-1) unstable; urgency=low
 
   * New upstream version 4.0-7.2 (see

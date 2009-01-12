@@ -643,6 +643,7 @@ retry:
 static int
 verify_task(struct task_context *tc, int level)
 {
+	int i;
 	ulong next_task;
 	ulong readflag;
 
@@ -663,11 +664,27 @@ verify_task(struct task_context *tc, int level)
 
 		/* fall through */
 	case 2:
-        	if ((tc->processor < 0) || (tc->processor >= NR_CPUS))
-			return FALSE;
-
 		if (!IS_TASK_ADDR(tc->ptask))
 			return FALSE;
+
+		if ((tc->processor < 0) || (tc->processor >= NR_CPUS)) {
+			for (i = 0; i < NR_CPUS; i++) {
+				if (tc->task == tt->active_set[i]) {
+					error(WARNING, 
+			"active task %lx on cpu %d: corrupt cpu value: %d\n\n",
+						tc->task, i, tc->processor);
+					tc->processor = i;
+					return TRUE;
+				}
+			}
+
+			if (CRASHDEBUG(1))
+				error(INFO, 
+				    "verify_task: task: %lx invalid processor: %d",
+					tc->task, tc->processor);
+			return FALSE;
+		}
+
 		break;
 	}
 

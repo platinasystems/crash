@@ -278,9 +278,6 @@ get_bit_value(ull val, int nbits, int boff, int size, value_t *v)
 	int dosign=0;
 	int vnbits=size*8;
 
-
-	val = API_GET_UINT64(&val);
-
 	/* first get the value_t */
         if (nbits >= 32) {
                 int upper_bits = nbits - 32;

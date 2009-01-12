@@ -1773,10 +1773,18 @@ x86_init(int when)
 		if (x86_omit_frame_pointer())
 			machdep->flags |= OMIT_FRAME_PTR;
 		STRUCT_SIZE_INIT(user_regs_struct, "user_regs_struct");
-		MEMBER_OFFSET_INIT(user_regs_struct_ebp,
-			"user_regs_struct", "ebp");
-		MEMBER_OFFSET_INIT(user_regs_struct_esp,
-			"user_regs_struct", "esp");
+		if (MEMBER_EXISTS("user_regs_struct", "ebp"))
+			MEMBER_OFFSET_INIT(user_regs_struct_ebp,
+				"user_regs_struct", "ebp");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_ebp,
+				"user_regs_struct", "bp");
+		if (MEMBER_EXISTS("user_regs_struct", "esp"))
+			MEMBER_OFFSET_INIT(user_regs_struct_esp,
+				"user_regs_struct", "esp");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_esp,
+				"user_regs_struct", "sp");
 		if (!VALID_STRUCT(user_regs_struct)) {
 			/*  Use this hardwired version -- sometimes the 
 			 *  debuginfo doesn't pick this up even though
@@ -1819,7 +1827,12 @@ x86_init(int when)
 		}
 
 		if (machdep->flags & PAE) {
-			machdep->section_size_bits = _SECTION_SIZE_BITS_PAE;
+			if (THIS_KERNEL_VERSION < LINUX(2,6,26))
+				machdep->section_size_bits =
+					_SECTION_SIZE_BITS_PAE_ORIG;
+			else
+				machdep->section_size_bits =
+					_SECTION_SIZE_BITS_PAE_2_6_26;
 			machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_PAE;
 		} else {
 			machdep->section_size_bits = _SECTION_SIZE_BITS;
@@ -3240,7 +3253,8 @@ x86_dump_machdep_table(ulong arg)
 	fprintf(fp, "           cmd_mach: x86_cmd_mach()\n");
 	fprintf(fp, "       get_smp_cpus: x86_get_smp_cpus()\n");
 	fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
-	fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
+	fprintf(fp, "          is_uvaddr: %s\n", COMMON_VADDR_SPACE() ?
+                        "x86_is_uvaddr()" : "generic_is_uvaddr()");
 	fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
         fprintf(fp, "    init_kernel_pgd: x86_init_kernel_pgd()\n");
 	fprintf(fp, "    value_to_symbol: %s\n",
@@ -4124,8 +4138,6 @@ x86_init_kernel_pgd(void)
 {
         int i;
 	ulong value;
-
-     	value = symbol_value("swapper_pg_dir");
 
 	if (XEN()) 
 		get_symbol_data("swapper_pg_dir", sizeof(ulong), &value);

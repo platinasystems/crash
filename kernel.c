@@ -102,8 +102,14 @@ kernel_init()
 		}
 		if (machine_type("X86"))
                 	get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
-		if (machine_type("X86_64"))
-                	get_symbol_data("end_pfn", sizeof(ulong), &kt->p2m_table_size);
+		if (machine_type("X86_64")) {
+			/*
+			 * kernel version <  2.6.27 => end_pfn
+			 * kernel version >= 2.6.27 => max_pfn
+			 */
+			if (!try_get_symbol_data("end_pfn", sizeof(ulong), &kt->p2m_table_size))
+				get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
+		}
                 if ((kt->m2p_page = (char *)malloc(PAGESIZE())) == NULL)
                        	error(FATAL, "cannot malloc m2p page.");
 	}
@@ -164,7 +170,15 @@ kernel_init()
 			p2++;
 		*p2 = NULLCHAR;
 		kt->kernel_version[2] = atoi(p1);
-	}
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, "base kernel version: %d.%d.%d\n",
+				kt->kernel_version[0],
+				kt->kernel_version[1],
+				kt->kernel_version[2]);
+	} else
+		error(INFO, "cannot determine base kernel version\n");
+
 
 	verify_version();
 
@@ -1604,11 +1618,14 @@ cmd_bt(void)
 			break;
 
 		case 'o':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
 			bt->flags |= BT_OLD_BACK_TRACE;
 			break;
 
 		case 'O':
-			if (!(machine_type("X86") || machine_type("X86_64"))) 
+			if (!(machine_type("X86") || machine_type("X86_64")) ||
+			    XEN_HYPER_MODE()) 
 				option_not_supported(c);
 			else if (kt->flags & USE_OLD_BT) { 
 				/* 
@@ -1644,11 +1661,15 @@ cmd_bt(void)
 			break;
 
 		case 'E':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
 			bt->flags |= BT_EFRAME_SEARCH|BT_EFRAME_SEARCH2;
 			bt->hp = &hook;
 			break;
 
 		case 'e':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
 			bt->flags |= BT_EFRAME_SEARCH;
 			break;
 
@@ -1738,11 +1759,6 @@ cmd_bt(void)
 		}
 	}
 
-	if (XEN_HYPER_MODE()) {
-		if (bt->flags & BT_EFRAME_SEARCH)
-			argerrs++;
-	}
-
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
@@ -1783,7 +1799,9 @@ cmd_bt(void)
 					continue;
 				fake_tc.task = xen_hyper_pcpu_to_active_vcpu(c);
 				BT_SETUP(&fake_tc);
-				xen_hyper_print_bt_header(fp, fake_tc.task, subsequent++);
+			        if (!BT_REFERENCE_CHECK(bt))
+					xen_hyper_print_bt_header(fp, fake_tc.task, 
+						subsequent++);
 				back_trace(bt);
 			}
 		} else {
@@ -1794,7 +1812,8 @@ cmd_bt(void)
 				fake_tc.task = XEN_HYPER_VCPU_LAST_CONTEXT()->vcpu;
 			}
 			BT_SETUP(&fake_tc);
-			xen_hyper_print_bt_header(fp, fake_tc.task, 0);
+			if (!BT_REFERENCE_CHECK(bt))
+				xen_hyper_print_bt_header(fp, fake_tc.task, 0);
 			back_trace(bt);
 		}
 		return;
@@ -2044,8 +2063,13 @@ back_trace(struct bt_info *bt)
         		{
         		case BT_HARDIRQ:
 				btloc.hp->eip = symbol_value("do_IRQ");
-                		btloc.hp->esp = ULONG(bt->stackbuf +
-                        	    SIZE(irq_ctx) - (sizeof(unsigned int)*2));
+				if (symbol_exists("__do_IRQ"))
+					btloc.hp->esp = ULONG(bt->stackbuf +
+					    OFFSET(thread_info_previous_esp));
+				else
+					btloc.hp->esp = ULONG(bt->stackbuf +
+					    SIZE(irq_ctx) - 
+					    (sizeof(char *)*2));
 				fprintf(fp, "--- <hard IRQ> ---\n");
                 		break;
 
@@ -2072,7 +2096,7 @@ complete_trace:
 		BCOPY(bt, &btsave, sizeof(struct bt_info));
 
 	if (CRASHDEBUG(4))
-		dump_bt_info(bt);
+		dump_bt_info(bt, "back_trace");
 
 	machdep->back_trace(bt);
 
@@ -2080,7 +2104,15 @@ complete_trace:
 		goto complete_trace;
 
 	if (BT_REFERENCE_FOUND(bt)) {
+#ifdef XEN_HYPERVISOR_ARCH
+		if (XEN_HYPER_MODE())
+			xen_hyper_print_bt_header(fp, bt->task, 0);
+		else
+			print_task_header(fp, task_to_context(bt->task), 0);
+#else
 		print_task_header(fp, task_to_context(bt->task), 0);
+#endif /* XEN_HYPERVISOR_ARCH */
+
 		BCOPY(&btsave, bt, sizeof(struct bt_info));
 		bt->ref = NULL;
 		machdep->back_trace(bt);
@@ -2096,6 +2128,8 @@ static int
 restore_stack(struct bt_info *bt)
 {
 	ulonglong type;
+	struct syment *sp;
+	ulong retvaddr;
 
 	bt->instptr = bt->stkptr = 0;
 	type = 0;
@@ -2103,14 +2137,30 @@ restore_stack(struct bt_info *bt)
 	switch (bt->flags & (BT_HARDIRQ|BT_SOFTIRQ)) 
 	{ 
 	case BT_HARDIRQ:
-		bt->instptr = symbol_value("do_IRQ");
-		bt->stkptr = ULONG(bt->stackbuf + 
-			SIZE(irq_ctx) - (sizeof(unsigned int)*2));
+		retvaddr = ULONG(bt->stackbuf +
+			SIZE(irq_ctx) - sizeof(char *));
+		if ((sp = value_search(retvaddr, NULL)) && 
+			STREQ(sp->name, "do_IRQ"))
+			bt->instptr = retvaddr; 
+		else
+			bt->instptr = symbol_value("do_IRQ");
+		if (symbol_exists("__do_IRQ"))
+            		bt->stkptr = ULONG(bt->stackbuf +
+                     		OFFSET(thread_info_previous_esp));
+		else
+			bt->stkptr = ULONG(bt->stackbuf + 
+				SIZE(irq_ctx) - (sizeof(char *)*2));
 		type = BT_HARDIRQ;
 		break;
 
 	case BT_SOFTIRQ:
-		bt->instptr = symbol_value("do_softirq");
+		retvaddr = ULONG(bt->stackbuf +
+			SIZE(irq_ctx) - sizeof(char *));
+		if ((sp = value_search(retvaddr, NULL)) && 
+			STREQ(sp->name, "do_softirq"))
+			bt->instptr = retvaddr; 
+		else
+			bt->instptr = symbol_value("do_softirq");
                	bt->stkptr = ULONG(bt->stackbuf +
                        	OFFSET(thread_info_previous_esp));
 		type = BT_SOFTIRQ;
@@ -2169,7 +2219,8 @@ gather_text_list(struct bt_info *bt)
 		if ((p1 = strstr(buf, ":"))) {
 			esp = eip = 0;
                 	*p1 = NULLCHAR;
-			if ((esp = htol(buf, RETURN_ON_ERROR, NULL)) != BADADDR)
+			if (((esp = htol(buf, RETURN_ON_ERROR, NULL)) != BADADDR)
+			    && INSTACK(esp, bt))
                                 eip = GET_STACK_ULONG(esp);
 			if (esp && eip) {
 				hooks[cnt].esp = esp;
@@ -2194,8 +2245,9 @@ gather_text_list(struct bt_info *bt)
  *  Debug routine most likely useful from above in back_trace()
  */
 void
-dump_bt_info(struct bt_info *bt)
+dump_bt_info(struct bt_info *bt, char *where)
 {
+	fprintf(fp, "[%lx] %s:\n", (ulong)bt, where);
 	fprintf(fp, "        task: %lx\n", bt->task);
 	fprintf(fp, "       flags: %llx\n", bt->flags);
 	fprintf(fp, "     instptr: %lx\n", bt->instptr);
@@ -2487,7 +2539,10 @@ module_init(void)
 			break;
 
 		case KALLSYMS_V2:
-			numksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+				numksyms = UINT(modbuf + OFFSET(module_num_symtab));
+			else
+				numksyms = ULONG(modbuf + OFFSET(module_num_symtab));
 			total += numksyms; 
 			break;
 		}
@@ -2600,8 +2655,12 @@ verify_modules(void)
 				case KMOD_V2:
         				module_name = modbuf + 
 						OFFSET(module_name);
-					mod_size = LONG(modbuf + 
-						OFFSET(module_core_size));
+					if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+						mod_size = UINT(modbuf +
+							OFFSET(module_core_size));
+					else
+						mod_size = ULONG(modbuf +
+							OFFSET(module_core_size));
                 			if (strlen(module_name) < MAX_MOD_NAME)
                         			strcpy(buf, module_name);
                 			else 

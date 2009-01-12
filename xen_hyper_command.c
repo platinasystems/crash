@@ -1022,7 +1022,8 @@ xen_hyper_display_sys_stats(void)
 		(buf1, "%d\n", XEN_HYPER_NR_DOMAINS()));
 	/* !!!Display a date here if it can be found. */
 	XEN_HYPER_PRI(fp, len, "UPTIME: ", buf1, flag,
-		(buf1, "%s\n", convert_time(xen_hyper_get_uptime_hyper(), buf2)));
+		(buf1, "%s\n", (xen_hyper_get_uptime_hyper() ? 
+		 convert_time(xen_hyper_get_uptime_hyper(), buf2) : "--:--:--")));
 	/* !!!Display a version here if it can be found. */
 	XEN_HYPER_PRI_CONST(fp, len, "MACHINE: ", flag);
 	if (strlen(uts->machine)) {
@@ -1378,7 +1379,7 @@ xen_hyper_domain_context_to_type(struct xen_hyper_domain_context *dc, int *type,
 	} else if (dc->domain_id == XEN_HYPER_DOMID_XEN) {
 		*type = XEN_HYPER_DOMAIN_TYPE_XEN;
 		sprintf(buf, verbose ? "dom_xen" : "X");
-	} else if (dc == xhdt->idle_domain) {
+	} else if (dc->domain_id == XEN_HYPER_DOMID_IDLE) {
 		*type = XEN_HYPER_DOMAIN_TYPE_IDLE;
 		sprintf(buf, verbose ? "idle domain" : "I");
 	} else if (dc == xhdt->dom0) {

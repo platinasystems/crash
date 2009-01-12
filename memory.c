@@ -644,8 +644,9 @@ vm_init(void)
 
 	if (kernel_symbol_exists("mem_map"))
         	get_symbol_data("max_mapnr", sizeof(ulong), &vt->max_mapnr);
-	get_symbol_data("nr_swapfiles", sizeof(unsigned int), 
-		&vt->nr_swapfiles);
+	if (kernel_symbol_exists("nr_swapfiles"))
+		get_symbol_data("nr_swapfiles", sizeof(unsigned int), 
+			&vt->nr_swapfiles);
 
 	STRUCT_SIZE_INIT(page, "page");
 	STRUCT_SIZE_INIT(free_area, "free_area");
@@ -1086,6 +1087,7 @@ struct memloc {                  /* common holder of read memory */
         uint16_t u16;
         uint32_t u32;
         uint64_t u64;
+        uint64_t limit64;
 };
 
 static void
@@ -1137,6 +1139,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 			addr, count, flag, addrtype);
 
 	origaddr = addr;
+	BZERO(&mem, sizeof(struct memloc));
 
 	switch (flag & (DISPLAY_TYPES))
 	{
@@ -1146,6 +1149,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 		location = &mem.u64;
 		sprintf(readtype, "64-bit %s", addrtype); 
 		per_line = ENTRIES_64; 
+		if (machine_type("IA64"))
+			mem.limit64 = kt->end;
 		break;
 
 	case DISPLAY_32:
@@ -1197,10 +1202,10 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	        case DISPLAY_64:
 			if ((flag & (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) ==
 			    (HEXADECIMAL|SYMBOLIC|DISPLAY_DEFAULT)) {
-				if (in_ksymbol_range(mem.u64) &&
+				if ((!mem.limit64 || (mem.u64 <= mem.limit64)) && 
+				    in_ksymbol_range(mem.u64) &&
 				    strlen(value_to_symstr(mem.u64, buf, 0))) {
-					fprintf(fp, "%-16s ",
-                                            value_to_symstr(mem.u64, buf, 0));
+					fprintf(fp, "%-16s ", buf);
 					linelen += strlen(buf)+1;
 					break;
 				}
@@ -1237,9 +1242,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 				if (in_ksymbol_range(mem.u32) &&
 				    strlen(value_to_symstr(mem.u32, buf, 0))) {
 					fprintf(fp, INT_PRLEN == 16 ? 
-					    "%-16s " : "%-8s ",
-                                                value_to_symstr(mem.u32,
-						                buf, 0));
+					    "%-16s " : "%-8s ", buf);
 					linelen += strlen(buf)+1;
 					break;
 				}
@@ -2974,7 +2977,7 @@ do_vm_flags(ulong flags)
 #define VM_REF_CHECK_DECVAL(X,V) \
    (DO_REF_SEARCH(X) && ((X)->cmdflags & VM_REF_NUMBER) && ((X)->decval == (V)))
 #define VM_REF_CHECK_STRING(X,S) \
-   (DO_REF_SEARCH(X) && (S) && FILENAME_COMPONENT((S),(X)->str))
+   (DO_REF_SEARCH(X) && (string_exists(S)) && FILENAME_COMPONENT((S),(X)->str))
 #define VM_REF_FOUND(X)    ((X) && ((X)->cmdflags & VM_REF_HEADER))
 
 ulong
@@ -7540,12 +7543,16 @@ kmem_cache_s_array_nodes:
 		for (i = 0; i < vt->kmem_cache_len_nodes && start_address[i]; i++) {
 			if (readmem(start_address[i] + OFFSET(kmem_list3_shared), 
 			    KVADDR, &shared, sizeof(void *),
-			    "kmem_list3 shared", RETURN_ON_ERROR|QUIET) &&
-			    readmem(shared + OFFSET(array_cache_limit),
+			    "kmem_list3 shared", RETURN_ON_ERROR|QUIET)) {
+				if (!shared)
+					break;
+			} 
+			if (readmem(shared + OFFSET(array_cache_limit),
 	       		    KVADDR, &limit, sizeof(int), "shared array_cache limit",
 		            RETURN_ON_ERROR|QUIET)) {
 				if (limit > max_limit)
 					max_limit = limit;
+				break;
 			}
 		}
 	}
@@ -8946,7 +8953,7 @@ do_slab_chain_percpu_v2(long cmd, struct meminfo *si)
 static void
 do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 {
-	int i, tmp, s;
+	int i, tmp, s, node;
 	int list_borked;
 	char *slab_buf;
 	ulong specified_slab;
@@ -8975,6 +8982,14 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 		slab_buf = GETBUF(SIZE(slab));
 		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
 		{ 
+			if (vt->flags & NODES_ONLINE) {
+				node = next_online_node(index);
+				if (node < 0)
+					break;
+				if (node != index)
+					continue;
+			}
+
 			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
 			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
 		        slab_chains[2] = start_address[index] + OFFSET(kmem_list3_slabs_free);
@@ -9076,6 +9091,14 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 		slab_buf = GETBUF(SIZE(slab));
 		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
 		{ 
+			if (vt->flags & NODES_ONLINE) {
+				node = next_online_node(index);
+				if (node < 0)
+					break;
+				if (node != index)
+					continue;
+			}
+
 			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
 			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
 		        slab_chains[2] = start_address[index] + OFFSET(kmem_list3_slabs_free);
@@ -10157,7 +10180,7 @@ gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
 	    sizeof(ulong) * vt->kmem_cache_len_nodes , "array nodelist array", 
 	    RETURN_ON_ERROR) ||  
 	    !readmem(start_address[index] + OFFSET(kmem_list3_shared), KVADDR, &shared,
-	     sizeof(void *), "kmem_list3 shared", RETURN_ON_ERROR|QUIET) ||
+	     sizeof(void *), "kmem_list3 shared", RETURN_ON_ERROR|QUIET) || !shared ||
 	    !readmem(shared + OFFSET(array_cache_avail), KVADDR, &avail, sizeof(int), 
 	    "shared array_cache avail", RETURN_ON_ERROR|QUIET) || !avail) {
 		FREEBUF(start_address);
@@ -11297,7 +11320,9 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
         if (vaddr < vaddr_orig)  /* wrapped back to zero? */
                 return FALSE;
 
-	if (IS_VMALLOC_ADDR(vaddr_orig)) {
+	if (IS_VMALLOC_ADDR(vaddr_orig) || 
+	    (machine_type("IA64") && IS_VMALLOC_ADDR(vaddr))) {
+
 		if (IS_VMALLOC_ADDR(vaddr) && 
 		    (vaddr < last_vmalloc_address())) {
 			if (machine_type("X86_64")) 
@@ -12328,6 +12353,7 @@ memory_page_size(void)
 
 	case DEVMEM:                      
 	case MEMMOD:
+	case CRASHBUILTIN:
 		psz = (uint)getpagesize();  
 		break;
 

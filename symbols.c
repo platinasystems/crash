@@ -1277,8 +1277,15 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		gpl_syms = ULONG(modbuf + OFFSET(module_gpl_syms));
                 nsyms = UINT(modbuf + OFFSET(module_num_syms));
                 ngplsyms = UINT(modbuf + OFFSET(module_num_gpl_syms));
-                nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
-		size = ULONG(modbuf + OFFSET(module_core_size));
+
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
+			nksyms = UINT(modbuf + OFFSET(module_num_symtab));
+			size = UINT(modbuf + OFFSET(module_core_size));
+		} else {
+			nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+			size = ULONG(modbuf + OFFSET(module_core_size));
+		}
+
 		mod_name = modbuf + OFFSET(module_name);
 
 		lm = &st->load_modules[m++];
@@ -1301,8 +1308,12 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				ngplsyms, nksyms);
 		lm->mod_flags = MOD_EXT_SYMS;
 		lm->mod_ext_symcnt = mcnt;
-		lm->mod_etext_guess = lm->mod_base + 
-			ULONG(modbuf + OFFSET(module_core_text_size));
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+			lm->mod_etext_guess = lm->mod_base +
+				UINT(modbuf + OFFSET(module_core_text_size));
+		else
+			lm->mod_etext_guess = lm->mod_base +
+				ULONG(modbuf + OFFSET(module_core_text_size));
 		lm->mod_text_start = lm->mod_base;
 
 		st->ext_module_symtable[mcnt].value = lm->mod_base;
@@ -1740,7 +1751,10 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
                 return 0;
         }
 
-	nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+		nksyms = UINT(modbuf + OFFSET(module_num_symtab));
+	else
+		nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
 	ksymtab = ULONG(modbuf + OFFSET(module_symtab));
 	locsymtab = module_buf + (ksymtab - lm->mod_base);
 	kstrtab = ULONG(modbuf + OFFSET(module_strtab));
@@ -1765,6 +1779,19 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 
 		if (ec->st_shndx == SHN_UNDEF)
                         continue;
+
+		if (!IN_MODULE(kstrtab + ec->st_name, lm)) {
+			if (CRASHDEBUG(3)) {
+				error(WARNING, 
+				   "%s: bad st_name index: %lx -> %lx\n        "
+				   " st_value: %lx st_shndx: %ld st_info: %c\n",
+					lm->mod_name,
+					ec->st_name, (kstrtab + ec->st_name),
+					ec->st_value, ec->st_shndx, 
+					ec->st_info);
+			}
+			continue;
+		}
 
 		nameptr = locstrtab + ec->st_name;
 		if (*nameptr == '\0')
@@ -4952,7 +4979,7 @@ cmd_p(void)
 
 	leader = do_load_module_filter = restore_radix = 0;
 
-        while ((c = getopt(argcnt, args, "dhx")) != EOF) {
+        while ((c = getopt(argcnt, args, "dhxu")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -4967,6 +4994,10 @@ cmd_p(void)
                         output_radix = 16;
                         output_format = (output_radix == 10) ? 0 : 'x';
                         break;
+
+		case 'u':
+			pc->curcmd_flags |= MEMTYPE_UVADDR;
+			break;
 
                 default:
                         argerrs++;
@@ -7476,14 +7507,14 @@ section_header_info(bfd *bfd, asection *section, void *reqptr)
 {
 	int i;
 	struct load_module *lm;
-	int request;
+	ulong request;
         asection **sec;
 
-	request = (int)((ulong)reqptr);
+	request = ((ulong)reqptr);
 
 	switch (request)
 	{
-	case (uint)KERNEL_SECTIONS:
+	case (ulong)KERNEL_SECTIONS:
         	sec = (asection **)st->sections;
         	for (i = 0; (i < st->bfd->section_count) && *sec; i++)
 			sec++;
@@ -7510,12 +7541,12 @@ section_header_info(bfd *bfd, asection *section, void *reqptr)
 		}
 		break;
 
-	case (uint)MODULE_SECTIONS:
+	case (ulong)MODULE_SECTIONS:
 		lm = st->current;
 		store_section_data(lm, bfd, section);
 		break;
 
-	case (uint)VERIFY_SECTIONS:
+	case (ulong)VERIFY_SECTIONS:
 		if (STREQ(bfd_get_section_name(bfd, section), ".text") ||
 		    STREQ(bfd_get_section_name(bfd, section), ".data")) {
 			if (!(bfd_get_section_flags(bfd, section) & SEC_LOAD))
