@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -64,7 +64,7 @@
 #define NR_CPUS  (256)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (256)
+#define NR_CPUS  (512)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -76,7 +76,7 @@
 #define NR_CPUS  (4096)
 #endif
 #ifdef PPC64
-#define NR_CPUS  (128)
+#define NR_CPUS  (1024)
 #endif
 #ifdef S390
 #define NR_CPUS  (64)
@@ -512,10 +512,10 @@ struct kernel_table {                   /* kernel data */
 	uint gcc_version[3];
 	int runq_siblings;
 	int kernel_NR_CPUS;
-	long __rq_idx[NR_CPUS];
-	long __cpu_idx[NR_CPUS];
 	long __per_cpu_offset[NR_CPUS];
-	ulong cpu_flags[NR_CPUS];
+	long *__rq_idx;
+	long *__cpu_idx;
+	ulong *cpu_flags;
 #define POSSIBLE  (0x1)
 #define PRESENT   (0x2)
 #define ONLINE    (0x4)
@@ -602,14 +602,14 @@ struct task_table {                      /* kernel/local task table data */
 	ulong retries;
         ulong panicmsg;
         int panic_processor;
-        ulong idle_threads[NR_CPUS];
-        ulong panic_threads[NR_CPUS];
-	ulong panic_ksp[NR_CPUS];
-	ulong active_set[NR_CPUS];
-	ulong hardirq_ctx[NR_CPUS];
-	ulong hardirq_tasks[NR_CPUS];
-	ulong softirq_ctx[NR_CPUS];
-	ulong softirq_tasks[NR_CPUS];
+        ulong *idle_threads;
+        ulong *panic_threads;
+	ulong *active_set;
+	ulong *panic_ksp;
+	ulong *hardirq_ctx;
+	ulong *hardirq_tasks;
+	ulong *softirq_ctx;
+	ulong *softirq_tasks;
         ulong panic_task;
 	ulong this_task;
 	int pidhash_len;
@@ -3143,6 +3143,7 @@ void dump_build_data(void);
 #define machdep_init(X) ppc64_init(X)
 #endif
 int clean_exit(int);
+int untrusted_file(FILE *, char *);
 
 /*
  *  cmdline.c

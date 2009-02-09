@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #include "defs.h"
 #include <linux/major.h>
+#include <regex.h>
 
 static void show_mounts(ulong, int, struct task_context *);
 static int find_booted_kernel(void);
@@ -936,9 +937,10 @@ search_directory_tree(char *directory, char *file)
 {
 	char command[BUFSIZE];
 	char buf[BUFSIZE];
-	char *retbuf;
+	char *retbuf, *start, *end, *module;
 	FILE *pipe;
-	int done;
+	regex_t regex;
+	int regex_used, done;
 
 	if (!file_exists("/usr/bin/find", NULL) || 
 	    !file_exists("/bin/echo", NULL) ||
@@ -957,20 +959,34 @@ search_directory_tree(char *directory, char *file)
 
 	done = FALSE;
 	retbuf = NULL;
+	regex_used = ((start = strstr(file, "[")) && 
+		(end = strstr(file, "]")) && (start < end) &&
+		(regcomp(&regex, file, 0) == 0));
 
         while (fgets(buf, BUFSIZE-1, pipe) || !done) {
                 if (STREQ(buf, "search done\n")) {
                         done = TRUE;
                         break;
                 }
-                if (!retbuf &&
+                if (!retbuf && !regex_used &&
                     STREQ((char *)basename(strip_linefeeds(buf)), file)) {
                         retbuf = GETBUF(strlen(buf)+1);
                         strcpy(retbuf, buf);
                 }
+		if (!retbuf && regex_used) {
+			module = basename(strip_linefeeds(buf));
+			if (regexec(&regex, module, 0, NULL, 0) == 0) {
+				retbuf = GETBUF(strlen(buf)+1);
+				strcpy(retbuf, buf);
+			}
+		}
         }
 
+	if (regex_used)
+		regfree(&regex);
+
         pclose(pipe);
+
 	return retbuf;
 }
  
@@ -1857,35 +1873,35 @@ dump_filesys_table(int verbose)
 		goto show_hit_rates;
 
         for (i = 0; i < FILE_CACHE; i++)
-                fprintf(stderr, "   cached_file[%2d]: %lx (%ld)\n",
+                fprintf(fp, "   cached_file[%2d]: %lx (%ld)\n",
                         i, ft->cached_file[i],
                         ft->cached_file_hits[i]);
-        fprintf(stderr, "        file_cache: %lx\n", (ulong)ft->file_cache);
-        fprintf(stderr, "  file_cache_index: %d\n", ft->file_cache_index);
-        fprintf(stderr, "  file_cache_fills: %ld\n", ft->file_cache_fills);
+        fprintf(fp, "        file_cache: %lx\n", (ulong)ft->file_cache);
+        fprintf(fp, "  file_cache_index: %d\n", ft->file_cache_index);
+        fprintf(fp, "  file_cache_fills: %ld\n", ft->file_cache_fills);
 
 	for (i = 0; i < DENTRY_CACHE; i++)
-		fprintf(stderr, "  cached_dentry[%2d]: %lx (%ld)\n", 
+		fprintf(fp, "  cached_dentry[%2d]: %lx (%ld)\n", 
 			i, ft->cached_dentry[i],
 			ft->cached_dentry_hits[i]);
-	fprintf(stderr, "      dentry_cache: %lx\n", (ulong)ft->dentry_cache);
-	fprintf(stderr, "dentry_cache_index: %d\n", ft->dentry_cache_index);
-	fprintf(stderr, "dentry_cache_fills: %ld\n", ft->dentry_cache_fills);
+	fprintf(fp, "      dentry_cache: %lx\n", (ulong)ft->dentry_cache);
+	fprintf(fp, "dentry_cache_index: %d\n", ft->dentry_cache_index);
+	fprintf(fp, "dentry_cache_fills: %ld\n", ft->dentry_cache_fills);
 
         for (i = 0; i < INODE_CACHE; i++)
-                fprintf(stderr, "  cached_inode[%2d]: %lx (%ld)\n",
+                fprintf(fp, "  cached_inode[%2d]: %lx (%ld)\n",
                         i, ft->cached_inode[i],
                         ft->cached_inode_hits[i]);
-        fprintf(stderr, "       inode_cache: %lx\n", (ulong)ft->inode_cache);
-        fprintf(stderr, " inode_cache_index: %d\n", ft->inode_cache_index);
-        fprintf(stderr, " inode_cache_fills: %ld\n", ft->inode_cache_fills);
+        fprintf(fp, "       inode_cache: %lx\n", (ulong)ft->inode_cache);
+        fprintf(fp, " inode_cache_index: %d\n", ft->inode_cache_index);
+        fprintf(fp, " inode_cache_fills: %ld\n", ft->inode_cache_fills);
 
 show_hit_rates:
         if (ft->file_cache_fills) {
                 for (i = fhits = 0; i < FILE_CACHE; i++)
                         fhits += ft->cached_file_hits[i];
 
-                fprintf(stderr, "     file hit rate: %2ld%% (%ld of %ld)\n",
+                fprintf(fp, "     file hit rate: %2ld%% (%ld of %ld)\n",
                         (fhits * 100)/ft->file_cache_fills,
                         fhits, ft->file_cache_fills);
 	} 
@@ -1894,7 +1910,7 @@ show_hit_rates:
                 for (i = dhits = 0; i < DENTRY_CACHE; i++)
                         dhits += ft->cached_dentry_hits[i];
 
-		fprintf(stderr, "   dentry hit rate: %2ld%% (%ld of %ld)\n",
+		fprintf(fp, "   dentry hit rate: %2ld%% (%ld of %ld)\n",
 			(dhits * 100)/ft->dentry_cache_fills,
 			dhits, ft->dentry_cache_fills);
 	}
@@ -1903,7 +1919,7 @@ show_hit_rates:
                 for (i = ihits = 0; i < INODE_CACHE; i++)
                         ihits += ft->cached_inode_hits[i];
 
-		fprintf(stderr, "    inode hit rate: %2ld%% (%ld of %ld)\n",
+		fprintf(fp, "    inode hit rate: %2ld%% (%ld of %ld)\n",
                         (ihits * 100)/ft->inode_cache_fills,
                         ihits, ft->inode_cache_fills);
 	}
@@ -2365,6 +2381,8 @@ open_file_reference(struct reference *ref)
 		}
 
         	for (i = 1; i < 4; i++) {
+			if (STREQ(arglist[i], "?"))
+				continue;
         		vaddr = htol(arglist[i], FAULT_ON_ERROR, NULL);
         		if (vaddr == ref->hexval) 
         			return TRUE;

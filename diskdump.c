@@ -107,7 +107,7 @@ static int read_dump_header(char *file)
 	struct disk_dump_sub_header *sub_header = NULL;
 	struct kdump_sub_header *sub_header_kdump = NULL;
 	int bitmap_len;
-	const int block_size = (int)sysconf(_SC_PAGESIZE);
+	int block_size = (int)sysconf(_SC_PAGESIZE);
 	off_t offset;
 	const off_t failed = (off_t)-1;
 	ulong pfn;
@@ -116,7 +116,8 @@ static int read_dump_header(char *file)
 	if (block_size < 0)
 		return FALSE;
 
-	if ((header = malloc(block_size)) == NULL)
+restart:
+	if ((header = realloc(header, block_size)) == NULL)
 		error(FATAL, "diskdump / compressed kdump: cannot malloc block_size buffer\n");
 
 	if (lseek(dd->dfd, 0, SEEK_SET) == failed) {
@@ -166,13 +167,15 @@ static int read_dump_header(char *file)
 		goto err;
 
 	if (header->block_size != block_size) {
-		error(INFO, "%s: block size in the dump header does not match"
-	            " with system page size\n",
-			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
-		goto err;
+		block_size = header->block_size;
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "retrying with different block/page size: %d\n", 
+				header->block_size);
+		goto restart;
 	}
-	dd->block_size  = block_size;
-	dd->block_shift = ffs(block_size) - 1;
+	dd->block_size  = header->block_size;
+	dd->block_shift = ffs(header->block_size) - 1;
 
 	if (sizeof(*header) + sizeof(void *) * header->nr_cpus > block_size ||
 	    header->nr_cpus <= 0) {

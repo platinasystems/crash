@@ -7391,8 +7391,7 @@ dwarf2_fundamental_type (struct objfile *objfile, int typeid,
    When the result is a register number, the global isreg flag is set,
    otherwise it is cleared.
 
-   Note that stack[0] is unused except as a default error return.
-   Note that stack overflow is not yet handled.  */
+   Note that stack[0] is unused except as a default error return. */
 
 static CORE_ADDR
 decode_locdesc (struct dwarf_block *blk, struct dwarf2_cu *cu)
@@ -7409,7 +7408,7 @@ decode_locdesc (struct dwarf_block *blk, struct dwarf2_cu *cu)
 
   i = 0;
   stacki = 0;
-  stack[stacki] = 0;
+  stack[++stacki] = 0;
   isreg = 0;
 
   while (i < size)
@@ -7591,6 +7590,16 @@ decode_locdesc (struct dwarf_block *blk, struct dwarf2_cu *cu)
 		     dwarf_stack_op_name (op));
 	  return (stack[stacki]);
 	}
+      /* Enforce maximum stack depth of size-1 to avoid ++stacki writing
+         outside of the allocated space. Also enforce minimum > 0.
+         -- wad@google.com 14 Aug 2006 */
+      if (stacki >= sizeof (stack) / sizeof (*stack) - 1)
+	internal_error (__FILE__, __LINE__,
+	                _("location description stack too deep: %d"),
+	                stacki);
+      if (stacki <= 0)
+	internal_error (__FILE__, __LINE__,
+	                _("location description stack too shallow"));
     }
   return (stack[stacki]);
 }

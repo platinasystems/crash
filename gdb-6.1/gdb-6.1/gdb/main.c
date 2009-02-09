@@ -628,7 +628,7 @@ extern int gdbtk_test (char *);
 
       if (!inhibit_gdbinit)
 	{
-	  catch_command_errors (source_command, homeinit, 0, RETURN_MASK_ALL);
+	  catch_command_errors (source_command, homeinit, -1, RETURN_MASK_ALL);
 	}
 
       /* Do stats; no need to do them elsewhere since we'll only
@@ -714,7 +714,7 @@ extern int gdbtk_test (char *);
       || memcmp ((char *) &homebuf, (char *) &cwdbuf, sizeof (struct stat)))
     if (!inhibit_gdbinit)
       {
-	catch_command_errors (source_command, gdbinit, 0, RETURN_MASK_ALL);
+	catch_command_errors (source_command, gdbinit, -1, RETURN_MASK_ALL);
       }
 
   for (i = 0; i < ncmd; i++)

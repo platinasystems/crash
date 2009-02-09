@@ -25,6 +25,7 @@ static int is_external_command(void);
 static int is_builtin_command(void);
 static int is_input_file(void);
 static void check_xen_hyper(void);
+static void show_untrusted_files(void);
 
 static struct option long_options[] = {
         {"memory_module", required_argument, 0, 0},
@@ -493,6 +494,7 @@ main_loop(void)
 {
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
+		show_untrusted_files();
 		if (XEN_HYPER_MODE()) {
 #ifdef XEN_HYPERVISOR_ARCH
 			machdep_init(POST_GDB);
@@ -876,6 +878,8 @@ setup_environment(int argc, char **argv)
 	                if ((afp = fopen(homerc, "r")) == NULL)
 	                        error(INFO, "cannot open %s: %s\n",
 	                                homerc, strerror(errno));
+			else if (untrusted_file(afp, homerc))
+				fclose(afp);
 	                else {
 	                        while (fgets(buf, BUFSIZE, afp))
 	                                resolve_rc_cmd(buf, ALIAS_RCHOME);
@@ -890,6 +894,8 @@ setup_environment(int argc, char **argv)
 		if ((afp = fopen(localrc, "r")) == NULL)
                         error(INFO, "cannot open %s: %s\n",
 				localrc, strerror(errno));
+		else if (untrusted_file(afp, localrc))
+			fclose(afp);
 		else {
 			while (fgets(buf, BUFSIZE, afp)) 
 				resolve_rc_cmd(buf, ALIAS_RCLOCAL);
@@ -1408,4 +1414,47 @@ check_xen_hyper(void)
 #else
 	error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
+}
+
+/*
+ *  Reject untrusted .crashrc, $HOME/.crashrc, 
+ *  .gdbinit, and $HOME/.gdbinit files.
+ */
+static char *untrusted_file_list[4] = { 0 };
+
+int
+untrusted_file(FILE *filep, char *filename)
+{
+	struct stat sbuf;
+	int i;
+
+	if (filep && (fstat(fileno(filep), &sbuf) == 0) &&
+	    (sbuf.st_uid == getuid()) && !(sbuf.st_mode & S_IWOTH))
+		return FALSE;
+	
+	for (i = 0; i < 4; i++) {
+		if (!untrusted_file_list[i]) {
+			untrusted_file_list[i] = strdup(filename);
+			break;
+		}
+	}
+
+	return TRUE;
+}
+
+static void
+show_untrusted_files(void)
+{
+	int i, cnt;
+
+	for (i = cnt = 0; i < 4; i++) {
+		if (untrusted_file_list[i]) {
+			error(WARNING, "not using untrusted file: \"%s\"\n", 
+				untrusted_file_list[i]);
+			free(untrusted_file_list[i]);
+			cnt++;
+		}
+	}
+	if (cnt)
+		fprintf(fp, "\n");
 }

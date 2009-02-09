@@ -1,6 +1,29 @@
+crash (4.0-7.7-1) experimental; urgency=low
+
+  * New upstream version 4.0-7.7 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Support dumps with different page size that the host system, ppc and
+    ia64 support configurable page sizes.
+    - Fix mod -s to support modules that have both - and _ in their names.
+    - Reject s390 and s390x "L2^B" local label symbols from the kernel symbol
+    list
+    - Fix potential buffer overflow with "ps -l".
+    - Fix "bt -a" to continue backtrace after hitting a fatal error
+    - Only suource trusted versions of .crashrc and .gdbinit 
+    - Fix potential, but highly unlikely, buffer overflow in gdb dwarfread.c
+    and dwarf2read.c.  
+    - Fix potential, but highly unlikely, integer overflow in the BDF library.
+    - Enable stack undind on ia64 when using kerntypes file. 
+    - Fix failure of "files -R" command when an inode is unknown.
+    - Allow LKCD kerntypes debuginfo file created form a module to be loaded
+    with: "mod -s <module> <kerntypes-file>"
+    - Increase NR_CPUS from 256 to 512 for x86-64 and 128 to 1024 for ppc64.
+
+ -- Troy Heber <troyh@debian.org>  Mon, 09 Feb 2009 07:14:33 -0700
+
 crash (4.0-7.6-1) experimental; urgency=low
 
-  * New upstream version 4.0-7.4 (see
+  * New upstream version 4.0-7.6 (see
     http://people.redhat.com/anderson/crash.changelog)
   - Fix failure if the kernel was built without CONFIG_SWAP
   - Fix "bt" command on x86_64 kernels that contain the x86/x86_64 merger

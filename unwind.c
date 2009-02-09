@@ -1395,9 +1395,44 @@ unwind_init_v2(void)
 unwind_init_v3(void)
 #endif
 {
+	int len;
 	struct gnu_request request, *req;
 
 	req = &request;
+
+	if (LKCD_KERNTYPES()) {
+		if ((len = STRUCT_SIZE("unw")) == 0) {
+			error(WARNING,
+			"cannot determine unw.tables offset; no struct unw\n");
+			machdep->flags |= UNW_OUT_OF_SYNC;
+			return;
+		}
+		machdep->machspec->unw_tables_offset =
+			MEMBER_OFFSET("unw", "tables");
+		if (MEMBER_EXISTS("unw", "r0"))
+			machdep->flags |= UNW_R0;
+		/*
+		 * no verification of save_order, sw_off, preg_index as
+		 * we're purely depending on the structure definition.
+		 */
+		if (MEMBER_EXISTS("unw", "pt_regs_offsets")) {
+			machdep->machspec->unw_pt_regs_offsets =
+				MEMBER_OFFSET("unw", "pt_regs_offsets") -
+				machdep->machspec->unw_tables_offset;
+			machdep->machspec->unw_kernel_table_offset =
+				MEMBER_OFFSET("unw", "kernel_table") -
+				machdep->machspec->unw_tables_offset;
+			machdep->flags |= UNW_PTREGS;
+		}
+		if (!load_unw_table(CLEAR_SCRIPT_CACHE)) {
+			error(WARNING,
+				"unwind_init: cannot read kernel unw table\n");
+			machdep->flags |= UNW_OUT_OF_SYNC;
+		}
+		machdep->machspec->unw = (void *)&unw;
+		/* fall to common structure size verifications */
+		goto verify;
+	}
 
         if (get_symbol_type("unw", "tables", req) == TYPE_CODE_UNDEF) {
 		/*
@@ -1449,7 +1484,7 @@ unwind_init_v3(void)
 
 		machdep->machspec->unw = (void *)&unw;
 	}
-
+verify:	
 	verify_common_struct("unw_frame_info", sizeof(struct unw_frame_info));
 	verify_common_struct("unw_table", sizeof(struct unw_table));
 	verify_common_struct("unw_table_entry", sizeof(struct unw_table_entry));

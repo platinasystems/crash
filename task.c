@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -101,6 +101,12 @@ task_init(void)
 	long eip_offset, esp_offset, ksp_offset;
 	struct gnu_request req;
 	ulong active_pid;
+
+	if (!(tt->idle_threads = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc idle_threads array");
+	if (DUMPFILE() &&
+	    !(tt->panic_threads = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc panic_threads array");
 
         if (kernel_symbol_exists("nr_tasks")) {
 		/*
@@ -468,6 +474,15 @@ irqstacks_init(void)
 {
 	int i;
 	char *thread_info_buf;
+
+	if (!(tt->hardirq_ctx = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc hardirq_ctx space.");
+	if (!(tt->hardirq_tasks = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc hardirq_tasks space.");
+	if (!(tt->softirq_ctx = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc softirq_ctx space.");
+	if (!(tt->softirq_tasks = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+		error(FATAL, "cannot malloc softirq_tasks space.");
 
 	thread_info_buf = GETBUF(SIZE(irq_ctx));
 
@@ -2902,7 +2917,7 @@ show_last_run(struct task_context *tc)
 {
 	int i, c;
 	struct task_context *tcp;
-	char format[10];
+	char format[15];
 	char buf[BUFSIZE];
 
        	tcp = FIRST_CONTEXT();
@@ -4530,6 +4545,10 @@ get_panic_context(void)
 		task = tt->panic_threads[tt->panic_processor];
 
 		if (symbol_exists("panic_ksp")) {
+			if (!(tt->panic_ksp = (ulong *)
+			     calloc(NR_CPUS, sizeof(void *))))
+				error(FATAL, 
+					"cannot malloc panic_ksp array.\n");
 		    	readmem(symbol_value("panic_ksp"), KVADDR, 
 			    tt->panic_ksp,
 		            sizeof(void *)*NR_CPUS, "panic_ksp array", 
@@ -4575,7 +4594,7 @@ get_active_task(int cpu)
 	ulong task;
         struct task_context *tc;
 
-	if ((task = tt->panic_threads[cpu]))
+	if (DUMPFILE() && (task = tt->panic_threads[cpu]))
 		return task;
 
         tc = FIRST_CONTEXT();
@@ -5555,7 +5574,7 @@ print_task_header(FILE *out, struct task_context *tc, int newline)
 void
 dump_task_table(int verbose)
 {
-	int i, nr_cpus;
+	int i, j, more, nr_cpus;
 	struct task_context *tc;
 	char buf[BUFSIZE];
 	int others, wrap, flen;
@@ -5671,75 +5690,196 @@ dump_task_table(int verbose)
 	fprintf(fp, "         mm_struct: %lx\n", (ulong)tt->mm_struct);
 	fprintf(fp, "       init_pid_ns: %lx\n", tt->init_pid_ns);
 
-        fprintf(fp, "     panic_threads:");
 
 	wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
 	flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
 
 	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
 
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->panic_threads[i]); 
-        }
-        fprintf(fp, "\n");
-
-        fprintf(fp, "         panic_ksp:");
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->panic_ksp[i]);
-        }
-        fprintf(fp, "\n");
-
-        fprintf(fp, "       hardirq_ctx:");
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->hardirq_ctx[i]);
-        }
-        fprintf(fp, "\n");
-
-        fprintf(fp, "     hardirq_tasks:");
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->hardirq_tasks[i]);
-        }
-        fprintf(fp, "\n");
-
-        fprintf(fp, "       softirq_ctx:");
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->softirq_ctx[i]);
-        }
-        fprintf(fp, "\n");
-
-        fprintf(fp, "     softirq_tasks:");
-        for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
-                        fprintf(fp, "\n        ");
-                fprintf(fp, "%.*lx ", flen, tt->softirq_tasks[i]);
-        }
-        fprintf(fp, "\n");
 
         fprintf(fp, "      idle_threads:");
         for (i = 0; i < nr_cpus; i++) {
-                if ((i % wrap) == 0)
+		if (!tt->idle_threads) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
                         fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->idle_threads[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
                 fprintf(fp, "%.*lx ", flen, tt->idle_threads[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
         }
         fprintf(fp, "\n");
 
 	fprintf(fp, "        active_set:");
 	for (i = 0; i < nr_cpus; i++) {
-		if ((i % wrap) == 0)
+		if (!tt->active_set) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+		if ((i % wrap) == 0) {
 	        	fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->active_set[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
 	        fprintf(fp, "%.*lx ", flen, tt->active_set[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
 	}
 	fprintf(fp, "\n");
+
+        fprintf(fp, "     panic_threads:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->panic_threads) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->panic_threads[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+               	fprintf(fp, "%.*lx ", flen, tt->panic_threads[i]); 
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
+
+        fprintf(fp, "         panic_ksp:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->panic_ksp) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->panic_ksp[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+                fprintf(fp, "%.*lx ", flen, tt->panic_ksp[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
+
+        fprintf(fp, "       hardirq_ctx:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->hardirq_ctx) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->hardirq_ctx[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+                fprintf(fp, "%.*lx ", flen, tt->hardirq_ctx[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
+
+        fprintf(fp, "     hardirq_tasks:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->hardirq_tasks) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->hardirq_tasks[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+                fprintf(fp, "%.*lx ", flen, tt->hardirq_tasks[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
+
+        fprintf(fp, "       softirq_ctx:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->softirq_ctx) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->softirq_ctx[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+                fprintf(fp, "%.*lx ", flen, tt->softirq_ctx[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
+
+        fprintf(fp, "     softirq_tasks:");
+        for (i = 0; i < nr_cpus; i++) {
+		if (!tt->softirq_tasks) {
+			fprintf(fp, " (unused)");
+			break;
+		}
+                if ((i % wrap) == 0) {
+                        fprintf(fp, "\n        ");
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (tt->softirq_tasks[j]) {
+					more = TRUE;
+					break;
+				}
+			}
+		}
+                fprintf(fp, "%.*lx ", flen, tt->softirq_tasks[i]);
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+        }
+        fprintf(fp, "\n");
 
 
 	if (!verbose)
@@ -5909,6 +6049,8 @@ rq_idx(int cpu)
 {
 	if (kt->runq_siblings == 1)
 		return cpu;
+	else if (!(kt->__rq_idx))
+		return 0;
 	else
 		return kt->__rq_idx[cpu];
 }
@@ -5921,6 +6063,8 @@ cpu_idx(int cpu)
 {
         if (kt->runq_siblings == 1)
                 return 0;
+	else if (!(kt->__cpu_idx))
+		return 0;
         else
                 return kt->__cpu_idx[cpu];
 }
@@ -5987,7 +6131,10 @@ get_active_set(void)
 	else
 		return FALSE;
 
-        BZERO(tt->active_set, sizeof(ulong) * NR_CPUS);
+
+	if (!(tt->active_set = (ulong *)calloc(NR_CPUS, sizeof(ulong))))	
+		error(FATAL, "cannot malloc active_set array");
+
         runqbuf = GETBUF(SIZE(runqueue));
 	cnt = 0;
 

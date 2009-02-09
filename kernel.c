@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -66,6 +66,9 @@ kernel_init()
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
+
+        if (!(kt->cpu_flags = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
+                error(FATAL, "cannot malloc cpu_flags array");
 
 	cpu_maps_init();
 
@@ -210,6 +213,12 @@ kernel_init()
 			NULL, 0);
 		if (symbol_exists("__cpu_idx") &&
 		    symbol_exists("__rq_idx")) {
+			if (!(kt->__cpu_idx = (long *)
+			    calloc(NR_CPUS, sizeof(long))))
+				error(FATAL, "cannot malloc __cpu_idx array");
+			if (!(kt->__rq_idx = (long *)
+			    calloc(NR_CPUS, sizeof(long))))
+				error(FATAL, "cannot malloc __rq_idx array");
 			if (!readmem(symbol_value("__cpu_idx"), KVADDR, 
 		            &kt->__cpu_idx[0], sizeof(long) * NR_CPUS,
                             "__cpu_idx[NR_CPUS]", RETURN_ON_ERROR))
@@ -1828,6 +1837,12 @@ cmd_bt(void)
 				"-a option not supported on a live system\n");
 
 		for (c = 0; c < NR_CPUS; c++) {
+			if (setjmp(pc->foreach_loop_env)) {
+				free_all_bufs();
+				continue;
+			}
+			pc->flags |= IN_FOREACH;
+
 			if ((tc = task_to_context(tt->panic_threads[c]))) {
 				BT_SETUP(tc);
 				if (!BT_REFERENCE_CHECK(bt))
@@ -1835,6 +1850,7 @@ cmd_bt(void)
 				back_trace(bt);
 			}
 		}
+                pc->flags &= ~IN_FOREACH;
 
 		return;
 	}
@@ -3251,15 +3267,18 @@ module_objfile_search(char *modref, char *filename, char *tree)
  *  First look for a module based upon its reference name.
  *  If that fails, try replacing any underscores in the
  *  reference name with a dash.  
+ *  If that fails, because of intermingled dashes and underscores, 
+ *  try a regex expression.
  *
  *  Example: module name "dm_mod" comes from "dm-mod.ko" objfile
+ *           module name "dm_region_hash" comes from "dm-region_hash.ko" objfile
  */
 static char *
 find_module_objfile(char *modref, char *filename, char *tree)
 {
 	char * retbuf;
 	char tmpref[BUFSIZE];
-	int c;
+	int i, c;
 
 	retbuf = module_objfile_search(modref, filename, tree);
 
@@ -3268,6 +3287,20 @@ find_module_objfile(char *modref, char *filename, char *tree)
 		for (c = 0; c < BUFSIZE && tmpref[c]; c++)
 			if (tmpref[c] == '_')
 				tmpref[c] = '-';
+		retbuf = module_objfile_search(tmpref, filename, tree);
+	}
+
+	if (!retbuf && (count_chars(modref, '_') > 1)) {
+		for (i = c = 0; modref[i]; i++) {
+			if (modref[i] == '_') {
+				tmpref[c++] = '[';
+				tmpref[c++] = '_';
+				tmpref[c++] = '-';
+				tmpref[c++] = ']';
+			} else
+				tmpref[c++] = modref[i];
+		} 
+		tmpref[c] = NULLCHAR;
 		retbuf = module_objfile_search(tmpref, filename, tree);
 	}
 
@@ -3899,7 +3932,7 @@ get_NR_syscalls(void)
 void
 dump_kernel_table(int verbose)
 {
-	int i, nr_cpus;
+	int i, j, more, nr_cpus;
         struct new_utsname *uts;
         int others;
 
@@ -4012,18 +4045,69 @@ dump_kernel_table(int verbose)
 	fprintf(fp, " runq_siblings: %d\n", kt->runq_siblings);
 	fprintf(fp, "  __rq_idx[NR_CPUS]: ");
 	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
-	for (i = 0; i < nr_cpus; i++) 
+	for (i = 0; i < nr_cpus; i++) {
+		if (!(kt->__rq_idx)) {
+			fprintf(fp, "(unused)");
+			break;
+		}
 		fprintf(fp, "%ld ", kt->__rq_idx[i]);
+		for (j = i, more = FALSE; j < nr_cpus; j++) {
+			if (kt->__rq_idx[j])
+				more = TRUE;
+		}
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+	}
 	fprintf(fp, "\n __cpu_idx[NR_CPUS]: ");
-	for (i = 0; i < nr_cpus; i++) 
+	for (i = 0; i < nr_cpus; i++) {
+		if (!(kt->__cpu_idx)) {
+			fprintf(fp, "(unused)");
+			break;
+		}
 		fprintf(fp, "%ld ", kt->__cpu_idx[i]);
+		for (j = i, more = FALSE; j < nr_cpus; j++) {
+			if (kt->__cpu_idx[j])
+				more = TRUE;
+		}
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+	}
 	fprintf(fp, "\n __per_cpu_offset[NR_CPUS]:");
-	for (i = 0; i < nr_cpus; i++) 
+	for (i = 0; i < nr_cpus; i++) {
 		fprintf(fp, "%s%.*lx ", (i % 4) == 0 ? "\n    " : "",
 			LONG_PRLEN, kt->__per_cpu_offset[i]);
+		if ((i % 4) == 0) {
+			for (j = i, more = FALSE; j < nr_cpus; j++) {
+				if (kt->__per_cpu_offset[j])
+					more = TRUE;
+			}
+		}
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+
+	}
 	fprintf(fp, "\n cpu_flags[NR_CPUS]: ");
-	for (i = 0; i < nr_cpus; i++) 
+	for (i = 0; i < nr_cpus; i++) {
+		if (!(kt->cpu_flags)) {
+			fprintf(fp, "(unused)\n");
+			goto no_cpu_flags;
+		}
 		fprintf(fp, "%lx ", kt->cpu_flags[i]);
+		for (j = i, more = FALSE; j < nr_cpus; j++) {
+			if (kt->cpu_flags[j])
+				more = TRUE;
+		}
+		if (!more) {
+			fprintf(fp, "...");
+			break;
+		}
+	}
 	fprintf(fp, "\n");
 	fprintf(fp, "       cpu_possible_map: ");
 	if (kernel_symbol_exists("cpu_possible_map")) {
@@ -4052,6 +4136,7 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "\n");
 	} else
 		fprintf(fp, "(does not exist)\n");
+no_cpu_flags:
 	others = 0;
 	fprintf(fp, "     xen_flags: %lx (", kt->xen_flags);
         if (kt->xen_flags & WRITABLE_PAGE_TABLES)

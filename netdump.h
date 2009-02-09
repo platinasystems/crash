@@ -1,7 +1,7 @@
 /* netdump.h
  *
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.
@@ -66,6 +66,8 @@ struct vmcore_data {
 	uint num_prstatus_notes;
 	void *nt_prstatus_percpu[NR_CPUS];
 	struct xen_kdump_data *xen_kdump_data;
+	void *vmcoreinfo;
+	uint size_vmcoreinfo;
 };
 
 /*
