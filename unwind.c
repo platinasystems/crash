@@ -2072,7 +2072,6 @@ unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
 			  char *type)
 {
 	unsigned long pt, sw, pid;
-	int processor;
 	char *p, *q;
 	struct task_context *tc = NULL;
 	struct bt_info clone_bt;
@@ -2118,15 +2117,19 @@ unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
 		if (*p != ' ')
 			goto find_exframe;
 		if ((q = strchr(++p, ' '))) {
-			/* "<type> <comm> <processor>" */
-			if (sscanf(++q, "%d", &processor) > 0) {
-				tc = pid_to_context(0);
-				while (tc) {
-					if (tc != bt->tc &&
-					    tc->processor == processor)
-						break;
-					tc = tc->tc_next;
-				}
+			/* 
+			 *  "<type> <comm> <processor>" 
+			 *
+			 *  We came from one of the PID 0 swapper tasks,
+			 *  so just find the one with the same cpu as 
+			 *  the passed-in INIT/MCA task.
+			 */
+			tc = pid_to_context(0);
+			while (tc) {
+				if (tc != bt->tc &&
+				    tc->processor == bt->tc->processor)
+					break;
+				tc = tc->tc_next;
 			}
 		} else if (sscanf(p, "%lu", &pid) > 0)
 			/* "<type> <pid>" */

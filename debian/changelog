@@ -1,8 +1,17 @@
-crash (4.0-7.7-2) unstable; urgency=low
+crash (4.0-8.8-1) unstable; urgency=low
 
-  * Upload to unstable
+  * New upstream version 4.0-8.8 (see
+    http://people.redhat.com/anderson/crash.changelog)
+    - Print warning with CONFIG_STRICT_DEVMEM 
+    - Fix "bt" to prevent segfault with amd64, LKCD dump and corrupt active
+    tasks.
+    - Fix chronological order kernel ring buffer when it has been cleard via
+    syslog() or klogctl(). 
+    - Search /usr/lib[64]/crash/extensions for crash extenstions
+    - Change how "bt" determines which idle task was interrupted by ia64
+    INIT or MCA. 
 
- -- Troy Heber <troyh@debian.org>  Wed, 18 Feb 2009 08:12:32 -0700
+ -- Troy Heber <troyh@debian.org>  Thu, 09 Apr 2009 09:09:31 -0600
 
 crash (4.0-7.7-1) experimental; urgency=low
 
