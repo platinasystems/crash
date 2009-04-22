@@ -47,7 +47,7 @@ static ulong ppc64_in_irqstack(ulong);
 static char * ppc64_check_eframe(struct ppc64_pt_regs *);
 static void ppc64_print_eframe(char *, struct ppc64_pt_regs *, 
 		struct bt_info *);
-static void parse_cmdline_arg(void);
+static void parse_cmdline_args(void);
 static void ppc64_paca_init(void);
 static void ppc64_clear_machdep_cache(void);
 
@@ -75,8 +75,8 @@ ppc64_init(int when)
 		machdep->verify_paddr = generic_verify_paddr;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		machdep->flags |= MACHDEP_BT_TEXT;
-                if (machdep->cmdline_arg)
-                        parse_cmdline_arg();
+                if (machdep->cmdline_args[0])
+                        parse_cmdline_args();
 		 machdep->clear_machdep_cache = ppc64_clear_machdep_cache;
 		break;
 
@@ -368,6 +368,11 @@ ppc64_dump_machdep_table(ulong arg)
 	fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
         fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
         fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
+        for (i = 0; i < MAX_MACHDEP_ARGS; i++) {
+                fprintf(fp, "    cmdline_args[%d]: %s\n",
+                        i, machdep->cmdline_args[i] ?
+                        machdep->cmdline_args[i] : "(unused)");
+        }
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 	fprintf(fp, "     hwintrstack[%d]: ", NR_CPUS);
        	for (c = 0; c < NR_CPUS; c++) {
@@ -2315,70 +2320,76 @@ ppc64_compiler_warning_stub(void)
  */
 
 void
-parse_cmdline_arg(void)
+parse_cmdline_args(void)
 {
-	int i, c, errflag;
+	int index, i, c, errflag;
 	char *p;
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
 	int lines = 0;
 
-	if (!strstr(machdep->cmdline_arg, "=")) {
-		error(WARNING, "ignoring --machdep option: %s\n\n",
-			machdep->cmdline_arg);
-		return;
-        }
+	for (index = 0; index < MAX_MACHDEP_ARGS; index++) {
 
-	strcpy(buf, machdep->cmdline_arg);
-
-	for (p = buf; *p; p++) {
-		if (*p == ',')
-			 *p = ' ';
-	}
-
-	c = parse_line(buf, arglist);
-
-	for (i = 0; i < c; i++) {
-		errflag = 0;
-
-		if (STRNEQ(arglist[i], "vm=")) {
-			p = arglist[i] + strlen("vm=");
-			if (strlen(p)) {
-				if (STREQ(p, "orig")) {
-					machdep->flags |= VM_ORIG;
-					continue;
-				} else if (STREQ(p, "2.6.14")) {
-					machdep->flags |= VM_4_LEVEL;
-					continue;
+		if (!machdep->cmdline_args[index])
+			break;
+	
+		if (!strstr(machdep->cmdline_args[index], "=")) {
+			error(WARNING, "ignoring --machdep option: %s\n\n",
+				machdep->cmdline_args[index]);
+			continue;
+	        }
+	
+		strcpy(buf, machdep->cmdline_args[index]);
+	
+		for (p = buf; *p; p++) {
+			if (*p == ',')
+				 *p = ' ';
+		}
+	
+		c = parse_line(buf, arglist);
+	
+		for (i = 0; i < c; i++) {
+			errflag = 0;
+	
+			if (STRNEQ(arglist[i], "vm=")) {
+				p = arglist[i] + strlen("vm=");
+				if (strlen(p)) {
+					if (STREQ(p, "orig")) {
+						machdep->flags |= VM_ORIG;
+						continue;
+					} else if (STREQ(p, "2.6.14")) {
+						machdep->flags |= VM_4_LEVEL;
+						continue;
+					}
 				}
 			}
-		}
-
-		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
-		lines++;
-	} 
-
-	switch (machdep->flags & (VM_ORIG|VM_4_LEVEL))
-	{
-	case VM_ORIG:
-		error(NOTE, "using original PPC64 VM address ranges\n");
-		lines++;
-		break;
-
-	case VM_4_LEVEL:
-		error(NOTE, "using 4-level pagetable PPC64 VM address ranges\n");
-		lines++;
-		break;
-
-	case (VM_ORIG|VM_4_LEVEL):
-		error(WARNING, "cannot set both vm=orig and vm=2.6.14\n");
-		lines++;
-		machdep->flags &= ~(VM_ORIG|VM_4_LEVEL);
-		break;
-	} 
-
-	if (lines)
-		fprintf(fp, "\n");
+	
+			error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
+			lines++;
+		} 
+	
+		switch (machdep->flags & (VM_ORIG|VM_4_LEVEL))
+		{
+		case VM_ORIG:
+			error(NOTE, "using original PPC64 VM address ranges\n");
+			lines++;
+			break;
+	
+		case VM_4_LEVEL:
+			error(NOTE, "using 4-level pagetable PPC64 VM address ranges\n");
+			lines++;
+			break;
+	
+		case (VM_ORIG|VM_4_LEVEL):
+			error(WARNING, "cannot set both vm=orig and vm=2.6.14\n");
+			lines++;
+			machdep->flags &= ~(VM_ORIG|VM_4_LEVEL);
+			break;
+		} 
+	
+		if (lines)
+			fprintf(fp, "\n");
+	}
 }
 
 /*

@@ -2031,12 +2031,13 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 void
 get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 {
-	int i, search, panic, panic_task;
+	int i, search, panic, panic_task, altered;
 	char *sym;
 	ulong *up;
 	ulong ipintr_eip, ipintr_esp, ipintr_func;
 	ulong halt_eip, halt_esp;
 	int check_hardirq, check_softirq;
+	ulong stackbase, stacktop;
 
 	if (!is_task_active(bt->task)) {
 		machdep->get_stack_frame(bt, eip, esp);
@@ -2045,11 +2046,13 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 
 	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
 
-	ipintr_eip = ipintr_esp = ipintr_func = panic = 0;
+	ipintr_eip = ipintr_esp = ipintr_func = panic = altered = 0;
 	halt_eip = halt_esp = 0;
 	check_hardirq = check_softirq = tt->flags & IRQSTACKS ? TRUE : FALSE;
 	search = ((bt->flags & BT_TEXT_SYMBOLS) && (tt->flags & TASK_INIT_DONE))
 		|| (machdep->flags & OMIT_FRAME_PTR);
+	stackbase = bt->stackbase;
+	stacktop = bt->stacktop;
 retry:
 	for (i = 0, up = (ulong *)bt->stackbuf; i < LONGS_PER_STACK; i++, up++){
 		sym = closest_symbol(*up);
@@ -2179,6 +2182,7 @@ next_sysrq:
 		alter_stackbuf(bt);
 		bt->flags |= BT_HARDIRQ;
 		check_hardirq = FALSE;
+		altered = TRUE;
 		goto retry;
 	}
 
@@ -2189,12 +2193,25 @@ next_sysrq:
 		alter_stackbuf(bt);
 		bt->flags |= BT_SOFTIRQ;
                 check_softirq = FALSE;
+		altered = TRUE;
                 goto retry;
         }
 
 	if (CRASHDEBUG(1))
 		error(INFO, 
     "get_netdump_regs_x86: cannot find anything useful (task: %lx)\n", bt->task);
+
+	if (altered) {
+                bt->stackbase = stackbase;
+                bt->stacktop = stacktop;
+		alter_stackbuf(bt);
+	}
+
+        if (XEN_CORE_DUMPFILE() && !panic_task && is_task_active(bt->task) &&
+	    !(bt->flags & (BT_TEXT_SYMBOLS_ALL|BT_TEXT_SYMBOLS)))
+		error(FATAL, 
+		    "starting backtrace locations of the active (non-crashing) "
+		    "xen tasks\n    cannot be determined: try -t or -T options\n");
  
 	machdep->get_stack_frame(bt, eip, esp);
 }

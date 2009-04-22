@@ -225,8 +225,10 @@ struct number_option {
 #define KDUMP_CMPRS_LOCAL   (0x2)
 #define ERROR_EXCLUDED      (0x4)
 #define ZERO_EXCLUDED       (0x8)
+#define DUMPFILE_SPLIT      (0x10)
 #define DISKDUMP_VALID()    (dd->flags & DISKDUMP_LOCAL)
 #define KDUMP_CMPRS_VALID() (dd->flags & KDUMP_CMPRS_LOCAL)
+#define KDUMP_SPLIT()       (dd->flags & DUMPFILE_SPLIT)
 
 #define XENDUMP_LOCAL    (0x1)
 #define XENDUMP_VALID()  (xd->flags & XENDUMP_LOCAL)
@@ -718,6 +720,8 @@ struct machine_specific;  /* uniquely defined below each machine's area */
 struct xendump_data;
 struct xen_kdump_data;
 
+#define MAX_MACHDEP_ARGS 5  /* for --machdep/-m machine-specific args */
+
 struct machdep_table {
 	ulong flags;
 	ulong kvbase;
@@ -768,7 +772,7 @@ struct machdep_table {
  	char *pmd;	
 	char *ptbl;
 	int ptrs_per_pgd;
-	char *cmdline_arg;
+	char *cmdline_args[MAX_MACHDEP_ARGS];
 	struct machine_specific *machspec;
 	ulong section_size_bits;
 	ulong max_physmem_bits;
@@ -2262,8 +2266,9 @@ struct load_module {
 #define VALID_LEVEL4_PGT_ADDR(X) \
 	(((X) == VIRTPAGEBASE(X)) && IS_KVADDR(X) && !IS_VMALLOC_ADDR(X))
 
-#define _SECTION_SIZE_BITS	27
-#define _MAX_PHYSMEM_BITS	40
+#define _SECTION_SIZE_BITS	  27
+#define _MAX_PHYSMEM_BITS	  40
+#define _MAX_PHYSMEM_BITS_2_6_26  44
 
 #endif  /* X86_64 */
 
@@ -3686,6 +3691,7 @@ void back_trace(struct bt_info *);
 #define BT_START          (0x2000000000ULL)
 #define BT_TEXT_SYMBOLS_ALL  (0x4000000000ULL)     
 #define BT_XEN_STOP_THIS_CPU (0x8000000000ULL)
+#define BT_THREAD_GROUP     (0x10000000000ULL)
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)
@@ -4146,6 +4152,8 @@ void get_diskdump_regs(struct bt_info *, ulong *, ulong *);
 int diskdump_phys_base(unsigned long *);
 ulong *diskdump_flags;
 int is_partial_diskdump(void);
+int dumpfile_is_split(void);
+void show_split_dumpfiles(void);
 
 /*
  * xendump.c

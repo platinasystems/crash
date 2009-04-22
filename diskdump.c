@@ -26,6 +26,7 @@
 #define BITMAP_SECT_LEN	4096
 
 struct diskdump_data {
+	char *filename;
 	ulong flags;       /* DISKDUMP_LOCAL, plus anything else... */
         int dfd;           /* dumpfile file descriptor */
         FILE *ofp;         /* fprintf(dd->ofp, "xxx"); */
@@ -67,6 +68,81 @@ static int get_dump_level(void);
 
 ulong *diskdump_flags = &diskdump_data.flags;
 
+static int __diskdump_memory_dump(FILE *);
+
+/* For split dumpfile */
+static struct diskdump_data **dd_list = NULL;
+static int num_dd = 0;
+static int num_dumpfiles = 0;
+
+int dumpfile_is_split(void)
+{
+	return KDUMP_SPLIT();
+}
+
+static void add_diskdump_data(char* name)
+{
+#define DDL_SIZE 16
+	int i;
+	int sz = sizeof(void*);
+	struct diskdump_data *ddp;
+
+	if (dd_list == NULL) {
+		dd_list = calloc(DDL_SIZE, sz);
+		num_dd = DDL_SIZE;
+	} else {
+		for (i = 0; i < num_dumpfiles; i++) {
+			ddp = dd_list[i];
+                	if (same_file(ddp->filename, name))
+				error(FATAL, 
+				    "split dumpfiles are identical:\n"
+				    "  %s\n  %s\n",
+					ddp->filename, name);
+			if (memcmp(ddp->header, dd->header,
+			    sizeof(struct disk_dump_header)))
+				error(FATAL, 
+				    "split dumpfiles derived from different vmcores:\n"
+				    "  %s\n  %s\n",
+					ddp->filename, name);
+		}
+	}
+
+	if (num_dumpfiles == num_dd) {
+		/* expand list */
+		struct diskdump_data **tmp;
+		tmp = calloc(num_dd*2, sz);
+		memcpy(tmp, dd_list, sz*num_dd);
+		free(dd_list);
+		dd_list = tmp;
+		num_dd *= 2;
+	}
+
+	dd_list[num_dumpfiles] = dd;
+	dd->flags |= DUMPFILE_SPLIT;
+	dd->filename = name;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "%s: start_pfn=%lu, end_pfn=%lu\n", name,
+			dd->sub_header_kdump->start_pfn,
+			dd->sub_header_kdump->end_pfn);
+}
+
+static void clean_diskdump_data(void)
+{
+	int i;
+
+	if (dd_list == NULL)
+		return;
+
+	for (i=1; i<num_dumpfiles; i++)
+		free(dd_list[i]); /* NOTE: dd_list[0] is static dd */
+
+	free(dd_list);
+	dd_list = NULL;
+	num_dumpfiles = 0;
+	dd = &diskdump_data;
+}
+
 static inline int get_bit(char *map, int byte, int bit)
 {
 	return map[byte] & (1<<bit);
@@ -97,6 +173,10 @@ static int open_dump_file(char *file)
 		error(INFO, "diskdump / compressed kdump: unable to open dump file %s", file);
 		return FALSE;
 	}
+
+	if (KDUMP_SPLIT())
+		dd = calloc(1, sizeof(*dd));
+
 	dd->dfd = fd;
 	return TRUE;
 }
@@ -112,6 +192,7 @@ static int read_dump_header(char *file)
 	const off_t failed = (off_t)-1;
 	ulong pfn;
 	int i, j, max_sect_len;
+	int is_split = 0;
 
 	if (block_size < 0)
 		return FALSE;
@@ -266,10 +347,35 @@ restart:
 		goto err;
 	}
 
-	max_sect_len = divideup(header->max_mapnr, BITMAP_SECT_LEN);
+	/* For split dumpfile */
+	if (KDUMP_CMPRS_VALID()) {
+		is_split = ((dd->header->header_version >= 2) &&
+		            (sub_header_kdump->split));
+
+		if ((is_split && (num_dumpfiles != 0) && (dd_list == NULL))||
+		    (!is_split && (num_dumpfiles != 0))) {
+			clean_diskdump_data();
+			goto err;
+		}
+
+		if (is_split)
+			add_diskdump_data(file);
+
+		num_dumpfiles++;
+	}
+
+	if (!is_split) {
+		max_sect_len = divideup(header->max_mapnr, BITMAP_SECT_LEN);
+		pfn = 0;
+	}
+	else {
+		ulong start = sub_header_kdump->start_pfn;
+		ulong end = sub_header_kdump->end_pfn;
+		max_sect_len = divideup(end - start + 1, BITMAP_SECT_LEN);
+		pfn = start;
+	}
 
 	dd->valid_pages = calloc(sizeof(ulong), max_sect_len + 1);
-	pfn = 0;
 	for (i = 1; i < max_sect_len + 1; i++) {
 		dd->valid_pages[i] = dd->valid_pages[i - 1];
 		for (j = 0; j < BITMAP_SECT_LEN; j++, pfn++)
@@ -297,10 +403,20 @@ static int
 pfn_to_pos(ulong pfn)
 {
 	int desc_pos, j, valid;
+	ulong p1, p2;
 
-	valid = dd->valid_pages[pfn / BITMAP_SECT_LEN];
+	if (KDUMP_SPLIT()) {
+		p1 = pfn - dd->sub_header_kdump->start_pfn;
+		p2 = round(p1, BITMAP_SECT_LEN) + dd->sub_header_kdump->start_pfn;
+	}
+	else {
+		p1 = pfn; 
+		p2 = round(pfn, BITMAP_SECT_LEN); 
+	}
 
-	for (j = round(pfn, BITMAP_SECT_LEN), desc_pos = valid; j <= pfn; j++)
+	valid = dd->valid_pages[p1 / BITMAP_SECT_LEN];
+
+	for (j = p2, desc_pos = valid; j <= pfn; j++)
 			if (page_is_dumpable(j))
 				desc_pos++;
 
@@ -335,7 +451,7 @@ is_diskdump(char *file)
 			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 
 	if (CRASHDEBUG(1))
-		diskdump_memory_dump(fp);
+		__diskdump_memory_dump(fp);
 
 	return TRUE;
 }
@@ -495,6 +611,26 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	ulong pfn, page_offset;
 
 	pfn = paddr >> dd->block_shift;
+
+	if (KDUMP_SPLIT()) {
+		/* Find proper dd */
+		int i;
+		unsigned long start_pfn;
+		unsigned long end_pfn;
+
+		for (i=0; i<num_dumpfiles; i++) {
+			start_pfn = dd_list[i]->sub_header_kdump->start_pfn;
+			end_pfn = dd_list[i]->sub_header_kdump->end_pfn;
+			if ((pfn >= start_pfn) && (pfn <= end_pfn))	{
+				dd = dd_list[i];
+				break;
+			}
+		}
+
+		if (i == num_dumpfiles)
+			return SEEK_ERROR;
+	}
+
 	curpaddr = paddr & ~((physaddr_t)(dd->block_size-1));
 	page_offset = paddr & ((physaddr_t)(dd->block_size-1));
 
@@ -619,7 +755,7 @@ int diskdump_memory_used(void)
  *  the diskdump header data.
  */
 int
-diskdump_memory_dump(FILE *fp)
+__diskdump_memory_dump(FILE *fp)
 {
 	int i, others, dump_level;
 	struct disk_dump_header *dh;
@@ -628,6 +764,7 @@ diskdump_memory_dump(FILE *fp)
 	ulong *tasks;
 
         fprintf(fp, "diskdump_data: \n");
+	fprintf(fp, "          filename: %s\n", dd->filename);
         fprintf(fp, "             flags: %lx (", dd->flags);
         others = 0;
         if (dd->flags & DISKDUMP_LOCAL)
@@ -771,9 +908,14 @@ diskdump_memory_dump(FILE *fp)
 					others++ ? "|" : "");
 			others = 0;
 
-			fprintf(fp, "%s\n\n", dump_level ? ")" : "");
+			fprintf(fp, "%s\n", dump_level ? ")" : "");
 		} else
-			fprintf(fp, "(unknown)\n\n");
+			fprintf(fp, "(unknown)\n");
+		if (KDUMP_SPLIT()) {
+			fprintf(fp, "           start_pfn: %lu\n", dd->sub_header_kdump->start_pfn);
+			fprintf(fp, "             end_pfn: %lu\n", dd->sub_header_kdump->end_pfn);
+		}
+		fprintf(fp, "\n");
 	} else
         	fprintf(fp, "(n/a)\n\n");
 
@@ -816,6 +958,27 @@ diskdump_memory_dump(FILE *fp)
 }
 
 /*
+ * Wrapper of __diskdump_memory_dump()
+ */
+int
+diskdump_memory_dump(FILE *fp)
+{
+	int i;
+
+	if (KDUMP_SPLIT() && (dd_list != NULL))
+		for (i = 0; i < num_dumpfiles; i++) {
+			dd = dd_list[i];
+			__diskdump_memory_dump(fp);
+			fprintf(fp, "\n");
+		}
+	else
+		__diskdump_memory_dump(fp);
+
+	return 0;
+}
+
+
+/*
  *  Get the switch_stack address of the passed-in task.  
  */
 ulong
@@ -855,4 +1018,24 @@ int
 is_partial_diskdump(void) 
 {
 	return (get_dump_level() > 0 ? TRUE : FALSE);
+}
+
+/*
+ *  Used by "sys" command to dump multiple split dumpfiles.
+ */
+void
+show_split_dumpfiles(void)
+{
+	int i;
+	struct diskdump_data *ddp;
+
+        for (i = 0; i < num_dumpfiles; i++) {
+        	ddp = dd_list[i];
+		fprintf(fp, "%s%s %s", 
+			i ? "              " : "", 
+			ddp->filename, 
+			is_partial_diskdump() ? "[PARTIAL DUMP]" : "");
+		if ((i+1) < num_dumpfiles)
+			fprintf(fp, "\n");
+	}
 }

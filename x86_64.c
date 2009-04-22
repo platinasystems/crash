@@ -73,7 +73,7 @@ static void x86_64_init_kernel_pgd(void);
 static void x86_64_cpu_pda_init(void);
 static void x86_64_ist_init(void);
 static void x86_64_post_init(void);
-static void parse_cmdline_arg(void);
+static void parse_cmdline_args(void);
 static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
@@ -102,6 +102,8 @@ struct machine_specific x86_64_machine_specific = { 0 };
 void
 x86_64_init(int when)
 {
+	int len, dim;
+
         if (XEN_HYPER_MODE()) {
                 x86_64_init_hyper(when);
                 return;
@@ -140,8 +142,8 @@ x86_64_init(int when)
 		machdep->flags |= MACHDEP_BT_TEXT;
 		machdep->flags |= FRAMESIZE_DEBUG;
 		machdep->machspec->irq_eframe_link = UNINITIALIZED;
-                if (machdep->cmdline_arg)
-                        parse_cmdline_arg();
+                if (machdep->cmdline_args[0])
+                        parse_cmdline_args();
 		break;
 
 	case PRE_GDB:
@@ -312,7 +314,23 @@ x86_64_init(int when)
 				machdep->hz = 1000;
 		}
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
-		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		if (!machdep->max_physmem_bits) {
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,26))
+				machdep->max_physmem_bits = 
+					_MAX_PHYSMEM_BITS_2_6_26;
+			else {
+				machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+				len = get_array_length("mem_section", &dim, 0);
+				/*
+				 * Check for patched MAX_PHYSMEM_BITS.
+				 */
+				if (((len > 32) && !dim) ||
+				    ((len > 8192) && (dim == 1)))
+					machdep->max_physmem_bits = 
+						_MAX_PHYSMEM_BITS_2_6_26;
+			}
+		}
+
                 if (XEN()) {
 			if (kt->xen_flags & WRITABLE_PAGE_TABLES) {
 				switch (machdep->flags & VM_FLAGS)
@@ -461,6 +479,11 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
         fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
         fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
+	for (i = 0; i < MAX_MACHDEP_ARGS; i++) {
+		fprintf(fp, "    cmdline_args[%d]: %s\n", 
+			i, machdep->cmdline_args[i] ? 
+			machdep->cmdline_args[i] : "(unused)");
+	}
 
 	fprintf(fp, "           machspec: %016lx\n", (ulong)machdep->machspec);
 	fprintf(fp, "            userspace_top: %016lx\n", (ulong)ms->userspace_top);
@@ -3698,6 +3721,12 @@ skip_stage:
 		    "x86_64_get_dumpfile_stack_frame: cannot find anything useful (task: %lx)\n",
 			bt->task);
 
+        if (XEN_CORE_DUMPFILE() && !panic_task && is_task_active(bt->task) &&
+            !(bt->flags & (BT_TEXT_SYMBOLS_ALL|BT_TEXT_SYMBOLS)))
+                error(FATAL,
+                    "starting backtrace locations of the active (non-crashing) "
+                    "xen tasks\n    cannot be determined: try -t or -T options\n");
+
 	bt->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 
         machdep->get_stack_frame(bt, rip, rsp);
@@ -4235,12 +4264,16 @@ x86_64_compiler_warning_stub(void)
  *  Force the IRQ stack back-link via:
  *
  *   --machdep irq_eframe_link=<offset>
+ *
+ *  Force max_physmem_bits via:
+ *
+ *   --machdep max_physmem_bits=<count>
  */
 
 void
-parse_cmdline_arg(void)
+parse_cmdline_args(void)
 {
-	int i, c, errflag;
+	int index, i, c, errflag;
 	char *p;
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
@@ -4249,119 +4282,137 @@ parse_cmdline_arg(void)
 	int vm_flag;
 	ulong value;
 
-	if (!strstr(machdep->cmdline_arg, "=")) {
-		error(WARNING, "ignoring --machdep option: %s\n\n",
-			machdep->cmdline_arg);
-		return;
-        }
+	for (index = 0; index < MAX_MACHDEP_ARGS; index++) {
 
-	strcpy(buf, machdep->cmdline_arg);
+		if (!machdep->cmdline_args[index])
+			break;
 
-	for (p = buf; *p; p++) {
-		if (*p == ',')
-			 *p = ' ';
-	}
-
-	c = parse_line(buf, arglist);
-
-	for (i = vm_flag = 0; i < c; i++) {
-		errflag = 0;
-
-		if (STRNEQ(arglist[i], "vm=")) {
-			vm_flag++;
-			p = arglist[i] + strlen("vm=");
-			if (strlen(p)) {
-				if (STREQ(p, "orig")) {
-					machdep->flags |= VM_ORIG;
-					continue;
-				} else if (STREQ(p, "2.6.11")) {
-					machdep->flags |= VM_2_6_11;
-					continue;
-				} else if (STREQ(p, "xen")) {
-					machdep->flags |= VM_XEN;
-					continue;
-				} else if (STREQ(p, "xen-rhel4")) {
-					machdep->flags |= VM_XEN_RHEL4;
-					continue;
-				}
-			}
-		} else if (STRNEQ(arglist[i], "phys_base=")) {
-			megabytes = FALSE;
-			if ((LASTCHAR(arglist[i]) == 'm') || 
-			    (LASTCHAR(arglist[i]) == 'M')) {
-				LASTCHAR(arglist[i]) = NULLCHAR;
-				megabytes = TRUE;
-			}
-                        p = arglist[i] + strlen("phys_base=");
-                        if (strlen(p)) {
-				if (megabytes) {
-                                	value = dtol(p, RETURN_ON_ERROR|QUIET,
-                                        	&errflag);
-				} else
-                                	value = htol(p, RETURN_ON_ERROR|QUIET,
-                                        	&errflag);
-                                if (!errflag) {
-					if (megabytes)
-						value = MEGABYTES(value);
-                                        machdep->machspec->phys_base = value;
-                                        error(NOTE,
-                                            "setting phys_base to: 0x%lx\n\n",
-                                                machdep->machspec->phys_base);
-					machdep->flags |= PHYS_BASE;
-                                        continue;
-                                }
-                        }
-                } else if (STRNEQ(arglist[i], "irq_eframe_link=")) {
-                        p = arglist[i] + strlen("irq_eframe_link=");
-			if (strlen(p)) {
-				value = stol(p, RETURN_ON_ERROR|QUIET, &errflag);
-				if (!errflag) {
-					machdep->machspec->irq_eframe_link = value;
-					continue;
-				}
-			}
+		if (!strstr(machdep->cmdline_args[index], "=")) {
+			error(WARNING, "ignoring --machdep option: %s\n\n",
+				machdep->cmdline_args[index]);
+			continue;
+	        }
+	
+		strcpy(buf, machdep->cmdline_args[index]);
+	
+		for (p = buf; *p; p++) {
+			if (*p == ',')
+				 *p = ' ';
 		}
-
-		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
-		lines++;
-	} 
-
-	if (vm_flag) {
-		switch (machdep->flags & VM_FLAGS)
-		{
-		case 0:
-			break;
 	
-		case VM_ORIG:
-			error(NOTE, "using original x86_64 VM address ranges\n");
-			lines++;
-			break;
+		c = parse_line(buf, arglist);
 	
-		case VM_2_6_11:
-			error(NOTE, "using 2.6.11 x86_64 VM address ranges\n");
-			lines++;
-			break;
+		for (i = vm_flag = 0; i < c; i++) {
+			errflag = 0;
 	
-		case VM_XEN:
-			error(NOTE, "using xen x86_64 VM address ranges\n");
-			lines++;
-			break;
-
-		case VM_XEN_RHEL4:
-			error(NOTE, "using RHEL4 xen x86_64 VM address ranges\n");
-			lines++;
-			break;
+			if (STRNEQ(arglist[i], "vm=")) {
+				vm_flag++;
+				p = arglist[i] + strlen("vm=");
+				if (strlen(p)) {
+					if (STREQ(p, "orig")) {
+						machdep->flags |= VM_ORIG;
+						continue;
+					} else if (STREQ(p, "2.6.11")) {
+						machdep->flags |= VM_2_6_11;
+						continue;
+					} else if (STREQ(p, "xen")) {
+						machdep->flags |= VM_XEN;
+						continue;
+					} else if (STREQ(p, "xen-rhel4")) {
+						machdep->flags |= VM_XEN_RHEL4;
+						continue;
+					}
+				}
+			} else if (STRNEQ(arglist[i], "phys_base=")) {
+				megabytes = FALSE;
+				if ((LASTCHAR(arglist[i]) == 'm') || 
+				    (LASTCHAR(arglist[i]) == 'M')) {
+					LASTCHAR(arglist[i]) = NULLCHAR;
+					megabytes = TRUE;
+				}
+	                        p = arglist[i] + strlen("phys_base=");
+	                        if (strlen(p)) {
+					if (megabytes) {
+	                                	value = dtol(p, RETURN_ON_ERROR|QUIET,
+	                                        	&errflag);
+					} else
+	                                	value = htol(p, RETURN_ON_ERROR|QUIET,
+	                                        	&errflag);
+	                                if (!errflag) {
+						if (megabytes)
+							value = MEGABYTES(value);
+	                                        machdep->machspec->phys_base = value;
+	                                        error(NOTE,
+	                                            "setting phys_base to: 0x%lx\n\n",
+	                                                machdep->machspec->phys_base);
+						machdep->flags |= PHYS_BASE;
+	                                        continue;
+	                                }
+	                        }
+	                } else if (STRNEQ(arglist[i], "irq_eframe_link=")) {
+	                        p = arglist[i] + strlen("irq_eframe_link=");
+				if (strlen(p)) {
+					value = stol(p, RETURN_ON_ERROR|QUIET, &errflag);
+					if (!errflag) {
+						machdep->machspec->irq_eframe_link = value;
+						continue;
+					}
+				}
+			} else if (STRNEQ(arglist[i], "max_physmem_bits=")) {
+	                        p = arglist[i] + strlen("max_physmem_bits=");
+				if (strlen(p)) {
+					value = stol(p, RETURN_ON_ERROR|QUIET, &errflag);
+					if (!errflag) {
+						machdep->max_physmem_bits = value;
+	                                        error(NOTE,
+	                                            "setting max_physmem_bits to: %ld\n\n",
+	                                                machdep->max_physmem_bits);
+						continue;
+					}
+				}
+			}
 	
-		default:
-			error(WARNING, "cannot set multiple vm values\n");
+			error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
 			lines++;
-			machdep->flags &= ~VM_FLAGS;
-			break;
 		} 
+	
+		if (vm_flag) {
+			switch (machdep->flags & VM_FLAGS)
+			{
+			case 0:
+				break;
+		
+			case VM_ORIG:
+				error(NOTE, "using original x86_64 VM address ranges\n");
+				lines++;
+				break;
+		
+			case VM_2_6_11:
+				error(NOTE, "using 2.6.11 x86_64 VM address ranges\n");
+				lines++;
+				break;
+		
+			case VM_XEN:
+				error(NOTE, "using xen x86_64 VM address ranges\n");
+				lines++;
+				break;
+	
+			case VM_XEN_RHEL4:
+				error(NOTE, "using RHEL4 xen x86_64 VM address ranges\n");
+				lines++;
+				break;
+		
+			default:
+				error(WARNING, "cannot set multiple vm values\n");
+				lines++;
+				machdep->flags &= ~VM_FLAGS;
+				break;
+			} 
+		}
+	
+		if (lines)
+			fprintf(fp, "\n");
 	}
-
-	if (lines)
-		fprintf(fp, "\n");
 }
 
 void
@@ -5531,8 +5582,8 @@ x86_64_init_hyper(int when)
                 machdep->last_ptbl_read = 0;
 		machdep->verify_paddr = generic_verify_paddr;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
-                if (machdep->cmdline_arg)
-                        parse_cmdline_arg();
+                if (machdep->cmdline_args[0])
+                        parse_cmdline_args();
 		break;
 
 	case PRE_GDB:

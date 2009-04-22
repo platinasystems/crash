@@ -1,3 +1,18 @@
+crash (4.0-8.9-1) unstable; urgency=low
+
+  * New upstream version 4.0-8.9 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - New "bt -g" option, which will display the backtraces of all threads in
+  the targeted task's thread group.
+  - support for the kdump "split-dumpfile" format
+  - Fix for "kmem -i", "kmem -n" and "kmem -p" on x86_64 CONFIG_SPARSEMEM and
+  CONFIG_SPARSEMEM_EXTREME kernels that have MAX_PHYSMEM_BITS increased from
+  40 to 44. 
+  - Display warning when trying to bt active, non-crashing, xen dom0 tasks
+  which are not available in kump dumpfile. 
+
+ -- Troy Heber <troyh@debian.org>  Wed, 22 Apr 2009 09:07:43 -0600
+
 crash (4.0-8.8-1) unstable; urgency=low
 
   * New upstream version 4.0-8.8 (see

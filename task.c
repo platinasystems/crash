@@ -5064,6 +5064,11 @@ foreach(struct foreach_data *fd)
 				error(INFO, "line numbers are not available\n");
 				fd->flags &= ~FOREACH_l_FLAG;
 			}
+#if defined(GDB_6_0) || defined(GDB_6_1)
+                        if ((fd->flags & FOREACH_g_FLAG))
+                                error(FATAL,
+                       "bt -g option is not supported when issued from foreach\n");
+#endif
 			bt = &bt_info;
 			break;
 
