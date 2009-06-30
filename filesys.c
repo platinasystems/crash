@@ -933,7 +933,7 @@ is_directory(char *file)
  *  When time permits, rewrite this doing the search by hand.
  */
 char *
-search_directory_tree(char *directory, char *file)
+search_directory_tree(char *directory, char *file, int follow_links)
 {
 	char command[BUFSIZE];
 	char buf[BUFSIZE];
@@ -949,8 +949,8 @@ search_directory_tree(char *directory, char *file)
 		return NULL;
 
 	sprintf(command, 
-            "/usr/bin/find %s -name %s -print; /bin/echo search done",
-		directory, file);
+            "/usr/bin/find %s %s -name %s -print; /bin/echo search done",
+		follow_links ? "-L" : "", directory, file);
 
         if ((pipe = popen(command, "r")) == NULL) {
                 error(INFO, "%s: %s\n", command, strerror(errno));

@@ -1198,6 +1198,7 @@ make_spec_file(void)
 	printf("The following extensions are provided:\n");
 	printf("* sial:   Provides C-like language for writing dump analysis scripts\n");
 	printf("* dminfo: Device-mapper target analyzer\n");
+	printf("* snap:   Takes a snapshot of live memory and creates a kdump dumpfile\n");
 	printf("\n");
 	printf("%%prep\n");
         printf("%%setup -n %%{name}-%%{version}-%%{release}\n"); 
@@ -1219,6 +1220,7 @@ make_spec_file(void)
 	printf("mkdir -p %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/sial.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/dminfo.so %%{buildroot}%%{_libdir}/crash/extensions\n");
+	printf("cp extensions/snap.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("\n");
 	printf("%%clean\n");
 	printf("rm -rf %%{buildroot}\n");

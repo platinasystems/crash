@@ -1578,7 +1578,7 @@ ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 	unsigned long unip;
 
 	pt_regs = (struct ppc64_pt_regs *)bt_in->machdep;
-	if (!pt_regs->gpr[1]) {
+	if (!pt_regs || !pt_regs->gpr[1]) {
 		/*
 		 * Not collected regs. May be the corresponding CPU not
 		 * responded to an IPI.
@@ -1847,10 +1847,13 @@ get_ppc64_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	ulong task;
 	struct ppc64_pt_regs regs;
 
+	ip = 0;
 	task = bt->task;
 	stack = (ulong *)bt->stackbuf;
 
 	sp = ppc64_get_sp(task);
+	if (!INSTACK(sp, bt))
+		goto out;
 	readmem(sp+STACK_FRAME_OVERHEAD, KVADDR, &regs, 
 		sizeof(struct ppc64_pt_regs),
 		"PPC64 pt_regs", FAULT_ON_ERROR);
@@ -1865,9 +1868,14 @@ get_ppc64_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 		 * Need to skip 2 frames.
 		 */
 		sp = stack[(sp - bt->stackbase)/sizeof(ulong)];
+		if (!INSTACK(sp, bt))
+			goto out;
 		sp = stack[(sp - bt->stackbase)/sizeof(ulong)];
+		if (!INSTACK(sp+16, bt))
+			goto out;
 		ip = stack[(sp + 16 - bt->stackbase)/sizeof(ulong)];
 	} 
+out:
 	*getsp = sp;
 	*getpc = ip;
 }
@@ -2407,13 +2415,16 @@ ppc64_paca_init(void)
 	if (!symbol_exists("paca"))
 		error(FATAL, "PPC64: Could not find 'paca' symbol\n");
 
-	if (symbol_exists("cpu_present_map"))
+	if (cpu_map_addr("possible"))
+		map = POSSIBLE;
+	else if (cpu_map_addr("present"))
 		map = PRESENT;
-	else if (symbol_exists("cpu_online_map"))
+	else if (cpu_map_addr("online"))
 		map = ONLINE;
 	else
-		error(FATAL, 
-		    "PPC64: cannot find 'cpu_present_map' or 'cpu_online_map' symbols\n");
+		error(FATAL,
+			"PPC64: cannot find 'cpu_possible_map' or\
+			'cpu_present_map' or 'cpu_online_map' symbols\n");
 
 	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
 		return;
@@ -2423,8 +2434,8 @@ ppc64_paca_init(void)
 
 	cpu_paca_buf = GETBUF(SIZE(ppc64_paca));
 
-	if (!(nr_paca = get_array_length("paca", NULL, 0))) 
-		nr_paca = NR_CPUS;
+	if (!(nr_paca = get_array_length("paca", NULL, 0)))
+		nr_paca = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
 
 	if (nr_paca > NR_CPUS) {
 		error(WARNING, 
@@ -2435,7 +2446,7 @@ ppc64_paca_init(void)
 	
 	for (i = cpus = 0; i < nr_paca; i++) {
 		/*
-		 * CPU present (or online)?
+		 * CPU present or online or can exist in the system(possible)?
 		 */
 		if (!in_cpu_map(map, i))
 			continue;

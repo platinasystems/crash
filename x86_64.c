@@ -71,6 +71,7 @@ static int x86_64_is_uvaddr(ulong, struct task_context *);
 void x86_64_compiler_warning_stub(void);
 static void x86_64_init_kernel_pgd(void);
 static void x86_64_cpu_pda_init(void);
+static void x86_64_per_cpu_init(void);
 static void x86_64_ist_init(void);
 static void x86_64_post_init(void);
 static void parse_cmdline_args(void);
@@ -92,6 +93,7 @@ static int x86_64_framesize_cache_resize(void);
 static int x86_64_framesize_cache_func(int, ulong, int *);
 static int x86_64_get_framesize(struct bt_info *, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
+static void x86_64_get_active_set(void);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -253,6 +255,22 @@ x86_64_init(int when)
 		break;
 
 	case POST_GDB:
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,26) &&
+		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
+			machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_26;
+		}
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,27) &&
+		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
+			machdep->machspec->modules_end = MODULES_END_2_6_27;
+		}
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,31)) {
+			machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_31;
+			machdep->machspec->vmalloc_end = VMALLOC_END_2_6_31;
+			machdep->machspec->vmemmap_vaddr = VMEMMAP_VADDR_2_6_31;
+			machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_31;
+			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_31;
+			machdep->machspec->modules_end = MODULES_END_2_6_31;
+		}
                 STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
 		STRUCT_SIZE_INIT(gate_struct, "gate_struct");
                 STRUCT_SIZE_INIT(e820map, "e820map");
@@ -292,7 +310,10 @@ x86_64_init(int when)
 		MEMBER_OFFSET_INIT(user_regs_struct_ss,
 			"user_regs_struct", "ss");
 		STRUCT_SIZE_INIT(user_regs_struct, "user_regs_struct");
-		x86_64_cpu_pda_init();
+		if (STRUCT_EXISTS("x8664_pda"))
+			x86_64_cpu_pda_init();
+		else
+			x86_64_per_cpu_init();
 		x86_64_ist_init();
                 if ((machdep->machspec->irqstack = (char *)
 		    malloc(machdep->machspec->stkinfo.isize)) == NULL)
@@ -315,7 +336,10 @@ x86_64_init(int when)
 		}
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		if (!machdep->max_physmem_bits) {
-			if (THIS_KERNEL_VERSION >= LINUX(2,6,26))
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,31))
+				machdep->max_physmem_bits = 
+					_MAX_PHYSMEM_BITS_2_6_31;
+			else if (THIS_KERNEL_VERSION >= LINUX(2,6,26))
 				machdep->max_physmem_bits = 
 					_MAX_PHYSMEM_BITS_2_6_26;
 			else {
@@ -360,6 +384,7 @@ x86_64_init(int when)
 
 	case POST_INIT:
 		x86_64_post_init();
+		x86_64_get_active_set();
 		break;
 	}
 }
@@ -533,6 +558,32 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "                           rsp: %ld\n", ms->pto.rsp);
 	fprintf(fp, "                            ss: %ld\n", ms->pto.ss);
 	}
+
+#define CPU_SPACES(C) \
+   ((C) < 10 ? 3 : (C) < 100 ? 2 : (C) < 1000 ? 1 : 0)
+
+	fprintf(fp, "%s            current[%d]:%s", 
+		space(CPU_SPACES(kt->cpus)), kt->cpus,
+		ms->current ? "\n   " : " (unused)\n");
+	for (c = 0; ms->current && (c < kt->cpus); c++) { 
+		if (c && !(c%4))
+			fprintf(fp, "\n   ");
+		fprintf(fp, "%016lx ", ms->current[c]);
+	}
+	if (ms->current)
+		fprintf(fp, "\n");
+
+	fprintf(fp, "%s      crash_nmi_rsp[%d]:%s", 
+		space(CPU_SPACES(kt->cpus)), kt->cpus, 
+		ms->crash_nmi_rsp ? "\n   " : " (unused)\n");
+	for (c = 0; ms->crash_nmi_rsp && (c < kt->cpus); c++) { 
+		if (c && !(c%4))
+			fprintf(fp, "\n   ");
+		fprintf(fp, "%016lx ", ms->crash_nmi_rsp[c]);
+	}
+	if (ms->crash_nmi_rsp)
+		fprintf(fp, "\n");
+
 	fprintf(fp, "                  stkinfo: esize: %d%sisize: %d\n", 
 		ms->stkinfo.esize, 
 		machdep->flags & NO_TSS ? " (NO TSS) " : " ",
@@ -606,6 +657,12 @@ x86_64_cpu_pda_init(void)
 		else
 			_boot_cpu_pda = FALSE;
 	}
+
+	if (DUMPFILE() &&
+	    !(machdep->machspec->current = calloc(nr_pda, sizeof(ulong))))
+		error(FATAL, "cannot calloc %d x86_64 current pointers!\n",
+			nr_pda);
+
 	for (i = cpus = 0; i < nr_pda; i++) {
 		if (_cpu_pda) {
 			if (_boot_cpu_pda) {
@@ -640,10 +697,16 @@ x86_64_cpu_pda_init(void)
 
 		machdep->machspec->stkinfo.ibase[i] = ULONG(cpu_pda_buf + 
 			OFFSET(x8664_pda_irqstackptr));
+		if (DUMPFILE())
+			machdep->machspec->current[i] = ULONG(cpu_pda_buf + 
+				OFFSET(x8664_pda_pcurrent));
 
 		if (CRASHDEBUG(2)) 
-			fprintf(fp, "CPU%d: level4_pgt: %lx data_offset: %lx\n",
-				i, level4_pgt, data_offset);
+			fprintf(fp, 
+			    "CPU%d: level4_pgt: %lx " 
+			    "data_offset: %lx pcurrent: %lx\n",
+				i, level4_pgt, data_offset, 
+				DUMPFILE() ? machdep->machspec->current[i] : 0);
 	}
 
 	if (!LKCD_KERNTYPES() &&
@@ -698,6 +761,68 @@ x86_64_cpu_pda_init(void)
 	verify_spinlock();
 
 	FREEBUF(cpu_pda_buf);
+}
+
+static void
+x86_64_per_cpu_init(void)
+{
+	int i, cpus, cpunumber;
+	struct machine_specific *ms;
+
+	if (!(kt->flags & PER_CPU_OFF))
+		return;
+
+	if (!symbol_exists("per_cpu__cpu_number") || 
+	    !symbol_exists("per_cpu__irq_stack_union"))
+		return;
+
+        ms = machdep->machspec;
+
+	for (i = cpus = 0; i < NR_CPUS; i++) {
+		readmem(symbol_value("per_cpu__cpu_number") + 
+			kt->__per_cpu_offset[i],
+			KVADDR, &cpunumber, sizeof(int),
+			"cpu number (per_cpu)", FAULT_ON_ERROR);
+
+		if (cpunumber != cpus)
+			break;
+		cpus++;
+
+		ms->stkinfo.ibase[i] = 
+			symbol_value("per_cpu__irq_stack_union") + 
+			kt->__per_cpu_offset[i];
+	}
+
+	if ((ms->stkinfo.isize = 
+	    MEMBER_SIZE("irq_stack_union", "irq_stack")) <= 0)
+		ms->stkinfo.isize = 16384;
+
+	if (CRASHDEBUG(2))
+		fprintf(fp, "x86_64_per_cpu_init: "
+		    "setup_percpu areas: %d\n", cpus);
+
+	if (cpus > 1)
+		kt->flags |= SMP;
+
+	if ((i = get_cpus_online()) && (i < cpus))
+		kt->cpus = i;
+	else
+		kt->cpus = cpus;
+
+	if (DUMPFILE() && symbol_exists("per_cpu__current_task")) {
+		if ((ms->current = calloc(kt->cpus, sizeof(ulong))) == NULL)
+			error(FATAL, 
+			    "cannot calloc %d x86_64 current pointers!\n",
+				kt->cpus);
+		for (i = 0; i < kt->cpus; i++)
+			if (!readmem(symbol_value("per_cpu__current_task") +
+			    kt->__per_cpu_offset[i], KVADDR, 
+			    &ms->current[i], sizeof(ulong),
+			    "current_task (per_cpu)", RETURN_ON_ERROR))
+				continue;
+	}
+
+	verify_spinlock();
 }
 
 /*
@@ -777,7 +902,7 @@ x86_64_ist_init(void)
 	 */
         sp = value_search(ms->stkinfo.ebase[0][0], &offset);
        	if (!sp || offset || !STREQ(sp->name, "boot_exception_stacks")) {
-		if (symbol_value("boot_exception_stacks")) {
+		if (symbol_exists("boot_exception_stacks")) {
                 	error(WARNING,
     "cpu 0 first exception stack: %lx\n         boot_exception_stacks: %lx\n\n",
                         	ms->stkinfo.ebase[0][0], 
@@ -785,7 +910,7 @@ x86_64_ist_init(void)
 			if (!ms->stkinfo.ebase[0][0])
 				ms->stkinfo.ebase[0][0] = 
 					symbol_value("boot_exception_stacks");
-		} else 
+		} else if (STRUCT_EXISTS("x8664_pda"))
 			error(WARNING, 
 	      "boot_exception_stacks: symbol does not exist in this kernel!\n");
 	}
@@ -804,8 +929,13 @@ x86_64_post_init(void)
 	 *  Check whether each cpu was stopped by an NMI.
 	 */
         ms = machdep->machspec;
+	
+	if (DUMPFILE() && 
+	    (ms->crash_nmi_rsp = calloc(kt->cpus, sizeof(ulong))) == NULL)
+		error(FATAL, "cannot calloc %d x86_64 NMI rsp values\n",
+			kt->cpus);
 
-        for (c = 0; c < kt->cpus; c++) {
+        for (c = 0; DUMPFILE() && (c < kt->cpus); c++) {
                 if (ms->stkinfo.ebase[c][NMI_STACK] == 0)
                         break;
 
@@ -832,6 +962,12 @@ x86_64_post_init(void)
                         	spc = x86_64_function_called_by((*up)-5);
                         	if (spc && STREQ(spc->name, "die_nmi"))
                                 	clues += 2;
+			}
+
+			if (STREQ(spt->name, "crash_nmi_callback")) {
+				up = (ulong *)(&ms->irqstack[ms->stkinfo.esize]);
+				up -= 2;
+				ms->crash_nmi_rsp[c] = *up;
 			}
 		}
 
@@ -1727,11 +1863,27 @@ x86_64_processor_speed(void)
 static int
 x86_64_verify_symbol(const char *name, ulong value, char type)
 {
-        if (STREQ(name, "_text") || STREQ(name, "_stext"))
-                machdep->flags |= KSYMS_START;
+	if (!name || !strlen(name))
+		return FALSE;
 
-        if (!name || !strlen(name) || !(machdep->flags & KSYMS_START))
-                return FALSE;
+	if (!(machdep->flags & KSYMS_START)) {
+		if (STREQ(name, "_text") || STREQ(name, "_stext")) {
+			machdep->flags |= KSYMS_START;
+			if (!st->first_ksymbol)
+				st->first_ksymbol = value;
+			return TRUE;
+		} else if (STREQ(name, "__per_cpu_start")) {
+			st->flags |= PERCPU_SYMS;
+			return TRUE;
+		} else if (st->flags & PERCPU_SYMS) {
+			if (STRNEQ(name, "per_cpu") || 
+			    STREQ(name, "__per_cpu_end"))
+				return TRUE;
+		}
+
+		return FALSE;
+	}
+
 	return TRUE;
 }
 
@@ -1945,6 +2097,9 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
 	ulong words, addr;
 
 	if (rsp < bt->frameptr)
+		return;
+
+	if (!INSTACK(rsp, bt) || !INSTACK(bt->frameptr, bt))
 		return;
 
         words = (rsp - bt->frameptr) / sizeof(ulong) + 1;
@@ -2292,7 +2447,7 @@ x86_64_in_irqstack(struct bt_info *bt)
 #define STACK_TRANSITION_ERRMSG_E_I_P \
 "cannot transition from exception stack to IRQ stack to current process stack:\n    exception stack pointer: %lx\n          IRQ stack pointer: %lx\n      process stack pointer: %lx\n         current stack base: %lx\n" 
 #define STACK_TRANSITION_ERRMSG_E_P \
-"cannot transition from exception stack to current process stack:\n    exception stack pointer: %lx\n      process stack pointer: %lx\n         current_stack_base: %lx\n"
+"cannot transition from exception stack to current process stack:\n    exception stack pointer: %lx\n      process stack pointer: %lx\n         current stack base: %lx\n"
 #define STACK_TRANSITION_ERRMSG_I_P \
 "cannot transition from IRQ stack to current process stack:\n        IRQ stack pointer: %lx\n    process stack pointer: %lx\n       current stack base: %lx\n"
 
@@ -3972,8 +4127,26 @@ x86_64_get_smp_cpus(void)
 	char *cpu_pda_buf;
 	ulong level4_pgt, cpu_pda_addr;
 
-	if (!VALID_STRUCT(x8664_pda))
-		return 1;
+	if (!VALID_STRUCT(x8664_pda)) {
+		if (!(kt->flags & PER_CPU_OFF) ||
+		    !symbol_exists("per_cpu__cpu_number"))
+			return 1;
+
+		for (i = cpus = 0; i < NR_CPUS; i++) {
+			readmem(symbol_value("per_cpu__cpu_number") + 
+				kt->__per_cpu_offset[i], KVADDR, 
+				&cpunumber, sizeof(int),
+				"cpu number (per_cpu)", FAULT_ON_ERROR);
+			if (cpunumber != cpus)
+				break;
+			cpus++;
+		}
+
+		if ((i = get_cpus_online()) && (i < cpus))
+			cpus = i;
+
+		return cpus;
+	}
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
@@ -4474,7 +4647,8 @@ x86_64_irq_eframe_link_init(void)
 
 	if (STREQ(link_register, "%rbp"))
 		machdep->machspec->irq_eframe_link = 40;
-	
+	else if (THIS_KERNEL_VERSION >= LINUX(2,6,29)) 
+		machdep->machspec->irq_eframe_link = 40;
 }
 
 #include "netdump.h"
@@ -5936,4 +6110,65 @@ x86_64_framesize_debug(struct bt_info *bt)
 		break;
 	}
 }
+
+static void
+x86_64_get_active_set(void)
+{
+	int c;
+	ulong current;
+	struct task_context *actctx, *curctx;
+        struct machine_specific *ms;
+
+	if (ACTIVE())
+		return;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "x86_64_get_active_set: runqueue vs. %s\n",
+			VALID_STRUCT(x8664_pda) ? "x8664_pda" : "current_task");
+
+        ms = machdep->machspec;
+
+	for (c = 0; c < kt->cpus; c++) {
+
+		if (!tt->active_set[c])
+			continue;
+
+		current = ms->current[c];
+		curctx = task_to_context(current);
+		actctx = task_to_context(tt->active_set[c]);
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, "  [%d]: %016lx %016lx %s%s\n",
+				c, tt->active_set[c], current,
+				curctx ? "" : "(invalid task)",
+				curctx && (curctx->processor != c) ?
+				"(wrong processor)" : "");
+
+		if (!curctx || (curctx->processor != c))
+			continue;
+
+		if (tt->active_set[c] == current)
+			continue;
+
+		if (tt->active_set[c] == tt->panic_task)
+			continue;
+
+		if (stkptr_to_task(ms->crash_nmi_rsp[c]) == curctx->task)
+			tt->active_set[c] = tt->panic_threads[c] = current;
+
+		error(INFO, 
+		    "inconsistent active task indications for CPU %d:\n", c);
+		error(CONT, 
+		    "   %srunqueue: %lx \"%s\" (default)\n",
+			VALID_STRUCT(x8664_pda) ? "" : " ",
+			actctx->task, actctx->comm);
+		error(CONT,
+		    "%s: %lx \"%s\" %s\n%s",
+			VALID_STRUCT(x8664_pda) ? "  x8664_pda" : "current_task",			
+			current, curctx->comm, 
+			tt->active_set[c] == current ?  "(reassigned)" : "",
+                        CRASHDEBUG(1) ? "" : "\n");
+	}
+}
+
 #endif  /* X86_64 */ 

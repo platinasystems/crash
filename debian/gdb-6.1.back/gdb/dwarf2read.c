@@ -1210,7 +1210,7 @@ dwarf2_build_psymtabs_hard (struct objfile *objfile, int mainline)
       cu.objfile = objfile;
       info_ptr = read_comp_unit_head (&cu.header, info_ptr, abfd);
 
-      if (cu.header.version != 2)
+      if (cu.header.version != 2 && cu.header.version != 3)
 	{
 	  error ("Dwarf Error: wrong version in compilation unit header (is %d, should be %d) [in module %s]", cu.header.version, 2, bfd_get_filename (abfd));
 	  return;

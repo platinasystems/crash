@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -59,6 +59,7 @@ static struct option long_options[] = {
         {"reloc", required_argument, 0, 0},
 	{"active", 0, 0, 0},
 	{"minimal", 0, 0, 0},
+	{"mod", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -202,6 +203,9 @@ main(int argc, char **argv)
 
 		        else if (STREQ(long_options[option_index].name, "active"))
 				tt->flags |= ACTIVE_ONLY;
+
+		        else if (STREQ(long_options[option_index].name, "mod"))
+				kt->module_tree = optarg;
 
 		        else if (STREQ(long_options[option_index].name, "reloc")) {
 				if (!calculate(optarg, &kt->relocate, NULL, 0)) {
@@ -412,6 +416,10 @@ main(int argc, char **argv)
                                 pc->readmem = read_xendump;
                                 pc->writemem = write_xendump;
 
+                        } else if (is_system_map(argv[optind])) {
+                                pc->system_map = argv[optind];
+                                pc->flags |= (SYSMAP|SYSMAP_ARG);
+
 			} else if (is_diskdump(argv[optind])) {
                                 if ((pc->flags & MEMORY_SOURCES) &&
                                     (!dumpfile_is_split())) {
@@ -434,10 +442,6 @@ main(int argc, char **argv)
                                 pc->dumpfile = argv[optind];
 				pc->readmem = read_lkcd_dumpfile;
 				pc->writemem = write_lkcd_dumpfile;
-
-                        } else if (is_system_map(argv[optind])) {
-                                pc->system_map = argv[optind];
-                                pc->flags |= (SYSMAP|SYSMAP_ARG);
 
 			} else if (is_mclx_compressed_dump(argv[optind])) {
 				if (pc->flags & MEMORY_SOURCES) {
@@ -1309,6 +1313,8 @@ dump_program_context(void)
 		fprintf(fp, "%sUD2A_INSTRUCTION", others ? "|" : "");
         if (pc->curcmd_flags & IRQ_IN_USE)
 		fprintf(fp, "%sIRQ_IN_USE", others ? "|" : "");
+        if (pc->curcmd_flags & MODULE_TREE)
+		fprintf(fp, "%sMODULE_TREE", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

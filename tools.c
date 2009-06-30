@@ -41,6 +41,7 @@ __error(int type, char *fmt, ...)
 {
 	int end_of_line, new_line;
         char buf[BUFSIZE];
+	char *spacebuf;
         ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
 	va_list ap;
 
@@ -66,26 +67,36 @@ __error(int type, char *fmt, ...)
 	else if (pc->flags & PLEASE_WAIT)
 		new_line = TRUE;
 
+	if (type == CONT)
+		spacebuf = space(strlen(pc->curcmd));
+
 	if (pc->stdpipe) {
-		fprintf(pc->stdpipe, "%s%s: %s%s", 
-			new_line ? "\n" : "", pc->curcmd, 
+		fprintf(pc->stdpipe, "%s%s%s %s%s", 
+			new_line ? "\n" : "", 
+			type == CONT ? spacebuf : pc->curcmd, 
+			type == CONT ? " " : ":",
 			type == WARNING ? "WARNING: " : 
 			type == NOTE ? "NOTE: " : "", 
 			buf);
 		fflush(pc->stdpipe);
 	} else { 
-		fprintf(stdout, "%s%s: %s%s", 
+		fprintf(stdout, "%s%s%s %s%s", 
 			new_line || end_of_line ? "\n" : "",
 			type == WARNING ? "WARNING" : 
-			type == NOTE ? "NOTE" : pc->curcmd, 
+			type == NOTE ? "NOTE" : 
+			type == CONT ? spacebuf : pc->curcmd,
+			type == CONT ? " " : ":",
 			buf, end_of_line ? "\n" : "");
 		fflush(stdout);
 	}
 
         if ((fp != stdout) && (fp != pc->stdpipe)) {
-                fprintf(fp, "%s%s: %s", new_line ? "\n" : "",
+                fprintf(fp, "%s%s%s %s", new_line ? "\n" : "",
 			type == WARNING ? "WARNING" : 
-			type == NOTE ? "NOTE" : pc->curcmd, buf);
+			type == NOTE ? "NOTE" : 
+			type == CONT ? spacebuf : pc->curcmd, 
+			type == CONT ? " " : ":",
+			buf);
 		fflush(fp);
 	}
 
@@ -1663,11 +1674,9 @@ backspace(int cnt)
 void
 cmd_set(void)
 {
-	int i;
-	int c;
+	int i, c;
 	ulong value;
-	int cpu;
-	int runtime;
+	int cpu, runtime;
 	char buf[BUFSIZE];
 	char *extra_message;
 	struct task_context *tc;
@@ -1675,7 +1684,7 @@ cmd_set(void)
 	extra_message = NULL;
 	runtime = pc->flags & RUNTIME;
 
-        while ((c = getopt(argcnt, args, "pvc:")) != EOF) {
+        while ((c = getopt(argcnt, args, "pvc:a:")) != EOF) {
                 switch(c)
 		{
 		case 'c':
@@ -1720,6 +1729,44 @@ cmd_set(void)
 
 		case 'v':
 			show_options();
+			return;
+
+		case 'a':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
+
+			if (!runtime)
+				return;
+
+			if (ACTIVE())
+				error(FATAL, 
+				    "-a option not allowed on live systems\n");
+
+	                switch (str_to_context(optarg, &value, &tc))
+	                {
+	                case STR_PID:
+				if ((i = TASKS_PER_PID(value)) > 1)
+					error(FATAL, 
+					    "pid %d has %d tasks: "
+					    "use a task address\n",
+						value, i);
+	                        break;
+	
+	                case STR_TASK:
+	                        break;
+	
+	                case STR_INVALID:
+	                        error(FATAL, "invalid task or pid value: %s\n",
+	                                optarg);
+	                }
+		
+			cpu = tc->processor;
+			tt->active_set[cpu] = tc->task;
+			if (tt->panic_threads[cpu])
+				tt->panic_threads[cpu] = tc->task;
+			fprintf(fp, 
+			    "\"%s\" task %lx has been marked as the active task on cpu %d\n",
+				tc->comm, tc->task, cpu);
 			return;
 
 		default:

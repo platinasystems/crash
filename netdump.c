@@ -45,6 +45,46 @@ static void check_dumpfile_size(char *);
 	(machine_type("IA64") || machine_type("PPC64"))
 
 /*
+ * kdump installs NT_PRSTATUS elf notes only to the cpus
+ * that were online during dumping.  Hence we call into
+ * this function after reading the cpu map from the kernel,
+ * to remap the NT_PRSTATUS notes only to the online cpus.
+ */
+void 
+map_cpus_to_prstatus(void)
+{
+	void **nt_ptr;
+	int online, i, j, nrcpus;
+	size_t size;
+
+	if (!(online = get_cpus_online()) || (online == kt->cpus))
+		return;
+
+	if (CRASHDEBUG(1))
+		error(INFO, 
+		    "cpus: %d online: %d NT_PRSTATUS notes: %d (remapping)\n",
+			kt->cpus, online, nd->num_prstatus_notes);
+
+	size = NR_CPUS * sizeof(void *);
+
+	nt_ptr = (void **)GETBUF(size);
+	BCOPY(nd->nt_prstatus_percpu, nt_ptr, size);
+	BZERO(nd->nt_prstatus_percpu, size);
+
+	/*
+	 *  Re-populate the array with the notes mapping to online cpus
+	 */
+	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
+
+	for (i = 0, j = 0; i < nrcpus; i++) {
+		if (in_cpu_map(ONLINE, i))
+			nd->nt_prstatus_percpu[i] = nt_ptr[j++];
+	}
+
+	FREEBUF(nt_ptr);
+}
+
+/*
  *  Determine whether a file is a netdump/diskdump/kdump creation, 
  *  and if TRUE, initialize the vmcore_data structure.
  */
@@ -616,14 +656,15 @@ get_netdump_panic_task(void)
         case KDUMP_ELF32:
         case KDUMP_ELF64:
 		crashing_cpu = -1;
-		if (symbol_exists("crashing_cpu")) {
+		if (kernel_symbol_exists("crashing_cpu")) {
 			get_symbol_data("crashing_cpu", sizeof(int), &i);
-			if ((i >= 0) && (i < nd->num_prstatus_notes)) {
+			if ((i >= 0) && in_cpu_map(ONLINE, i)) {
 				crashing_cpu = i;
 				if (CRASHDEBUG(1))
 					error(INFO, 
-				   "get_netdump_panic_task: crashing_cpu: %d\n",
-						crashing_cpu);
+		  "get_netdump_panic_task: active_set[crashing_cpu: %d]: %lx\n",
+						crashing_cpu,
+						tt->active_set[crashing_cpu]);
 			}
 		}
 
@@ -715,6 +756,11 @@ check_ebp_esp:
 						return task;
 				}
 			}
+		}
+
+		if (nd->elf64->e_machine == EM_X86_64) {
+			if ((crashing_cpu != -1) && (crashing_cpu <= kt->cpus))
+				return (tt->active_set[crashing_cpu]);
 		}
 	} 
 
@@ -2230,7 +2276,7 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 		 * CPUs if they responded to an IPI.
 		 */
                 if (nd->num_prstatus_notes > 1) {
-			if (bt->tc->processor >= nd->num_prstatus_notes)
+			if (!nd->nt_prstatus_percpu[bt->tc->processor])
 				error(FATAL, 
 		          	    "cannot determine NT_PRSTATUS ELF note "
 				    "for %s task: %lx\n", 
@@ -2487,4 +2533,152 @@ int
 xen_minor_version(void)
 {
 	return nd->xen_kdump_data->xen_minor_version;
+}
+
+
+/*
+ *  The following set of functions are not used by the crash
+ *  source code, but are available to extension modules for
+ *  gathering register sets from ELF NT_PRSTATUS note sections.
+ *
+ *  Contributed by: Sharyathi Nagesh (sharyath@in.ibm.com)
+ */
+
+static void *get_ppc64_regs_from_elf_notes(struct task_context *);
+static void *get_x86_regs_from_elf_notes(struct task_context *);
+static void *get_x86_64_regs_from_elf_notes(struct task_context *);
+
+int get_netdump_arch(void)
+{
+	int e_machine;
+
+	if (nd->elf32)
+		e_machine = nd->elf32->e_machine;
+	else if (nd->elf64)
+		e_machine = nd->elf64->e_machine;
+	else
+		e_machine = EM_NONE;
+
+	return e_machine;
+}
+
+void * 
+get_regs_from_elf_notes(struct task_context *tc)
+{
+	switch(get_netdump_arch())
+	{
+	case EM_386:
+		return get_x86_regs_from_elf_notes(tc);
+	case EM_PPC64:
+		return get_ppc64_regs_from_elf_notes(tc);
+	case EM_X86_64:
+		return get_x86_64_regs_from_elf_notes(tc);
+	default:
+		error(FATAL,
+		    "support for ELF machine type %d not available\n",
+			get_netdump_arch());
+	}
+
+	return NULL;
+}
+
+static void * 
+get_x86_regs_from_elf_notes(struct task_context *tc)
+{
+	Elf32_Nhdr *note_32;
+	Elf64_Nhdr *note_64;
+	void *note;
+	size_t len;
+	void *pt_regs;
+
+	if ((tc->task == tt->panic_task) || 
+	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
+		if (nd->num_prstatus_notes > 1)
+			note = (void *)
+				nd->nt_prstatus_percpu[tc->processor];
+		else
+			note = (void *)nd->nt_prstatus;
+		if (nd->elf32) {
+			note_32 = (Elf32_Nhdr *)note;
+			len = sizeof(Elf32_Nhdr);
+			len = roundup(len + note_32->n_namesz, 4);
+		} else if (nd->elf64) {
+			note_64 = (Elf64_Nhdr *)note;
+			len = sizeof(Elf64_Nhdr);
+			len = roundup(len + note_64->n_namesz, 4);
+		}
+		
+		pt_regs = (void *)((char *)note + len + 
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+		/* NEED TO BE FIXED: Hack to get the proper alignment */
+		pt_regs +=4;
+	} else
+		error(FATAL, 
+		    "cannot determine register set for task \"%s\"\n",
+			tc->comm);
+	return pt_regs;
+
+}
+
+static void * 
+get_x86_64_regs_from_elf_notes(struct task_context *tc)
+{
+	Elf64_Nhdr *note;
+	size_t len;
+	void *pt_regs;
+
+	if ((tc->task == tt->panic_task) || 
+	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
+		if (nd->num_prstatus_notes > 1)
+			note = (Elf64_Nhdr *)
+				nd->nt_prstatus_percpu[tc->processor];
+		else
+			note = (Elf64_Nhdr *)nd->nt_prstatus;
+
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		pt_regs = (void *)((char *)note + len + 
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	} else
+		error(FATAL, 
+		    "cannot determine register set for task \"%s\"\n",
+			tc->comm);
+	return pt_regs;
+}
+
+static void * 
+get_ppc64_regs_from_elf_notes(struct task_context *tc)
+{
+	Elf64_Nhdr *note;
+	size_t len;
+	void *pt_regs;
+	extern struct vmcore_data *nd;
+
+	if ((tc->task == tt->panic_task) ||
+	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
+		/*	
+		 * Registers are always saved during the dump process for the 
+		 * panic task.  Kdump also captures registers for all CPUs if
+		 * they responded to an IPI.
+		 */
+		if (nd->num_prstatus_notes > 1) {
+			if (tc->processor >= nd->num_prstatus_notes)
+				error(FATAL, "cannot determine NT_PRSTATUS ELF note "
+				    "for %s task: %lx\n", (tc->task == tt->panic_task) ?
+				    "panic" : "active", tc->task);	
+			note = (Elf64_Nhdr *)
+				nd->nt_prstatus_percpu[tc->processor];
+		} else
+			note = (Elf64_Nhdr *)nd->nt_prstatus;
+
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		pt_regs = (void *)((char *)note + len + 
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	} else
+		error(FATAL, 
+		    "cannot determine register set for task \"%s\"\n",
+			tc->comm);
+	
+	return pt_regs;
 }

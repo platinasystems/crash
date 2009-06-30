@@ -1,3 +1,25 @@
+crash (4.0-8.11-1) unstable; urgency=low
+
+  * New upstream version 4.0-8.11 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix backtrace when offline CPUs doe not have NT_PRSTATUS notes
+  - Fix "dev" command for 2.6.26 later kernels.
+  - Fix segfaul when running "foreach bt" on active live system.
+  - Fix to read LKCD V8 x86 dumpfile headers
+  - Fix bt when NMI was issued ot non-crashing amd64 CPU.
+  - Fix bt on amd64 when transitioning from the IRQ stack back to the process
+  stack on >= 2.6.29 kernels.
+  - Enhance "runq" to show current task in each cpu's runqueue. 
+  - Fix mem leak when running on live systems.
+  - Support dwarf 3 vmlinux debuginfo format
+  - Allow any order for system map and compressed vmlinux file on the cmd
+  line.
+  - Fix seg fault when vmcore and system map do not match
+  - Adjust virt and phys memory definitions for >= 2.6.31
+  - Fix for "kmem -[sS]" when using CONFIG_SLUB and there is an invalid link.
+
+ -- Troy Heber <troyh@debian.org>  Tue, 30 Jun 2009 12:00:10 -0600
+
 crash (4.0-8.9-1) unstable; urgency=low
 
   * New upstream version 4.0-8.9 (see

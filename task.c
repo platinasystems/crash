@@ -452,6 +452,8 @@ task_init(void)
 		tt->this_task = pid_to_task(active_pid);
 	}
 	else {
+		if (KDUMP_DUMPFILE())
+			map_cpus_to_prstatus();
 		please_wait("determining panic task");
 		set_context(get_panic_context(), NO_PID);
 		please_wait_done();
@@ -1873,6 +1875,8 @@ retry_pid_hash:
 	 */
 	cnt = 0;
 	for (i = 0; i < kt->cpus; i++) {
+		if (!tt->idle_threads[i])
+			continue;
 		if (hq_enter(tt->idle_threads[i]))
 			cnt++;
 		else
@@ -6137,7 +6141,8 @@ get_active_set(void)
 		return FALSE;
 
 
-	if (!(tt->active_set = (ulong *)calloc(NR_CPUS, sizeof(ulong))))	
+	if (!tt->active_set &&
+	    !(tt->active_set = (ulong *)calloc(NR_CPUS, sizeof(ulong))))	
 		error(FATAL, "cannot malloc active_set array");
 
         runqbuf = GETBUF(SIZE(runqueue));
@@ -6566,6 +6571,7 @@ dump_runqueues(void)
 	ulong runq, offset;
 	char *runqbuf;
 	ulong active, expired, arrays;
+	struct task_context *tc;
 	int per_cpu;
 
 
@@ -6577,6 +6583,7 @@ dump_runqueues(void)
                 per_cpu = TRUE;
         }
 
+	get_active_set();
         runqbuf = GETBUF(SIZE(runqueue));
 
 	for (cpu = 0; cpu < kt->cpus; cpu++, runq += SIZE(runqueue)) {
@@ -6588,7 +6595,15 @@ dump_runqueues(void)
                  		runq = symbol_value("per_cpu__runqueues");
 		}
 
-		fprintf(fp, "RUNQUEUES[%d]: %lx\n", cpu, runq);
+		fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "", 
+			cpu, runq);
+
+		fprintf(fp, "  CURRENT: ");
+		if ((tc = task_to_context(tt->active_set[cpu])))
+			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				tc->pid, tc->task, tc->comm);
+		else
+			fprintf(fp, "%lx\n", tt->active_set[cpu]);
 
                 readmem(runq, KVADDR, runqbuf, SIZE(runqueue), 
 			"runqueues array entry", FAULT_ON_ERROR);
@@ -6615,7 +6630,7 @@ dump_runqueues(void)
 static void
 dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 {
-	int i, c, cnt, qheads, nr_active;
+	int i, c, cnt, tot, qheads, nr_active;
 	ulong offset, kvaddr, uvaddr;
 	ulong list_head[2];
         struct list_data list_data, *ld;
@@ -6631,20 +6646,25 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 	nr_active = INT(u_prio_array + OFFSET(prio_array_nr_active));
 	console("nr_active: %d\n", nr_active);
 
-	fprintf(fp, " %s PRIO_ARRAY: %lx\n",  
+	fprintf(fp, "  %s PRIO_ARRAY: %lx\n",  
 		which == RUNQ_ACTIVE ? "ACTIVE" : "EXPIRED", k_prio_array);
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "nr_active: %d\n", nr_active);
 
 	ld = &list_data;
 
-	for (i = 0; i < 140; i++) {
+	for (i = tot = 0; i < 140; i++) {
 		offset =  OFFSET(prio_array_queue) + (i * SIZE(list_head));
 		kvaddr = k_prio_array + offset;
 		uvaddr = (ulong)u_prio_array + offset;
 		BCOPY((char *)uvaddr, (char *)&list_head[0], sizeof(ulong)*2);
 
 		if (CRASHDEBUG(1))
-			fprintf(fp, "prio_array[%d] @ %lx => %lx/%lx\n", 
-				i, kvaddr, list_head[0], list_head[1]);
+			fprintf(fp, "prio_array[%d] @ %lx => %lx/%lx %s\n", 
+				i, kvaddr, list_head[0], list_head[1],
+				(list_head[0] == list_head[1]) && 
+				(list_head[0] == kvaddr) ? "(empty)" : "");
 
 		if ((list_head[0] == kvaddr) && (list_head[1] == kvaddr))
 			continue;
@@ -6652,7 +6672,7 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 		console("[%d] %lx => %lx-%lx ", i, kvaddr, list_head[0],
 			list_head[1]);
 
-		fprintf(fp, "  [%3d] ", i);
+		fprintf(fp, "     [%3d] ", i);
 
 		BZERO(ld, sizeof(struct list_data));
 		ld->start = list_head[0];
@@ -6668,10 +6688,17 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 			if (!(tc = task_to_context(tlist[c])))
 				continue;
 			if (c)
-				INDENT(8);
-			print_task_header(fp, tc, FALSE);
+				INDENT(11);
+			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				tc->pid, tc->task, tc->comm);
 		}
+		tot += cnt;
 		FREEBUF(tlist);
+	}
+
+	if (!tot) {
+		INDENT(5);
+		fprintf(fp, "[no tasks queued]\n");
 	}
 }
 
@@ -6765,7 +6792,7 @@ rb_next(struct rb_node *node)
 static void
 dump_CFS_runqueues(void)
 {
-	int cpu;
+	int tot, prio, cpu;
 	ulong runq, cfs_rq;
 	char *runqbuf, *cfs_rq_buf;
 	ulong leftmost, tasks_timeline;
@@ -6788,6 +6815,8 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(rt_rq_active, "rt_rq", "active");
                 MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
                         "run_list");
+                MEMBER_OFFSET_INIT(task_struct_prio, "task_struct",
+                        "prio");
 	}
 
 	if (!symbol_exists("per_cpu__runqueues"))
@@ -6799,6 +6828,8 @@ dump_CFS_runqueues(void)
 	cfs_rq_buf = symbol_exists("per_cpu__init_cfs_rq") ?
 		GETBUF(SIZE(cfs_rq)) : NULL;
 
+	get_active_set();
+
         for (cpu = 0; cpu < kt->cpus; cpu++) {
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 			runq = symbol_value("per_cpu__runqueues") +
@@ -6806,7 +6837,16 @@ dump_CFS_runqueues(void)
 		} else
 			runq = symbol_value("per_cpu__runqueues");
 
-                fprintf(fp, "RUNQUEUES[%d]: %lx\n", cpu, runq);
+                fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "",
+			cpu, runq);
+
+		fprintf(fp, "  CURRENT: ");
+		if ((tc = task_to_context(tt->active_set[cpu])))
+			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				tc->pid, tc->task, tc->comm);
+		else
+			fprintf(fp, "%lx\n", tt->active_set[cpu]);
+
                 readmem(runq, KVADDR, runqbuf, SIZE(runqueue),
                         "per-cpu rq", FAULT_ON_ERROR);
 
@@ -6846,18 +6886,25 @@ dump_CFS_runqueues(void)
 			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
 			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
 
-		fprintf(fp, " CFS RB_ROOT: %lx\n", (ulong)root);
+		fprintf(fp, "  CFS RB_ROOT: %lx\n", (ulong)root);
 
-		if (!leftmost)
-			continue;
-
-		for (node = rb_first(root); node; node = rb_next(node)) {
+		for (node = rb_first(root), tot = 0; leftmost && node; 
+		     node = rb_next(node)) {
 			tc = task_to_context((ulong)node - OFFSET(task_struct_se) -
 			     OFFSET(sched_entity_run_node));
 			if (!tc)
 				continue;
-			INDENT(2);
-			print_task_header(fp, tc, FALSE);
+			readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
+				&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
+			fprintf(fp, "     [%3d] ", prio);
+			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				tc->pid, tc->task, tc->comm);
+			tot++;
+		}
+
+		if (!tot) {
+			INDENT(5);
+			fprintf(fp, "[no tasks queued]\n");
 		}
 	}
 
@@ -6869,24 +6916,27 @@ dump_CFS_runqueues(void)
 static void
 dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
 {
-	int i, c, cnt, qheads;
+	int i, c, tot, cnt, qheads;
 	ulong offset, kvaddr, uvaddr;
 	ulong list_head[2];
         struct list_data list_data, *ld;
 	struct task_context *tc;
 	ulong *tlist;
 
-	fprintf(fp, " RT PRIO_ARRAY: %lx\n",  k_prio_array);
+	fprintf(fp, "  RT PRIO_ARRAY: %lx\n",  k_prio_array);
 
-	if (!active)
+	if (!active) {
+		INDENT(5);
+		fprintf(fp, "[no tasks queued]\n");	
 		return;
+	}
 
         qheads = (i = ARRAY_LENGTH(prio_array_queue)) ?
                 i : get_array_length("prio_array.queue", NULL, SIZE(list_head));
 
 	ld = &list_data;
 
-	for (i = 0; i < qheads; i++) {
+	for (i = tot = 0; i < qheads; i++) {
 		offset =  OFFSET(prio_array_queue) + (i * SIZE(list_head));
 		kvaddr = k_prio_array + offset;
 		uvaddr = (ulong)u_prio_array + offset;
@@ -6899,7 +6949,7 @@ dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
 		if ((list_head[0] == kvaddr) && (list_head[1] == kvaddr))
 			continue;
 
-		fprintf(fp, "  [%3d] ", i);
+		fprintf(fp, "     [%3d] ", i);
 
 		BZERO(ld, sizeof(struct list_data));
 		ld->start = list_head[0];
@@ -6914,10 +6964,17 @@ dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
 			if (!(tc = task_to_context(tlist[c])))
 				continue;
 			if (c)
-				INDENT(8);
-			print_task_header(fp, tc, FALSE);
+				INDENT(11);
+			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				tc->pid, tc->task, tc->comm);
+			tot++;
 		}
 		FREEBUF(tlist);
+	}
+
+	if (!tot) {
+		INDENT(5);
+		fprintf(fp, "[no tasks queued]\n");	
 	}
 }
 

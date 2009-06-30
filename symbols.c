@@ -428,11 +428,14 @@ separate_debug_file_exists(const char *name, unsigned long crc, int *exists)
 }
 
 /*
- *  Callback for gdb to use a specified debug file.
+ *  Callback for gdb to use a specified vmlinux.debug file.
  */
 char *
-check_specified_debug_file()
+check_specified_kernel_debug_file()
 {
+	if (pc->flags & GDB_INIT)
+		return NULL;
+
 	return (pc->namelist_debug ? pc->namelist_debug : NULL);
 }
 
@@ -2295,6 +2298,8 @@ dump_symbol_table(void)
                 fprintf(fp, "%sADD_SYMBOL_FILE", others++ ? "|" : "");
         if (st->flags & USE_OLD_ADD_SYM)
                 fprintf(fp, "%sUSE_OLD_ADD_SYM", others++ ? "|" : "");
+        if (st->flags & PERCPU_SYMS)
+                fprintf(fp, "%sPERCPU_SYMS", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "                 bfd: %lx\n", (ulong)st->bfd);
@@ -2302,6 +2307,14 @@ dump_symbol_table(void)
 	fprintf(fp, "              symend: %lx\n", (ulong)st->symend);
 	fprintf(fp, "              symcnt: %ld\n", st->symcnt);
 	fprintf(fp, "         syment_size: %ld\n", st->syment_size);
+	fprintf(fp, "       first_ksymbol: ");
+	if (st->first_ksymbol) {
+		fprintf(fp, "%lx (%s)\n", 
+			st->first_ksymbol,
+			st->flags & KERNEL_SYMS ?
+			value_symbol(st->first_ksymbol) : "");
+	} else
+		fprintf(fp, "(unused)\n");
 
         fprintf(fp, "    symval_hash[%d]: %lx\n", SYMVAL_HASH,
                 (ulong)&st->symval_hash[0]);
@@ -3277,8 +3290,12 @@ int
 in_ksymbol_range(ulong value)
 {
         if ((value >= st->symtable[0].value) && 
-	    (value <= st->symtable[st->symcnt-1].value))
-                return TRUE;
+	    (value <= st->symtable[st->symcnt-1].value)) {
+		if ((st->flags & PERCPU_SYMS) && (value < st->first_ksymbol))
+			return FALSE;
+		else
+			return TRUE;
+	}
 
 	if (module_symbol(value, NULL, NULL, NULL, output_radix))
 		return TRUE;
@@ -6003,6 +6020,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_nsproxy));
         fprintf(fp, "              task_struct_rlim: %ld\n",
                 OFFSET(task_struct_rlim));
+        fprintf(fp, "              task_struct_prio: %ld\n",
+                OFFSET(task_struct_prio));
 
 	fprintf(fp, "              thread_info_task: %ld\n",
                 OFFSET(thread_info_task));
@@ -7007,6 +7026,21 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(char_device_struct_fops));
 	fprintf(fp, "      char_device_struct_major: %ld\n",
 		OFFSET(char_device_struct_major));
+	fprintf(fp, "  char_device_struct_baseminor: %ld\n",
+		OFFSET(char_device_struct_baseminor));
+	fprintf(fp, "       char_device_struct_cdev: %ld\n",
+		OFFSET(char_device_struct_cdev));
+
+	fprintf(fp, "                      cdev_ops: %ld\n", OFFSET(cdev_ops));
+
+	fprintf(fp, "                    probe_next: %ld\n", 
+		OFFSET(probe_next));
+	fprintf(fp, "                     probe_dev: %ld\n", 
+		OFFSET(probe_dev));
+	fprintf(fp, "                    probe_data: %ld\n", 
+		OFFSET(probe_data));
+	fprintf(fp, "               kobj_map_probes: %ld\n", 
+		OFFSET(kobj_map_probes));
 
 	fprintf(fp, "           blk_major_name_next: %ld\n",
 		OFFSET(blk_major_name_next));
@@ -7249,6 +7283,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(pcpu_info));
 	fprintf(fp, "                   vcpu_struct: %ld\n", 
 		SIZE(vcpu_struct));
+	fprintf(fp, "                          cdev: %ld\n", 
+		SIZE(cdev));
+	fprintf(fp, "                         probe: %ld\n", 
+		SIZE(probe));
+	fprintf(fp, "                      kobj_map: %ld\n", 
+		SIZE(kobj_map));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

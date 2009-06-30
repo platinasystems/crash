@@ -445,9 +445,9 @@ typedef struct _dump_header_asm_s {
  */
 typedef struct dump_CPU_info_s {
 	struct pt_regs	dha_smp_regs;
-	uint64_t	dha_smp_current_task;
-	uint64_t	dha_stack;
-	uint64_t	dha_stack_ptr;
+	uint32_t	dha_smp_current_task;
+	uint32_t	dha_stack;
+	uint32_t	dha_stack_ptr;
 } __attribute__ ((packed)) dump_CPU_info_t;
 
 

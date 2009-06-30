@@ -999,16 +999,7 @@ s390_dis_filter(ulong vaddr, char *inbuf)
 int
 s390_get_smp_cpus(void)
 {
-	unsigned long map = 0, addr;
-	int i, cpu_num = 0;
-	addr=symbol_value("cpu_online_map");
-	readmem(addr, KVADDR, &map,sizeof(long), "cpu_online_map",FAULT_ON_ERROR);
-	for(i = 0; i < sizeof(map)*8;i++){
-		if(map & 0x1UL)
-			cpu_num += 1;
-		map >>= 1;
-	}
-	return cpu_num;
+	return get_cpus_online();
 }
 
 /*

@@ -3,7 +3,7 @@
    Copyright 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998,
    1999, 2000, 2001, 2002, 2003, 2004 Free Software Foundation, Inc.
    Portions Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
-   Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+   Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2009 Red Hat, Inc. All rights reserved.
 
    Contributed by Cygnus Support, using pieces from other GDB modules.
 
@@ -1051,7 +1051,11 @@ find_separate_debug_file (struct objfile *objfile)
   char *basename;
   char *dir;
   char *debugfile;
+#ifdef CRASH_MERGE
   char *name_copy;
+  extern int check_specified_module_tree(char *, char *);
+  extern char *check_specified_kernel_debug_file();
+#endif
   bfd_size_type debuglink_size;
   unsigned long crc32;
   int i;
@@ -1105,6 +1109,17 @@ find_separate_debug_file (struct objfile *objfile)
       xfree (dir);
       return xstrdup (debugfile);
     }
+
+#ifdef CRASH_MERGE
+{
+        if (check_specified_module_tree(objfile->name, debugfile) &&
+  	    separate_debug_file_exists(debugfile, crc32)) {
+      		xfree(basename);
+      		xfree(dir);
+      		return xstrdup(debugfile);
+	}
+}
+#endif
   
   /* Then try in the global debugfile directory.  */
   strcpy (debugfile, debug_file_directory);
@@ -1123,8 +1138,7 @@ find_separate_debug_file (struct objfile *objfile)
   xfree (dir);
 #ifdef CRASH_MERGE
 {
-        extern char *check_specified_debug_file();
-        name_copy = check_specified_debug_file();
+        name_copy = check_specified_kernel_debug_file();
         return (name_copy ? xstrdup (name_copy) : NULL);
 }
 #else
