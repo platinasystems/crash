@@ -2151,6 +2151,8 @@ cmd_set(void)
 					pc->flags |= NETDUMP;
 				else if (is_kdump(args[optind], KDUMP_LOCAL))
 					pc->flags |= KDUMP;
+				else if (is_kvmdump(args[optind]))
+					pc->flags |= KVMDUMP;
 				else if (is_xendump(args[optind]))
 					pc->flags |= XENDUMP;
 				else if (is_diskdump(args[optind]))
@@ -4344,6 +4346,25 @@ count_bits_long(ulong val)
         return total;
 }
 
+int
+highest_bit_long(ulong val)
+{
+        int i, cnt;
+        int total;
+	int highest;
+
+	highest = -1;
+        cnt = sizeof(long) * 8;
+
+        for (i = total = 0; i < cnt; i++) {
+                if (val & 1)
+                        highest = i;
+                val >>= 1;
+        }
+
+        return highest;
+}
+
 /*
  *  Debug routine to stop whatever's going on in its tracks.
  */
@@ -4650,9 +4671,17 @@ option_not_supported(int c)
 void
 please_wait(char *s)
 {
-	if ((pc->flags & SILENT) || !(pc->flags & TTY) || 
-	    !DUMPFILE() || (pc->flags & RUNTIME))
+	int fd;
+
+	if ((pc->flags & SILENT) || !DUMPFILE() || (pc->flags & RUNTIME))
 		return;
+
+	if (!(pc->flags & TTY) && KVMDUMP_DUMPFILE()) {
+		if (!isatty(fileno(stdin)) ||
+		    ((fd = open("/dev/tty", O_RDONLY)) < 0))
+			return;
+		close(fd);
+	}
 
 	pc->flags |= PLEASE_WAIT;
 
@@ -4663,8 +4692,7 @@ please_wait(char *s)
 void
 please_wait_done(void)
 {
-	if ((pc->flags & SILENT) || !(pc->flags & TTY) || 
-	    !DUMPFILE() || (pc->flags & RUNTIME))
+	if (!(pc->flags & PLEASE_WAIT))
 		return;
 
 	pc->flags &= ~PLEASE_WAIT;

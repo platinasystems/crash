@@ -81,7 +81,10 @@ kernel_init()
 		kt->init_begin = symbol_value("__init_begin");
 		kt->init_end = symbol_value("__init_end");
 	}
-	kt->end = symbol_value("_end");
+	if (symbol_exists("_end"))
+		kt->end = symbol_value("_end");
+	else
+		kt->end = highest_bss_symbol();
 	
 	/*
 	 *  For the traditional (non-pv_ops) Xen architecture, default to writable 
@@ -2178,6 +2181,8 @@ back_trace(struct bt_info *bt)
                 get_kdump_regs(bt, &eip, &esp);
 	else if (DISKDUMP_DUMPFILE())
                 get_diskdump_regs(bt, &eip, &esp);
+	else if (KVMDUMP_DUMPFILE())
+                get_kvmdump_regs(bt, &eip, &esp);
         else if (LKCD_DUMPFILE())
                 get_lkcd_regs(bt, &eip, &esp);
 	else if (XENDUMP_DUMPFILE())
@@ -2439,6 +2444,7 @@ dump_bt_info(struct bt_info *bt, char *where)
 	fprintf(fp, "    frameptr: %lx\n", (ulong)bt->frameptr);
 	fprintf(fp, " call_target: %s\n", bt->call_target ? 
 		bt->call_target : "none");
+	fprintf(fp, "   eframe_ip: %lx\n", bt->eframe_ip);
 	fprintf(fp, "       debug: %lx\n", bt->debug);
 }
 
@@ -6087,6 +6093,43 @@ get_cpus_online()
 	FREEBUF(buf);
 
 	return online;
+}
+
+/*
+ *  If it exists, return the highest cpu number in the cpu_online_map.
+ */
+int
+get_highest_cpu_online()
+{
+	int i, len;
+	char *buf;
+	ulong *maskptr, addr;
+	int high, highest;
+
+	if (!(addr = cpu_map_addr("online")))
+		return -1;
+
+	len = cpu_map_size("online");
+	buf = GETBUF(len);
+	highest = -1;
+
+        if (readmem(addr, KVADDR, buf, len, 
+	    "cpu_online_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++) {
+			if ((high = highest_bit_long(*maskptr)) < 0)
+				continue;
+			highest = high + (i * (sizeof(ulong)*8));
+		}
+
+		if (CRASHDEBUG(1))
+			error(INFO, "get_highest_cpu_online: %d\n", highest);
+	}
+
+	FREEBUF(buf);
+
+	return highest;
 }
 
 /*

@@ -922,6 +922,10 @@ static void dwarf_decode_macros (struct line_header *, unsigned int,
 
 static int attr_form_is_block (struct attribute *);
 
+static int attr_form_is_section_offset (struct attribute *);
+
+static int attr_form_is_constant (struct attribute *);
+
 static void
 dwarf2_symbol_mark_computed (struct attribute *attr, struct symbol *sym,
 			     struct dwarf2_cu *cu);
@@ -2618,8 +2622,19 @@ dwarf2_add_field (struct field_info *fip, struct die_info *die,
       attr = dwarf2_attr (die, DW_AT_data_member_location, cu);
       if (attr)
 	{
-	  FIELD_BITPOS (*fp) =
-	    decode_locdesc (DW_BLOCK (attr), cu) * bits_per_byte;
+          int byte_offset;
+
+          if (attr_form_is_section_offset (attr))
+            {
+              dwarf2_complex_location_expr_complaint ();
+              byte_offset = 0;
+            }
+          else if (attr_form_is_constant (attr))
+            byte_offset = dwarf2_get_attr_constant_value (attr, 0);
+          else
+            byte_offset = decode_locdesc (DW_BLOCK (attr), cu);
+
+          FIELD_BITPOS (*fp) = byte_offset * bits_per_byte;
 	}
       else
 	FIELD_BITPOS (*fp) = 0;
@@ -2939,7 +2954,7 @@ dwarf2_add_member_fn (struct field_info *fip, struct die_info *die,
         {
           fnp->voffset = decode_locdesc (DW_BLOCK (attr), cu) + 2;
         }
-      else if (attr->form == DW_FORM_data4 || attr->form == DW_FORM_data8)
+      else if (attr_form_is_section_offset (attr))
         {
 	  dwarf2_complex_location_expr_complaint ();
         }
@@ -3482,7 +3497,7 @@ read_common_block (struct die_info *die, struct dwarf2_cu *cu)
         {
           base = decode_locdesc (DW_BLOCK (attr), cu);
         }
-      else if (attr->form == DW_FORM_data4 || attr->form == DW_FORM_data8)
+      else if (attr_form_is_section_offset (attr))
         {
 	  dwarf2_complex_location_expr_complaint ();
         }
@@ -4392,7 +4407,7 @@ read_partial_die (struct partial_die_info *part_die, bfd *abfd,
             {
 	       part_die->locdesc = DW_BLOCK (&attr);
             }
-          else if (attr.form == DW_FORM_data4 || attr.form == DW_FORM_data8)
+          else if (attr_form_is_section_offset (&attr))
             {
 	      dwarf2_complex_location_expr_complaint ();
             }
@@ -8030,11 +8045,56 @@ attr_form_is_block (struct attribute *attr)
       || attr->form == DW_FORM_block);
 }
 
+/* Return non-zero if ATTR's value is a section offset --- classes
+   lineptr, loclistptr, macptr or rangelistptr --- or zero, otherwise.
+   You may use DW_UNSND (attr) to retrieve such offsets.
+
+   Section 7.5.4, "Attribute Encodings", explains that no attribute
+   may have a value that belongs to more than one of these classes; it
+   would be ambiguous if we did, because we use the same forms for all
+   of them.  */
+static int
+attr_form_is_section_offset (struct attribute *attr)
+{
+  return (attr->form == DW_FORM_data4
+          || attr->form == DW_FORM_data8);
+}
+
+
+/* Return non-zero if ATTR's value falls in the 'constant' class, or
+   zero otherwise.  When this function returns true, you can apply
+   dwarf2_get_attr_constant_value to it.
+
+   However, note that for some attributes you must check
+   attr_form_is_section_offset before using this test.  DW_FORM_data4
+   and DW_FORM_data8 are members of both the constant class, and of
+   the classes that contain offsets into other debug sections
+   (lineptr, loclistptr, macptr or rangelistptr).  The DWARF spec says
+   that, if an attribute's can be either a constant or one of the
+   section offset classes, DW_FORM_data4 and DW_FORM_data8 should be
+   taken as section offsets, not constants.  */
+static int
+attr_form_is_constant (struct attribute *attr)
+{
+  switch (attr->form)
+    {
+    case DW_FORM_sdata:
+    case DW_FORM_udata:
+    case DW_FORM_data1:
+    case DW_FORM_data2:
+    case DW_FORM_data4:
+    case DW_FORM_data8:
+      return 1;
+    default:
+      return 0;
+    }
+}
+
 static void
 dwarf2_symbol_mark_computed (struct attribute *attr, struct symbol *sym,
 			     struct dwarf2_cu *cu)
 {
-  if (attr->form == DW_FORM_data4 || attr->form == DW_FORM_data8)
+  if (attr_form_is_section_offset (attr))
     {
       struct dwarf2_loclist_baton *baton;
 

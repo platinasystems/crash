@@ -1,3 +1,28 @@
+crash (4.0.9-1) unstable; urgency=low
+
+  * New upstream version 4.0.9 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - New versioning format such that the upstream version no longe rcontains
+  the "-" in the version number.
+  - backport of the x86/x86_64 disassembly code from gdb-6.8 to the embedded
+  gdb-6.1. 
+  - Fix compressed diskdump/kdump vmcores to work with page descriptor
+  structure that are beyond 4GB offsets in the vmcore file.
+  - Fix for multipal x86_64 bt command issues
+  - Fix for usage of System.map argument with kernels >= 2.6.30.
+  - Fix for usage of System.map that does not contaon an "_end" symbol.
+  - Fix for "kmem -p <addr>" or "kmem <addr>" options when <addr> is not a
+  page struct address.
+  - Fix for the snap.so extension to work on < 2.6.12 kernels with more than
+  4GB physical memory.
+  - Fix how extensions are built, for example give a proper error message is
+  the host does not have the build deps for the extension module, but still
+  allow crash to build. 
+  - RHEL_4 fix for "rd" and "vtop" command on x86_64 Xen kernels.
+
+
+ -- Troy Heber <troyh@debian.org>  Thu, 10 Sep 2009 11:38:39 -0600
+
 crash (4.0-8.11-1) unstable; urgency=low
 
   * New upstream version 4.0-8.11 (see

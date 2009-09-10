@@ -25,10 +25,10 @@
  *               PROGRAM (for daemon)
  *       create: build_data.c
  *
- *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, RELEASE and TARGET_CFLAGS 
+ *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION and TARGET_CFLAGS 
  *        undef: WARNING_ERROR, WARNING_OPTIONS
  *
- *   -r  define: GDB_FILES, RELEASE
+ *   -r  define: GDB_FILES, VERSION
  *       verify that no .rpmmacro file exists for the running shell
  *
  *   -w  define: WARNING_OPTIONS
@@ -549,8 +549,8 @@ release_configure(char *gdb_version)
 			found++;
 		if (strncmp(buf, "GDB_FILES=", strlen("GDB_FILES=")) == 0)
 			fprintf(fp2, "GDB_FILES=${%s}\n", gdb_files);
-		else if (strncmp(buf, "RELEASE=", strlen("RELEASE=")) == 0)
-                        fprintf(fp2, "RELEASE=%s\n", 
+		else if (strncmp(buf, "VERSION=", strlen("VERSION=")) == 0)
+                        fprintf(fp2, "VERSION=%s\n", 
 				target_data.release);
 		else
 			fprintf(fp2, "%s", buf);
@@ -797,8 +797,8 @@ unconfigure(void)
                         fprintf(fp2, "GDB_OFILES=\n");
                 else if (strncmp(buf, "GDB=", strlen("GDB=")) == 0) 
                         fprintf(fp2, "GDB=\n");
-                else if (strncmp(buf, "RELEASE=", strlen("RELEASE=")) == 0) 
-                        fprintf(fp2, "RELEASE=\n");
+                else if (strncmp(buf, "VERSION=", strlen("VERSION=")) == 0) 
+                        fprintf(fp2, "VERSION=\n");
                 else if (strncmp(buf, "WARNING_ERROR=", 
 			strlen("WARNING_ERROR=")) == 0) {
                         shift_string_right(buf, 1);
@@ -1140,14 +1140,14 @@ make_spec_file(void)
 
 	Release = strstr(target_data.release, "-");
 	if (!Release) {
+		Version = target_data.release;
+		Release = "0";		
+	} else {
 		fprintf(stderr, 
- 	     "\nNOTE: cannot create local spec file: no release number: [%s]\n",
+		    "crash.spec: obsolete src.rpm build manner -- no dashes allowed: %s\n",
 			target_data.release);
 		return;
 	}
-	*Release = '\0';
-	Version = target_data.release;
-	Release++;
 
 	printf("#\n");
 	printf("# crash core analysis suite\n");
@@ -1158,7 +1158,7 @@ make_spec_file(void)
 	printf("Release: %s\n", Release);
 	printf("License: GPLv2\n");
 	printf("Group: Development/Debuggers\n");
-	printf("Source: %%{name}-%%{version}-%%{release}.tar.gz\n");
+	printf("Source: %%{name}-%%{version}.tar.gz\n");
 	printf("URL: http://people.redhat.com/anderson\n");
 	printf("Distribution: Linux 2.2 or greater\n");
 	printf("Vendor: Red Hat, Inc.\n");
@@ -1201,12 +1201,13 @@ make_spec_file(void)
 	printf("* snap:   Takes a snapshot of live memory and creates a kdump dumpfile\n");
 	printf("\n");
 	printf("%%prep\n");
-        printf("%%setup -n %%{name}-%%{version}-%%{release}\n"); 
+        printf("%%setup -n %%{name}-%%{version}\n"); 
 	printf("# %%patch0 -p1 -b .install (patch example)\n");
 	printf("\n");
 	printf("%%build\n");
-	printf("make RPMPKG=\"%%{version}-%%{release}\"\n");
-	printf("make RPMPKG=\"%%{version}-%%{release}\" extensions\n");
+	printf("make RPMPKG=\"%%{version}\"\n");
+	printf("# make RPMPKG=\"%%{version}-%%{release}\"\n");
+	printf("make extensions\n");
      /*	printf("make crashd\n"); */
 	printf("\n");
 	printf("%%install\n");

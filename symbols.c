@@ -2585,8 +2585,16 @@ is_kernel(char *file)
 		switch (swap16(elf32->e_machine, swap))
 		{
 		case EM_386:
-			if (machine_type_mismatch(file, "X86", NULL, 0))
+			if (machine_type_mismatch(file, "X86", NULL, 0)) {
+				if (machine_type("X86_64")) {
+					/* 
+					 * Since is_bfd_format() returns TRUE 
+					 * in this case, just bail out here.
+					 */
+					return FALSE;
+				}
 				goto bailout;
+			}
 			break;
 
 		case EM_S390:
@@ -2643,6 +2651,86 @@ is_kernel(char *file)
 
 bailout:
 	return(is_bfd_format(file));
+}
+
+int
+is_shared_object(char *file)
+{
+	int fd, swap;
+	char eheader[BUFSIZE];
+	Elf32_Ehdr *elf32;
+	Elf64_Ehdr *elf64;
+
+	if (is_directory(file))
+		return FALSE;
+
+	if ((fd = open(file, O_RDONLY)) < 0)
+		return FALSE;
+
+	if (read(fd, eheader, BUFSIZE) != BUFSIZE) {
+		close(fd);
+		return FALSE;
+	}  
+	close(fd);
+
+	if (!STRNEQ(eheader, ELFMAG) || eheader[EI_VERSION] != EV_CURRENT)
+		return FALSE;
+
+	elf32 = (Elf32_Ehdr *)&eheader[0];
+	elf64 = (Elf64_Ehdr *)&eheader[0];
+
+	swap = (((eheader[EI_DATA] == ELFDATA2LSB) && 
+	     (__BYTE_ORDER == __BIG_ENDIAN)) ||
+	    ((eheader[EI_DATA] == ELFDATA2MSB) && 
+	     (__BYTE_ORDER == __LITTLE_ENDIAN)));
+
+        if ((elf32->e_ident[EI_CLASS] == ELFCLASS32) &&
+	    (swap16(elf32->e_type, swap) == ET_DYN)) {
+		switch (swap16(elf32->e_machine, swap))
+		{
+		case EM_386:
+			if (machine_type("x86"))
+				return TRUE;
+			break;
+
+		case EM_S390:
+			if (machine_type("S390"))
+				return TRUE;
+			break;
+		}
+
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: machine type mismatch: %d\n",
+				file, swap16(elf32->e_machine, swap));
+
+		return FALSE;
+
+	} else if ((elf64->e_ident[EI_CLASS] == ELFCLASS64) &&
+	    (swap16(elf64->e_type, swap) == ET_DYN)) {
+		switch (swap16(elf64->e_machine, swap))
+		{
+		case EM_IA_64:
+			if (machine_type("IA64"))
+				return TRUE;
+			break;
+
+		case EM_PPC64:
+			if (machine_type("PPC64"))
+				return TRUE;
+			break;
+
+		case EM_X86_64:
+			if (machine_type("X86_64")) 
+				return TRUE;
+			break;
+		}
+
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: machine type mismatch: %d\n",
+				file, swap16(elf32->e_machine, swap));
+	}
+
+	return FALSE;
 }
 
 /*
@@ -3461,6 +3549,21 @@ check_modules:
         }
 
         return((struct syment *)NULL);
+}
+
+ulong
+highest_bss_symbol(void)
+{
+	struct syment *sp;
+	ulong highest = 0;
+
+	for (sp = st->symtable; sp < st->symend; sp++) {
+		if ((sp->type == 'b') || (sp->type == 'B')) {
+			if (sp->value > highest)
+				highest = sp->value;
+		}
+	}
+	return highest;
 }
 
 /*
@@ -8945,7 +9048,7 @@ int
 patch_kernel_symbol(struct gnu_request *req)
 {
 	int i, c;
-	struct syment *sp_array[200], *sp;
+	struct syment *sp_array[1000], *sp;
 
 	if (req->name == PATCH_KERNEL_SYMBOLS_START) {
 		if (kt->flags & RELOC_FORCE)
@@ -8980,7 +9083,7 @@ patch_kernel_symbol(struct gnu_request *req)
                 sp->allocated = TRUE;
                 req->last_sp = (ulong)sp;
 	} else {
-		switch (c = get_syment_array(req->name, sp_array, 200))
+		switch (c = get_syment_array(req->name, sp_array, 1000))
 		{
 		case 0: req->last_sp = 0;
 			return TRUE;

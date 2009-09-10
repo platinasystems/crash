@@ -64,7 +64,7 @@
 #define NR_CPUS  (256)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (512)
+#define NR_CPUS  (4096)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -133,7 +133,7 @@ struct number_option {
 #define MCLXCD                     (0x10ULL)
 #define CMDLINE_IFILE              (0x20ULL)
 #define MFD_RDWR                   (0x40ULL)
-#define DFD_RDWR                   (0x80ULL)
+#define KVMDUMP                    (0x80ULL)
 #define SILENT                    (0x100ULL)
 #define REMOTE_DAEMON             (0x200ULL)
 #define HASH                      (0x400ULL)
@@ -188,11 +188,13 @@ struct number_option {
 #define KERNTYPES     (0x800000000000000ULL)
 #define MINIMAL_MODE (0x1000000000000000ULL)
 #define CRASHBUILTIN (0x2000000000000000ULL)
+#define PRELOAD_EXTENSIONS \
+		     (0x4000000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP)
 #define REMOTE()            (pc->flags & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
@@ -207,6 +209,7 @@ struct number_option {
 #define SYSRQ_TASK(X)       ((pc->flags & SYSRQ) && is_task_active(X))
 #define XEN_CORE_DUMPFILE() (pc->flags & XEN_CORE)
 #define LKCD_KERNTYPES()    (pc->flags & KERNTYPES)
+#define KVMDUMP_DUMPFILE()  (pc->flags & KVMDUMP)
 
 #define NETDUMP_LOCAL    (0x1)  /* netdump_data flags */
 #define NETDUMP_REMOTE   (0x2)  
@@ -217,6 +220,8 @@ struct number_option {
 #define KDUMP_ELF32     (0x20)
 #define KDUMP_ELF64     (0x40)
 #define KDUMP_LOCAL     (0x80)  
+#define KVMDUMP_LOCAL    (0x1)
+#define KVMDUMP_VALID()  (kvm->flags & (KVMDUMP_LOCAL))
 
 #define DUMPFILE_FORMAT(flags) ((flags) & \
 		        (NETDUMP_ELF32|NETDUMP_ELF64|KDUMP_ELF32|KDUMP_ELF64))
@@ -707,6 +712,7 @@ struct bt_info {
 	char *call_target;
 	void *machdep;
         ulong debug;
+	ulong eframe_ip;
 };
 
 #define STACK_OFFSET_TYPE(OFF) \
@@ -3278,6 +3284,7 @@ void drop_core(char *);
 int extract_hex(char *, ulong *, char, ulong);
 int count_bits_int(int);
 int count_bits_long(ulong);
+int highest_bit_long(ulong);
 void buf_init(void);
 void sym_buf_init(void);
 void free_all_bufs(void);
@@ -3320,6 +3327,7 @@ void datatype_init(void);
 struct syment *symbol_search(char *);
 struct syment *value_search(ulong, ulong *);
 struct syment *value_search_base_kernel(ulong, ulong *);
+ulong highest_bss_symbol(void);
 int in_ksymbol_range(ulong);
 int module_symbol(ulong, struct syment **, 
 	struct load_module **, char *, ulong);
@@ -3358,6 +3366,7 @@ void dump_struct_table(ulong);
 void dump_offset_table(char *, ulong);
 int is_elf_file(char *);
 int is_kernel(char *);
+int is_shared_object(char *);
 int file_elf_version(char *);
 int is_system_map(char *);
 int select_namelist(char *);
@@ -3639,6 +3648,7 @@ void register_extension(struct command_table_entry *);
 void dump_extension_table(int);
 void load_extension(char *);
 void unload_extension(char *);
+void preload_extensions(void);
 /* Hooks for sial */
 unsigned long get_curtask(void);
 char *crash_global_cmd(void);
@@ -3671,6 +3681,7 @@ struct stack_hook *gather_text_list(struct bt_info *);
 int get_cpus_online(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
+int get_highest_cpu_online(void);
 int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
@@ -3721,6 +3732,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_TEXT_SYMBOLS_ALL  (0x4000000000ULL)     
 #define BT_XEN_STOP_THIS_CPU (0x8000000000ULL)
 #define BT_THREAD_GROUP     (0x10000000000ULL)
+#define BT_SAVE_EFRAME_IP   (0x20000000000ULL)
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)
@@ -3877,6 +3889,7 @@ struct machine_specific {
 	struct x86_64_stkinfo stkinfo;
 	ulong *current;
 	ulong *crash_nmi_rsp;
+	ulong vsyscall_page;
 };
 
 #define KSYMS_START    (0x1)
@@ -4207,6 +4220,31 @@ int xc_core_mfn_to_page_index(ulong);
 void xendump_panic_hook(char *);
 int read_xendump_hyper(int, void *, int, ulong, physaddr_t);
 struct xendump_data *get_xendump_data(void);
+
+/*
+ * kvmdump.c
+ */
+int is_kvmdump(char *);
+int kvmdump_init(char *, FILE *);
+int read_kvmdump(int, void *, int, ulong, physaddr_t);
+int write_kvmdump(int, void *, int, ulong, physaddr_t);
+int kvmdump_free_memory(void);
+int kvmdump_memory_used(void);
+int kvmdump_memory_dump(FILE *);
+void get_kvmdump_regs(struct bt_info *, ulong *, ulong *);
+ulong get_kvmdump_panic_task(void);
+int kvmdump_phys_base(unsigned long *);
+
+/*
+ * qemu.c
+ */
+int qemu_init(char *);
+
+/*
+ * qemu-load.c
+ */
+int is_qemu_vm_file(char *);
+void dump_qemu_header(FILE *);
 
 /*
  *  net.c

@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -64,7 +64,7 @@ INSTALLDIR=${DESTDIR}/usr/bin
 
 GENERIC_HFILES=defs.h xen_hyper_defs.h
 MCORE_HFILES=va_server.h vas_crash.h
-REDHAT_HFILES=netdump.h diskdump.h xendump.h
+REDHAT_HFILES=netdump.h diskdump.h xendump.h kvmdump.h qemu-load.h
 LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
         lkcd_dump_v7.h lkcd_dump_v8.h
 LKCD_OBSOLETE_HFILES=lkcd_fix_mem.h
@@ -81,7 +81,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c \
  	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
-	xen_hyper_dump_tables.c
+	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
@@ -97,7 +97,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o \
  	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
-	xen_hyper_dump_tables.o
+	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o
 
 # These are the current set of crash extensions sources.  They are not built
 # by default unless the third command line of the "all:" stanza is uncommented.
@@ -224,7 +224,7 @@ GDB_FLAGS=
 # TARGET_CFLAGS will be configured automatically by configure
 TARGET_CFLAGS=
 
-CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS}
+CRASH_CFLAGS=${CFLAGS} -g -D${TARGET} ${TARGET_CFLAGS}
 
 TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES}
@@ -287,7 +287,7 @@ clean:
 	@(cd extensions; make --no-print-directory -i clean)
 
 make_build_data: force
-	cc -c ${CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 install:
 	/usr/bin/install ${PROGRAM} ${INSTALLDIR}
@@ -309,150 +309,159 @@ nowarn: make_configure
 	@make --no-print-directory gdb_merge
 
 main.o: ${GENERIC_HFILES} main.c
-	cc -c ${CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
+	cc -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
 cmdline.o: ${GENERIC_HFILES} cmdline.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 tools.o: ${GENERIC_HFILES} tools.c
-	cc -c ${CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 global_data.o: ${GENERIC_HFILES} global_data.c
-	cc -c ${CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 symbols.o: ${GENERIC_HFILES} symbols.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 filesys.o: ${GENERIC_HFILES} filesys.c
-	cc -c ${CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 help.o: ${GENERIC_HFILES} help.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 memory.o: ${GENERIC_HFILES} memory.c
-	cc -c ${CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 test.o: ${GENERIC_HFILES} test.c
-	cc -c ${CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 task.o: ${GENERIC_HFILES} task.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 kernel.o: ${GENERIC_HFILES} kernel.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 gdb_interface.o: ${GENERIC_HFILES} gdb_interface.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server.o: ${MCORE_HFILES} va_server.c
-	cc -c ${CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server_v1.o: ${MCORE_HFILES} va_server_v1.c
-	cc -c ${CFLAGS} va_server_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} va_server_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_common.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_common.c
-	cc -c ${CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v1.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v1.c
-	cc -c ${CFLAGS} -DMCLX lkcd_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v2_v3.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v2_v3.c
-	cc -c ${CFLAGS} -DMCLX lkcd_v2_v3.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v2_v3.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v5.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v5.c
-	cc -c ${CFLAGS} -DMCLX lkcd_v5.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v5.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v7.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v7.c
-	cc -c ${CFLAGS} -DMCLX lkcd_v7.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v7.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v8.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v8.c
-	cc -c ${CFLAGS} -DMCLX lkcd_v8.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v8.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 net.o: ${GENERIC_HFILES} net.c
-	cc -c ${CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 dev.o: ${GENERIC_HFILES} dev.c
-	cc -c ${CFLAGS} dev.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} dev.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 # remote.c functionality has been deprecated
 remote.o: ${GENERIC_HFILES} remote.c
-	@cc -c ${CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	@cc -c ${CRASH_CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 remote_daemon.o: ${GENERIC_HFILES} remote.c
-	cc -c ${CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 x86.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86.c
-	cc -c ${CFLAGS} -DMCLX x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 alpha.o: ${GENERIC_HFILES} alpha.c
-	cc -c ${CFLAGS} ${GDB_FLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc.o: ${GENERIC_HFILES} ppc.c
-	cc -c ${CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ia64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ia64.c
-	cc -c ${CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc64.o: ${GENERIC_HFILES} ppc64.c
-	cc -c ${CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 x86_64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86_64.c
-	cc -c ${CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
-	cc -c ${CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390x.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x.c
-	cc -c ${CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390dbf.o: ${GENERIC_HFILES} ${IBM_HFILES} s390dbf.c
-	cc -c ${CFLAGS} s390dbf.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} s390dbf.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390_dump.c
-	cc -c ${CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 netdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
-	cc -c ${CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
-	cc -c ${CFLAGS} -DDAEMON netdump.c -o netdump_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DDAEMON netdump.c -o netdump_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 diskdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} diskdump.c
-	cc -c ${CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xendump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} xendump.c
-	cc -c ${CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+kvmdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} kvmdump.c
+	cc -c ${CRASH_CFLAGS} kvmdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+qemu.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu.c
+	cc -c ${CRASH_CFLAGS} qemu.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+qemu-load.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu-load.c
+	cc -c ${CRASH_CFLAGS} qemu-load.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 extensions.o: ${GENERIC_HFILES} extensions.c
-	cc -c ${CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c 
-	cc -c ${CFLAGS} -DREDHAT lkcd_x86_trace.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DREDHAT lkcd_x86_trace.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_x86_32_64.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_x86_32_64.c
-	cc -c ${CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V1 unwind.c -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V1 unwind.c -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v2.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V2 unwind.c -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V2 unwind.c -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V3 unwind.c -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V3 unwind.c -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
-	cc -c ${CFLAGS} -DMCLX lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper.o: ${GENERIC_HFILES} xen_hyper.c
-	cc -c ${CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_command.o: ${GENERIC_HFILES} xen_hyper_command.c
-	cc -c ${CFLAGS} xen_hyper_command.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} xen_hyper_command.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_global_data.o: ${GENERIC_HFILES} xen_hyper_global_data.c
-	cc -c ${CFLAGS} xen_hyper_global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} xen_hyper_global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_dump_tables.o: ${GENERIC_HFILES} xen_hyper_dump_tables.c
-	cc -c ${CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ${PROGRAM}: force
 	@make --no-print-directory all
@@ -497,14 +506,8 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-# To create a base tar file for Red Hat RPM packaging, pass the base RPM
-# version number without the release number, as in: "make release RPMPKG=x.y".
-# This will cause the local src.rpm creation to fail below (as it should).
-# However, when the package is created by the Red Hat build procedure, its 
-# spec file will have its own release number, which will in turn get passed 
-# to the "all" target upon the initial build.
-
-RELEASE=4.0-8.11
+VERSION=4.0.9
+RELEASE=0
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
@@ -521,34 +524,34 @@ release_configure: make_configure
 	@make --no-print-directory do_release
 
 do_release:
-	@echo "RELEASE: ${RELEASE}  GDB VERSION: ${GDB}"
+	@echo "CRASH VERSION: ${VERSION}  GDB VERSION: ${GDB}"
 	@if [ ! -f .rh_rpm_package  ]; then \
 		echo "no .rh_rpm_package exists!"; exit 1; fi
 	@chmod 666 .rh_rpm_package
-	@rm -rf ./RELDIR; mkdir ./RELDIR; mkdir ./RELDIR/${PROGRAM}-${RELEASE}
-	@rm -f ${PROGRAM}-${RELEASE}.tar.gz 
-	@rm -f ${PROGRAM}-${RELEASE}.src.rpm
-	@chown root ./RELDIR/${PROGRAM}-${RELEASE}
+	@rm -rf ./RELDIR; mkdir ./RELDIR; mkdir ./RELDIR/${PROGRAM}-${VERSION}
+	@rm -f ${PROGRAM}-${VERSION}.tar.gz 
+	@rm -f ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm
+	@chown root ./RELDIR/${PROGRAM}-${VERSION}
 	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING \
-	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${RELEASE}; tar xf -)
-	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${RELEASE}
-	@./${PROGRAM} --no_scroll --no_crashrc -h README > ./RELDIR/${PROGRAM}-${RELEASE}/README
+	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${VERSION}; tar xf -)
+	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${VERSION}
+	@./${PROGRAM} --no_scroll --no_crashrc -h README > ./RELDIR/${PROGRAM}-${VERSION}/README
 	@(cd ./RELDIR; find . -exec chown root {} ";")
 	@(cd ./RELDIR; find . -exec chgrp root {} ";")
 	@(cd ./RELDIR; find . -exec touch {} ";")
 	@(cd ./RELDIR; \
-		tar czvf ../${PROGRAM}-${RELEASE}.tar.gz ${PROGRAM}-${RELEASE})
-	@chgrp root ${PROGRAM}-${RELEASE}.tar.gz
+		tar czvf ../${PROGRAM}-${VERSION}.tar.gz ${PROGRAM}-${VERSION})
+	@chgrp root ${PROGRAM}-${VERSION}.tar.gz
 	@rm -rf ./RELDIR
 	@echo
-	@ls -l ${PROGRAM}-${RELEASE}.tar.gz
+	@ls -l ${PROGRAM}-${VERSION}.tar.gz
 	@./configure -s -u > ${PROGRAM}.spec
 	@if [ -s ${PROGRAM}.spec ]; then \
-	  cp ${PROGRAM}-${RELEASE}.tar.gz /usr/src/redhat/SOURCES; \
+	  cp ${PROGRAM}-${VERSION}.tar.gz /usr/src/redhat/SOURCES; \
 	  /usr/bin/rpmbuild -bs ${PROGRAM}.spec > /dev/null; \
-	  rm -f /usr/src/redhat/SOURCES/${PROGRAM}-${RELEASE}.tar.gz; \
-	  mv /usr/src/redhat/SRPMS/${PROGRAM}-${RELEASE}.src.rpm . ; \
-	  ls -l ${PROGRAM}-${RELEASE}.src.rpm; \
+	  rm -f /usr/src/redhat/SOURCES/${PROGRAM}-${VERSION}.tar.gz; \
+	  mv /usr/src/redhat/SRPMS/${PROGRAM}-${VERSION}-${RELEASE}.src.rpm . ; \
+	  ls -l ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm; \
 	exit 0; fi
 
 ref:

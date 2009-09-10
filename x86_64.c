@@ -30,6 +30,8 @@ static int x86_64_verify_symbol(const char *, ulong, char);
 static ulong x86_64_get_task_pgd(ulong);
 static int x86_64_translate_pte(ulong, void *, ulonglong);
 static ulong x86_64_processor_speed(void);
+static int is_vsyscall_addr(ulong);
+struct syment *x86_64_value_to_symbol(ulong, ulong *);
 static int x86_64_eframe_search(struct bt_info *);
 static int x86_64_eframe_verify(struct bt_info *, long, long, long, long, long, long);
 static long x86_64_exception_frame(ulong,ulong,char *,struct bt_info *, FILE *);
@@ -90,7 +92,7 @@ static void x86_64_init_hyper(int);
 static ulong x86_64_get_stackbase_hyper(ulong);
 static ulong x86_64_get_stacktop_hyper(ulong);
 static int x86_64_framesize_cache_resize(void);
-static int x86_64_framesize_cache_func(int, ulong, int *);
+static int x86_64_framesize_cache_func(int, ulong, int *, int);
 static int x86_64_get_framesize(struct bt_info *, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
 static void x86_64_get_active_set(void);
@@ -244,13 +246,16 @@ x86_64_init(int when)
 		machdep->cmd_mach = x86_64_cmd_mach;
 		machdep->get_smp_cpus = x86_64_get_smp_cpus;
 		machdep->line_number_hooks = x86_64_line_number_hooks;
-		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+		machdep->value_to_symbol = x86_64_value_to_symbol;
 		machdep->init_kernel_pgd = x86_64_init_kernel_pgd;
 		machdep->clear_machdep_cache = x86_64_clear_machdep_cache;
 		machdep->xendump_p2m_create = x86_64_xendump_p2m_create;
 		machdep->get_xendump_regs = x86_64_get_xendump_regs;
 		machdep->xen_kdump_p2m_create = x86_64_xen_kdump_p2m_create;
 		machdep->xendump_panic_task = x86_64_xendump_panic_task;
+		if (symbol_exists("vgettimeofday"))
+			machdep->machspec->vsyscall_page = 
+				PAGEBASE(symbol_value("vgettimeofday"));
 		x86_64_calc_phys_base();
 		break;
 
@@ -493,7 +498,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, " xendump_panic_task: x86_64_xendump_panic_task()\n");
 	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
         fprintf(fp, "  line_number_hooks: x86_64_line_number_hooks\n");
-        fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+        fprintf(fp, "    value_to_symbol: x86_64_value_to_symbol()\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
@@ -583,6 +588,7 @@ x86_64_dump_machdep_table(ulong arg)
 	}
 	if (ms->crash_nmi_rsp)
 		fprintf(fp, "\n");
+	fprintf(fp, "            vsyscall_page: %lx\n", ms->vsyscall_page); 
 
 	fprintf(fp, "                  stkinfo: esize: %d%sisize: %d\n", 
 		ms->stkinfo.esize, 
@@ -805,7 +811,7 @@ x86_64_per_cpu_init(void)
 		kt->flags |= SMP;
 
 	if ((i = get_cpus_online()) && (i < cpus))
-		kt->cpus = i;
+		kt->cpus = get_highest_cpu_online() + 1;
 	else
 		kt->cpus = cpus;
 
@@ -1048,7 +1054,10 @@ x86_64_is_module_addr(ulong vaddr)
 static int 
 x86_64_is_kvaddr(ulong addr)
 {
-        return (addr >= PAGE_OFFSET); 
+	if (machdep->flags & VM_XEN_RHEL4)
+		return (addr >= VMALLOC_START);
+	else
+        	return (addr >= PAGE_OFFSET); 
 }
 
 static int 
@@ -2243,6 +2252,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	char buf[BUFSIZE];
 
 	eframe_check = -1;
+	if (!(bt->flags & BT_SAVE_EFRAME_IP))
+		bt->eframe_ip = 0;
 	offset = 0;
 	sp = value_search(text, &offset);
 	if (!sp)
@@ -2556,6 +2567,9 @@ in_exception_stack:
                         	bt->stackbuf + (irq_eframe - bt->stackbase), 
 				bt, ofp);
                         rsp += SIZE(pt_regs);  /* guaranteed kernel mode */
+			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
+			    bt->eframe_ip)) >= 0))
+				rsp += framesize;
                         level++;
                         irq_eframe = 0;
                 }
@@ -2579,7 +2593,8 @@ in_exception_stack:
 				i += SIZE(pt_regs)/sizeof(ulong);
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
-				if ((framesize = x86_64_get_framesize(bt, *up)) >= 0) {
+				if ((framesize = x86_64_get_framesize(bt, 
+				    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
 					rsp += framesize;
 					i += framesize/sizeof(ulong);
 				}
@@ -2617,10 +2632,11 @@ in_exception_stack:
 		 *  Print the return values from the estack end.
 		 */
 		if (!done) {
-                	bt->flags |= BT_START;
-                	x86_64_print_stack_entry(bt, ofp, level,
-                        	0, bt->instptr);
-                	bt->flags &= ~(BT_START|BT_FRAMESIZE_DISABLE);
+			bt->flags |= BT_START|BT_SAVE_EFRAME_IP;
+			x86_64_print_stack_entry(bt, ofp, level,
+				0, bt->instptr);
+			bt->flags &= 
+			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
 			level++;
 			if ((framesize = x86_64_get_framesize(bt, bt->instptr)) >= 0)
 				rsp += framesize;
@@ -2669,7 +2685,8 @@ in_exception_stack:
 				i += SIZE(pt_regs)/sizeof(ulong);
                         case BACKTRACE_ENTRY_DISPLAYED:
                                 level++;
-				if ((framesize = x86_64_get_framesize(bt, *up)) >= 0) {
+				if ((framesize = x86_64_get_framesize(bt, 
+				    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
 					rsp += framesize;
 					i += framesize/sizeof(ulong);
 				}
@@ -2779,6 +2796,9 @@ in_exception_stack:
 				level++;
 			rsp += SIZE(pt_regs);
 			irq_eframe = 0;
+			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
+			    bt->eframe_ip)) >= 0))
+				rsp += framesize;
 		}
 		level++;
         }
@@ -2856,7 +2876,8 @@ in_exception_stack:
 			i += SIZE(pt_regs)/sizeof(ulong);
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
-			if ((framesize = x86_64_get_framesize(bt, *up)) >= 0) {
+			if ((framesize = x86_64_get_framesize(bt, 
+			    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
 				rsp += framesize;
 				i += framesize/sizeof(ulong);
 			}
@@ -3449,6 +3470,7 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
                 		if (offset)
                         		fprintf(ofp, (output_radix == 16) ? 
 						"+0x%lx" : "+%ld", offset);
+				bt->eframe_ip = rip;
 			} else
                 		fprintf(ofp, "unknown or invalid address");
 			fprintf(ofp, "]\n");
@@ -3548,6 +3570,33 @@ x86_64_print_eframe_location(ulong eframe, int level, FILE *ofp)
 }
 
 /*
+ *  Check whether an RIP is in the FIXMAP vsyscall page.
+ */
+static int
+is_vsyscall_addr(ulong rip)
+{
+	ulong page;
+
+	if ((page = machdep->machspec->vsyscall_page))
+		if ((rip >= page) && (rip < (page+PAGESIZE())))
+			return TRUE;
+
+	return FALSE;
+}
+
+struct syment *
+x86_64_value_to_symbol(ulong vaddr, ulong *offset)
+{
+	struct syment *sp;
+
+	if (is_vsyscall_addr(vaddr) && 
+	    (sp = value_search_base_kernel(vaddr, offset))) 
+		return sp;
+
+	return generic_machdep_value_to_symbol(vaddr, offset);
+}
+
+/*
  *  Check that the verifiable registers contain reasonable data.
  */
 #define RAZ_MASK 0xffffffffffc08028    /* return-as-zero bits */
@@ -3589,6 +3638,8 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 
         if ((cs == 0x33) && (ss == 0x2b)) {
                 if (IS_UVADDR(rip, bt->tc) && IS_UVADDR(rsp, bt->tc))
+                        return TRUE;
+                if (is_vsyscall_addr(rip) && IS_UVADDR(rsp, bt->tc))
                         return TRUE;
         }
 
@@ -3647,6 +3698,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	ulong ur_rip, ur_rsp;
 	ulong halt_rip, halt_rsp;
 	ulong crash_kexec_rip, crash_kexec_rsp;
+	ulong call_function_rip, call_function_rsp;
 
         bt = &bt_local;
         BCOPY(bt_in, bt, sizeof(struct bt_info));
@@ -3654,6 +3706,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	ur_rip = ur_rsp = 0;
 	halt_rip = halt_rsp = 0;
 	crash_kexec_rip = crash_kexec_rsp = 0;
+	call_function_rip = call_function_rsp = 0;
 	stage = 0;
 	estack = -1;
 
@@ -3780,9 +3833,9 @@ next_sysrq:
 
                 if (!panic_task && (stage > 0) && 
 		    STREQ(sym, "smp_call_function_interrupt")) {
-                        *rip = *up;
-                        *rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
-			return;
+			call_function_rip = *up;
+			call_function_rsp = bt->stackbase + 
+				((char *)(up) - bt->stackbuf);
                 }
 
                 if (!panic_task && STREQ(sym, "crash_nmi_callback")) {
@@ -3862,6 +3915,12 @@ skip_stage:
 	if (ur_rip && ur_rsp) {
         	*rip = ur_rip;
 		*rsp = ur_rsp;
+		return;
+	}
+
+	if (call_function_rip && call_function_rsp) {
+		*rip = call_function_rip;
+		*rsp = call_function_rsp;
 		return;
 	}
 
@@ -4143,7 +4202,7 @@ x86_64_get_smp_cpus(void)
 		}
 
 		if ((i = get_cpus_online()) && (i < cpus))
-			cpus = i;
+			cpus = get_highest_cpu_online() + 1;
 
 		return cpus;
 	}
@@ -4995,6 +5054,16 @@ x86_64_calc_phys_base(void)
 		return;
 	}
 
+	if (KVMDUMP_DUMPFILE()) {
+		if (kvmdump_phys_base(&phys_base)) {
+			machdep->machspec->phys_base = phys_base;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "kvmdump: phys_base: %lx\n",
+					phys_base);
+		}
+		return;
+	}
+
 	if ((vd = get_kdump_vmcore_data())) {
                 for (i = 0; i < vd->num_pt_load_segments; i++) {
 			phdr = vd->load64 + i;
@@ -5812,6 +5881,7 @@ x86_64_init_hyper(int when)
 struct framesize_cache {
         ulong textaddr;
         int framesize;
+	int exception;
 };
 
 static struct framesize_cache *x86_64_framesize_cache = NULL;
@@ -5842,6 +5912,7 @@ x86_64_framesize_cache_resize(void)
 	     fc++, i++) {
 		fc->textaddr = 0;
 		fc->framesize = 0;
+		fc->exception = 0;
 	} 	
 
 	x86_64_framesize_cache = new_fc;
@@ -5851,9 +5922,9 @@ x86_64_framesize_cache_resize(void)
 }
 
 static int
-x86_64_framesize_cache_func(int cmd, ulong textaddr, int *framesize)
+x86_64_framesize_cache_func(int cmd, ulong textaddr, int *framesize, int exception)
 {
-	int i;
+	int i, n;
 	struct framesize_cache *fc;
 	char buf[BUFSIZE];
 
@@ -5871,6 +5942,8 @@ x86_64_framesize_cache_func(int cmd, ulong textaddr, int *framesize)
 		fc = &x86_64_framesize_cache[0];
 		for (i = 0; i < framesize_cache_entries; i++, fc++) {
 			if (fc->textaddr == textaddr) {
+				if (fc->exception != exception)
+					return FALSE;
 				*framesize = fc->framesize;
 				return TRUE;
 			}
@@ -5883,8 +5956,19 @@ retry:
 		for (i = 0; i < framesize_cache_entries; i++, fc++) {
 			if ((fc->textaddr == 0) ||
 			    (fc->textaddr == textaddr)) {
+				if (*framesize == -1) {
+					fc->textaddr = 0;
+					fc->framesize = 0;
+					fc->exception = 0;
+					for (n = i+1; n < framesize_cache_entries; 
+					    i++, n++)
+						x86_64_framesize_cache[i] = 
+							x86_64_framesize_cache[n];
+					return 0;
+				}
 				fc->textaddr = textaddr;
 				fc->framesize = *framesize;
+				fc->exception = exception;
 				return fc->framesize;
 			}
 		}
@@ -5905,8 +5989,9 @@ retry:
 				break;
 			}
 
-			fprintf(fp, "[%3d]: %lx %3d (%s)\n", i,
+			fprintf(fp, "[%3d]: %lx %3d %s (%s)\n", i,
 				fc->textaddr, fc->framesize,
+				fc->exception ? "EX" : "CF",
 				value_to_symstr(fc->textaddr, buf, 0));
 		}
 		break;
@@ -5931,6 +6016,8 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 	ulong locking_func, textaddr_save, current;
 	char *p1, *p2;
 	int reterror;
+	int arg_exists;
+	int exception;
 
 	if (!(bt->flags & BT_FRAMESIZE_DEBUG)) {
 		if ((bt->flags & BT_FRAMESIZE_IGNORE_MASK) ||
@@ -5944,8 +6031,11 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
                 return 0;
 	}
 
+	exception = bt->eframe_ip == textaddr ? TRUE : FALSE;
+
 	if (!(bt->flags & BT_FRAMESIZE_DEBUG) &&
-	    x86_64_framesize_cache_func(FRAMESIZE_QUERY, textaddr, &framesize)) {
+	    x86_64_framesize_cache_func(FRAMESIZE_QUERY, textaddr, &framesize,
+		exception)) {
 		if (framesize == -1)
 			bt->flags |= BT_FRAMESIZE_DISABLE;
 		return framesize; 
@@ -6004,15 +6094,22 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			}
 		}
 
-		if (c < (arg+1))
+		if (c < (instr+1))
 			continue;
+		else if (c >= (arg+1))
+			arg_exists = TRUE;
+		else
+			arg_exists = FALSE;
 
 		reterror = 0;
 		current =  htol(strip_ending_char(arglist[0], ':'), 
 			RETURN_ON_ERROR, &reterror);
 		if (reterror)
 			continue;
-		if (current >= textaddr)
+
+		if (current > textaddr)
+			break;
+		else if ((current == textaddr) && !exception)
 			break;
 
 		if (STRNEQ(arglist[instr], "push")) {
@@ -6025,7 +6122,7 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
 				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
-		} else if (STRNEQ(arglist[instr], "add") && 
+		} else if (arg_exists && STRNEQ(arglist[instr], "add") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
 			*p1 = NULLCHAR;
 			p2 = arglist[arg];
@@ -6037,7 +6134,7 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
 				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
-		} else if (STRNEQ(arglist[instr], "sub") && 
+		} else if (arg_exists && STRNEQ(arglist[instr], "sub") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
 			*p1 = NULLCHAR;
 			p2 = arglist[arg];
@@ -6049,45 +6146,44 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
 				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
-		} else if (STRNEQ(arglist[instr], "retq")) {
+		} else if (STRNEQ(arglist[instr], "retq_NOT_CHECKED")) {
 			bt->flags |= BT_FRAMESIZE_DISABLE;
 			framesize = -1;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
 				fprintf(pc->saved_fp, "%s\t[framesize: DISABLED]\n", 
 					strip_linefeeds(buf2));
 			break;
-		}
+		} 
         }
         close_tmpfile2();
 
 	if (textaddr_save)
 		textaddr = textaddr_save;
 
-	return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, &framesize));
+	return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
+		&framesize, exception));
 }
 
 static void 
 x86_64_framesize_debug(struct bt_info *bt)
 {
 	int framesize;
+	int exception;
+
+	exception = (bt->flags & BT_EFRAME_SEARCH);
 
 	switch (bt->hp->esp) 
 	{
 	case 1: /* "dump" */
-		if (bt->hp->eip) {
-			framesize = 1;
-			x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
-				&framesize);
-		} else
-			x86_64_framesize_cache_func(FRAMESIZE_DUMP, 0, NULL);
+		x86_64_framesize_cache_func(FRAMESIZE_DUMP, 0, NULL, 0);
 		break;
 
 	case 0:
-		if (bt->hp->eip) {
-			framesize = 0;
+		if (bt->hp->eip) {  /* clear one entry */
+			framesize = -1;
 			x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
-				&framesize);
-		} else  /* "clear" */
+				&framesize, exception);
+		} else  /* clear all entries */
 			BZERO(&x86_64_framesize_cache[0], 
 			    sizeof(struct framesize_cache)*framesize_cache_entries);
 		break;
@@ -6104,7 +6200,7 @@ x86_64_framesize_debug(struct bt_info *bt)
 			framesize = bt->hp->esp;
 			if (bt->hp->eip)
 				x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
-					&framesize);
+					&framesize, exception);
 		} else
 			error(INFO, "x86_64_framesize_debug: ignoring command\n");
 		break;

@@ -399,10 +399,10 @@ err:
 	return FALSE;
 }
 
-static int
+static ulong
 pfn_to_pos(ulong pfn)
 {
-	int desc_pos, j, valid;
+	ulong desc_pos, j, valid;
 	ulong p1, p2;
 
 	if (KDUMP_SPLIT()) {
@@ -530,7 +530,7 @@ cache_page(physaddr_t paddr)
 	int i, ret;
 	int found;
 	ulong pfn;
-	int desc_pos;
+	ulong desc_pos;
 	off_t seek_offset;
 	page_desc_t pd;
 	const int block_size = dd->block_size;

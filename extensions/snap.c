@@ -687,6 +687,15 @@ verify_paddr(physaddr_t paddr)
 		}
 	}
 
+	/*
+	 *  Pre-2.6.13 x86_64 /proc/iomem was restricted to 4GB,
+	 *  so just accept it.
+	 */
+	if ((paddr >= 0x100000000ULL) &&
+	    machine_type("X86_64") &&
+	    (THIS_KERNEL_VERSION < LINUX(2,6,13)))
+		ok++;
+
 	if (!ok) {
 		if (CRASHDEBUG(1))
 			console("reject: %llx\n", (ulonglong)paddr);
