@@ -61,7 +61,7 @@ static int check_gnu_debuglink(bfd *);
 static int separate_debug_file_exists(const char *, unsigned long, int *);
 static int store_module_kallsyms_v1(struct load_module *, int, int, char *);
 static int store_module_kallsyms_v2(struct load_module *, int, int, char *);
-static void datatype_error(ulong *, char *, char *, char *, int);
+static void datatype_error(void **, char *, char *, char *, int);
 static char *get_thisfile(void);
 struct elf_common;
 static void Elf32_Sym_to_common(Elf32_Sym *, struct elf_common *); 
@@ -1019,7 +1019,7 @@ store_module_symbols_v1(ulong total, int mods_installed)
 
 	modbuf = GETBUF(SIZE(module));
 	modsymbuf = NULL;
-	m = mcnt = 0;
+	m = mcnt = mod_next = 0;
 
         for (mod = kt->module_list; mod != kt->kernel_module; mod = mod_next) {
 
@@ -1269,7 +1269,7 @@ store_module_symbols_v2(ulong total, int mods_installed)
 
 	modbuf = GETBUF(SIZE(module));
 	modsymbuf = NULL;
-	m = mcnt = 0;
+	m = mcnt = mod_next = 0;
 
         for (mod = kt->module_list; mod != kt->kernel_module; mod = mod_next) {
 
@@ -1738,6 +1738,7 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 		return 0;
 
 	mcnt = 0;
+	BZERO(&elf_common, sizeof(struct elf_common));
 	mcnt_idx = curr;
         ns = &st->ext_module_namespace;
 	ec = &elf_common;
@@ -2139,6 +2140,8 @@ is_kernel_text(ulong value)
         struct load_module *lm;
 	ulong start, end;
 	struct syment *sp;
+
+	start = 0;
 
 	if (pc->flags & SYSMAP) {
 		sp = st->symtable;
@@ -2689,7 +2692,7 @@ is_shared_object(char *file)
 		switch (swap16(elf32->e_machine, swap))
 		{
 		case EM_386:
-			if (machine_type("x86"))
+			if (machine_type("X86"))
 				return TRUE;
 			break;
 
@@ -2721,6 +2724,11 @@ is_shared_object(char *file)
 
 		case EM_X86_64:
 			if (machine_type("X86_64")) 
+				return TRUE;
+			break;
+
+		case EM_S390:
+			if (machine_type("S390X"))
 				return TRUE;
 			break;
 		}
@@ -3090,10 +3098,16 @@ get_line_number(ulong addr, char *buf, int strip_usr_src)
 	struct gnu_request request, *req;
 	struct line_number_hook *lnh;
 	char bldbuf[BUFSIZE], *name;
+	struct load_module *lm;
 
 	buf[0] = NULLCHAR;
 	if (!is_kernel_text(addr) || GDB_PATCHED()) 
 		return(buf);
+
+	if (module_symbol(addr, NULL, &lm, NULL, 0)) {
+		if (!(lm->mod_flags & MOD_LOAD_SYMS))
+			return(buf);
+	}
 
 	if ((lnh = machdep->line_number_hooks)) {
         	name = closest_symbol(addr);
@@ -4120,6 +4134,10 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 		gdb_interface(req);
 	}
 
+	member_typecode = TYPE_CODE_UNDEF;
+	member_size = 0;
+	type_found = 0;
+
 	if (CRASHDEBUG(2)) {
 		if (req->typecode) {
 			console("name: %s ", req->name);
@@ -4326,6 +4344,8 @@ dump_struct(char *s, ulong addr, unsigned radix)
 	unsigned restore_radix;
 	long len;
 
+	restore_radix = 0;
+
 	if ((len = STRUCT_SIZE(s)) < 0)
 		error(FATAL, "invalid structure name: %s\n", s);
 
@@ -4354,6 +4374,7 @@ dump_struct_member(char *s, ulong addr, unsigned radix)
         unsigned restore_radix;
 	char *buf, *p1;
 
+	restore_radix = 0;
 	buf = GETBUF(strlen(s)+1);
 	strcpy(buf, s);
 
@@ -4403,6 +4424,8 @@ dump_union(char *s, ulong addr, unsigned radix)
 {
 	unsigned restore_radix;
         long len;
+
+	restore_radix = 0;
 
         if ((len = UNION_SIZE(s)) < 0)
                 error(FATAL, "invalid union name: %s\n", s);
@@ -4480,9 +4503,10 @@ cmd_datatype_common(ulong flags)
         dm = &datatype_member;
 	count = 0xdeadbeef;
 	rawdata = 0;
-	aflag = 0;
+	aflag = addr = 0;
         list_head_offset = 0;
         argc_members = 0;
+	separator = members = NULL;
 
         while ((c = getopt(argcnt, args, "fuc:rvol:")) != EOF) {
                 switch (c)
@@ -4796,6 +4820,7 @@ arg_to_datatype(char *s, struct datatype_member *dm, ulong flags)
 	int both;
 	
 	BZERO(dm, sizeof(struct datatype_member));
+	both = FALSE;
 
 	dm->name = s;
 
@@ -5312,6 +5337,7 @@ is_datatype_command(void)
 				case INT32: rdarg = "-32"; break;
 				case INT16: rdarg = "-16"; break;
 				case  INT8: rdarg =  "-8"; break;
+				default:    rdarg = NULL; break;
 				}
 
 				if (args[1]) {
@@ -5654,9 +5680,11 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		return FALSE;
 	}
 
-	if (STRNEQ(inbuf, "        "))
-		goto do_empty_offset;
 
+	if (STRNEQ(inbuf, "        ")) {
+		end_of_block = FALSE;
+		goto do_empty_offset;
+	}
 	if (STRNEQ(inbuf, "    union {")) 
 		dm->flags |= IN_UNION;
 	if (STRNEQ(inbuf, "    struct {")) 
@@ -6014,6 +6042,7 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	data_debug = pc->flags & DATADEBUG;
 	pc->flags &= ~DATADEBUG;
+	uts = NULL;
 
 	if (makestruct) {
         	uts = &kt->utsname;
@@ -6985,6 +7014,8 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "               zone_free_pages: %ld\n",
                 OFFSET(zone_free_pages));
+	fprintf(fp, "                zone_watermark: %ld\n",
+                OFFSET(zone_watermark));
 	fprintf(fp, "                zone_free_area: %ld\n",
                 OFFSET(zone_free_area));
 	fprintf(fp, "               zone_zone_pgdat: %ld\n",
@@ -7229,6 +7260,7 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
+	fprintf(fp, "                    page_flags: %ld\n", SIZE(page_flags));
         fprintf(fp, "              free_area_struct: %ld\n", 
 		SIZE(free_area_struct));
         fprintf(fp, "                     free_area: %ld\n", 
@@ -7817,6 +7849,8 @@ calculate_load_order_v1(struct load_module *lm, bfd *bfd)
 	ulong alignment;
 	ulong offset;
 
+	offset = 0;
+
 	switch (kt->flags & (KMOD_V1|KMOD_V2))
 	{
 	case KMOD_V1:
@@ -8269,7 +8303,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
         if ((store = bfd_make_empty_symbol(bfd)) == NULL)
                 error(FATAL, "bfd_make_empty_symbol() failed\n");
 
-	st->current = NULL;
+	st->current = lm = NULL;
 
 	/*
 	 *  Find out whether this module has already been loaded.  Coming
@@ -8277,7 +8311,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 	 *  a reusable symbol table, or NULL if it needs to be re-malloc'd.
 	 */
 
-	for (i = 0; i < st->mods_installed; i++) {
+	for (i = symalloc = 0; i < st->mods_installed; i++) {
 		lm = &st->load_modules[i];
 
                	if (lm->mod_base == base_addr) {
@@ -9130,7 +9164,7 @@ OFFSET_option(long offset1, long offset2, char *func, char *file, int line,
 		return offset2;
 
 	if (pc->flags & DATADEBUG) {
-        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		void *retaddr[NUMBER_STACKFRAMES] = { 0 };
 		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, 	
 		    "invalid (optional) structure member offsets: %s or %s",
@@ -9153,7 +9187,7 @@ SIZE_option(long size1, long size2, char *func, char *file, int line,
                 return size2;
 
         if (pc->flags & DATADEBUG) {
-        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		void *retaddr[NUMBER_STACKFRAMES] = { 0 };
 		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid (optional) structure sizes: %s or %s",
 			item1, item2);
@@ -9181,7 +9215,7 @@ OFFSET_verify(long offset, char *func, char *file, int line, char *item)
 		return offset;
 
 	if (offset < 0) {
-        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		void *retaddr[NUMBER_STACKFRAMES] = { 0 };
 		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid structure member offset: %s",
 			item);
@@ -9199,7 +9233,7 @@ SIZE_verify(long size, char *func, char *file, int line, char *item)
                 return size;
 
         if (size < 0) {
-        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		void *retaddr[NUMBER_STACKFRAMES] = { 0 };
 		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid structure size: %s", item);
                 datatype_error(retaddr, errmsg, func, file, line);
@@ -9211,7 +9245,7 @@ SIZE_verify(long size, char *func, char *file, int line, char *item)
  *  Perform the common datatype error handling.
  */
 static void
-datatype_error(ulong *retaddr, char *errmsg, char *func, char *file, int line)
+datatype_error(void **retaddr, char *errmsg, char *func, char *file, int line)
 {
 	char buf[BUFSIZE];
 	int fd;
@@ -9250,7 +9284,7 @@ datatype_error(ulong *retaddr, char *errmsg, char *func, char *file, int line)
  *  Dump a trace leading to the improper datatype usage.
  */
 void
-dump_trace(ulong *retaddr)
+dump_trace(void **retaddr)
 {
 	int i, c;
 	char *thisfile;
@@ -9273,7 +9307,7 @@ dump_trace(ulong *retaddr)
                 if (retaddr[i])
                         fprintf(stderr, "%s%lx%s",
                                 i == 3 ? "" : "=> ",
-                                retaddr[i],
+                                (ulong)retaddr[i],
                                 i == 0 ? "\n" : " ");
         }
 	fflush(stderr);
@@ -9288,8 +9322,10 @@ dump_trace(ulong *retaddr)
 	else
 		nm_call = "/usr/bin/nm -BSn %s";
 
+	last_size = 0;
+
         for (i = 0; i < NUMBER_STACKFRAMES; i++) {
-		if (!(lookfor = retaddr[i]))
+		if (!(lookfor = (ulong)retaddr[i]))
 			continue;
 
 		sprintf(buf, nm_call, thisfile);

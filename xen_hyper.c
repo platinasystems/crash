@@ -335,7 +335,8 @@ xen_hyper_x86_pcpu_init(void)
 			sp = ULONG(buf + XEN_HYPER_OFFSET(tss_struct_esp0));
 		} else if (machine_type("X86_64")) {
 			sp = ULONG(buf + XEN_HYPER_OFFSET(tss_struct_rsp0));
-		}
+		} else 
+			sp = 0;
 		cpu_info = XEN_HYPER_GET_CPU_INFO(sp);
 		if (CRASHDEBUG(1)) {
 			fprintf(fp, "sp=%lx, cpu_info=%lx\n", sp, cpu_info);
@@ -756,6 +757,7 @@ xen_hyper_dumpinfo_init(void)
 	}
 	nccp = xhdit->crash_note_core_array;
 	BZERO(nccp, size);
+	xccp = NULL;
 
 	/* allocate xen core */
 	if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V2) {

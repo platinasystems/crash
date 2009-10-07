@@ -436,6 +436,7 @@ setup_redirect(int origin)
 	int append;
 	int expression;
 	int string;
+	int ret;
 	FILE *pipe;
 	FILE *ofile;
 
@@ -445,7 +446,7 @@ setup_redirect(int origin)
 	p = pc->command_line;
 
         if (STREQ(p, "|") || STREQ(p, "!")) {
-        	system("/bin/sh");
+		ret = system("/bin/sh");
 		pc->redirect |= REDIRECT_SHELL_ESCAPE;
 		return REDIRECT_SHELL_ESCAPE;
 	}
@@ -684,8 +685,11 @@ output_open(void)
                		return FALSE;
 		break;
 
-	case (REDIRECT_TO_PIPE|FROM_COMMAND_LINE):
 	case (REDIRECT_TO_PIPE|FROM_INPUT_FILE):
+		if (pc->curcmd_flags & REPEAT)
+			break;
+		/* FALLTHROUGH */
+	case (REDIRECT_TO_PIPE|FROM_COMMAND_LINE):
 		switch (pc->redirect & (REDIRECT_MULTI_PIPE)) 
 		{
 		case REDIRECT_MULTI_PIPE:
@@ -1167,6 +1171,10 @@ received_SIGINT(void)
 	if (pc->flags & _SIGINT_) {
 		pc->flags &= ~_SIGINT_;
 		pc->sigint_cnt = 0;
+		if (pc->ifile_in_progress) {
+			pc->ifile_in_progress = 0;
+			pc->ifile_offset = 0;
+		}
 		return TRUE;
 	} else 
 		return FALSE;
@@ -1847,6 +1855,7 @@ cmd_repeat(void)
 	ulong delay;
 	char buf[BUFSIZE]; 
 	char bufsave[BUFSIZE];
+	FILE *incoming_fp;
 
 	if (argcnt == 1)
 		cmd_usage(pc->curcmd, SYNOPSIS);
@@ -1901,12 +1910,14 @@ cmd_repeat(void)
 		"scrolling must be turned off when repeating an input file\n");
 
 	pc->curcmd_flags |= REPEAT;
+	incoming_fp = fp;
 
 	while (TRUE) {
 		optind = 0;
-
+		fp = incoming_fp;
 		exec_command();
 		free_all_bufs();
+		wait_for_children(ZOMBIES_ONLY);
 
 		if (received_SIGINT() || !output_open())
 			break;
@@ -2042,6 +2053,8 @@ setup_stdpipe(void)
 		error(INFO, "fork system call failed: %s", strerror(errno));
 		return FALSE;
 	}
+
+	path = NULL;
 
 	if (pc->stdpipe_pid > 0) {               
 		pc->redirect |= REDIRECT_PID_KNOWN;

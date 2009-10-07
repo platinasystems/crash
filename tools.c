@@ -42,7 +42,7 @@ __error(int type, char *fmt, ...)
 	int end_of_line, new_line;
         char buf[BUFSIZE];
 	char *spacebuf;
-        ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+        void *retaddr[NUMBER_STACKFRAMES] = { 0 };
 	va_list ap;
 
 	if (CRASHDEBUG(1) || (pc->flags & DROP_CORE)) {
@@ -69,6 +69,8 @@ __error(int type, char *fmt, ...)
 
 	if (type == CONT)
 		spacebuf = space(strlen(pc->curcmd));
+	else
+		spacebuf = NULL;
 
 	if (pc->stdpipe) {
 		fprintf(pc->stdpipe, "%s%s%s %s%s", 
@@ -965,9 +967,10 @@ decimal(char *s, int count)
     	char *p;
 	int cnt;
 
-	if (!count)
+	if (!count) {
 		strip_line_end(s);
-	else
+		cnt = 0;
+	} else
 		cnt = count;
 
     	for (p = &s[0]; *p; p++) {
@@ -1013,7 +1016,7 @@ extract_hex(char *s, ulong *result, char stripchar, ulong first_instance)
 	strcpy(buf, s);
 	argc = parse_line(buf, arglist);
 
-	for (i = found = 0; i < argc; i++) {
+	for (i = found = value = 0; i < argc; i++) {
 		if (stripchar) 
 			strip_ending_char(arglist[i], stripchar);
 		
@@ -1069,9 +1072,10 @@ hexadecimal(char *s, int count)
     	char *p;
 	int cnt;
 
-	if (!count)
+	if (!count) {
 		strip_line_end(s);
-	else
+		cnt = 0;
+	} else
 		cnt = count;
 
 	for (p = &s[0]; *p; p++) {
@@ -1130,9 +1134,10 @@ hexadecimal_only(char *s, int count)
     	char *p;
 	int cnt, only;
 
-	if (!count)
+	if (!count) {
 		strip_line_end(s);
-	else
+		cnt = 0;
+	} else
 		cnt = count;
 
 	only = 0;

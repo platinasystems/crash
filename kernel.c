@@ -204,6 +204,10 @@ kernel_init()
 		rqstruct = "runqueue";
 	else if (STRUCT_EXISTS("rq"))
 		rqstruct = "rq";
+	else {
+		rqstruct = NULL;
+		error(FATAL, "neither runqueue nor rq structures exist\n");
+	}
 
 	MEMBER_OFFSET_INIT(runqueue_cpu, rqstruct, "cpu");
 	/*
@@ -1109,7 +1113,7 @@ cmd_dis(void)
 	ulong offset;
 	struct syment *sp;
 	struct gnu_request *req;
-	char *savename;
+	char *savename, *ret;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -1414,7 +1418,7 @@ cmd_dis(void)
                 	if (LASTCHAR(clean_line(buf2)) != ':') 
                         	break;
 
-        		fgets(buf2, BUFSIZE, pc->tmpfile);
+        		ret = fgets(buf2, BUFSIZE, pc->tmpfile);
 
                 	if (do_load_module_filter)
                         	load_module_filter(buf2, LM_DIS_FILTER);
@@ -1522,6 +1526,7 @@ BUG_x86(void)
 	sprintf(buf1, "x/%ldi 0x%lx", spn->value - sp->value, sp->value);
 
 	found = FALSE;
+	vaddr = 0;
 	open_tmpfile();
 	gdb_pass_through(buf1, pc->tmpfile, GNU_RETURN_ON_ERROR);
 	rewind(pc->tmpfile);
@@ -2575,6 +2580,7 @@ module_init(void)
 	STRUCT_SIZE_INIT(module, "module");
         MEMBER_OFFSET_INIT(module_name, "module", "name");
         MEMBER_OFFSET_INIT(module_syms, "module", "syms");
+	mod_next = nsyms = 0;
 
 	switch (kt->flags & (KMOD_V1|KMOD_V2))
 	{
@@ -2801,6 +2807,7 @@ verify_modules(void)
 	}
 
 	mods_installed = irregularities = 0;
+	mod_base = mod_next = 0;
         modbuf = GETBUF(SIZE(module));
 
         for (mod = module_list; mod != kt->kernel_module; mod = mod_next) {
@@ -3604,6 +3611,7 @@ dump_log(int msg_level)
 
 	buf = GETBUF(log_buf_len);
 	log_wrap = FALSE;
+	last = 0;
 	get_symbol_data("log_end", sizeof(ulong), &log_end);
         readmem(log_buf, KVADDR, buf,
         	log_buf_len, "log_buf contents", FAULT_ON_ERROR);
@@ -4155,6 +4163,7 @@ dump_kernel_table(int verbose)
         int others;
 
         others = 0;
+	more = FALSE;
         uts = &kt->utsname;
 
         fprintf(fp, "         flags: %lx\n  (", kt->flags);
@@ -4513,6 +4522,7 @@ generic_dump_irq(int irq)
 {
 	struct datatype_member datatype_member, *dm;
 	ulong irq_desc_addr;
+	ulong irq_desc_ptr;
 	long len;
 	char buf[BUFSIZE];
 	int status, depth, others;
@@ -4529,8 +4539,22 @@ generic_dump_irq(int irq)
 		irq_desc_addr = symbol_value("irq_desc") + (len * irq);
         else if (symbol_exists("_irq_desc"))
 		irq_desc_addr = symbol_value("_irq_desc") + (len * irq);
-	else
-		error(FATAL, "neither irq_desc nor _irq_desc symbols exist\n");
+	else if (symbol_exists("irq_desc_ptrs")) {
+		get_symbol_data("irq_desc_ptrs", sizeof(void *), &irq_desc_ptr);
+		irq_desc_ptr += (irq * sizeof(void *));
+		readmem(irq_desc_ptr, KVADDR, &irq_desc_addr,
+                        sizeof(void *), "irq_desc_ptrs entry",
+                        FAULT_ON_ERROR);
+		if (!irq_desc_addr) {
+			fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
+			return;
+		}
+	} else {
+		irq_desc_addr = 0;
+		error(FATAL, 
+		    "neither irq_desc, _irq_desc, nor irq_desc_ptrs "
+		    "symbols exist\n");
+	}
 
         readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, &status,
                 sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
@@ -4921,30 +4945,7 @@ do_linked_action:
                 readmem(action+OFFSET(irqaction_flags), KVADDR,
                         &value, sizeof(void *),
                         "irqaction flags", FAULT_ON_ERROR);
-                fprintf(fp, "            flags: %lx  ", value);
-                if (value) {
-                        others = 0;
-                        fprintf(fp, "(");
-				
-                        if (value & SA_INTERRUPT)
-                                fprintf(fp, "%sSA_INTERRUPT",
-                                                        others++ ? "|" : "");
-                        if (value & SA_PROBE)
-                                fprintf(fp, "%sSA_PROBE",
-                                                        others++ ? "|" : "");
-                        if (value & SA_SAMPLE_RANDOM)
-                                fprintf(fp, "%sSA_SAMPLE_RANDOM",
-                                                        others++ ? "|" : "");
-                        if (value & SA_SHIRQ)
-                                fprintf(fp, "%sSA_SHIRQ", others++ ? "|" : "");
-
-                        fprintf(fp, ")");
-                        if (value & ~ACTION_FLAGS) {
-                                fprintf(fp, "  (bits %lx not translated)",
-                                        	value & ~ACTION_FLAGS);
-                        }
-                }
-		fprintf(fp, "\n");
+                fprintf(fp, "            flags: %lx\n", value);
 
                 readmem(action+OFFSET(irqaction_mask), KVADDR,
                         &tmp1, sizeof(void *),
@@ -5724,9 +5725,9 @@ do_timer_list(ulong vec_kvaddr,
 	long sz;
 	ulong offset;
 
+	tdx = 0;
 	td = option ? (struct timer_data *)option : NULL;
 	if (td) {
-		tdx = 0;
 		while (td[tdx].function)
 			tdx++;
 	}

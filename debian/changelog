@@ -1,3 +1,43 @@
+crash (4.1.0-1) unstable; urgency=low
+
+  * New upstream version 4.1.0 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix s390x & x86 "extend" command regression created by the "crash -x"
+  option introduced in crash version 4.0.9.
+  - Clean up source to remove compiler warnings in Fedora
+  - Fix for "pte" command on s390 and s390x machines if the pte value argument
+  evaluates as not present
+  - Allow command redirection to pipes or files when using gdb commands alone
+  on the command line without preceding the command string with "gdb".
+  -  Fix for the processing of bit fields on big endian systems in the SIAL
+  extension module.
+  - Fix for "dis -l" to properly display line-number information for 2.6.21
+  and later x86_64 kernel module text addresses. 
+  - Fix to prevent querying the embedded gdb module for line numbers of kernel
+  module text addresses if the module's debuginfo data has not been loaded.
+  - Implemented a new "ps -G" option, which restricts the process status
+  output to show only the data of the thread group leader of a thread group. 
+  - Several fixes for the "repeat" command when used in conjunction with an
+  input file.
+  - Added "trace" to the extension
+  - Fix for a potential failure to initialize the kmem slab cache subsystem on
+  2.6.22 and later CONFIG_SLAB kernels if the dumpfile has pages excluded by
+  the makedumpfile facility.
+  - Fix for a potential session initialization failure on x86_64 kernels if
+  the dumpfile has pages excluded by the makedumpfile facility.
+  - Fix for "kmem -z" option on 2.6.29 and later kernels.
+  - Fix for "irq" command on 2.6.29 and later CONFIG_SPARSE_IRQ kernels.
+  - Fix for the "kmem -i" option on 2.6.31 kernels.
+  - Fix for the "kmem -i" option on 2.6.26 through 2.6.30 x86_64 kernels.
+  - Fix for "kmem -p" option on older 64-bit kernels that have a 32-bit
+  page.flags field.
+  -  Fix for "kmem -i" option on older kernels whose unreferenced page.count
+  value was -1 (instead of 0).
+  - Change the cursor location when cycling through the command history when
+  in "vi" editing mode (the default). 
+
+ -- Troy Heber <troyh@debian.org>  Wed, 07 Oct 2009 14:51:57 -0600
+
 crash (4.0.9-1) unstable; urgency=low
 
   * New upstream version 4.0.9 (see

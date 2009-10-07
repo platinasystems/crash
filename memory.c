@@ -87,6 +87,7 @@ static void kmem_search(struct meminfo *);
 static void kmem_cache_init(void);
 static void kmem_cache_init_slub(void);
 static ulong max_cpudata_limit(ulong, ulong *);
+static void kmem_cache_downsize(void);
 static int ignore_cache(struct meminfo *, char *);
 static char *is_kmem_cache_addr(ulong, char *);
 static char *is_kmem_cache_addr_slub(ulong, char *);
@@ -287,6 +288,7 @@ vm_init(void)
 	if (INVALID_MEMBER(page_count))
 		MEMBER_OFFSET_INIT(page_count, "page", "_count");
 	MEMBER_OFFSET_INIT(page_flags, "page", "flags");
+	MEMBER_SIZE_INIT(page_flags, "page", "flags");
         MEMBER_OFFSET_INIT(page_mapping, "page", "mapping");
 	if (INVALID_MEMBER(page_mapping))
 		ANON_MEMBER_OFFSET_INIT(page_mapping, "page", "mapping");
@@ -782,6 +784,8 @@ vm_init(void)
                                 "zone", "pages_low");
                         MEMBER_OFFSET_INIT(zone_pages_high,
                                 "zone", "pages_high");
+                        MEMBER_OFFSET_INIT(zone_watermark,
+                                "zone", "watermark");
                         MEMBER_OFFSET_INIT(zone_nr_active,
                                 "zone", "nr_active");
                         MEMBER_OFFSET_INIT(zone_nr_inactive,
@@ -884,6 +888,7 @@ cmd_rd(void)
 
 	flag = HEXADECIMAL|DISPLAY_DEFAULT;
 	endaddr = 0;
+	offset = 0;
 	memtype = KVADDR;
 	count = -1;
 
@@ -1134,6 +1139,9 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	case FILEADDR:
 		addrtype = "FILEADDR";
 		break;
+	default:
+		addrtype = NULL;
+		break;
 	}
 
 	if (CRASHDEBUG(4))
@@ -1142,6 +1150,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 
 	origaddr = addr;
 	BZERO(&mem, sizeof(struct memloc));
+	hx = linelen = typesz = per_line = ascii_start = 0;
+	location = NULL;
 
 	switch (flag & (DISPLAY_TYPES))
 	{
@@ -1395,6 +1405,8 @@ cmd_wr(void)
 		error(FATAL, "not allowed on dumpfiles\n");
 
 	memtype = 0;
+	buf = NULL;
+	addr = 0;
 	size = sizeof(void*);
 	addr_entered = value_entered = FALSE;
 
@@ -2432,7 +2444,7 @@ cmd_vtop(void)
 	ulong vtop_flags, loop_vtop_flags;
 	struct task_context *tc;
 
-	vtop_flags = 0;
+	vtop_flags = loop_vtop_flags = 0;
 	tc = NULL;
 
         while ((c = getopt(argcnt, args, "ukc:")) != EOF) {
@@ -2519,7 +2531,7 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
         struct meminfo meminfo;
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
-	int memtype;
+	int memtype = 0;
 
 	switch (vtop_flags & (UVADDR|KVADDR))
 	{
@@ -2553,7 +2565,7 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 		break;
         }
 
-	paddr = 0;
+	page_exists = paddr = 0;
 
 	switch (memtype) {
 	case UVADDR: 
@@ -3121,6 +3133,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		if (vm_file && !(flag & VERIFY_ADDR)) {
 			file_buf = fill_file_cache(vm_file);
 			dentry = ULONG(file_buf + OFFSET(file_f_dentry));
+			dentry_buf = NULL;
 			if (dentry) {
 				dentry_buf = fill_dentry_cache(dentry);
 				if (VALID_MEMBER(file_f_vfsmnt)) {
@@ -3848,6 +3861,7 @@ static void
 PG_reserved_flag_init(void)
 {
 	ulong pageptr;
+	int count;
 	ulong vaddr, flags;
 	char *buf;
 
@@ -3865,11 +3879,15 @@ PG_reserved_flag_init(void)
 	}
 
 	flags = ULONG(buf + OFFSET(page_flags));
+	count = INT(buf + OFFSET(page_count));
 
 	if (count_bits_long(flags) == 1)
 		vt->PG_reserved = flags;
 	else
-		vt->PG_reserved = 0;
+		vt->PG_reserved = 1 << (ffsl(flags)-1);
+
+	if (count == -1)
+		vt->flags |= PGCNT_ADJ;
 
 	if (CRASHDEBUG(2))
 		fprintf(fp, 
@@ -4026,8 +4044,10 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 		    mkstring(buf4, 8, CENTER|RJUST, "INDEX"));
         }
 
+	mapping = index = 0;
+	reserved = shared = slabs = buffers = inode = offset = 0;
 	pg_spec = phys_spec = print_hdr = FALSE;
-	
+
 	switch (mi->flags)
 	{
 	case ADDRESS_SPECIFIED: 
@@ -4175,6 +4195,8 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 				continue;
 			
 			flags = ULONG(pcache + OFFSET(page_flags));
+			if (SIZE(page_flags) == 4)
+				flags &= 0xffffffff;
 			count = UINT(pcache + OFFSET(page_count));
 
 	                switch (mi->flags)
@@ -4226,7 +4248,8 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 	                        if (flags & PG_reserved_flag) {
 	                                reserved++;
 				} else {
-					if (count > 1)
+					if ((int)count > 
+					    (vt->flags & PGCNT_ADJ ? 0 : 1))
 						shared++;
 				}
 	                        continue;
@@ -4511,6 +4534,8 @@ dump_mem_map(struct meminfo *mi)
 		    mkstring(buf4, 8, CENTER|RJUST, "INDEX"));
         }
 
+	mapping = index = 0;
+	reserved = shared = slabs = buffers = inode = offset = 0;
 	pg_spec = phys_spec = print_hdr = FALSE;
 	
 	switch (mi->flags)
@@ -4621,6 +4646,8 @@ dump_mem_map(struct meminfo *mi)
 				continue;
 			
 			flags = ULONG(pcache + OFFSET(page_flags));
+			if (SIZE(page_flags) == 4)
+				flags &= 0xffffffff;
 			count = UINT(pcache + OFFSET(page_count));
 
 	                switch (mi->flags)
@@ -4672,7 +4699,8 @@ dump_mem_map(struct meminfo *mi)
 	                        if (flags & PG_reserved_flag) {
 	                                reserved++;
 				} else {
-					if (count > 1)
+					if ((int)count >
+					    (vt->flags & PGCNT_ADJ ? 0 : 1))
 						shared++;
 				}
 	                        continue;
@@ -5021,10 +5049,9 @@ dump_page_hash_table(struct meminfo *hi)
 	entry_len = VALID_STRUCT(page_cache_bucket) ?
 		SIZE(page_cache_bucket) : sizeof(void *);
 
-	if (CRASHDEBUG(1)) {
-		populated = 0;
+	populated = 0;
+	if (CRASHDEBUG(1))
 		fprintf(fp, "page_hash_table length: %d\n", len);
-	}
 
 	get_symbol_type("page_cache_size", NULL, &req);
         if (req.length == sizeof(int)) {
@@ -5178,6 +5205,7 @@ dump_free_pages(struct meminfo *fi)
 	ld = &list_data;
 	total_free = 0;
 	searchphys = 0;
+	chunk_size = 0;
 	do_search = FALSE;
 	get_symbol_data("nr_free_pages", sizeof(int), &nr_free_pages);
 	
@@ -5270,7 +5298,7 @@ dump_free_pages(struct meminfo *fi)
 
 	found = FALSE;
         rewind(pc->tmpfile);
-	order = offset = 0;
+	order = offset = this_addr = 0;
 
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
 		if (CRASHDEBUG(1) && STRNEQ(buf, "<readmem"))
@@ -5379,6 +5407,7 @@ dump_multidimensional_free_pages(struct meminfo *fi)
 
         total_free = 0;
         searchphys = 0;
+	chunk_size = 0;
 	do_search = FALSE;
         get_symbol_data("nr_free_pages", sizeof(int), &nr_free_pages);
 
@@ -5483,7 +5512,7 @@ dump_multidimensional_free_pages(struct meminfo *fi)
 
         found = FALSE;
         rewind(pc->tmpfile);
-        order = offset = 0;
+        order = offset = this_addr = 0;
 
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
 		if (CRASHDEBUG(1) && STRNEQ(buf, "<readmem:"))
@@ -5494,7 +5523,7 @@ dump_multidimensional_free_pages(struct meminfo *fi)
 
 		if (strstr(buf, "AREA")) {
                         strcpy(last_area_hdr, buf);
-                        fgets(buf, BUFSIZE, pc->tmpfile);
+                        p = fgets(buf, BUFSIZE, pc->tmpfile);
                         strcpy(last_area, strip_linefeeds(buf));
 			p = strstr(buf, "k");
 			*p = NULLCHAR;
@@ -5611,6 +5640,9 @@ dump_free_pages_zones_v1(struct meminfo *fi)
 		do_search = FALSE;
 	}
         verbose = (do_search || (fi->flags & VERBOSE)) ? TRUE : FALSE;
+
+	chunk_size = 0;
+	zone_size_offset = 0;
 
 	if (VALID_MEMBER(zone_struct_size))
 		zone_size_offset =  OFFSET(zone_struct_size);
@@ -5751,7 +5783,7 @@ dump_free_pages_zones_v1(struct meminfo *fi)
 
         found = FALSE;
         rewind(pc->tmpfile);
-        order = offset = 0;
+        order = offset = this_addr = 0;
 	last_node[0] = NULLCHAR;
         last_zone[0] = NULLCHAR;
         last_area[0] = NULLCHAR;
@@ -5766,18 +5798,18 @@ dump_free_pages_zones_v1(struct meminfo *fi)
 			continue;
 
 		if (STRNEQ(buf, "NODE")) { 
-			fgets(buf, BUFSIZE, pc->tmpfile);
+			p = fgets(buf, BUFSIZE, pc->tmpfile);
 			strcpy(last_node, strip_linefeeds(buf));
 			continue;
 		}
 		if (STRNEQ(buf, "ZONE")) {
-			fgets(buf, BUFSIZE, pc->tmpfile);
+			p = fgets(buf, BUFSIZE, pc->tmpfile);
 			strcpy(last_zone, strip_linefeeds(buf));
 			continue;
 		}
 		if (STRNEQ(buf, "AREA")) {
                         strcpy(last_area_hdr, buf);
-                        fgets(buf, BUFSIZE, pc->tmpfile);
+                        p = fgets(buf, BUFSIZE, pc->tmpfile);
                         strcpy(last_area, strip_linefeeds(buf));
 			p = strstr(buf, "k");
 			*p = NULLCHAR;
@@ -5904,6 +5936,10 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 	}
 
         verbose = (do_search || (fi->flags & VERBOSE)) ? TRUE : FALSE;
+
+	zone_size_offset = 0;
+	chunk_size = 0;
+	this_addr = 0;
 
 	if (VALID_MEMBER(zone_spanned_pages))
 		zone_size_offset =  OFFSET(zone_spanned_pages);
@@ -6080,18 +6116,18 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 			continue;
 
 		if (STRNEQ(buf, "NODE")) { 
-			fgets(buf, BUFSIZE, pc->tmpfile);
+			p = fgets(buf, BUFSIZE, pc->tmpfile);
 			strcpy(last_node, strip_linefeeds(buf));
 			continue;
 		}
 		if (STRNEQ(buf, "ZONE")) {
-			fgets(buf, BUFSIZE, pc->tmpfile);
+			p = fgets(buf, BUFSIZE, pc->tmpfile);
 			strcpy(last_zone, strip_linefeeds(buf));
 			continue;
 		}
 		if (STRNEQ(buf, "AREA")) {
                         strcpy(last_area_hdr, buf);
-                        fgets(buf, BUFSIZE, pc->tmpfile);
+                        p = fgets(buf, BUFSIZE, pc->tmpfile);
                         strcpy(last_area, strip_linefeeds(buf));
 			p = strstr(buf, "k");
 			*p = NULLCHAR;
@@ -6193,7 +6229,7 @@ dump_zone_page_usage(void)
                 nt = &vt->node_table[n];
                 node_zones = nt->pgdat + OFFSET(pglist_data_node_zones);
                 
-		if ((i == 0) && (vt->flags & NODES)) {
+		if ((vt->numnodes > 1) && (vt->flags & NODES)) {
                 	fprintf(fp, "%sNODE\n %2d\n",
                         	n ? "\n" : "", nt->node_id);
                 }
@@ -6274,6 +6310,9 @@ dump_zone_free_area(ulong free_area, int num, ulong verbose)
 	struct list_data list_data, *ld;
 	int list_count;
 	ulong *free_ptr;
+
+	list_count = 0;
+	free_list_buf = free_area_buf2 = NULL;
 
 	if (VALID_STRUCT(free_area_struct)) {
 		if (SIZE(free_area_struct) != (3 * sizeof(ulong)))
@@ -7122,7 +7161,7 @@ is_kmem_cache_addr(ulong vaddr, char *kbuf)
 
         do {
 	        readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
-	        	"kmem_cache_s buffer", FAULT_ON_ERROR);
+	        	"kmem_cache buffer", FAULT_ON_ERROR);
 
 		if (cache == vaddr) {
 	                if (vt->kmem_cache_namelen) {
@@ -7191,7 +7230,7 @@ kmem_cache_list(void)
 
         do {
 	        readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
-	        	"kmem_cache_s buffer", FAULT_ON_ERROR);
+	        	"kmem_cache buffer", FAULT_ON_ERROR);
 
 	        if (vt->kmem_cache_namelen) {
 			BCOPY(cache_buf+name_offset, buf, 
@@ -7392,13 +7431,16 @@ kmem_cache_init(void)
         } else
                 cache = cache_end = symbol_value("cache_cache");
 
+	if (!(pc->flags & RUNTIME))
+		kmem_cache_downsize();
+
 	cache_buf = GETBUF(SIZE(kmem_cache_s));
 
         do {
 		cache_count++;
 
                 if (!readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
-                        "kmem_cache_s buffer", RETURN_ON_ERROR)) {
+                        "kmem_cache buffer", RETURN_ON_ERROR)) {
 			FREEBUF(cache_buf);
 			vt->flags |= KMEM_CACHE_UNAVAIL;
 			error(INFO, 
@@ -7472,6 +7514,55 @@ kmem_cache_init(void)
 
 	vt->flags |= KMEM_CACHE_INIT;
 }
+
+static void
+kmem_cache_downsize(void)
+{
+	char *cache_buf;
+	uint buffer_size; 
+	int nr_node_ids;
+
+	if ((THIS_KERNEL_VERSION < LINUX(2,6,22)) ||
+	    !kernel_symbol_exists("cache_cache") ||
+	    !MEMBER_EXISTS("kmem_cache", "buffer_size"))
+		return;
+
+	cache_buf = GETBUF(SIZE(kmem_cache_s));
+
+	if (!readmem(symbol_value("cache_cache"), KVADDR, cache_buf, 
+	    SIZE(kmem_cache_s), "kmem_cache buffer", FAULT_ON_ERROR)) {
+		FREEBUF(cache_buf);
+		return;
+	}
+
+	buffer_size = UINT(cache_buf + 
+		MEMBER_OFFSET("kmem_cache", "buffer_size"));
+
+	if (buffer_size < SIZE(kmem_cache_s)) {
+		ASSIGN_SIZE(kmem_cache_s) = buffer_size;
+
+		if (kernel_symbol_exists("nr_node_ids")) {
+			get_symbol_data("nr_node_ids", sizeof(int),
+				&nr_node_ids);
+			vt->kmem_cache_len_nodes = nr_node_ids;
+					
+		} else
+			vt->kmem_cache_len_nodes = 1;
+
+		if (CRASHDEBUG(1)) {
+     			fprintf(fp, 
+			    "\nkmem_cache_downsize: SIZE(kmem_cache_s): %ld "
+			    "cache_cache.buffer_size: %d\n",
+				STRUCT_SIZE("kmem_cache"), buffer_size);
+			fprintf(fp,
+			    "kmem_cache_downsize: nr_node_ids: %ld\n",
+				vt->kmem_cache_len_nodes);
+		}
+	}
+
+	FREEBUF(cache_buf);
+}
+
 
 /*
  *  Determine the largest cpudata limit for a given cache.
@@ -7786,7 +7877,7 @@ dump_kmem_cache(struct meminfo *si)
 			fprintf(fp, "%s%s", cnt++ ? "\n" : "", kmem_cache_hdr);
 
                 readmem(si->cache, KVADDR, si->cache_buf, SIZE(kmem_cache_s),
-                	"kmem_cache_s buffer", FAULT_ON_ERROR);
+                	"kmem_cache buffer", FAULT_ON_ERROR);
 
 		if (vt->kmem_cache_namelen) {
 			BCOPY(si->cache_buf + OFFSET(kmem_cache_s_c_name),
@@ -9005,6 +9096,7 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 	int index;
 
 	list_borked = 0;
+	slab_buf = NULL;
 	si->slabsize = (power(2, si->order) * PAGESIZE());
 	si->cpucached_slab = 0;
 	start_address = (ulong *)GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
@@ -10326,6 +10418,7 @@ kmem_search(struct meminfo *mi)
 	ulong task;
 	struct task_context *tc;
 
+	vaddr = 0;
 	pc->curcmd_flags &= ~HEADER_PRINTED;
 
 	switch (mi->memtype)
@@ -10705,6 +10798,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sCONFIG_NUMA", others++ ? "|" : "");\
 	if (vt->flags & VM_EVENT)
 		fprintf(fp, "%sVM_EVENT", others++ ? "|" : "");\
+	if (vt->flags & PGCNT_ADJ)
+		fprintf(fp, "%sPGCNT_ADJ", others++ ? "|" : "");\
 
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
@@ -10734,7 +10829,7 @@ dump_vm_table(int verbose)
 	fprintf(fp, "      kmem_max_cpus: %ld\n", vt->kmem_max_cpus);
 	fprintf(fp, "   kmem_cache_count: %ld\n", vt->kmem_cache_count);
 	fprintf(fp, " kmem_cache_namelen: %d\n", vt->kmem_cache_namelen);
-	fprintf(fp, "kmem_cache_nodelist_len: %ld\n", vt->kmem_cache_len_nodes);
+	fprintf(fp, "kmem_cache_len_nodes: %ld\n", vt->kmem_cache_len_nodes);
 	fprintf(fp, "        PG_reserved: %lx\n", vt->PG_reserved);
 	fprintf(fp, "            PG_slab: %ld (%lx)\n", vt->PG_slab, 
 		(ulong)1 << vt->PG_slab);
@@ -11700,6 +11795,7 @@ vma_file_offset(ulong vma, ulong vaddr, char *buf)
 	else 
 		goto no_file_offset;
 
+	offset = 0;
 	if (vm_offset != 0xdeadbeef) 
 		offset = VIRTPAGEBASE(vaddr) - vm_start + vm_offset;
 	else if (vm_pgoff != 0xdeadbeef) {
@@ -11774,6 +11870,8 @@ dump_memory_nodes(int initialize)
 	char buf4[BUFSIZE];
 	char buf5[BUFSIZE];
 	struct node_table *nt;
+
+	node = slen = 0;
 
 	if (!(vt->flags & (NODES|NODES_ONLINE)) && initialize) {
 		nt = &vt->node_table[0];
@@ -12178,7 +12276,10 @@ dump_zone_stats(void)
 	ulong value4;
 	ulong value5;
 	ulong value6;
+	long min, low, high;
 
+	value1 = value2 = value3 = value4 = value5 = value6 = 0;
+	min = low = high = 0;
 	pgdat = vt->node_table[0].pgdat;
 	zonebuf = GETBUF(SIZE_OPTION(zone_struct, zone));
 	vm_stat_init();
@@ -12213,12 +12314,28 @@ dump_zone_stats(void)
 			} else error(FATAL, 
 			    	"zone struct has unknown size field\n");
 
-			value2 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_min,
-				zone_struct_pages_min));
-			value3 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_low,
-				zone_struct_pages_low));
-			value4 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_high,
-				zone_struct_pages_high));
+			if (VALID_MEMBER(zone_watermark)) {
+				if (!enumerator_value("WMARK_MIN", &min) ||
+				    !enumerator_value("WMARK_LOW", &low) ||
+				    !enumerator_value("WMARK_HIGH", &high)) {
+					min = 0;
+					low = 1;
+					high = 2;
+				}
+				value2 = ULONG(zonebuf + OFFSET(zone_watermark) +
+					(sizeof(long) * min));
+				value3 = ULONG(zonebuf + OFFSET(zone_watermark) +
+					(sizeof(long) * low));
+				value4 = ULONG(zonebuf + OFFSET(zone_watermark) +
+					(sizeof(long) * high));
+			} else {
+				value2 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_min,
+					zone_struct_pages_min));
+				value3 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_low,
+					zone_struct_pages_low));
+				value4 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_high,
+					zone_struct_pages_high));
+			}
 			value5 = ULONG(zonebuf + OFFSET_OPTION(zone_free_pages,
 				zone_struct_free_pages));
 
@@ -12263,7 +12380,12 @@ dump_zone_stats(void)
 				dump_vm_stat(NULL, NULL, node_zones + 
 					OFFSET(zone_vm_stat));
 			} else {
-				fprintf(fp, "  FREE: %ld\n", value5); 
+				if (VALID_MEMBER(zone_vm_stat)) {
+					fprintf(fp, "\n  VM_STAT:\n");
+					dump_vm_stat(NULL, NULL, node_zones + 
+						OFFSET(zone_vm_stat));
+				} else
+					fprintf(fp, "  FREE: %ld\n", value5); 
 				goto next_zone;
 			}
 
@@ -12430,6 +12552,7 @@ memory_page_size(void)
 		break;
 
 	default:
+		psz = 0;
 		error(FATAL, "memory_page_size: invalid pc->flags: %lx\n", 
 			pc->flags & MEMORY_SOURCES); 
 	}
@@ -12450,6 +12573,7 @@ force_page_size(char *s)
 
 	k = 1;
 	err = FALSE;
+	psize = 0;
 
 	switch (LASTCHAR(s))
 	{
@@ -12965,6 +13089,8 @@ get_nodes_online(void)
 	if (!symbol_exists("node_online_map") && 
 	    !symbol_exists("node_states")) 
 		return 0;
+
+	len = mapaddr = 0;
 
 	if (symbol_exists("node_online_map")) {
 		if (LKCD_KERNTYPES()) {
@@ -13617,6 +13743,7 @@ dump_kmem_cache_slub(struct meminfo *si)
 		return;
 	}
 
+	order = objects = 0;
 	si->cache_count = get_kmem_cache_list(&si->cache_list);
 	si->cache_buf = GETBUF(SIZE(kmem_cache));
 
@@ -14401,6 +14528,7 @@ get_cpu_slab_ptr(struct meminfo *si, int cpu, ulong *cpu_freelist)
 		break;
 
 	default:
+		cpu_slab_ptr = 0;
 		error(FATAL, "cannot determine location of kmem_cache.cpu_slab page\n");
 	}
 

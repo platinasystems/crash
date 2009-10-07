@@ -35,6 +35,7 @@ static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
 static void child_list(ulong);
 static void initialize_task_state(void);
+static void show_ps_data(ulong, struct task_context *);
 static void show_task_times(struct task_context *, ulong);
 static void show_task_args(struct task_context *);
 static void show_task_rlimit(struct task_context *);
@@ -635,6 +636,9 @@ refresh_fixed_task_table(void)
 	if (ACTIVE() && !(tt->flags & TASK_REFRESH))
 		return;
 
+	curpid = NO_PID;
+	curtask = NO_TASK;
+
         /*
          *  The current task's task_context entry may change,
          *  or the task may not even exist anymore.
@@ -718,7 +722,7 @@ verify_task(struct task_context *tc, int level)
 			for (i = 0; i < NR_CPUS; i++) {
 				if (tc->task == tt->active_set[i]) {
 					error(WARNING, 
-			"active task %lx on cpu %d: corrupt cpu value: %d\n\n",
+			"active task %lx on cpu %d: corrupt cpu value: %u\n\n",
 						tc->task, i, tc->processor);
 					tc->processor = i;
 					return TRUE;
@@ -727,7 +731,7 @@ verify_task(struct task_context *tc, int level)
 
 			if (CRASHDEBUG(1))
 				error(INFO, 
-				    "verify_task: task: %lx invalid processor: %d",
+				    "verify_task: task: %lx invalid processor: %u",
 					tc->task, tc->processor);
 			return FALSE;
 		}
@@ -774,6 +778,10 @@ refresh_unlimited_task_table(void)
 
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
+
+	curpid = NO_PID;
+	curtask = NO_TASK;
+	tp = NULL;
 
 	/*
 	 *  The current task's task_context entry may change,  
@@ -943,6 +951,9 @@ refresh_pidhash_task_table(void)
 
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
+
+	curpid = NO_PID;
+	curtask = NO_TASK;
 
         /*
          *  The current task's task_context entry may change,
@@ -1157,6 +1168,9 @@ refresh_pid_hash_task_table(void)
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
 
+	curpid = NO_PID;
+	curtask = NO_TASK;
+
         /*
          *  The current task's task_context entry may change,
          *  or the task may not even exist anymore.
@@ -1357,6 +1371,9 @@ refresh_hlist_task_table(void)
 
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
+
+	curpid = NO_PID;
+	curtask = NO_TASK;
 
         /*
          *  The current task's task_context entry may change,
@@ -1625,6 +1642,9 @@ refresh_hlist_task_table_v2(void)
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
 
+	curpid = NO_PID;
+	curtask = NO_TASK;
+
         /*
          *  The current task's task_context entry may change,
          *  or the task may not even exist anymore.
@@ -1860,6 +1880,9 @@ refresh_hlist_task_table_v3(void)
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
 
+	curpid = NO_PID;
+	curtask = NO_TASK;
+
         /*
          *  The current task's task_context entry may change,
          *  or the task may not even exist anymore.
@@ -2090,6 +2113,10 @@ refresh_active_task_table(void)
         if (ACTIVE() && !(tt->flags & TASK_REFRESH))
                 return;
 
+	curtask = NO_TASK;
+	curpid = NO_PID;
+	retries = 0; 
+
 	get_active_set();
        	/*
        	 *  The current task's task_context entry may change,
@@ -2199,6 +2226,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
         ulong *mm_addr;
         int has_cpu;
 	int do_verify;
+
+	processor_addr = NULL;
 
 	if (tt->refresh_task_table == refresh_fixed_task_table)
 		do_verify = 1;
@@ -2685,7 +2714,7 @@ cmd_ps(void)
 	BZERO(&psinfo, sizeof(struct psinfo));
 	flag = 0;
 
-        while ((c = getopt(argcnt, args, "gstcpkular")) != EOF) {
+        while ((c = getopt(argcnt, args, "gstcpkuGlar")) != EOF) {
                 switch(c)
 		{
 		case 'k':
@@ -2698,6 +2727,9 @@ cmd_ps(void)
 			flag &= ~PS_KERNEL;
 			break;
 
+		case 'G':
+			flag |= PS_GROUP;
+			break;
 		/*
 		 *  The a, t, c, p, g and l flags are all mutually-exclusive.
 		 */
@@ -2808,80 +2840,95 @@ cmd_ps(void)
 /*
  *  Do the work requested by cmd_ps().
  */
+static void 
+show_ps_data(ulong flag, struct task_context *tc)
+{
+	struct task_mem_usage task_mem_usage, *tm;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	ulong tgid;
 
-#define SHOW_PS_DATA()                                                \
-        if ((flag & PS_USER) && is_kernel_thread(tc->task))           \
-                continue;                                             \
-        if ((flag & PS_KERNEL) && !is_kernel_thread(tc->task))        \
-                continue;                                             \
-        if (flag & PS_PPID_LIST) {                                    \
-                parent_list(tc->task);                                \
-                fprintf(fp, "\n");                                    \
-                continue;                                             \
-        }                                                             \
-        if (flag & PS_CHILD_LIST) {                                   \
-                child_list(tc->task);                                 \
-                fprintf(fp, "\n");                                    \
-                continue;                                             \
-        }                                                             \
-        if (flag & PS_LAST_RUN) {                                     \
-                show_last_run(tc);                                    \
-                continue;                                             \
-        }                                                             \
-        if (flag & PS_ARGV_ENVP) {                                    \
-                show_task_args(tc);                                   \
-                continue;                                             \
-        }                                                             \
-        if (flag & PS_RLIMIT) {                                       \
-                show_task_rlimit(tc);                                 \
-                continue;                                             \
-        }                                                             \
-        if (flag & PS_TGID_LIST) {                                    \
-                show_tgid_list(tc->task);                             \
-                continue;                                             \
-        }                                                             \
-        get_task_mem_usage(tc->task, tm);                             \
-        fprintf(fp, "%s", is_task_active(tc->task) ? "> " : "  ");    \
-        fprintf(fp, "%5ld  %5ld  %2s  %s %3s",                        \
-                tc->pid, task_to_pid(tc->ptask),                      \
-                task_cpu(tc->processor, buf2, !VERBOSE),              \
-                task_pointer_string(tc, flag & PS_KSTACKP, buf3),     \
-                task_state_string(tc->task, buf1, !VERBOSE));         \
-        pad_line(fp, strlen(buf1) > 3 ? 1 : 2, ' ');                  \
-        sprintf(buf1, "%.1f", tm->pct_physmem);                       \
-        if (strlen(buf1) == 3)                                        \
-        	mkstring(buf1, 4, CENTER|RJUST, NULL);                \
-        fprintf(fp, "%s ", buf1);                                     \
-        fprintf(fp, "%7ld ", (tm->total_vm * PAGESIZE())/1024);       \
-        fprintf(fp, "%6ld  ", (tm->rss * PAGESIZE())/1024);           \
-        if (is_kernel_thread(tc->task))                               \
-                fprintf(fp, "[%s]\n", tc->comm);                      \
-        else                                                          \
-                fprintf(fp, "%s\n", tc->comm);    
+	if ((flag & PS_USER) && is_kernel_thread(tc->task))
+		return;
+	if ((flag & PS_KERNEL) && !is_kernel_thread(tc->task))
+		return;
+	if (flag & PS_PPID_LIST) {
+		parent_list(tc->task);
+		fprintf(fp, "\n");
+		return;
+	}
+	if (flag & PS_CHILD_LIST) {
+		child_list(tc->task);
+		fprintf(fp, "\n");
+		return;
+	}
+	if (flag & PS_LAST_RUN) {
+		show_last_run(tc);
+		return;
+	}
+	if (flag & PS_ARGV_ENVP) {
+		show_task_args(tc);
+		return;
+	}
+	if (flag & PS_RLIMIT) {
+		show_task_rlimit(tc);
+		return;
+	}
+	if (flag & PS_TGID_LIST) {
+		show_tgid_list(tc->task);
+		return;
+	}
+	if (flag & PS_GROUP) {
+		tgid = task_tgid(tc->task);
+		if (tc->pid != tgid) {
+			if (pc->curcmd_flags & TASK_SPECIFIED) {
+				if (!(tc = tgid_to_context(tgid)))
+					return;
+			} else
+				return;
+		}
+	}
+	tm = &task_mem_usage;
+	get_task_mem_usage(tc->task, tm);
+	fprintf(fp, "%s", is_task_active(tc->task) ? "> " : "  ");
+	fprintf(fp, "%5ld  %5ld  %2s  %s %3s",
+		tc->pid, task_to_pid(tc->ptask),
+		task_cpu(tc->processor, buf2, !VERBOSE),
+		task_pointer_string(tc, flag & PS_KSTACKP, buf3),
+		task_state_string(tc->task, buf1, !VERBOSE));
+	pad_line(fp, strlen(buf1) > 3 ? 1 : 2, ' ');
+	sprintf(buf1, "%.1f", tm->pct_physmem);
+	if (strlen(buf1) == 3)
+		mkstring(buf1, 4, CENTER|RJUST, NULL);
+	fprintf(fp, "%s ", buf1);
+	fprintf(fp, "%7ld ", (tm->total_vm * PAGESIZE())/1024);
+	fprintf(fp, "%6ld  ", (tm->rss * PAGESIZE())/1024);
+	if (is_kernel_thread(tc->task))
+		fprintf(fp, "[%s]\n", tc->comm);
+	else
+		fprintf(fp, "%s\n", tc->comm);
+}
 
 static void
 show_ps(ulong flag, struct psinfo *psi)
 {
 	int i, ac;
         struct task_context *tc;
-	struct task_mem_usage task_mem_usage, *tm;
 	int print;
-	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
-	char buf3[BUFSIZE];
+	char buf[BUFSIZE];
 
 	if (!(flag & PS_EXCLUSIVE)) 
 		fprintf(fp, 
 		    "   PID    PPID  CPU %s  ST  %%MEM     VSZ    RSS  COMM\n",
 			flag & PS_KSTACKP ?
-			mkstring(buf1, VADDR_PRLEN, CENTER|RJUST, "KSTACKP") :
-			mkstring(buf1, VADDR_PRLEN, CENTER, "TASK"));
+			mkstring(buf, VADDR_PRLEN, CENTER|RJUST, "KSTACKP") :
+			mkstring(buf, VADDR_PRLEN, CENTER, "TASK"));
 
 	if (flag & PS_LAST_RUN)
 		sort_context_array_by_last_run();
 
 	if (flag & PS_SHOW_ALL) {
-		tm = &task_mem_usage;
 
 		if (flag & PS_TIMES) {
 			show_task_times(NULL, flag);
@@ -2889,9 +2936,8 @@ show_ps(ulong flag, struct psinfo *psi)
 		}
 
 		tc = FIRST_CONTEXT();
-        	for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
-			SHOW_PS_DATA();
-		}
+		for (i = 0; i < RUNNING_TASKS(); i++, tc++)
+			show_ps_data(flag, tc);
 		
 		return;
 	}
@@ -2899,7 +2945,6 @@ show_ps(ulong flag, struct psinfo *psi)
 	pc->curcmd_flags |= TASK_SPECIFIED;
 
 	for (ac = 0; ac < psi->argc; ac++) {
-		tm = &task_mem_usage;
 		tc = FIRST_CONTEXT();
 
         	for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
@@ -2919,7 +2964,7 @@ show_ps(ulong flag, struct psinfo *psi)
 
 			case PS_BY_CMD:
 				if (STREQ(tc->comm, psi->comm[ac])) {
-					if (flag & PS_TGID_LIST) {
+					if (flag & (PS_TGID_LIST|PS_GROUP)) {
 						if (tc->pid == task_tgid(tc->task))
 							print = TRUE;
 						else
@@ -2935,9 +2980,8 @@ show_ps(ulong flag, struct psinfo *psi)
 					show_task_times(tc, flag);
 				else if (flag & PS_LAST_RUN)
 					show_last_run(tc);
-				else {
-					SHOW_PS_DATA();
-				}
+				else
+					show_ps_data(flag, tc);
 			}
 		}
 	}
@@ -3118,6 +3162,8 @@ show_task_rlimit(struct task_context *tc)
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+
+	rlimit_index = 0;
 
 	if (!VALID_MEMBER(task_struct_rlim) && !VALID_MEMBER(signal_struct_rlim)) {
 		MEMBER_OFFSET_INIT(task_struct_rlim, "task_struct", "rlim");
@@ -4373,6 +4419,7 @@ task_last_run(ulong task)
         ulong last_run;
 	ulonglong timestamp;
 
+	timestamp = 0;
         fill_task_struct(task);
 
 	if (VALID_MEMBER(task_struct_last_run)) {
@@ -5030,6 +5077,7 @@ foreach(struct foreach_data *fd)
 	}
 
 	print_header = TRUE;
+	bt = NULL;
 
         for (k = 0; k < fd->keys; k++) {
         	switch(fd->keyword_array[k])
@@ -5624,6 +5672,7 @@ dump_task_table(int verbose)
 
 	tc = tt->current;
 	others = 0;
+	more = FALSE;
 
 	fprintf(fp, "           current: %lx [%ld]\n",  (ulong)tt->current,
 		(ulong)(tt->current - tt->context_array));
@@ -6163,6 +6212,8 @@ get_active_set(void)
         if (tt->flags & ACTIVE_SET)
                 return TRUE;
 
+	per_cpu = FALSE;
+
 	if (symbol_exists("runqueues")) {
 		runq = symbol_value("runqueues");
 		per_cpu = FALSE;
@@ -6547,6 +6598,7 @@ dump_runq(void)
 		return;
 	}
 
+	offs = runqueue_head = 0;
 	qlen = 1000;
 
 start_again:
@@ -6608,14 +6660,16 @@ dump_runqueues(void)
 	struct task_context *tc;
 	int per_cpu;
 
-
         if (symbol_exists("runqueues")) {
                 runq = symbol_value("runqueues");
                 per_cpu = FALSE;
         } else if (symbol_exists("per_cpu__runqueues")) {
                 runq = symbol_value("per_cpu__runqueues");
                 per_cpu = TRUE;
-        }
+        } else {
+		runq = 0;
+		per_cpu = FALSE;
+	}
 
 	get_active_set();
         runqbuf = GETBUF(SIZE(runqueue));
@@ -7376,6 +7430,9 @@ dump_signal_data(struct task_context *tc, ulong flags)
 	char buf3[BUFSIZE];
 	char buf4[BUFSIZE];
 
+	sigpending = sigqueue = 0;
+	sighand_struct = signal_struct = 0;
+
         if (VALID_STRUCT(sigqueue) && !VALID_MEMBER(sigqueue_next)) {
                 MEMBER_OFFSET_INIT(sigqueue_next, "sigqueue", "next");
                 MEMBER_OFFSET_INIT(sigqueue_list, "sigqueue", "list");
@@ -7688,8 +7745,8 @@ static void sigqueue_list(ulong sigqueue) {
 static ulonglong 
 task_signal(ulong task, ulong *signal)
 {
-	ulonglong sigset;
 	ulong *sigset_ptr;
+	ulonglong sigset = 0;
 
 	if (task) {
         	fill_task_struct(task);
@@ -7757,6 +7814,7 @@ sigaction_mask(ulong sigaction)
         ulonglong sigset;
         ulong *sigset_ptr;
 
+	sigset = 0;
 	sigset_ptr = (ulong *)(sigaction + OFFSET(sigaction_sa_mask));
 
         switch (_NSIG_WORDS)

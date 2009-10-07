@@ -2953,6 +2953,8 @@ copy_remote_file(struct remote_file *rfp, int fd, char *file, char *ttystr)
 	long pct, last;
         ulong size, offset, filesize;
         ulong ret, req, tot;
+	int sysret;
+	ssize_t bytes;
 
 	last = -1;
 	lseek(fd, 0, SEEK_SET);
@@ -2964,7 +2966,7 @@ copy_remote_file(struct remote_file *rfp, int fd, char *file, char *ttystr)
 		
 		BZERO(sendbuf, BUFSIZE);
         	sprintf(sendbuf, "READ %d %lx %ld", rfp->fd, offset, size);
-        	write(pc->sockfd, sendbuf, strlen(sendbuf));
+        	bytes = write(pc->sockfd, sendbuf, strlen(sendbuf));
 
         	bzero(readbuf, READBUFSIZE);
 
@@ -3012,7 +3014,7 @@ copy_remote_file(struct remote_file *rfp, int fd, char *file, char *ttystr)
                                     	sprintf(readbuf,
                                 	    "echo -e -n \"\\b\\b\\b\\b%ld%%)\"",
 					        pct);
-                               	system(readbuf);
+                               	sysret = system(readbuf);
 				last = pct;
 			}
 		}
@@ -3060,6 +3062,7 @@ copy_remote_gzip_file(struct remote_file *rfp, char *file, char *ttystr)
        	bzero(readbuf, READBUFSIZE);
 
 	done = total = 0;
+	gtot = 0;
 
 	while (!done) {
 
@@ -3307,6 +3310,7 @@ remote_memory_dump(int verbose)
 
        	bzero(readbuf, READBUFSIZE);
 	done = total = 0;
+	dtot = 0;
 
 	while (!done) {
 
@@ -3490,6 +3494,7 @@ remote_execute(void)
 
        	bzero(readbuf, READBUFSIZE);
 	done = total = 0;
+	dtot = 0;
 
 	while (!done) {
 

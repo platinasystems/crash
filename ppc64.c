@@ -223,6 +223,9 @@ ppc64_init(int when)
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 				"irq_desc", NULL, 0);
+		else if (kernel_symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(unsigned int),
+				&machdep->nr_irqs);
 		else
 			machdep->nr_irqs = 0;
 
@@ -1803,6 +1806,8 @@ ppc64_get_stack_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 {
 	ulong ksp, nip;
 	
+	nip = ksp = 0;
+
 	if (DUMPFILE() && is_task_active(bt->task)) 
 		ppc64_get_dumpfile_stack_frame(bt, &nip, &ksp);
 	else
@@ -1919,11 +1924,12 @@ ppc64_dump_irq(int irq)
                 /* typename */
                 readmem(ctl + OFFSET(hw_interrupt_type_typename), KVADDR, &addr,
                         sizeof(ulong), "typename pointer", FAULT_ON_ERROR);
-                read_string(addr, typename, 32);
 
-                if(typename)
-                        fprintf(fp, "         typename: %08lx  \"%s\"\n",
-                                addr, typename);
+		fprintf(fp, "         typename: %08lx  ", addr);
+                if (read_string(addr, typename, 32))
+                        fprintf(fp, "\"%s\"\n", typename);
+		else
+			fprintf(fp, "\n");
 
                 /* startup...I think this is always 0 */
                 readmem(ctl + OFFSET(hw_interrupt_type_startup), KVADDR, &addr,
@@ -2032,11 +2038,12 @@ ppc64_dump_irq(int irq)
                 /* name */
                 readmem(action + OFFSET(irqaction_name), KVADDR, &addr,
                         sizeof(ulong), "action name", FAULT_ON_ERROR);
-                read_string(addr, typename, 32);
 
-                if(typename)
-                        fprintf(fp, "             name: %08lx  \"%s\"\n",
-                                addr, typename);
+		fprintf(fp, "             name: %08lx  ", addr);
+		if (read_string(addr, typename, 32))
+                        fprintf(fp, "\"%s\"\n", typename);
+		else
+			fprintf(fp, "\n");
 
                 /* dev_id */
                 readmem(action + OFFSET(irqaction_dev_id), KVADDR, &value,
@@ -2421,10 +2428,12 @@ ppc64_paca_init(void)
 		map = PRESENT;
 	else if (cpu_map_addr("online"))
 		map = ONLINE;
-	else
+	else {
+		map = 0;
 		error(FATAL,
 			"PPC64: cannot find 'cpu_possible_map' or\
 			'cpu_present_map' or 'cpu_online_map' symbols\n");
+	}
 
 	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
 		return;

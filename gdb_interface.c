@@ -619,9 +619,11 @@ is_gdb_command(int merge_orig_args, ulong flags)
         FREEBUF(req);
 
 	if (retval && merge_orig_args) {
-		argcnt = 2;
+		int i;
+		for (i = argcnt; i; i--)
+			args[i] = args[i-1];
 		args[0] = "gdb";
-		args[1] = pc->orig_line;
+		argcnt++;
 	}
 
         return retval;

@@ -26,10 +26,11 @@ is_s390_dump(char *file)
 {
 	FILE* fh;
 	long long int magic;
+	size_t items;
 	int rc;
 
 	fh = fopen(file,"r");
-	fread(&magic, sizeof(magic), 1,fh);
+	items = fread(&magic, sizeof(magic), 1,fh);
 	if(magic == 0xa8190173618f23fdLL)
 		rc = TRUE;
 	else

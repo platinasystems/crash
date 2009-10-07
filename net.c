@@ -788,6 +788,9 @@ get_sock_info(ulong sock, char *buf)
 	BZERO(buf, BUFSIZE);
 	BZERO(buf2, BUFSIZE);
 	sockbuf = inet_sockbuf = NULL;
+	dport = sport = 0;
+	family = type = 0;
+	ipv6_pinfo = 0;
 
 	switch (net->flags & (SOCK_V1|SOCK_V2))
 	{

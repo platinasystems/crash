@@ -225,6 +225,8 @@ int
 ram_read_phys_page (struct qemu_device_ram *dram, void *buf, uint64_t addr)
 {
 	off_t ofs;
+	ssize_t bytes;
+
         if (addr >= dram->last_ram_offset)
                 return false;
         assert ((addr & 0xfff) == 0);
@@ -234,7 +236,7 @@ ram_read_phys_page (struct qemu_device_ram *dram, void *buf, uint64_t addr)
 	if ((ofs & RAM_OFFSET_COMPRESSED) == RAM_OFFSET_COMPRESSED)
 		memset (buf, ofs & 255, 4096);
 	else
-	        pread (fileno (dram->fp), buf, 4096, ofs);
+	        bytes = pread (fileno (dram->fp), buf, 4096, ofs);
 	return true;
 }
 
@@ -595,6 +597,7 @@ device_get (const struct qemu_device_loader *devices,
 	char name[257];
 	uint32_t section_id, instance_id, version_id;
 //	bool live;
+	size_t items;
 	int sz;
 
 	section_id = get_be32 (fp);
@@ -605,7 +608,7 @@ device_get (const struct qemu_device_loader *devices,
 	sz = getc (fp);
 	if (sz == EOF)
 		return NULL;
-	fread (name, sz, 1, fp);
+	items = fread (name, sz, 1, fp);
 	name[sz] = 0;
 
 	instance_id = get_be32 (fp);
@@ -625,6 +628,7 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 	   FILE *fp)
 {
 	struct qemu_device_list *result = NULL;
+	size_t items;
 
 	switch (get_be32 (fp)) {
 	case QEMU_VM_FILE_MAGIC:
@@ -633,7 +637,7 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 	case LIBVIRT_QEMU_VM_FILE_MAGIC: {
 		struct libvirt_header header;
 		memcpy (header.magic, "Libv", 4);
-		fread (&header.magic[4], sizeof (header) - 4, 1, fp);
+		items = fread (&header.magic[4], sizeof (header) - 4, 1, fp);
 		if (memcmp ("LibvirtQemudSave", header.magic, 16))
 			goto fail;
 
@@ -698,6 +702,7 @@ is_qemu_vm_file(char *filename)
 {
 	struct libvirt_header header;
 	int retval;
+	size_t items;
 	char *xml;
 
 	if ((kvm->vmp = fopen(filename, "r")) == NULL) {
@@ -705,6 +710,7 @@ is_qemu_vm_file(char *filename)
 		return FALSE;
 	}
 
+	retval = FALSE;
 	xml = NULL;
 
 	switch (get_be32(kvm->vmp)) 
@@ -715,10 +721,10 @@ is_qemu_vm_file(char *filename)
 
 	case LIBVIRT_QEMU_VM_FILE_MAGIC: 
 		rewind(kvm->vmp);
-		fread(&header.magic[0], sizeof(header), 1, kvm->vmp); 
+		items = fread(&header.magic[0], sizeof(header), 1, kvm->vmp); 
 		if (STRNEQ(header.magic, "LibvirtQemudSave")) {
 			if ((xml = (char *)malloc(header.xml_length))) {
-				fread(xml, header.xml_length, 1, kvm->vmp);
+				items = fread(xml, header.xml_length, 1, kvm->vmp);
 				/*
 				 *  Parse here if necessary or desirable.
 				 */
@@ -749,6 +755,7 @@ dump_qemu_header(FILE *out)
 	struct libvirt_header header;
 	char magic[4];
 	uint8_t c;
+	size_t items;
 
 	rewind(kvm->vmp);
 	if (get_be32(kvm->vmp) == QEMU_VM_FILE_MAGIC) {
@@ -757,7 +764,7 @@ dump_qemu_header(FILE *out)
 	}
 
 	rewind(kvm->vmp);
-	fread(&header, sizeof(header), 1, kvm->vmp);
+	items = fread(&header, sizeof(header), 1, kvm->vmp);
 
 	fprintf(out, "%s: libvirt_header:\n\n", pc->dumpfile);
 	fprintf(out, "      magic: ");
@@ -774,7 +781,7 @@ dump_qemu_header(FILE *out)
 			fprintf(out, "%c", c);
 	}
 	fprintf(out, "\n");
-	fread(&magic, sizeof(char), 4, kvm->vmp);
+	items = fread(&magic, sizeof(char), 4, kvm->vmp);
 	for (i = 0; i < 4; i++)
 		fprintf(out, "%c", magic[i]);
 	fprintf(out, "\n");

@@ -467,13 +467,17 @@ s390x_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 		if ((c = parse_line(buf, arglist)) != 3)
 			error(FATAL, "cannot determine swap location\n");
 
+		sprintf(ptebuf, "%lx", pte);
+		len1 = MAX(strlen(ptebuf), strlen("PTE"));
 		len2 = MAX(strlen(arglist[0]), strlen("SWAP"));
 		len3 = MAX(strlen(arglist[2]), strlen("OFFSET"));
 
-		fprintf(fp, "%s  %s\n",
+		fprintf(fp, "%s  %s  %s\n",
+			mkstring(ptebuf, len1, CENTER|LJUST, "PTE"),
 			mkstring(buf2, len2, CENTER|LJUST, "SWAP"),
 			mkstring(buf3, len3, CENTER|LJUST, "OFFSET"));
 
+		sprintf(ptebuf, "%lx", pte);
 		strcpy(buf2, arglist[0]);
 		strcpy(buf3, arglist[2]);
 		fprintf(fp, "%s  %s  %s\n",

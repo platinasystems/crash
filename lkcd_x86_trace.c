@@ -1351,6 +1351,8 @@ find_trace(
 	int interrupted_system_call = FALSE;
 	struct bt_info *bt = trace->bt;
 	uaddr_t *pt;
+
+	curframe = NULL;
 #endif
 	sbp = trace->stack[curstkidx].ptr;
 	sbase = trace->stack[curstkidx].addr;
@@ -1948,6 +1950,7 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 	int nframes = 0;
 	kaddr_t task = bt->task;
 	KL_ERROR = 0;
+	tsp = NULL;
 
 	if (bt->flags & BT_FRAMESIZE_DEBUG) 
 		return(framesize_debug(bt, ofp));
@@ -2178,6 +2181,7 @@ verify_back_trace(struct bt_info *bt)
 
 	errcnt = 0;
         KL_ERROR = 0;
+	tsp = NULL;
 
 	if (!XEN_HYPER_MODE()) {
 	        if (!(tsp = kl_alloc_block(TASK_STRUCT_SZ, K_TEMP))) 
@@ -4983,6 +4987,8 @@ get_operand_info(int opnum, instr_rec_t *irp)
 {
 	int opcode, opdata;
 
+	opcode = opdata = 0;
+
 	switch(opnum) {
 		case 0:
 			opcode = irp->opcodep->Op1;
@@ -5575,6 +5581,7 @@ get_instr_stream(kaddr_t pc, int bcount, int acount)
 	instr_rec_t *fst = (instr_rec_t *)NULL, *lst, *ptr, *cur;
 
 #ifdef REDHAT
+	cur = NULL;
 	if ((sp = x86_is_entry_tramp_address(pc, &offset))) 
         	pc = sp->value + offset;
 #endif

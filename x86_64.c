@@ -262,7 +262,7 @@ x86_64_init(int when)
 	case POST_GDB:
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,26) &&
 		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
-			machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_26;
+			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_26;
 		}
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,27) &&
 		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
@@ -330,7 +330,10 @@ x86_64_init(int when)
 			else
 				ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 					"irq_desc", NULL, 0);
-		} else
+		} else if (kernel_symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(unsigned int),
+				&machdep->nr_irqs);
+		else
 			machdep->nr_irqs = 224; /* NR_IRQS (at least) */
 		machdep->vmalloc_start = x86_64_vmalloc_start;
 		machdep->dump_irq = x86_64_dump_irq;
@@ -628,6 +631,9 @@ x86_64_cpu_pda_init(void)
 	struct syment *sp, *nsp;
 	ulong offset, istacksize;
 
+	_boot_cpu_pda = FALSE;
+	level4_pgt = 0;
+
 	STRUCT_SIZE_INIT(x8664_pda, "x8664_pda");
 	MEMBER_OFFSET_INIT(x8664_pda_pcurrent, "x8664_pda", "pcurrent");
 	MEMBER_OFFSET_INIT(x8664_pda_data_offset, "x8664_pda", "data_offset");
@@ -857,7 +863,7 @@ x86_64_ist_init(void)
 				break;
 		}
 	} else if (symbol_exists("per_cpu__init_tss")) {
-		for (c = 0; c < NR_CPUS; c++) {
+		for (c = 0; c < kt->cpus; c++) {
                 	if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 				if (kt->__per_cpu_offset[c] == 0)
 					break;
@@ -2132,8 +2138,8 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
 static void
 x86_64_do_bt_reference_check(struct bt_info *bt, ulong text, char *name)
 {
-	struct syment *sp;
 	ulong offset;
+	struct syment *sp = NULL;
 
 	if (!name)
 		sp = value_search(text, &offset); 
@@ -4011,7 +4017,8 @@ get_x86_64_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 static void 
 x86_64_dump_irq(int irq)
 {
-        if (symbol_exists("irq_desc")) {
+        if (symbol_exists("irq_desc") || 
+	    kernel_symbol_exists("irq_desc_ptrs")) {
                 machdep->dump_irq = generic_dump_irq;
                 return(generic_dump_irq(irq));
         }
@@ -4207,6 +4214,7 @@ x86_64_get_smp_cpus(void)
 		return cpus;
 	}
 
+	_boot_cpu_pda = FALSE;
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
 	if (LKCD_KERNTYPES()) {
@@ -4333,6 +4341,10 @@ x86_64_display_cpu_data(void)
         int cpu, cpus, boot_cpu, _cpu_pda;
         ulong cpu_data;
 	ulong cpu_pda, cpu_pda_addr;
+
+	boot_cpu = _cpu_pda = FALSE;
+	cpu_data = cpu_pda = 0;
+	cpus = 0;
 
 	if (symbol_exists("cpu_data")) {
         	cpu_data = symbol_value("cpu_data");

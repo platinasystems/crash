@@ -784,7 +784,8 @@ is_external_command(void)
 			else
                         	strcat(command, args[i]);
                 }
-                system(command);
+                if (system(command) == -1)
+			perror(command);
                 return TRUE;
         }
 

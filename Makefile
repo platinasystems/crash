@@ -107,6 +107,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 EXTENSIONS=extensions
 EXTENSION_SOURCE_FILES=${EXTENSIONS}/Makefile ${EXTENSIONS}/echo.c ${EXTENSIONS}/dminfo.c \
 	${EXTENSIONS}/snap.c ${EXTENSIONS}/snap.mk \
+	${EXTENSIONS}/trace.c \
         ${EXTENSIONS}/libsial/Makefile \
         ${EXTENSIONS}/libsial/mkbaseop.c \
         ${EXTENSIONS}/libsial/README \
@@ -218,13 +219,13 @@ GDB_FLAGS=
 # usefulness is also dependent upon the processor's compiler -- your mileage
 # may vary.
 #
-#WARNING_OPTIONS=-Wall -Wstrict-prototypes -Wmissing-prototypes
+#WARNING_OPTIONS=-Wall -O2 -Wstrict-prototypes -Wmissing-prototypes -fstack-protector -Wp,-D_FORTIFY_SOURCE=2
 #WARNING_ERROR=-Werror
 
 # TARGET_CFLAGS will be configured automatically by configure
 TARGET_CFLAGS=
 
-CRASH_CFLAGS=${CFLAGS} -g -D${TARGET} ${TARGET_CFLAGS}
+CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
 
 TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES}
@@ -312,7 +313,7 @@ main.o: ${GENERIC_HFILES} main.c
 	cc -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
 cmdline.o: ${GENERIC_HFILES} cmdline.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} cmdline.c ${GDB_FLAGS} -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 tools.o: ${GENERIC_HFILES} tools.c
 	cc -c ${CRASH_CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -321,13 +322,13 @@ global_data.o: ${GENERIC_HFILES} global_data.c
 	cc -c ${CRASH_CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 symbols.o: ${GENERIC_HFILES} symbols.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} symbols.c ${GDB_FLAGS} -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 filesys.o: ${GENERIC_HFILES} filesys.c
 	cc -c ${CRASH_CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 help.o: ${GENERIC_HFILES} help.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} help.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 memory.o: ${GENERIC_HFILES} memory.c
 	cc -c ${CRASH_CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -336,13 +337,13 @@ test.o: ${GENERIC_HFILES} test.c
 	cc -c ${CRASH_CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 task.o: ${GENERIC_HFILES} task.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} task.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 kernel.o: ${GENERIC_HFILES} kernel.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} kernel.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 gdb_interface.o: ${GENERIC_HFILES} gdb_interface.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} gdb_interface.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server.o: ${MCORE_HFILES} va_server.c
 	cc -c ${CRASH_CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -354,19 +355,19 @@ lkcd_common.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_common.c
 	cc -c ${CRASH_CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v1.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v1.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_v1.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v2_v3.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v2_v3.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v2_v3.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_v2_v3.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v5.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v5.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v5.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_v5.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v7.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v7.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v7.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_v7.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v8.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v8.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_v8.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_v8.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 net.o: ${GENERIC_HFILES} net.c
 	cc -c ${CRASH_CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -381,10 +382,10 @@ remote_daemon.o: ${GENERIC_HFILES} remote.c
 	cc -c ${CRASH_CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 x86.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86.c
-	cc -c ${CRASH_CFLAGS} -DMCLX x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} x86.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 alpha.o: ${GENERIC_HFILES} alpha.c
-	cc -c ${CRASH_CFLAGS} ${GDB_FLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} alpha.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc.o: ${GENERIC_HFILES} ppc.c
 	cc -c ${CRASH_CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -434,22 +435,22 @@ extensions.o: ${GENERIC_HFILES} extensions.c
 	cc -c ${CRASH_CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c 
-	cc -c ${CRASH_CFLAGS} -DREDHAT lkcd_x86_trace.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_x86_trace.c -DREDHAT ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_x86_32_64.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_x86_32_64.c
 	cc -c ${CRASH_CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V1 unwind.c -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V1 -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v2.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V2 unwind.c -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V2 -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} -DREDHAT -DUNWIND_V3 unwind.c -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V3 -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
-	cc -c ${CRASH_CFLAGS} -DMCLX lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} lkcd_fix_mem.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper.o: ${GENERIC_HFILES} xen_hyper.c
 	cc -c ${CRASH_CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -506,7 +507,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=4.0.9
+VERSION=4.1.0
 RELEASE=0
 
 release: make_configure
@@ -547,12 +548,18 @@ do_release:
 	@ls -l ${PROGRAM}-${VERSION}.tar.gz
 	@./configure -s -u > ${PROGRAM}.spec
 	@if [ -s ${PROGRAM}.spec ]; then \
-	  cp ${PROGRAM}-${VERSION}.tar.gz /usr/src/redhat/SOURCES; \
-	  /usr/bin/rpmbuild -bs ${PROGRAM}.spec > /dev/null; \
-	  rm -f /usr/src/redhat/SOURCES/${PROGRAM}-${VERSION}.tar.gz; \
-	  mv /usr/src/redhat/SRPMS/${PROGRAM}-${VERSION}-${RELEASE}.src.rpm . ; \
-	  ls -l ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm; \
-	exit 0; fi
+	  rm -rf ./RPMBUILD; \
+	  mkdir -p ./RPMBUILD/SOURCES ./RPMBUILD/SPECS ./RPMBUILD/SRPMS; \
+	  cp ${PROGRAM}-${VERSION}.tar.gz ./RPMBUILD/SOURCES; \
+	  cp ${PROGRAM}.spec ./RPMBUILD/SPECS; \
+	  rpmbuild --define "_sourcedir ./RPMBUILD/SOURCES" \
+	    --define "_srcrpmdir ./RPMBUILD/SRPMS" \
+	    --define "_specdir ./RPMBUILD/SPECS" \
+	    --nodeps -bs ./RPMBUILD/SPECS/${PROGRAM}.spec > /dev/null; \
+	   mv ./RPMBUILD/SRPMS/${PROGRAM}-${VERSION}-${RELEASE}.src.rpm . ; \
+	   rm -rf ./RPMBUILD; \
+	   ls -l ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm; \
+	fi
 
 ref:
 	make ctags cscope

@@ -75,7 +75,6 @@ int count_chars(char *, char);
 void make_build_data(char *);
 void make_spec_file(void);
 void gdb_configure(void);
-int verify_rpm_targets(void);
 int parse_line(char *, char **);
 int setup_gdb_defaults(void);
 struct supported_gdb_version;
@@ -424,6 +423,9 @@ build_configure(void)
 
 	get_current_configuration();
 
+	target = target_CFLAGS = NULL;
+	gdb_version = gdb_version_in = gdb_files = gdb_ofiles = NULL;
+
 	switch (target_data.target)
 	{
 	case X86:
@@ -528,9 +530,6 @@ release_configure(char *gdb_version)
 	char buf[512];
 	char gdb_files[MAXSTRLEN];
 
-	if (!verify_rpm_targets())
-		exit(1);
-
 	get_current_configuration();
 
 	sprintf(buf, "%s/gdb", gdb_version);
@@ -631,90 +630,6 @@ make_rh_rpm_package(char *package, int release)
 	fclose(fp);
 }
 
-/*
- *  Verify that the rpm build area will be in /usr/src/redhat by checking
- *  for the default settings (indicated by "rpm --showrc").
- */
-
-#define DEFAULT_RPM_DIR "%{_topdir}/"
-#define DEFAULT_TOPDIR  "%{_usrsrc}/redhat"
-#define DEFAULT_USRSRC  "%{_usr}/src"
-#define DEFAULT_USR     "/usr"
-
-int 
-verify_rpm_targets(void)
-{
-	int errors;
-	char inbuf[4096], *p1, *p2;
-	FILE *fpr;
-
-	errors = 0;
-	fpr = popen("/bin/rpm --showrc", "r");
-
-	while (fgets(inbuf, 4095, fpr)) {
-                if ((p1 = strstr(inbuf, ": _topdir	")) &&
-                    !strstr(p1, DEFAULT_TOPDIR)) {
-                        p2 = p1 + strlen(": _topdir");
-                        fprintf(stderr, "non-default rpm top directory: %s",
-                                p2+1);
-                        errors++;
-                }
-                if ((p1 = strstr(inbuf, ": _usrsrc	")) &&
-                    !strstr(p1, DEFAULT_USRSRC)) {
-                        p2 = p1 + strlen(": _usrsrc");
-                        fprintf(stderr,"non-default rpm /usr/src directory: %s",
-                                p2+1);
-                        errors++;
-                }
-                if ((p1 = strstr(inbuf, ": _usr	")) &&
-                    !strstr(p1, DEFAULT_USR)) {
-                        p2 = p1 + strlen(": _usr");
-                        fprintf(stderr,"non-default rpm /usr directory: %s",                                p2+1);
-                        errors++;
-                }
-
-		if ((p1 = strstr(inbuf, ": _builddir	")) &&
-		    !strstr(p1, DEFAULT_RPM_DIR "BUILD")) { 
-			p2 = p1 + strlen(": _builddir");
-			fprintf(stderr, "non-default rpm BUILD directory: %s",
-				p2+1);
-			errors++;
-		}
-                if ((p1 = strstr(inbuf, ": _rpmdir	")) &&
-                    !strstr(p1, DEFAULT_RPM_DIR "RPMS")) {
-			p2 = p1 + strlen(": _rpmdir");
-                        fprintf(stderr, "non-default rpm RPMS directory: %s",
-                                p2+1);
-                        errors++;
-                }
-                if ((p1 = strstr(inbuf, ": _sourcedir	")) &&
-                    !strstr(p1, DEFAULT_RPM_DIR "SOURCES")) {
-			p2 = p1 + strlen(": _sourcedir");
-                        fprintf(stderr, "non-default rpm SOURCES directory: %s",
-                                p2+1);
-                        errors++;
-                }
-                if ((p1 = strstr(inbuf, ": _specdir	")) &&
-                    !strstr(p1, DEFAULT_RPM_DIR "SPECS")) {
-			p2 = p1 + strlen(": _specdir");
-                        fprintf(stderr, "non-default rpm SPECS directory: %s",
-                                p2+1);
-                        errors++;
-                }
-                if ((p1 = strstr(inbuf, ": _srcrpmdir	")) &&
-                    !strstr(p1, DEFAULT_RPM_DIR "SRPMS")) {
-			p2 = p1 + strlen(": _srcrpmdir");
-                        fprintf(stderr, "non-default rpm SRPMS directory: %s",
-                                p2+1);
-                        errors++;
-                }
-	}
-
-	return (errors ? FALSE : TRUE); 
-}
-
-
-
 void
 gdb_configure(void)
 {
@@ -723,6 +638,8 @@ gdb_configure(void)
 	char *gdb_version;
 
 	get_current_configuration();
+
+	gdb_version = NULL;
 
 	switch (target_data.target)
 	{
@@ -1095,14 +1012,14 @@ make_build_data(char *target)
         if (gethostname(hostname, MAXSTRLEN) != 0)
                 hostname[0] = '\0';
 
-        fgets(inbuf1, 79, fp1);
+        p = fgets(inbuf1, 79, fp1);
 
-        fgets(inbuf2, 79, fp2);
+        p = fgets(inbuf2, 79, fp2);
         p = strstr(inbuf2, ")");
         p++;
         *p = '\0';
 
-        fgets(inbuf3, 79, fp3);
+        p = fgets(inbuf3, 79, fp3);
 
 	lower_case(target_data.program, progname);
 
@@ -1199,6 +1116,7 @@ make_spec_file(void)
 	printf("* sial:   Provides C-like language for writing dump analysis scripts\n");
 	printf("* dminfo: Device-mapper target analyzer\n");
 	printf("* snap:   Takes a snapshot of live memory and creates a kdump dumpfile\n");
+        printf("* trace:  Displays kernel tracing data and traced events that occurred prior to a panic.\n"); 
 	printf("\n");
 	printf("%%prep\n");
         printf("%%setup -n %%{name}-%%{version}\n"); 
@@ -1222,11 +1140,13 @@ make_spec_file(void)
 	printf("cp extensions/sial.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/dminfo.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/snap.so %%{buildroot}%%{_libdir}/crash/extensions\n");
+	printf("cp extensions/trace.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("\n");
 	printf("%%clean\n");
 	printf("rm -rf %%{buildroot}\n");
 	printf("\n");
 	printf("%%files\n");
+	printf("%%defattr(-,root,root)\n");
 	printf("/usr/bin/crash\n");
 	printf("%%{_mandir}/man8/crash.8*\n");
      /*	printf("/usr/bin/crashd\n"); */

@@ -1724,6 +1724,7 @@ xc_core_elf_pfn_to_page_index(ulong pfn)
 	 *  Initialize the start_index.
 	 */
 	xd->xc_core.last_batch.accesses++;
+	start_index = 0;
 
 	if ((pfn >= xd->xc_core.last_batch.start) &&
 	    (pfn <= xd->xc_core.last_batch.end)) {
@@ -1853,6 +1854,7 @@ xc_core_elf_pfn_valid(ulong pfn)
 	 *  Initialize the start_index.
 	 */
 	xd->xc_core.last_batch.accesses++;
+	start_index = 0;
 
 	if ((pfn >= xd->xc_core.last_batch.start) &&
 	    (pfn <= xd->xc_core.last_batch.end)) {
@@ -2702,6 +2704,7 @@ xc_core_dump_elfnote(off_t sh_offset, size_t sh_size, int store)
 	struct xen_dumpcore_elfnote_format_version_desc *format_version;
 
 	elfnote_header = NULL;
+	format_version = NULL;
 
         if (!(notes_buffer = (char *)malloc(sh_size)))
                 error(FATAL, "cannot malloc notes space.");

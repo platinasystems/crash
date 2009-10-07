@@ -353,7 +353,8 @@ xen_hyper_cmd_dumpinfo(void)
 	int c, cnt, type, bogus;
 
 	BZERO(&dia, sizeof(struct xen_hyper_cmd_args));
-	flag= 0;
+	flag = val =0;
+	dic = NULL;
         while ((c = getopt(argcnt, args, "rt")) != EOF) {
                 switch(c)
                 {
@@ -606,6 +607,7 @@ xen_hyper_dump_log(void)
 		"conring contents", FAULT_ON_ERROR);
 	idx = start;
 	len = XEN_HYPER_CONRING_SIZE;
+	last = 0;
 
 wrap_around:
 	for (i = idx; i < len; i++) {
