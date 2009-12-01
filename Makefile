@@ -25,7 +25,7 @@ PROGRAM=crash
 # Supported targets: X86 ALPHA PPC IA64 PPC64
 # TARGET will be configured automatically by configure
 #
-TARGET=
+TARGET=X86_64
 
 ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
 ifeq ($(ARCH), ppc64)
@@ -33,12 +33,11 @@ CONF_FLAGS = -m64
 endif
 
 #
-# GDB, GDB_FILES and GDB_OFILES will be configured automatically by configure 
+# GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
 GDB=gdb-6.1
 GDB_FILES=${GDB_6.1_FILES}
-GDB_OFILES=
-
+GDB_OFILES=${GDB_6.1_OFILES}
 GDB_PATCH_FILES=gdb-6.1.patch
 
 #
@@ -207,10 +206,13 @@ GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
           ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o \
           ${GDB}/gdb/ppc-linux-tdep.o
 
+GDB_7.0_FILES=
+GDB_7.0_OFILES=
+
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
 #
-GDB_FLAGS=
+GDB_FLAGS=-DGDB_6_1
 
 #
 # WARNING_OPTIONS and WARNING_ERROR are both applied on a per-file basis. 
@@ -227,7 +229,8 @@ TARGET_CFLAGS=
 
 CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
 
-TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8 \
+GPL_FILES=COPYING
+TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
 
@@ -251,7 +254,8 @@ gdb_merge: force
 	@echo "${LDFLAGS} -lz -ldl -rdynamic" > ${GDB}/gdb/mergelibs
 	@echo "../../${PROGRAM} ../../${PROGRAM}lib.a" > ${GDB}/gdb/mergeobj
 	@if [ ! -f ${GDB}/config.status ]; then \
-	  (cd ${GDB}; ./configure --with-separate-debug-dir=/usr/lib/debug; \
+	  (cd ${GDB}; ./configure --with-separate-debug-dir=/usr/lib/debug \
+	    --with-bugurl="" --with-expat=no --with-python=no; \
 	  make --no-print-directory;) \
 	else (cd ${GDB}/gdb; make --no-print-directory;); fi
 	@if [ ! -f ${GDB}/gdb/libgdb.a ]; then \
@@ -260,7 +264,7 @@ gdb_merge: force
 
 gdb_unzip:
 	@rm -f gdb.files
-	@for FILE in ${GDB_FILES}; do\
+	@for FILE in ${GDB_FILES} dummy; do\
 	  echo $$FILE >> gdb.files; done
 	@tar --exclude-from gdb.files -xvzmf ${GDB}.tar.gz
 	@make --no-print-directory gdb_patch
@@ -283,7 +287,11 @@ make_configure: force
 	@rm -f configure
 	@cc ${CONF_FLAGS} -o configure configure.c ${WARNING_ERROR} ${WARNING_OPTIONS}
 
-clean:
+clean: make_configure
+	@./configure -q -b
+	@make --no-print-directory do_clean
+
+do_clean:
 	rm -f ${OBJECT_FILES} ${DAEMON_OBJECT_FILES} ${PROGRAM} ${PROGRAM}lib.a ${GDB_OFILES}
 	@(cd extensions; make --no-print-directory -i clean)
 
@@ -491,7 +499,7 @@ gdb_files: make_configure
 show_files:
 	@if [ -f ${PROGRAM}  ]; then \
 		./${PROGRAM} --no_scroll --no_crashrc -h README > README; fi
-	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING README \
+	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} ${GPL_FILES} README \
 	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES}
 
 ctags:
@@ -507,7 +515,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=4.1.0
+VERSION=4.1.1
 RELEASE=0
 
 release: make_configure
@@ -533,7 +541,7 @@ do_release:
 	@rm -f ${PROGRAM}-${VERSION}.tar.gz 
 	@rm -f ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm
 	@chown root ./RELDIR/${PROGRAM}-${VERSION}
-	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING \
+	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} ${GPL_FILES} \
 	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${VERSION}; tar xf -)
 	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${VERSION}
 	@./${PROGRAM} --no_scroll --no_crashrc -h README > ./RELDIR/${PROGRAM}-${VERSION}/README
@@ -587,4 +595,4 @@ extensions: make_configure
 	@make --no-print-directory do_extensions
 
 do_extensions:
-	@(cd extensions; make -i TARGET=$(TARGET) TARGET_CFLAGS=$(TARGET_CFLAGS))
+	@(cd extensions; make -i TARGET=$(TARGET) TARGET_CFLAGS=$(TARGET_CFLAGS) GDB=$(GDB) GDB_FLAGS=$(GDB_FLAGS))

@@ -18,18 +18,17 @@
 /*
  *  define, clear and undef dynamically update the top-level Makefile: 
  *
- *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES and TARGET_CFLAGS
+ *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS and GPL_FILES
  *       create: build_data.c
  *
- *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, TARGET_CFLAGS, and
+ *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, and
  *               PROGRAM (for daemon)
  *       create: build_data.c
  *
- *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION and TARGET_CFLAGS 
+ *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION, GDB_PATCH_FILES, TARGET_CFLAGS and GPL_FILES 
  *        undef: WARNING_ERROR, WARNING_OPTIONS
  *
- *   -r  define: GDB_FILES, VERSION
- *       verify that no .rpmmacro file exists for the running shell
+ *   -r  define: GDB_FILES, VERSION, GDB_PATCH_FILES GPL_FILES
  *
  *   -w  define: WARNING_OPTIONS
  *        undef: WARNING_ERROR
@@ -54,8 +53,9 @@
 #include <unistd.h>
 #include <ctype.h>
 
-void build_configure(void);
-void release_configure(char *);
+struct supported_gdb_version;
+void build_configure(struct supported_gdb_version *);
+void release_configure(char *, struct supported_gdb_version *);
 void make_rh_rpm_package(char *, int);
 void unconfigure(void);
 void set_warnings(int);
@@ -73,12 +73,11 @@ char *strip_linefeeds(char *);
 int file_exists(char *);
 int count_chars(char *, char);
 void make_build_data(char *);
-void make_spec_file(void);
-void gdb_configure(void);
+void gdb_configure(struct supported_gdb_version *);
 int parse_line(char *, char **);
-int setup_gdb_defaults(void);
-struct supported_gdb_version;
-int store_gdb_defaults(struct supported_gdb_version *);
+struct supported_gdb_version *setup_gdb_defaults(void);
+struct supported_gdb_version *store_gdb_defaults(struct supported_gdb_version *);
+void make_spec_file(struct supported_gdb_version *);
 
 #define TRUE 1
 #define FALSE 0
@@ -129,6 +128,8 @@ int store_gdb_defaults(struct supported_gdb_version *);
 #define GDB_5_3  0
 #define GDB_6_0  1
 #define GDB_6_1  2
+#define GDB_7_0  3
+#define SUPPORTED_GDB_VERSIONS (GDB_7_0 + 1)
 
 int default_gdb = GDB_6_1;
 
@@ -137,66 +138,47 @@ struct supported_gdb_version {
 	char *GDB_VERSION_IN;
 	char *GDB_FILES;
 	char *GDB_OFILES;
-} supported_gdb_versions[3] = {
+	char *GDB_PATCH_FILES;
+	char *GDB_FLAGS;
+	char *GPL;
+} supported_gdb_versions[SUPPORTED_GDB_VERSIONS] = {
 	{
 	    "GDB=gdb-5.3post-0.20021129.36rh",
 	    "Red Hat Linux (5.3post-0.20021129.36rh)",
 	    "GDB_FILES=${GDB_5.3post-0.20021129.36rh_FILES}",	   
-	    "GDB_OFILES=${GDB_5.3post-0.20021129.36rh_OFILES}"
+	    "GDB_OFILES=${GDB_5.3post-0.20021129.36rh_OFILES}",
+	    "GDB_PATCH_FILES=",
+	    "GDB_FLAGS=-DGDB_5_3",
+	    "GPLv2"
 	},
 	{ 
 	    "GDB=gdb-6.0",
 	    "6.0",
 	    "GDB_FILES=${GDB_6.0_FILES}",
-	    "GDB_OFILES=${GDB_6.0_OFILES}"
+	    "GDB_OFILES=${GDB_6.0_OFILES}",
+	    "GDB_PATCH_FILES=",
+	    "GDB_FLAGS=-DGDB_6_0",
+	    "GPLv2"
 	},
 	{
 	    "GDB=gdb-6.1",
 	    "6.1",
 	    "GDB_FILES=${GDB_6.1_FILES}",
-	    "GDB_OFILES=${GDB_6.1_OFILES}"
+	    "GDB_OFILES=${GDB_6.1_OFILES}",
+	    "GDB_PATCH_FILES=gdb-6.1.patch",
+	    "GDB_FLAGS=-DGDB_6_1",
+	    "GPLv2"
+	},
+	{
+	    "GDB=gdb-7.0",
+	    "7.0",
+	    "GDB_FILES=${GDB_7.0_FILES}",
+	    "GDB_OFILES=${GDB_7.0_OFILES}",
+	    "GDB_PATCH_FILES=gdb-7.0.patch",
+	    "GDB_FLAGS=-DGDB_7_0",
+	    "GPLv3"
 	},
 };
-
-
-char *GDB_X86; 
-char *GDB_ALPHA;
-char *GDB_PPC;
-char *GDB_IA64;
-char *GDB_S390;
-char *GDB_S390X;
-char *GDB_PPC64;
-char *GDB_X86_64;
-
-/* 
- * copy of gdb-x.x/gdb/version.in file 
- */
-char *GDB_X86_VERSION_IN;
-char *GDB_ALPHA_VERSION_IN;
-char *GDB_PPC_VERSION_IN;
-char *GDB_IA64_VERSION_IN;
-char *GDB_S390_VERSION_IN;
-char *GDB_S390X_VERSION_IN;
-char *GDB_PPC64_VERSION_IN;
-char *GDB_X86_64_VERSION_IN;
-
-char *GDB_FILES_X86;
-char *GDB_FILES_ALPHA;
-char *GDB_FILES_PPC;
-char *GDB_FILES_IA64;
-char *GDB_FILES_S390;
-char *GDB_FILES_S390X;
-char *GDB_FILES_PPC64;
-char *GDB_FILES_X86_64;
-
-char *GDB_OFILES_X86;
-char *GDB_OFILES_ALPHA;
-char *GDB_OFILES_PPC;
-char *GDB_OFILES_IA64;
-char *GDB_OFILES_S390;
-char *GDB_OFILES_S390X;
-char *GDB_OFILES_PPC64;
-char *GDB_OFILES_X86_64;
 
 #define DAEMON  0x1
 #define QUIET   0x2
@@ -209,7 +191,6 @@ struct target_data {
 	int flags;
 	char program[MAXSTRLEN];
 	char gdb_version[MAXSTRLEN];
-	char gdb_version_in[MAXSTRLEN];
 	char release[MAXSTRLEN];
 	struct stat statbuf;
 } target_data = { 0 }; 
@@ -218,8 +199,9 @@ int
 main(int argc, char **argv)
 {
 	int c;
+	struct supported_gdb_version *sp;
 
-	setup_gdb_defaults();
+	sp = setup_gdb_defaults();
 
 	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:")) > 0) {
 		switch (c) {
@@ -232,10 +214,10 @@ main(int argc, char **argv)
 		case 'd':
 			target_data.flags |= DAEMON;
 		case 'b':
-			build_configure();
+			build_configure(sp);
 			break;
 		case 'r':
-			release_configure(optarg);
+			release_configure(optarg, sp);
 			break;
 		case 'p':
 			make_rh_rpm_package(optarg, 0);
@@ -249,10 +231,10 @@ main(int argc, char **argv)
 			set_warnings(c);
 			break;
 		case 's':
-			make_spec_file();
+			make_spec_file(sp);
 			break;
 		case 'g':
-			gdb_configure();
+			gdb_configure(sp);
 			break;
 		}
 	}
@@ -410,87 +392,50 @@ show_configuration(void)
 }
 
 void
-build_configure(void)
+build_configure(struct supported_gdb_version *sp)
 {
 	FILE *fp1, *fp2;
 	char buf[512];
 	char *target;
 	char *target_CFLAGS;
-	char *gdb_version;
-	char *gdb_version_in;
-	char *gdb_files;
-	char *gdb_ofiles;
 
 	get_current_configuration();
 
 	target = target_CFLAGS = NULL;
-	gdb_version = gdb_version_in = gdb_files = gdb_ofiles = NULL;
 
 	switch (target_data.target)
 	{
 	case X86:
 		target = TARGET_X86;
 		target_CFLAGS = TARGET_CFLAGS_X86;
-		gdb_version = GDB_X86;
-		gdb_version_in = GDB_X86_VERSION_IN;
-		gdb_files = GDB_FILES_X86;
-		gdb_ofiles = GDB_OFILES_X86;
 		break;
 	case ALPHA:
 		target = TARGET_ALPHA;
 		target_CFLAGS = TARGET_CFLAGS_ALPHA;
-		gdb_version = GDB_ALPHA;
-		gdb_version_in = GDB_ALPHA_VERSION_IN;
-                gdb_files = GDB_FILES_ALPHA;
-                gdb_ofiles = GDB_OFILES_ALPHA;
 		break;
 	case PPC:
 		target = TARGET_PPC;
 		target_CFLAGS = TARGET_CFLAGS_PPC;
-		gdb_version = GDB_PPC;
-		gdb_version_in = GDB_PPC_VERSION_IN;
-                gdb_files = GDB_FILES_PPC;
-                gdb_ofiles = GDB_OFILES_PPC;
 		break;
 	case IA64:
 		target = TARGET_IA64;
                 target_CFLAGS = TARGET_CFLAGS_IA64;
-		gdb_version = GDB_IA64;
-		gdb_version_in = GDB_IA64_VERSION_IN;
-                gdb_files = GDB_FILES_IA64;
-                gdb_ofiles = GDB_OFILES_IA64;
 		break;
 	case S390:
 		target = TARGET_S390;
 		target_CFLAGS = TARGET_CFLAGS_S390;
-		gdb_version = GDB_S390;
-		gdb_version_in = GDB_S390_VERSION_IN;
-                gdb_files = GDB_FILES_S390;
-                gdb_ofiles = GDB_OFILES_S390;
 		break;
 	case S390X:
 		target = TARGET_S390X;
 		target_CFLAGS = TARGET_CFLAGS_S390X;
-		gdb_version = GDB_S390X;
-		gdb_version_in = GDB_S390X_VERSION_IN;
-                gdb_files = GDB_FILES_S390X;
-                gdb_ofiles = GDB_OFILES_S390X;
 		break;
 	case PPC64:
                 target = TARGET_PPC64;
                 target_CFLAGS = TARGET_CFLAGS_PPC64;
-                gdb_version = GDB_PPC64;
-                gdb_version_in = GDB_PPC64_VERSION_IN;
-                gdb_files = GDB_FILES_PPC64;
-                gdb_ofiles = GDB_OFILES_PPC64;
                 break;
 	case X86_64:
                 target = TARGET_X86_64;
                 target_CFLAGS = TARGET_CFLAGS_X86_64;
-                gdb_version = GDB_X86_64;
-                gdb_version_in = GDB_X86_64_VERSION_IN;
-                gdb_files = GDB_FILES_X86_64;
-                gdb_ofiles = GDB_OFILES_X86_64;
                 break;
 	}
 
@@ -503,15 +448,19 @@ build_configure(void)
 			strlen("TARGET_CFLAGS=")) == 0)
                         fprintf(fp2, "%s\n", target_CFLAGS);
 		else if (strncmp(buf, "GDB_FILES=",strlen("GDB_FILES=")) == 0)
-			fprintf(fp2, "%s\n", gdb_files);
+			fprintf(fp2, "%s\n", sp->GDB_FILES);
 		else if (strncmp(buf, "GDB_OFILES=",strlen("GDB_OFILES=")) == 0)
-                        fprintf(fp2, "%s\n", gdb_ofiles);
+                        fprintf(fp2, "%s\n", sp->GDB_OFILES);
+		else if (strncmp(buf, "GDB_PATCH_FILES=",strlen("GDB_PATCH_FILES=")) == 0)
+                        fprintf(fp2, "%s\n", sp->GDB_PATCH_FILES);
+		else if (strncmp(buf, "GDB_FLAGS=",strlen("GDB_FLAGS=")) == 0)
+                        fprintf(fp2, "%s\n", sp->GDB_FLAGS);
+		else if (strncmp(buf, "GPL_FILES=", strlen("GPL_FILES=")) == 0)
+			fprintf(fp2, "GPL_FILES=%s\n", strcmp(sp->GPL, "GPLv2") == 0 ? 
+				"COPYING" : "COPYING3");
                 else if (strncmp(buf, "GDB=", strlen("GDB=")) == 0) {
-                        fprintf(fp2, "%s\n", gdb_version);
-                        sprintf(target_data.gdb_version, "%s", &gdb_version[4]);
-			bzero(target_data.gdb_version_in, MAXSTRLEN);
-			strncpy(target_data.gdb_version_in, gdb_version_in, 
-				MIN(strlen(gdb_version_in), MAXSTRLEN-1));
+                        fprintf(fp2, "%s\n", sp->GDB);
+                        sprintf(target_data.gdb_version, "%s", &sp->GDB[4]);
 		} else
 			fprintf(fp2, "%s", buf);
 
@@ -523,7 +472,7 @@ build_configure(void)
 }
 
 void
-release_configure(char *gdb_version)
+release_configure(char *gdb_version, struct supported_gdb_version *sp)
 {
 	FILE *fp1, *fp2;
 	int found;
@@ -551,6 +500,11 @@ release_configure(char *gdb_version)
 		else if (strncmp(buf, "VERSION=", strlen("VERSION=")) == 0)
                         fprintf(fp2, "VERSION=%s\n", 
 				target_data.release);
+		else if (strncmp(buf, "GDB_PATCH_FILES=", strlen("GDB_PATCH_FILES=")) == 0)
+			fprintf(fp2, "%s\n", sp->GDB_PATCH_FILES);
+		else if (strncmp(buf, "GPL_FILES=", strlen("GPL_FILES=")) == 0)
+			fprintf(fp2, "GPL_FILES=%s\n", strcmp(sp->GPL, "GPLv2") == 0 ? 
+				"COPYING" : "COPYING3");
 		else
 			fprintf(fp2, "%s", buf);
 
@@ -631,61 +585,18 @@ make_rh_rpm_package(char *package, int release)
 }
 
 void
-gdb_configure(void)
+gdb_configure(struct supported_gdb_version *sp)
 {
 	FILE *fp1, *fp2;
 	char buf[512];
-	char *gdb_version;
 
 	get_current_configuration();
-
-	gdb_version = NULL;
-
-	switch (target_data.target)
-	{
-	case X86:
-		gdb_version = GDB_X86;
-		break;
-	case ALPHA:
-		gdb_version = GDB_ALPHA;
-		break;
-	case PPC:
-		gdb_version = GDB_PPC;
-		break;
-	case IA64:
-		gdb_version = GDB_IA64;
-		break;
-	case S390:
-		gdb_version = GDB_S390;
-		break;
-	case S390X:
-		gdb_version = GDB_S390X;
-		break;
-	case PPC64:
-		gdb_version = GDB_PPC64;
-		break;
-	case X86_64:
-		gdb_version = GDB_X86_64;
-		break;
-	}
-
-	if ((strcmp(gdb_version, GDB_X86) != 0) &&
-	    (strcmp(gdb_version, GDB_ALPHA) != 0) &&
-	    (strcmp(gdb_version, GDB_PPC) != 0) &&
-	    (strcmp(gdb_version, GDB_IA64) != 0) &&
-	    (strcmp(gdb_version, GDB_S390) != 0) &&
-	    (strcmp(gdb_version, GDB_S390X) != 0) &&
-	    (strcmp(gdb_version, GDB_PPC64) != 0) &&
-	    (strcmp(gdb_version, GDB_X86_64) != 0)) {
-		fprintf(stderr, "divergent gdb versions\n");
-		return;
-	}
 
 	makefile_setup(&fp1, &fp2);
 
 	while (fgets(buf, 512, fp1)) {
 		if (strncmp(buf, "GDB=", strlen("GDB=")) == 0)
-			fprintf(fp2, "%s\n", gdb_version);
+			fprintf(fp2, "%s\n", sp->GDB);
 		else
 			fprintf(fp2, "%s", buf);
 
@@ -712,10 +623,16 @@ unconfigure(void)
                         fprintf(fp2, "GDB_FILES=\n");
                 else if (strncmp(buf, "GDB_OFILES=",strlen("GDB_OFILES=")) == 0)
                         fprintf(fp2, "GDB_OFILES=\n");
+                else if (strncmp(buf, "GDB_PATCH_FILES=",strlen("GDB_PATCH_FILES=")) == 0)
+                        fprintf(fp2, "GDB_PATCH_FILES=\n");
+                else if (strncmp(buf, "GDB_FLAGS=",strlen("GDB_FLAGS=")) == 0)
+                        fprintf(fp2, "GDB_FLAGS=\n");
                 else if (strncmp(buf, "GDB=", strlen("GDB=")) == 0) 
                         fprintf(fp2, "GDB=\n");
                 else if (strncmp(buf, "VERSION=", strlen("VERSION=")) == 0) 
                         fprintf(fp2, "VERSION=\n");
+                else if (strncmp(buf, "GPL_FILES=", strlen("GPL_FILES=")) == 0) 
+                        fprintf(fp2, "GPL_FILES=\n");
                 else if (strncmp(buf, "WARNING_ERROR=", 
 			strlen("WARNING_ERROR=")) == 0) {
                         shift_string_right(buf, 1);
@@ -1048,7 +965,7 @@ make_build_data(char *target)
 }
 
 void
-make_spec_file(void)
+make_spec_file(struct supported_gdb_version *sp)
 {
 	char *Version, *Release;
 	char buf[512];
@@ -1073,7 +990,7 @@ make_spec_file(void)
 	printf("Name: %s\n", lower_case(target_data.program, buf));
 	printf("Version: %s\n", Version);
 	printf("Release: %s\n", Release);
-	printf("License: GPLv2\n");
+	printf("License: %s\n", sp->GPL);
 	printf("Group: Development/Debuggers\n");
 	printf("Source: %%{name}-%%{version}.tar.gz\n");
 	printf("URL: http://people.redhat.com/anderson\n");
@@ -1162,44 +1079,28 @@ make_spec_file(void)
 }
 
 /*
- *  Use the default gdb #defines unless there's a .gdb_config file
- *  containing statments for DEFAULT_GDB, DEFAULT_GDB_VERSION_IN,
- *  DEFAULT_GDB_FILES and DEFAULT_GDB_OFILES.
+ *  Use the default gdb #defines unless there's a .gdb file.
  */
-char GDB_override[MAXSTRLEN] = { 0 };
-char GDB_VERSION_IN_override[MAXSTRLEN] = { 0 };
-char GDB_FILES_override[MAXSTRLEN] = { 0 };
-char GDB_OFILES_override[MAXSTRLEN] = { 0 };
-struct supported_gdb_version test_gdb_version = { 0 };
-
-int
+struct supported_gdb_version *
 setup_gdb_defaults(void)
 {
 	FILE *fp;
 	char inbuf[512];
 	char buf[512];
-	char *p1, *p2;
-	int line, bad, cnt;
-	char *gdb, *gdb_version_in, *gdb_files, *gdb_ofiles;
 	struct supported_gdb_version *sp;
 
-	gdb = gdb_version_in = gdb_files = gdb_ofiles = NULL;
-	bad = line = 0;
-	sp = NULL;
-
 	/*
-	 *  Use the default, allowing for an override in .gdb_config
+	 *  Use the default, allowing for an override in .gdb
 	 */
-        if (!file_exists(".gdb_config")) 
+        if (!file_exists(".gdb")) 
 		return store_gdb_defaults(NULL);
 
-        if ((fp = fopen(".gdb_config", "r")) == NULL) {
-        	perror(".gdb_config");
+        if ((fp = fopen(".gdb", "r")) == NULL) {
+        	perror(".gdb");
 		return store_gdb_defaults(NULL);
 	}
 
         while (fgets(inbuf, 512, fp)) {
-		line++;
 		strip_linefeeds(inbuf);
 		strip_beginning_whitespace(inbuf);
 
@@ -1209,180 +1110,38 @@ setup_gdb_defaults(void)
 		 *  Simple override.
 		 */
 		if (strcmp(buf, "5.3") == 0) {
-			if (gdb || gdb_version_in || gdb_files || gdb_ofiles) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: mixed supported/test configuration?\n", 
-					line);
-				bad++;
-				break;
-			}
 			fclose(fp);
 			sp = &supported_gdb_versions[GDB_5_3];
-			fprintf(stderr, ".gdb_config configuration: %s\n\n", sp->GDB_VERSION_IN);
+			fprintf(stderr, ".gdb configuration: %s\n\n", sp->GDB_VERSION_IN);
 			return store_gdb_defaults(sp);
 		}
 		if (strcmp(buf, "6.0") == 0) {
-			if (gdb || gdb_version_in || gdb_files || gdb_ofiles) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: mixed supported/test configuration?\n", 
-					line);
-				bad++;
-				break;
-			}
 			fclose(fp);
 			sp = &supported_gdb_versions[GDB_6_0];
-			fprintf(stderr, ".gdb_config configuration: %s\n\n", sp->GDB_VERSION_IN);
+			fprintf(stderr, ".gdb configuration: %s\n\n", sp->GDB_VERSION_IN);
 			return store_gdb_defaults(sp);
 		}
 		if (strcmp(buf, "6.1") == 0) {
-			if (gdb || gdb_version_in || gdb_files || gdb_ofiles) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: mixed supported/test configuration?\n", 
-					line);
-				bad++;
-				break;
-			}
 			fclose(fp);
-			fprintf(stderr, ".gdb_config configuration: 6.1\n\n");
 			sp = &supported_gdb_versions[GDB_6_1];
-			fprintf(stderr, ".gdb_config configuration: %s\n", sp->GDB_VERSION_IN);
+			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
 			return store_gdb_defaults(sp);
 		}
-
-		/*
-		 *  Test case override.
-		 *  
-		 *  This is the acceptable .gdb_config file format:
-		 *
-		 *   GDB             "GDB=gdb-6.0"
-		 *   GDB_VERSION_IN  "6.0"
-		 *   GDB_FILES       "GDB_FILES=${GDB_6.0_FILES}"
-		 *   GDB_OFILES      "GDB_OFILES=${GDB_6.0_OFILES}"
-	 	 */
-
-                if ((strncmp(buf, "GDB ", 4) == 0) ||
-		    (strncmp(buf, "GDB	", 4) == 0) ||
-		    (strncmp(buf, "GDB=", 4) == 0))  {
-			if (strlen(GDB_override)) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: GDB already configured: \"%s\"\n", 
-					line, GDB_override);
-				bad++;
-				break;
-			}
-			p1 = index(buf, '\"');
-			p2 = rindex(buf, '\"');
-			cnt = count_chars(buf, '\"');
-			if ((cnt != 2) || !p1 || !p2 || (p1 == p2) || (p2 == (p1+1))) 
-				goto malformed;
-			*p2 = '\0';
-			gdb = p1+1; 
-			if (count_chars(gdb, ' ') || count_chars(gdb, '\t'))
-				goto malformed;
-			strcpy(GDB_override, gdb);
-		}
-                else if ((strncmp(buf, "GDB_VERSION_IN ", 15) == 0) || 
-		    (strncmp(buf, "GDB_VERSION_IN	", 15) == 0) ||
-		    (strncmp(buf, "GDB_VERSION_IN=", 15) == 0)) {
-			if (strlen(GDB_VERSION_IN_override)) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: GDB_VERSION_IN already configured: \"%s\"\n", 
-					line, GDB_VERSION_IN_override);
-				bad++;
-				break;
-			}
-			p1 = index(buf, '\"');
-			p2 = rindex(buf, '\"');
-			cnt = count_chars(buf, '\"');
-			if ((cnt != 2) || !p1 || !p2 || (p1 == p2) || (p2 == (p1+1))) 
-				goto malformed;
-			*(p2) = '\0';
-			gdb_version_in = p1+1;
-			if (count_chars(gdb_version_in, ' ') || 
-			    count_chars(gdb_version_in, '\t'))
-				goto malformed;
-			strcpy(GDB_VERSION_IN_override, gdb_version_in);
-		}
-                else if ((strncmp(buf, "GDB_FILES ", 10) == 0) ||
-		    (strncmp(buf, "GDB_FILES	", 10) == 0) ||
-		    (strncmp(buf, "GDB_FILES=", 10) == 0)) {
-			if (strlen(GDB_FILES_override)) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: GDB_FILES already configured: \"%s\"?\n", 
-					line, GDB_FILES_override);
-				bad++;
-				break;
-			}
-			p1 = index(buf, '\"');
-			p2 = rindex(buf, '\"');
-			cnt = count_chars(buf, '\"');
-			if ((cnt != 2) || !p1 || !p2 || (p1 == p2) || (p2 == (p1+1))) 
-				goto malformed;
-			*(p2) = '\0';
-			gdb_files = p1+1;
-			if (count_chars(gdb_files, ' ') || count_chars(gdb_files, '\t'))
-				goto malformed;
-			strcpy(GDB_FILES_override, gdb_files);
-		}
-                else if ((strncmp(buf, "GDB_OFILES ", 11) == 0) ||
-		    (strncmp(buf, "GDB_OFILES	", 11) == 0) ||
-		    (strncmp(buf, "GDB_OFILES=", 11) == 0)) {
-			if (strlen(GDB_OFILES_override)) {
-				fprintf(stderr, 
-				    ".gdb_config[line %d]: GDB_OFILES already configured: \"%s\"\n", 
-					line, GDB_OFILES_override);
-				bad++;
-				break;
-			}
-			p1 = index(buf, '\"');
-			p2 = rindex(buf, '\"');
-			cnt = count_chars(buf, '\"');
-			if ((cnt != 2) || !p1 || !p2 || (p1 == p2) || (p2 == (p1+1))) 
-				goto malformed;
-			*(p2) = '\0';
-			gdb_ofiles = p1+1;
-			if (count_chars(gdb_ofiles, ' ') || count_chars(gdb_ofiles, '\t'))
-				goto malformed;
-			strcpy(GDB_OFILES_override, gdb_ofiles);
-                }
-		else {
-			if (buf[0] == '#')
-				continue;
-			goto malformed;
+		if (strcmp(buf, "7.0") == 0) {
+			fclose(fp);
+			sp = &supported_gdb_versions[GDB_7_0];
+			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
+			return store_gdb_defaults(sp);
 		}
         }
 	
 	fclose(fp);
 
-	if (bad || !gdb || !gdb_version_in || !gdb_files || !gdb_ofiles) {
-		fprintf(stderr, ".gdb_config: rejected -- using default gdb\n\n");
-		sp = NULL;
-	} else {
-		fprintf(stderr, ".gdb_config test configuration:\n");
-		fprintf(stderr, "    GDB=\"%s\"\n", GDB_override);
-		fprintf(stderr, "    GDB_VERSION_IN=\"%s\"\n", GDB_VERSION_IN_override);
-		fprintf(stderr, "    GDB_FILES=\"%s\"\n", GDB_FILES_override);
-		fprintf(stderr, "    GDB_OFILES=\"%s\"\n\n", GDB_OFILES_override);
-	
-		test_gdb_version.GDB = GDB_override;
-		test_gdb_version.GDB_VERSION_IN = GDB_VERSION_IN_override;
-		test_gdb_version.GDB_FILES = GDB_FILES_override;
-		test_gdb_version.GDB_OFILES = GDB_OFILES_override;
-		sp = &test_gdb_version;
-	}
-
- 	return store_gdb_defaults(sp);
-
-malformed:
-	fclose(fp);
-        fprintf(stderr, ".gdb_config[line %d]: malformed line:\n%s\n",
-        	line, inbuf);
-	fprintf(stderr, ".gdb_config: rejected!\n\n");
-
-	return store_gdb_defaults(NULL);
+	fprintf(stderr, ".gdb: rejected -- using default gdb\n\n");
+ 	return store_gdb_defaults(NULL);
 }
 
-int
+struct supported_gdb_version *
 store_gdb_defaults(struct supported_gdb_version *sp)
 {
 	if (!sp)
@@ -1390,41 +1149,5 @@ store_gdb_defaults(struct supported_gdb_version *sp)
 	else
 		fprintf(stderr, "WARNING: \"make clean\" may be required before rebuilding\n\n");
 
-	GDB_X86 = sp->GDB;
-	GDB_ALPHA = sp->GDB;
-	GDB_PPC = sp->GDB;
-	GDB_IA64 = sp->GDB;
-	GDB_S390 = sp->GDB;
-	GDB_S390X = sp->GDB;
-	GDB_PPC64 = sp->GDB;
-	GDB_X86_64 = sp->GDB;
-
-	GDB_X86_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_ALPHA_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_PPC_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_IA64_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_S390_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_S390X_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_PPC64_VERSION_IN = sp->GDB_VERSION_IN;
-	GDB_X86_64_VERSION_IN = sp->GDB_VERSION_IN;
-
-	GDB_FILES_X86 = sp->GDB_FILES;
-	GDB_FILES_ALPHA = sp->GDB_FILES;
-	GDB_FILES_PPC = sp->GDB_FILES;
-	GDB_FILES_IA64 = sp->GDB_FILES;
-	GDB_FILES_S390 = sp->GDB_FILES;
-	GDB_FILES_S390X = sp->GDB_FILES;
-	GDB_FILES_PPC64 = sp->GDB_FILES;
-	GDB_FILES_X86_64 = sp->GDB_FILES;
-
-	GDB_OFILES_X86 = sp->GDB_OFILES;
-	GDB_OFILES_ALPHA = sp->GDB_OFILES;
-	GDB_OFILES_PPC = sp->GDB_OFILES;
-	GDB_OFILES_IA64 = sp->GDB_OFILES;
-	GDB_OFILES_S390 = sp->GDB_OFILES;
-	GDB_OFILES_S390X = sp->GDB_OFILES;
-	GDB_OFILES_PPC64 = sp->GDB_OFILES;
-	GDB_OFILES_X86_64 = sp->GDB_OFILES;
-
-	return TRUE;
+	return sp; 
 }

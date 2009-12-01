@@ -791,13 +791,13 @@ alpha_frame_offset(struct gnu_request *req, ulong alt_pc)
 	}
 
 use_gdb:
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 {
 	static int gdb_frame_offset_warnings = 10;
 
 	if (gdb_frame_offset_warnings-- > 0)
 		error(WARNING, 
-	        "GNU_ALPHA_FRAME_OFFSET functionality not ported to gdb-6.1\n");
+	        "GNU_ALPHA_FRAME_OFFSET functionality not ported to gdb\n");
 }
 #endif
 	req->command = GNU_ALPHA_FRAME_OFFSET;

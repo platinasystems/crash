@@ -1482,6 +1482,16 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long kobj_map_probes;
 	long task_struct_prio;
 	long zone_watermark;
+	long module_sect_attrs;
+	long module_sect_attrs_attrs;
+	long module_sect_attrs_nsections;
+	long module_sect_attr_mattr;
+	long module_sect_attr_name;
+	long module_sect_attr_address;
+	long module_attribute_attr;
+	long attribute_owner;
+	long module_sect_attr_attr;
+	long module_sections_attrs;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1591,6 +1601,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long probe;
 	long kobj_map;
 	long page_flags;
+	long module_sect_attr;
 };
 
 struct array_table {
@@ -1890,7 +1901,7 @@ struct namespace {
 
 struct symbol_table_data {
 	ulong flags;
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 	struct bfd *bfd;
 #else
 	struct _bfd *bfd;
@@ -1934,6 +1945,10 @@ struct symbol_table_data {
 #define ADD_SYMBOL_FILE  (0x200)
 #define USE_OLD_ADD_SYM  (0x400)
 #define PERCPU_SYMS      (0x800)
+#define MODSECT_UNKNOWN (0x1000)
+#define MODSECT_V1      (0x2000)
+#define MODSECT_V2      (0x4000)
+#define MODSECT_V3      (0x8000)
 
 #endif /* !GDB_COMMON */
 
@@ -1948,11 +1963,12 @@ struct symbol_table_data {
 #define MOD_REMOTE      (0x4)
 #define MOD_KALLSYMS    (0x8)
 #define MOD_INITRD     (0x10)
+#define MOD_NOPATCH    (0x20)
 
 #define SEC_FOUND       (0x10000)
 
 struct mod_section_data {
-#if defined(GDB_6_1)
+#if defined(GDB_6_1) || defined(GDB_7_0)
         struct bfd_section *section;
 #else
         struct sec *section;
@@ -2953,6 +2969,7 @@ struct gnu_request {
 #define GNU_VERSION              (13)
 #define GNU_PATCH_SYMBOL_VALUES  (14)
 #define GNU_GET_SYMBOL_TYPE      (15)
+#define GNU_USER_PRINT_OPTION 	 (16)
 #define GNU_DEBUG_COMMAND       (100)
 /*
  *  GNU flags
@@ -2994,6 +3011,9 @@ enum type_code {
   TYPE_CODE_STRUCT,             /* C struct or Pascal record */
   TYPE_CODE_UNION,              /* C union or Pascal variant part */
   TYPE_CODE_ENUM,               /* Enumeration type */
+#ifdef GDB_7_0
+  TYPE_CODE_FLAGS,              /* Bit flags type */
+#endif
   TYPE_CODE_FUNC,               /* Function type */
   TYPE_CODE_INT,                /* Integer type */
 
@@ -3197,7 +3217,7 @@ struct alias_data *is_alias(char *);
 void deallocate_alias(char *);
 void cmdline_init(void);
 void exec_input_file(void);
-void get_command_line(void);
+void process_command_line(void);
 void dump_history(void);
 void resolve_rc_cmd(char *, int);
 void dump_alias_data(void);
@@ -3294,8 +3314,10 @@ void sym_buf_init(void);
 void free_all_bufs(void);
 char *getbuf(long);
 void freebuf(char *);
+char *resizebuf(char *, long, long);
 #define GETBUF(X)   getbuf((long)(X))
 #define FREEBUF(X)  freebuf((char *)(X))
+#define RESIZEBUF(X,Y,Z) (X) = resizebuf((char *)(X), (long)(Y), (long)(Z));
 void sigsetup(int, void *, struct sigaction *, struct sigaction *);
 #define SIGACTION(s, h, a, o) sigsetup(s, h, a, o)
 char *convert_time(ulonglong, char *);
@@ -3336,7 +3358,7 @@ int in_ksymbol_range(ulong);
 int module_symbol(ulong, struct syment **, 
 	struct load_module **, char *, ulong);
 #define IS_MODULE_VADDR(X) \
-	(module_symbol((ulong)(X), NULL, NULL, NULL, output_radix))
+	(module_symbol((ulong)(X), NULL, NULL, NULL, *gdb_output_radix))
 char *closest_symbol(ulong);
 ulong closest_symbol_value(ulong);
 #define SAME_FUNCTION(X,Y) (closest_symbol_value(X) == closest_symbol_value(Y))
@@ -3345,7 +3367,7 @@ void show_symbol(struct syment *, ulong, ulong);
 #define SHOW_SECTION  (0x2)
 #define SHOW_HEX_OFFS (0x4)
 #define SHOW_DEC_OFFS (0x8)
-#define SHOW_RADIX() (output_radix == 16 ? SHOW_HEX_OFFS : SHOW_DEC_OFFS)
+#define SHOW_RADIX() (*gdb_output_radix == 16 ? SHOW_HEX_OFFS : SHOW_DEC_OFFS)
 int symbol_query(char *, char *, struct syment **);
 struct syment *next_symbol(char *, struct syment *);
 struct syment *prev_symbol(char *, struct syment *);
@@ -3864,14 +3886,16 @@ struct x86_64_pt_regs_offsets {
         long ss;
 };
 
+#define MAX_EXCEPTION_STACKS 7
+#define NMI_STACK 2    /* ebase[] index to NMI exception stack */
+#define DEBUG_STACK 3  /* ebase[] index to DEBUG exception stack */
+
 struct x86_64_stkinfo {
-	ulong ebase[NR_CPUS][7];
-	int esize;
+	ulong ebase[NR_CPUS][MAX_EXCEPTION_STACKS];
+	int esize[MAX_EXCEPTION_STACKS];
 	ulong ibase[NR_CPUS];
 	int isize;
 };
-
-#define NMI_STACK 2    /* ebase[] offset to NMI exception stack */
 
 struct machine_specific {
 	ulong userspace_top;
@@ -4567,17 +4591,35 @@ char *gdb_command_string(int, char *, int);
 void dump_gnu_request(struct gnu_request *, int);
 int gdb_CRASHDEBUG(ulong);
 void dump_gdb_data(void);
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 void update_gdb_hooks(void);
 #endif
 void gdb_readnow_warning(void);
+extern int *gdb_output_format;
+extern unsigned int *gdb_print_max;
+extern int *gdb_prettyprint_structs;
+extern int *gdb_prettyprint_arrays;
+extern int *gdb_repeat_count_threshold;
+extern int *gdb_stop_print_at_null;
+extern unsigned int *gdb_output_radix;
 
 /*
  *  gdb/top.c
  */
+#if defined(GDB_7_0)
+extern void (*deprecated_command_loop_hook)(void);
+#else
 extern void (*command_loop_hook)(void);
 extern void (*error_hook)(void);
+#endif
 extern void execute_command (char *, int);
+
+/*
+ *  gdb/exceptions.c
+ */
+#if defined(GDB_7_0)
+extern void (*error_hook)(void);
+#endif
 
 /*
  *  gdb/symtab.c
@@ -4587,7 +4629,7 @@ extern void gdb_command_funnel(struct gnu_request *);
 /*
  *  gdb/symfile.c
  */
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 struct objfile;
 extern void (*target_new_objfile_hook)(struct objfile *);
 #endif
@@ -4596,12 +4638,16 @@ extern void (*target_new_objfile_hook)(struct objfile *);
  *  gdb/valprint.c
  */
 extern unsigned output_radix;
+#if defined(GDB_7_0)
+extern void *get_user_print_option_address(char *);
+#else
 extern int output_format;
 extern int prettyprint_structs;
 extern int prettyprint_arrays;
 extern int repeat_count_threshold;
 extern unsigned int print_max;
 extern int stop_print_at_null;
+#endif
 
 /*
  *  gdb/utils.c
@@ -4616,14 +4662,14 @@ extern char *version;
 /*
  *  gdb/disasm.c
  */
-#if !defined(GDB_6_0) && !defined(GDB_6_1)
+#if !defined(GDB_6_0) && !defined(GDB_6_1) && !defined(GDB_7_0)
 extern int gdb_disassemble_from_exec;
 #endif
 
 /*
  *  readline/readline.c
  */
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 extern char *readline(const char *);
 #else
 extern char *readline(char *);
@@ -4641,7 +4687,7 @@ extern int history_offset;
 #if defined(GDB_5_3)
 extern int gdb_main_entry(int, char **);
 extern unsigned long calc_crc32(unsigned long, unsigned char *, size_t);
-#elif defined(GDB_6_0) || defined(GDB_6_1)
+#elif defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 extern int gdb_main_entry(int, char **);
 extern unsigned long gnu_debuglink_crc32 (unsigned long, unsigned char *, size_t);
 #else

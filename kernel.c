@@ -855,7 +855,7 @@ verify_spinlock(void)
                 if (CRASHDEBUG(1)) {
                         fprintf(fp, "\ngdb> ptype spinlock_t\n");
                         sprintf(buf, "ptype spinlock_t");
-                        gdb_pass_through(buf, NULL, 0);
+                        gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
                 }
                 non_matching_kernel();
 	}
@@ -1184,7 +1184,7 @@ cmd_dis(void)
 			if (!user_mode && 
 			    !(sp = value_search(req->addr, &offset))) {
 				error(WARNING, 
-				    "%x: no associated kernel symbol found\n",
+				    "%lx: no associated kernel symbol found\n",
 					req->addr);
 				unfiltered = TRUE;
 			}
@@ -1216,7 +1216,7 @@ cmd_dis(void)
 		if (unfiltered) {
                 	sprintf(buf1, "x/%ldi 0x%lx",  
 				req->count ? req->count : 1, req->addr);
-        		gdb_pass_through(buf1, NULL, 0);
+        		gdb_pass_through(buf1, NULL, GNU_RETURN_ON_ERROR);
 			return;
 		}
 
@@ -1228,12 +1228,12 @@ cmd_dis(void)
                 	sprintf(buf1, "x/%ldi 0x%lx",  
 				req->count ? req->count : 1, req->addr);
 			pc->curcmd_flags |= MEMTYPE_UVADDR;
-        		gdb_pass_through(buf1, NULL, 0);
+        		gdb_pass_through(buf1, NULL, GNU_RETURN_ON_ERROR);
 			return;
 		}
 
 		do_load_module_filter = module_symbol(req->addr, NULL, NULL, 
-			NULL, output_radix);
+			NULL, *gdb_output_radix);
 
 		if (!reverse) {
 			req->command = GNU_RESOLVE_TEXT_ADDR;
@@ -1822,7 +1822,7 @@ cmd_bt(void)
 			break;
 
 		case 'g':
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 			bt->flags |= BT_THREAD_GROUP;
 #else
 			bt->flags |= BT_USE_GDB;
@@ -4047,7 +4047,7 @@ dump_sys_call_table(char *spec, int cnt)
         for (i = 0, sct = sys_call_table; i < NR_syscalls; i++, sct++) {
                 if (!(scp = value_symbol(*sct))) {
 			if (CRASHDEBUG(1)) {
-				fprintf(fp, (output_radix == 16) ? 
+				fprintf(fp, (*gdb_output_radix == 16) ? 
 					"%3x  " : "%3d  ", i);
 				fprintf(fp, 
 			    	    "invalid sys_call_table entry: %lx (%s)\n", 
@@ -4057,7 +4057,7 @@ dump_sys_call_table(char *spec, int cnt)
 			continue;
 		}
 		
-		fprintf(fp, (output_radix == 16) ? "%3x  " : "%3d  ", i);
+		fprintf(fp, (*gdb_output_radix == 16) ? "%3x  " : "%3d  ", i);
   		if (sys_ni_syscall && *sct == sys_ni_syscall)
 			fprintf(fp, "%-26s ", "sys_ni_syscall");
 		else
@@ -4097,7 +4097,7 @@ dump_sys_call_table(char *spec, int cnt)
 
 		hdr_printed = cnt;
 		if ((number = IS_A_NUMBER(spec))) 
-                	sprintf(buf3, (output_radix == 16) ?  "%lx" : "%ld",
+                	sprintf(buf3, (*gdb_output_radix == 16) ?  "%lx" : "%ld",
                         	stol(spec, FAULT_ON_ERROR, NULL));
 
                 while (fgets(buf1, BUFSIZE, pc->tmpfile)) {

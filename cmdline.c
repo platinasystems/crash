@@ -47,7 +47,7 @@ static void readline_init(void);
 static struct alias_data alias_head = { 0 }; 
 
 void
-get_command_line(void)
+process_command_line(void)
 {
 	/*
 	 *  Restore normal environment, clearing out any excess baggage
@@ -1439,6 +1439,9 @@ alias_init(char *inbuf)
         argcnt = parse_line(buf, args);
         allocate_alias(ALIAS_BUILTIN);
 
+        strcpy(buf, "alias lsmod mod");
+        argcnt = parse_line(buf, args);
+        allocate_alias(ALIAS_BUILTIN);
 }
 
 /*

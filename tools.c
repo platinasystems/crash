@@ -2113,9 +2113,9 @@ cmd_set(void)
 			optind++;
 			if (args[optind]) {
 				if (decimal(args[optind], 0))
-					print_max = atoi(args[optind]);
+					*gdb_print_max = atoi(args[optind]);
 				else if (hexadecimal(args[optind], 0))
-					print_max = (unsigned int)
+					*gdb_print_max = (unsigned int)
 					    htol(args[optind], 
 						FAULT_ON_ERROR, NULL);
 				else
@@ -2123,29 +2123,29 @@ cmd_set(void)
 
 			}
 			if (runtime)
-				fprintf(fp, "print_max: %d\n", print_max);
+				fprintf(fp, "print_max: %d\n", *gdb_print_max);
 			return;
 
                 } else if (STREQ(args[optind], "null-stop")) {
 			optind++;
 			if (args[optind]) {
 				if (STREQ(args[optind], "on"))
-					stop_print_at_null = 1;
+					*gdb_stop_print_at_null = 1;
 				else if (STREQ(args[optind], "off"))
-					stop_print_at_null = 0;
+					*gdb_stop_print_at_null = 0;
 				else if (IS_A_NUMBER(args[optind])) {
 					value = stol(args[optind],
 						FAULT_ON_ERROR, NULL);
 					if (value)
-						stop_print_at_null = 1;
+						*gdb_stop_print_at_null = 1;
 					else
-						stop_print_at_null = 0;
+						*gdb_stop_print_at_null = 0;
 					} else
 						goto invalid_set_command;
 			}
 			if (runtime)
 				fprintf(fp, "null-stop: %s\n", 
-					stop_print_at_null ? "on" : "off");
+					*gdb_stop_print_at_null ? "on" : "off");
 			return;
 
                 } else if (STREQ(args[optind], "dumpfile")) {
@@ -2310,7 +2310,7 @@ show_options(void)
                 pc->output_radix == 10 ? "decimal" :
                 pc->output_radix == 16 ? "hexadecimal" : "unknown");
 	fprintf(fp, "       refresh: %s\n", tt->flags & TASK_REFRESH ? "on" : "off");
-	fprintf(fp, "     print_max: %d\n", print_max);
+	fprintf(fp, "     print_max: %d\n", *gdb_print_max);
 	fprintf(fp, "       console: %s\n", pc->console ? 
 		pc->console : "(not assigned)");
 	fprintf(fp, "         debug: %ld\n", pc->debug);
@@ -2322,7 +2322,7 @@ show_options(void)
 	fprintf(fp, "      dumpfile: %s\n", pc->dumpfile);
 	fprintf(fp, "        unwind: %s\n", kt->flags & DWARF_UNWIND ? "on" : "off");
 	fprintf(fp, " zero_excluded: %s\n", *diskdump_flags & ZERO_EXCLUDED ? "on" : "off");
-	fprintf(fp, "     null-stop: %s\n", stop_print_at_null ? "on" : "off");
+	fprintf(fp, "     null-stop: %s\n", *gdb_stop_print_at_null ? "on" : "off");
 }
 
 
@@ -4311,6 +4311,25 @@ getbuf(long reqsize)
 	
 	return ((char *)(long)
 		error(FATAL, "cannot allocate any more memory!\n"));
+}
+
+/*
+ *  Change the size of the previously-allocated memory block 
+ *  pointed to by oldbuf to newsize bytes.  Copy the minimum
+ *  of oldsize and newsize bytes from the oldbuf to the newbuf,
+ *  and return the address of the new buffer, which will have
+ *  a different address than oldbuf.
+ */
+char *
+resizebuf(char *oldbuf, long oldsize, long newsize)
+{
+	char *newbuf;
+
+	newbuf = GETBUF(newsize);
+	BCOPY(oldbuf, newbuf, MIN(oldsize, newsize));
+	FREEBUF(oldbuf);
+
+	return newbuf;
 }
 
 /*

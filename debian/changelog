@@ -1,3 +1,19 @@
+crash (4.1.1-1) unstable; urgency=low
+
+  * New upstream version 4.1.1 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix session init failure with 2.6.30 amd64, with filterd makedumpfile
+  dump.
+  - Add "lsmod" as a built-in alias for the "mod" command
+  - Handler corrupt elf headers structs in vmcore. 
+  - Fix "mach -c" for on 2.6.30 and later amd64 kernels.
+  - Fix to set DEBUG exception stack size and base on >= 2.6.18 amd64 kernels.
+  - Fix session init for >= 2.6.30 amd64 kernels when number of CPUS is equal
+  to the NR_CPU value.
+  - Prepare source for move to internal gdb-7.0.
+
+ -- Troy Heber <troyh@debian.org>  Tue, 01 Dec 2009 12:52:40 -0700
+
 crash (4.1.0-1) unstable; urgency=low
 
   * New upstream version 4.1.0 (see

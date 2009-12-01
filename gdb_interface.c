@@ -21,6 +21,18 @@ static void exit_after_gdb_info(void);
 static int is_restricted_command(char *, ulong);
 int get_frame_offset(ulong);
 
+int *gdb_output_format;
+unsigned int *gdb_print_max;
+int *gdb_prettyprint_structs;
+int *gdb_prettyprint_arrays;
+int *gdb_repeat_count_threshold;
+int *gdb_stop_print_at_null;
+unsigned int *gdb_output_radix;
+
+#ifdef GDB_7_0
+ulong gdb_user_print_option_address(char *);
+#endif
+
 /*
  *  Called from main() this routine sets up the call-back hook such that
  *  gdb's main() routine -- renamed gdb_main() -- will call back to
@@ -57,25 +69,36 @@ gdb_main_loop(int argc, char **argv)
 	}
 
         optind = 0;
+#if defined(GDB_7_0)
+	deprecated_command_loop_hook = main_loop;
+#else
         command_loop_hook = main_loop;
-
-#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
+#endif
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
         gdb_main_entry(argc, argv);
 #else
         gdb_main(argc, argv);
 #endif
 }
 
-#if defined(GDB_6_0) || defined(GDB_6_1)
 /*
  *  Update any hooks that gdb has set.
  */
+#if defined(GDB_6_0) || defined(GDB_6_1)
 void
 update_gdb_hooks(void)
 {
 	command_loop_hook = pc->flags & VERSION_QUERY ?
         	exit_after_gdb_info : main_loop;
 	target_new_objfile_hook = NULL;
+}
+#endif
+#if defined(GDB_7_0)
+void
+update_gdb_hooks(void)
+{
+	deprecated_command_loop_hook = pc->flags & VERSION_QUERY ?
+		exit_after_gdb_info : main_loop;
 }
 #endif
 
@@ -102,9 +125,13 @@ void
 display_gdb_banner(void)
 {
 	optind = 0;
+#if defined(GDB_7_0)
+        deprecated_command_loop_hook = exit_after_gdb_info;
+#else
         command_loop_hook = exit_after_gdb_info;
+#endif
 	args[0] = "gdb";
-#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
         gdb_main_entry(1, args);
 #else
         gdb_main(1, args);
@@ -155,29 +182,56 @@ gdb_session_init(void)
 		SIGACTION(SIGSEGV, restart, &pc->sigaction, NULL);
 
 	/*
+	 *  Set up pointers to gdb variables.
+	 */
+#if defined(GDB_7_0)
+	gdb_output_format = (int *) 
+		gdb_user_print_option_address("output_format");
+	gdb_print_max = (unsigned int *)
+		gdb_user_print_option_address("print_max");
+	gdb_prettyprint_structs = (int *)
+		gdb_user_print_option_address("prettyprint_structs");
+	gdb_prettyprint_arrays = (int *)
+		gdb_user_print_option_address("prettyprint_arrays");
+	gdb_repeat_count_threshold = (int *)
+		gdb_user_print_option_address("repeat_count_threshold");
+	gdb_stop_print_at_null = (int *)
+		gdb_user_print_option_address("stop_print_at_null");
+	gdb_output_radix = (unsigned int *)
+		gdb_user_print_option_address("output_radix");
+#else
+	gdb_output_format = &output_format;
+	gdb_print_max = &print_max;
+	gdb_prettyprint_structs = &prettyprint_structs;
+	gdb_prettyprint_arrays = &prettyprint_arrays;
+	gdb_repeat_count_threshold = &repeat_count_threshold;
+	gdb_stop_print_at_null = &stop_print_at_null;
+	gdb_output_radix = &output_radix;
+#endif
+	/*
          *  If the output radix is set in an .rc file, then pc->output_radix
          *  will be non-zero.  Otherwise use the gdb default.
 	 */
 	if (pc->output_radix) {  
-		output_radix = pc->output_radix;
-		output_format = (output_radix == 10) ? 0 : 'x';
+		*gdb_output_radix = pc->output_radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 	}
 
-	switch (output_radix)
+	switch (*gdb_output_radix)
 	{
 	case 10:
 	case 16:
-		pc->output_radix = output_radix;
+		pc->output_radix = *gdb_output_radix;
 		break;
 	default:
-		pc->output_radix = output_radix = 10;
-		output_format = 0;
+		pc->output_radix = *gdb_output_radix = 10;
+		*gdb_output_format = 0;
 	}
 		
-	prettyprint_structs = 1;
-	repeat_count_threshold = 0x7fffffff;
-	print_max = 256;
-#if !defined(GDB_6_0) && !defined(GDB_6_1)
+	*gdb_prettyprint_structs = 1;
+	*gdb_repeat_count_threshold = 0x7fffffff;
+	*gdb_print_max = 256;
+#if !defined(GDB_6_0) && !defined(GDB_6_1) && !defined(GDB_7_0)
 	gdb_disassemble_from_exec = 0;
 #endif
 
@@ -371,14 +425,14 @@ gdb_interface(struct gnu_request *req)
 void
 dump_gdb_data(void)
 {
-        fprintf(fp, "    prettyprint_arrays: %d\n", prettyprint_arrays);
-        fprintf(fp, "   prettyprint_structs: %d\n", prettyprint_structs);
-        fprintf(fp, "repeat_count_threshold: %x\n", repeat_count_threshold);
-	fprintf(fp, "    stop_print_at_null: %d\n", stop_print_at_null);
-	fprintf(fp, "             print_max: %d\n", print_max);
-        fprintf(fp, "          output_radix: %d\n", output_radix);
+        fprintf(fp, "    prettyprint_arrays: %d\n", *gdb_prettyprint_arrays);
+        fprintf(fp, "   prettyprint_structs: %d\n", *gdb_prettyprint_structs);
+        fprintf(fp, "repeat_count_threshold: %x\n", *gdb_repeat_count_threshold);
+	fprintf(fp, "    stop_print_at_null: %d\n", *gdb_stop_print_at_null);
+	fprintf(fp, "             print_max: %d\n", *gdb_print_max);
+        fprintf(fp, "          output_radix: %d\n", *gdb_output_radix);
         fprintf(fp, "         output_format: ");
-        switch (output_format)
+        switch (*gdb_output_format)
         {
         case 'x':
                 fprintf(fp, "hex\n"); break;
@@ -558,12 +612,12 @@ restore_gdb_sanity(void)
                 return;
 
         if (pc->output_radix) {
-                output_radix = pc->output_radix;   
-                output_format = (output_radix == 10) ? 0 : 'x';
+                *gdb_output_radix = pc->output_radix;   
+                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
         }
 
-        prettyprint_structs = 1;   /* these may piss somebody off... */
-	repeat_count_threshold = 0x7fffffff;
+        *gdb_prettyprint_structs = 1;   /* these may piss somebody off... */
+	*gdb_repeat_count_threshold = 0x7fffffff;
 
 	error_hook = NULL;
 
@@ -718,7 +772,8 @@ cmd_gdb(void)
 	 */
 	if (!is_restricted_command(args[1], FAULT_ON_ERROR)) {
 		concat_args(buf, 1, 0);
-		gdb_pass_through(buf, NULL, 0);
+		if (!gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR))
+			error(INFO, "gdb request failed: %s\n", buf);
 	}
 }
 
@@ -840,6 +895,19 @@ gdb_CRASHDEBUG(ulong dval)
 
 	return (pc->cur_req && (pc->cur_req->debug >= dval));
 }
+
+#ifdef GDB_7_0
+ulong 
+gdb_user_print_option_address(char *name)
+{
+        struct gnu_request request;
+
+	request.command = GNU_USER_PRINT_OPTION;
+	request.name = name;
+	gdb_command_funnel(&request);    
+	return request.addr;
+}
+#endif
 
 #ifndef ALPHA
 /*

@@ -594,12 +594,12 @@ main_loop(void)
 	}
 
 	/*
-	 *  get_command_line() reads, parses and stores input command lines
+	 *  process_command_line() reads, parses and stores input command lines
 	 *  in the global args[] array.  exec_command() figures out what to 
          *  do with the parsed line.
 	 */
 	while (TRUE) {
-		get_command_line();
+		process_command_line();
 		exec_command();
 	}
 }

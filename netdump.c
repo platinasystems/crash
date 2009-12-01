@@ -303,7 +303,8 @@ is_netdump(char *file, ulong source_query)
                 	dump_Elf32_Phdr(nd->load32 + i, ELFSTORE+i);
         	offset32 = nd->notes32->p_offset;
                 for (tot = 0; tot < nd->notes32->p_filesz; tot += len) {
-                        len = dump_Elf32_Nhdr(offset32, ELFSTORE);
+                        if (!(len = dump_Elf32_Nhdr(offset32, ELFSTORE)))
+				break;
                         offset32 += len;
                 }
 		break;
@@ -331,7 +332,8 @@ is_netdump(char *file, ulong source_query)
                 	dump_Elf64_Phdr(nd->load64 + i, ELFSTORE+i);
                 offset64 = nd->notes64->p_offset;
                 for (tot = 0; tot < nd->notes64->p_filesz; tot += len) {
-                        len = dump_Elf64_Nhdr(offset64, ELFSTORE);
+                        if (!(len = dump_Elf64_Nhdr(offset64, ELFSTORE)))
+				break;
                         offset64 += len;
                 }
 		break;
@@ -978,7 +980,8 @@ netdump_memory_dump(FILE *fp)
 			dump_Elf32_Phdr(nd->load32 + i, ELFREAD);
         	offset32 = nd->notes32->p_offset;
         	for (tot = 0; tot < nd->notes32->p_filesz; tot += len) {
-                	len = dump_Elf32_Nhdr(offset32, ELFREAD);
+                	if (!(len = dump_Elf32_Nhdr(offset32, ELFREAD)))
+				break;
 			offset32 += len;
         	}
 		break;
@@ -991,7 +994,8 @@ netdump_memory_dump(FILE *fp)
 			dump_Elf64_Phdr(nd->load64 + i, ELFREAD);
         	offset64 = nd->notes64->p_offset;
         	for (tot = 0; tot < nd->notes64->p_filesz; tot += len) {
-                	len = dump_Elf64_Nhdr(offset64, ELFREAD);
+                	if (!(len = dump_Elf64_Nhdr(offset64, ELFREAD)))
+				break;
                 	offset64 += len;
         	}
 		break;
@@ -1564,14 +1568,39 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	char *ptr;
 	ulong *uptr;
 	int xen_core, vmcoreinfo;
+	uint64_t remaining, notesize;
 
 	note = (Elf32_Nhdr *)((char *)nd->elf32 + offset);
 
-        netdump_print("Elf32_Nhdr:\n");
-        netdump_print("               n_namesz: %ld ", note->n_namesz);
         BZERO(buf, BUFSIZE);
 	xen_core = vmcoreinfo = FALSE;
         ptr = (char *)note + sizeof(Elf32_Nhdr);
+
+	if (ptr > (nd->elf_header + nd->header_size)) {
+		if (CRASHDEBUG(1))
+			error(WARNING, 
+		    	    "Elf32_Nhdr pointer: %lx ELF header end: %lx\n",
+				(char *)note, nd->elf_header + nd->header_size);
+		remaining = 0;
+	} else
+		remaining = (uint64_t)((nd->elf_header + nd->header_size) - ptr);
+
+	notesize = (uint64_t)note->n_namesz + (uint64_t)note->n_descsz;
+
+	if ((note->n_namesz == 0) || !remaining || (notesize > remaining)) {
+		error(WARNING, 
+		    "possibly corrupt Elf32_Nhdr: "
+		    "n_namesz: %ld n_descsz: %ld n_type: %lx\n%s",
+			note->n_namesz, note->n_descsz, note->n_type,
+			note->n_namesz || note->n_descsz || !remaining ? 
+			"\n" : "");
+		if (note->n_namesz || note->n_descsz || !remaining)
+			return 0;
+	}
+
+        netdump_print("Elf32_Nhdr:\n");
+        netdump_print("               n_namesz: %ld ", note->n_namesz);
+
         BCOPY(ptr, buf, note->n_namesz);
         netdump_print("(\"%s\")\n", buf);
 
@@ -1758,14 +1787,39 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	int *iptr;
 	ulong *up;
 	int xen_core, vmcoreinfo;
+	uint64_t remaining, notesize;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
-        netdump_print("Elf64_Nhdr:\n");
-        netdump_print("               n_namesz: %ld ", note->n_namesz);
         BZERO(buf, BUFSIZE);
         ptr = (char *)note + sizeof(Elf64_Nhdr);
 	xen_core = vmcoreinfo = FALSE;
+
+	if (ptr > (nd->elf_header + nd->header_size)) {
+		if (CRASHDEBUG(1))
+			error(WARNING, 
+		    	    "Elf64_Nhdr pointer: %lx  ELF header end: %lx\n\n",
+				(char *)note, nd->elf_header + nd->header_size);
+		remaining = 0;
+	} else
+		remaining = (uint64_t)((nd->elf_header + nd->header_size) - ptr);
+
+	notesize = (uint64_t)note->n_namesz + (uint64_t)note->n_descsz;
+
+	if ((note->n_namesz == 0) || !remaining || (notesize > remaining)) {
+		error(WARNING, 
+		    "possibly corrupt Elf64_Nhdr: "
+		    "n_namesz: %ld n_descsz: %ld n_type: %lx\n%s",
+			note->n_namesz, note->n_descsz, note->n_type,
+			note->n_namesz || note->n_descsz || !remaining ? 
+			"\n" : "");
+		if (note->n_namesz || note->n_descsz || !remaining)
+			return 0;
+	}
+
+        netdump_print("Elf64_Nhdr:\n");
+        netdump_print("               n_namesz: %ld ", note->n_namesz);
+
         BCOPY(ptr, buf, note->n_namesz);
         netdump_print("(\"%s\")\n", buf);
 

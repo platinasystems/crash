@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.8 2009/04/30 20:04:02 anderson Exp $
+ * $Id: sial.c,v 1.9 2009/11/20 15:25:23 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -16,7 +16,7 @@
  * information.
  */
 
-#include "gdb-6.1/gdb/defs.h"
+#include "gdb/defs.h"
 #include "target.h"
 #include "symtab.h"
 #include "gdbtypes.h"
@@ -148,10 +148,18 @@ apigetctype(int ctype, char *name, TYPE_S *tout)
     int v=0;
     
     sial_dbg_named(DBG_TYPE, name, 2, "Looking for type %d name [%s] in struct domain...", ctype, name);
+#ifdef GDB_6_1
     sym = lookup_symbol(name, 0, STRUCT_DOMAIN, 0, (struct symtab **) NULL);
+#else
+    sym = lookup_symbol(name, 0, STRUCT_DOMAIN, 0);
+#endif
     if(!sym) {
             sial_dbg_named(DBG_TYPE, name, 2, "Not found.\nLooking for type %d name [%s] in var domain...", ctype, name);
+#ifdef GDB_6_1
             sym = lookup_symbol(name, 0, VAR_DOMAIN, 0, (struct symtab **) NULL);
+#else
+            sym = lookup_symbol(name, 0, VAR_DOMAIN, 0);
+#endif
             if(sym) {
                 sial_dbg_named(DBG_TYPE, name, 2, "found class=%d\n", sym->aclass);
                 if(sym->aclass == LOC_TYPEDEF) v=1;
@@ -227,8 +235,11 @@ int nidx=0;
 
             // check out for stub types and pull in the definition instead
             if(TYPE_STUB(type) && TYPE_TAG_NAME(type)) {
-
+#ifdef GDB_6_1
                 struct symbol *sym=lookup_symbol(TYPE_TAG_NAME(type), 0, STRUCT_DOMAIN, 0, (struct symtab **) NULL);
+#else
+                struct symbol *sym=lookup_symbol(TYPE_TAG_NAME(type), 0, STRUCT_DOMAIN, 0);
+#endif
                 if(sym) {
                     type=sym->type;
                 } 
@@ -444,7 +455,11 @@ apigetenum(char *name)
 {
     struct symbol *sym;
 
+#ifdef GDB_6_1
     sym = lookup_symbol(name, 0, STRUCT_DOMAIN, 0, (struct symtab **) NULL);
+#else
+    sym = lookup_symbol(name, 0, STRUCT_DOMAIN, 0);
+#endif
     if (sym && TYPE_CODE(sym->type)==TYPE_CODE_ENUM) {
 	ENUM_S *et=0;
         struct type *type=sym->type;

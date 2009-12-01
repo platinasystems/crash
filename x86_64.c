@@ -41,7 +41,7 @@ static long x86_64_exception_frame(ulong,ulong,char *,struct bt_info *, FILE *);
 #define EFRAME_SEARCH (0x8)
 static int x86_64_print_eframe_location(ulong, int, FILE *);
 static void x86_64_back_trace_cmd(struct bt_info *);
-static ulong x86_64_in_exception_stack(struct bt_info *);
+static ulong x86_64_in_exception_stack(struct bt_info *, int *);
 static ulong x86_64_in_irqstack(struct bt_info *);
 static void x86_64_low_budget_back_trace_cmd(struct bt_info *);
 static void x86_64_dwarf_back_trace_cmd(struct bt_info *);
@@ -593,16 +593,24 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "\n");
 	fprintf(fp, "            vsyscall_page: %lx\n", ms->vsyscall_page); 
 
-	fprintf(fp, "                  stkinfo: esize: %d%sisize: %d\n", 
-		ms->stkinfo.esize, 
-		machdep->flags & NO_TSS ? " (NO TSS) " : " ",
+	fprintf(fp, "                  stkinfo: isize: %d\n", 
 		ms->stkinfo.isize);
-	fprintf(fp, "                           ebase[%s][7]:",
-		arg ? "NR_CPUS" : "cpus");
+	fprintf(fp, "                           esize[%d]: %d,%d,%d,%d,%d,%d,%d%s\n", 
+		MAX_EXCEPTION_STACKS,
+		ms->stkinfo.esize[0], 
+		ms->stkinfo.esize[1], 
+		ms->stkinfo.esize[2], 
+		ms->stkinfo.esize[3], 
+		ms->stkinfo.esize[4], 
+		ms->stkinfo.esize[5], 
+		ms->stkinfo.esize[6], 
+		machdep->flags & NO_TSS ? " (NO TSS) " : " ");
+	fprintf(fp, "                           ebase[%s][%d]:",
+		arg ? "NR_CPUS" : "cpus", MAX_EXCEPTION_STACKS);
 	cpus = arg ? NR_CPUS : kt->cpus;
 	for (c = 0; c < cpus; c++) {
 		fprintf(fp, "\n  %s[%d]: ", c < 10 ? " " : "", c);
-		for (i = 0; i < 7; i++) { 
+		for (i = 0; i < MAX_EXCEPTION_STACKS; i++) { 
 			fprintf(fp, "%016lx ", ms->stkinfo.ebase[c][i]);
 			if (i == 3)
 				fprintf(fp, "\n        ");
@@ -791,10 +799,11 @@ x86_64_per_cpu_init(void)
         ms = machdep->machspec;
 
 	for (i = cpus = 0; i < NR_CPUS; i++) {
-		readmem(symbol_value("per_cpu__cpu_number") + 
-			kt->__per_cpu_offset[i],
-			KVADDR, &cpunumber, sizeof(int),
-			"cpu number (per_cpu)", FAULT_ON_ERROR);
+		if (!readmem(symbol_value("per_cpu__cpu_number") + 
+		    kt->__per_cpu_offset[i],
+		    KVADDR, &cpunumber, sizeof(int),
+		    "cpu number (per_cpu)", QUIET|RETURN_ON_ERROR))
+			break;
 
 		if (cpunumber != cpus)
 			break;
@@ -837,13 +846,24 @@ x86_64_per_cpu_init(void)
 	verify_spinlock();
 }
 
+static char *
+x86_64_exception_stacks[MAX_EXCEPTION_STACKS] = {
+	"STACKFAULT",
+	"DOUBLEFAULT",
+	"NMI",
+	"DEBUG",
+	"MCE",
+	"(unknown)",
+	"(unknown)"
+};
+
 /*
  *  Gather the ist addresses for each CPU.
  */
 static void 
 x86_64_ist_init(void)
 {
-	int c, i, cpus;
+	int c, i, cpus, esize;
 	ulong vaddr, offset;
 	ulong init_tss;
 	struct machine_specific *ms;
@@ -857,8 +877,8 @@ x86_64_ist_init(void)
 			vaddr = init_tss + (c * SIZE(tss_struct)) +
 				OFFSET(tss_struct_ist); 
 			readmem(vaddr, KVADDR, &ms->stkinfo.ebase[c][0], 
-				sizeof(ulong) * 7, "tss_struct ist array", 
-				FAULT_ON_ERROR);
+				sizeof(ulong) * MAX_EXCEPTION_STACKS, 
+				"tss_struct ist array", FAULT_ON_ERROR);
 			if (ms->stkinfo.ebase[c][0] == 0)
 				break;
 		}
@@ -875,11 +895,37 @@ x86_64_ist_init(void)
 			vaddr += OFFSET(tss_struct_ist);
 
                         readmem(vaddr, KVADDR, &ms->stkinfo.ebase[c][0],
-                                sizeof(ulong) * 7, "tss_struct ist array",
-                                FAULT_ON_ERROR);
+                                sizeof(ulong) * MAX_EXCEPTION_STACKS, 
+				"tss_struct ist array", FAULT_ON_ERROR);
 
                         if (ms->stkinfo.ebase[c][0] == 0)
                                 break;
+		}
+
+		if (symbol_exists("per_cpu__orig_ist")) {
+			for (c = 0; c < kt->cpus; c++) {
+				ulong estacks[MAX_EXCEPTION_STACKS];
+				if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+					if (kt->__per_cpu_offset[c] == 0)
+						break;
+					vaddr = symbol_value("per_cpu__orig_ist") +
+						kt->__per_cpu_offset[c];
+				} else 
+					vaddr = symbol_value("per_cpu__orig_ist");
+	
+				readmem(vaddr, KVADDR, &estacks[0],
+				    sizeof(ulong) * MAX_EXCEPTION_STACKS, 
+				    "orig_ist array", FAULT_ON_ERROR);
+
+				for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
+					if (ms->stkinfo.ebase[c][i] != estacks[i])
+						error(WARNING, 
+						    "cpu %d %s stack: init_tss: %lx orig_ist: %lx\n", c,  
+							x86_64_exception_stacks[i],
+							ms->stkinfo.ebase[c][i], estacks[i]);
+					ms->stkinfo.ebase[c][i] = estacks[i];
+				}
+			}
 		}
 	} else if (!symbol_exists("boot_exception_stacks")) {
 		machdep->flags |= NO_TSS;
@@ -891,20 +937,24 @@ x86_64_ist_init(void)
 	}
 
 	if (ms->stkinfo.ebase[0][0] && ms->stkinfo.ebase[0][1])
-		ms->stkinfo.esize = ms->stkinfo.ebase[0][1] - 
-			ms->stkinfo.ebase[0][0];
+		esize = ms->stkinfo.ebase[0][1] - ms->stkinfo.ebase[0][0];
 	else
-		ms->stkinfo.esize = 4096;  /*  safe a bet as process stk size */
+		esize = 4096;
 
 	/*
  	 *  Knowing the size, now adjust the top-of-stack addresses back down
 	 *  to the base stack address.
 	 */
         for (c = 0; c < kt->cpus; c++) {
-                for (i = 0; i < 7; i++) {
+                for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
                         if (ms->stkinfo.ebase[c][i] == 0)
                                 break;
-			ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize;
+			if ((THIS_KERNEL_VERSION >= LINUX(2,6,18)) &&
+			    (i == DEBUG_STACK))
+				ms->stkinfo.esize[i] = esize*2;
+			else
+				ms->stkinfo.esize[i] = esize;
+			ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
 		}
 	}
 
@@ -953,12 +1003,12 @@ x86_64_post_init(void)
 
                 if (!readmem(ms->stkinfo.ebase[c][NMI_STACK], 
 		    KVADDR, ms->irqstack,
-		    ms->stkinfo.esize,
+		    ms->stkinfo.esize[NMI_STACK],
                     "NMI exception stack contents", 
 		    RETURN_ON_ERROR|QUIET)) 
 			continue;
 
-       		for (i = clues = 0; i < (ms->stkinfo.esize)/sizeof(ulong); i++){
+       		for (i = clues = 0; i < (ms->stkinfo.esize[NMI_STACK])/sizeof(ulong); i++){
                 	up = (ulong *)(&ms->irqstack[i*sizeof(ulong)]);
 
                 	if (!is_kernel_text(*up) ||
@@ -977,7 +1027,7 @@ x86_64_post_init(void)
 			}
 
 			if (STREQ(spt->name, "crash_nmi_callback")) {
-				up = (ulong *)(&ms->irqstack[ms->stkinfo.esize]);
+				up = (ulong *)(&ms->irqstack[ms->stkinfo.esize[NMI_STACK]]);
 				up -= 2;
 				ms->crash_nmi_rsp[c] = *up;
 			}
@@ -2008,16 +2058,6 @@ x86_64_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 	return (page_present);
 }
 
-static char *
-x86_64_exception_stacks[7] = {
-	"STACKFAULT",
-	"DOUBLEFAULT",
-	"NMI",
-	"DEBUG",
-	"MCE",
-	"(unknown)",
-	"(unknown)"
-};
 
 /*
  *  Look for likely exception frames in a stack.
@@ -2025,7 +2065,7 @@ x86_64_exception_stacks[7] = {
 static int 
 x86_64_eframe_search(struct bt_info *bt)
 {
-	int i, c, cnt;
+	int i, c, cnt, estack_index;
         ulong estack, irqstack, stacksize;
 	ulong *up;
         struct machine_specific *ms;
@@ -2049,7 +2089,7 @@ x86_64_eframe_search(struct bt_info *bt)
                 }
 
         	for (c = 0; c < kt->cpus; c++) {
-                	for (i = 0; i < 7; i++) {
+                	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
                         	if (ms->stkinfo.ebase[c][i] == 0)
                                 	break;
                                 bt->hp->esp = ms->stkinfo.ebase[c][i];
@@ -2068,10 +2108,10 @@ x86_64_eframe_search(struct bt_info *bt)
         if (bt->hp && bt->hp->esp) {
         	ms = machdep->machspec;
 		bt->stkptr = bt->hp->esp;
-		if ((estack = x86_64_in_exception_stack(bt))) {
-			stacksize = ms->stkinfo.esize;
+		if ((estack = x86_64_in_exception_stack(bt, &estack_index))) {
+			stacksize = ms->stkinfo.esize[estack_index];
 			bt->stackbase = estack;
-			bt->stacktop = estack + ms->stkinfo.esize;
+			bt->stacktop = estack + ms->stkinfo.esize[estack_index];
                 	bt->stackbuf = ms->irqstack;
                 	alter_stackbuf(bt);
 		} else if ((irqstack = x86_64_in_irqstack(bt))) {
@@ -2398,7 +2438,7 @@ x86_64_back_trace_cmd(struct bt_info *bt)
  *  exception stacks.
  */
 static ulong
-x86_64_in_exception_stack(struct bt_info *bt) 
+x86_64_in_exception_stack(struct bt_info *bt, int *estack_index) 
 {
 	int c, i;
 	ulong rsp;
@@ -2410,13 +2450,15 @@ x86_64_in_exception_stack(struct bt_info *bt)
 	estack = 0;
 
         for (c = 0; !estack && (c < kt->cpus); c++) {
-		for (i = 0; i < 7; i++) {
+		for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
 			if (ms->stkinfo.ebase[c][i] == 0)
 				break;
 			if ((rsp >= ms->stkinfo.ebase[c][i]) &&
 			    (rsp < (ms->stkinfo.ebase[c][i] + 
-			    ms->stkinfo.esize))) {
+			    ms->stkinfo.esize[i]))) {
 				estack = ms->stkinfo.ebase[c][i]; 
+				if (estack_index)
+					*estack_index = i;
 				if (CRASHDEBUG(1) && (c != bt->tc->processor)) 
 					error(INFO, 
       		                      "task cpu: %d  exception stack cpu: %d\n",
@@ -2475,7 +2517,7 @@ x86_64_in_irqstack(struct bt_info *bt)
 static void
 x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 {
-	int i, level, done, framesize;
+	int i, level, done, framesize, estack_index;
 	ulong rsp, offset, stacktop;
 	ulong *up;
 	long cs;
@@ -2537,7 +2579,7 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	}
 
 
-        if ((estack = x86_64_in_exception_stack(bt))) {
+        if ((estack = x86_64_in_exception_stack(bt, &estack_index))) {
 in_exception_stack:
 		bt->flags |= BT_EXCEPTION_STACK;
 		/*
@@ -2545,7 +2587,7 @@ in_exception_stack:
 		 *  stack, so switch to the indicated exception stack.
 		 */
                 bt->stackbase = estack;
-                bt->stacktop = estack + ms->stkinfo.esize;
+                bt->stacktop = estack + ms->stkinfo.esize[estack_index];
                 bt->stackbuf = ms->irqstack;
 
                 if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
@@ -2618,7 +2660,8 @@ in_exception_stack:
 			SIZE(pt_regs), bt, ofp);
 
 		if (!BT_REFERENCE_CHECK(bt))
-			fprintf(fp, "--- <exception stack> ---\n");
+			fprintf(fp, "--- <%s exception stack> ---\n",
+				x86_64_exception_stacks[estack_index]);
 
                 /* 
 		 *  stack = (unsigned long *) estack_end[-2]; 
@@ -2728,7 +2771,7 @@ in_exception_stack:
         } else
 		irq_eframe = 0;
 
-        if (!done && (estack = x86_64_in_exception_stack(bt))) 
+        if (!done && (estack = x86_64_in_exception_stack(bt, &estack_index))) 
 		goto in_exception_stack;
 
 	if (!done && (bt->flags & (BT_EXCEPTION_STACK|BT_IRQSTACK))) {
@@ -2922,7 +2965,7 @@ in_exception_stack:
 static void
 x86_64_dwarf_back_trace_cmd(struct bt_info *bt_in)
 {
-	int i, level, done;
+	int i, level, done, estack_index;
 	ulong rsp, offset, stacktop;
 	ulong *up;
 	long cs;
@@ -2985,7 +3028,7 @@ x86_64_dwarf_back_trace_cmd(struct bt_info *bt_in)
 	}
 
 
-        if ((estack = x86_64_in_exception_stack(bt))) {
+        if ((estack = x86_64_in_exception_stack(bt, &estack_index))) {
 in_exception_stack:
 		bt->flags |= BT_EXCEPTION_STACK;
 		/*
@@ -2993,7 +3036,7 @@ in_exception_stack:
 		 *  stack, so switch to the indicated exception stack.
 		 */
                 bt->stackbase = estack;
-                bt->stacktop = estack + ms->stkinfo.esize;
+                bt->stacktop = estack + ms->stkinfo.esize[estack_index];
                 bt->stackbuf = ms->irqstack;
 
                 if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
@@ -3118,7 +3161,7 @@ in_exception_stack:
         } else
 		irq_eframe = 0;
 
-        if (!done && (estack = x86_64_in_exception_stack(bt))) 
+        if (!done && (estack = x86_64_in_exception_stack(bt, &estack_index))) 
 		goto in_exception_stack;
 
 	if (!done && (bt->flags & (BT_EXCEPTION_STACK|BT_IRQSTACK))) {
@@ -3474,7 +3517,7 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 			if ((sp = value_search(rip, &offset))) {
                 		fprintf(ofp, "%s", sp->name);
                 		if (offset)
-                        		fprintf(ofp, (output_radix == 16) ? 
+                        		fprintf(ofp, (*gdb_output_radix == 16) ? 
 						"+0x%lx" : "+%ld", offset);
 				bt->eframe_ip = rip;
 			} else
@@ -3638,7 +3681,7 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 
 	if ((cs == 0x10) && kvaddr) {
                 if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
-		    x86_64_in_exception_stack(bt))
+		    x86_64_in_exception_stack(bt, NULL))
 			return TRUE;
 	}
 
@@ -3899,11 +3942,11 @@ skip_stage:
          *  Check the exception stacks.
          */
 	case 1:
-		if (++estack == 7)
+		if (++estack == MAX_EXCEPTION_STACKS)
 			break;
 		bt->stackbase = ms->stkinfo.ebase[bt->tc->processor][estack];
 		bt->stacktop = ms->stkinfo.ebase[bt->tc->processor][estack] +
-                	ms->stkinfo.esize;
+                	ms->stkinfo.esize[estack];
 		console("x86_64_get_dumpfile_stack_frame: searching %s estack at %lx\n", 
 			x86_64_exception_stacks[estack], bt->stackbase);
 		if (!(bt->stackbase)) 
@@ -4199,10 +4242,13 @@ x86_64_get_smp_cpus(void)
 			return 1;
 
 		for (i = cpus = 0; i < NR_CPUS; i++) {
-			readmem(symbol_value("per_cpu__cpu_number") + 
-				kt->__per_cpu_offset[i], KVADDR, 
-				&cpunumber, sizeof(int),
-				"cpu number (per_cpu)", FAULT_ON_ERROR);
+			if (kt->__per_cpu_offset[i] == 0)
+				break;
+			if (!readmem(symbol_value("per_cpu__cpu_number") + 
+			    kt->__per_cpu_offset[i], KVADDR, 
+			    &cpunumber, sizeof(int),
+			    "cpu number (per_cpu)", QUIET|RETURN_ON_ERROR))
+				break;
 			if (cpunumber != cpus)
 				break;
 			cpus++;
@@ -4338,18 +4384,23 @@ x86_64_display_machine_stats(void)
 static void 
 x86_64_display_cpu_data(void)
 {
-        int cpu, cpus, boot_cpu, _cpu_pda;
+        int cpu, cpus, boot_cpu, _cpu_pda, per_cpu;
         ulong cpu_data;
 	ulong cpu_pda, cpu_pda_addr;
 
 	boot_cpu = _cpu_pda = FALSE;
 	cpu_data = cpu_pda = 0;
 	cpus = 0;
+	per_cpu = FALSE;
 
 	if (symbol_exists("cpu_data")) {
         	cpu_data = symbol_value("cpu_data");
 		cpus = kt->cpus;
 		boot_cpu = FALSE;
+	} else if (symbol_exists("per_cpu__cpu_info")) {
+		cpus = kt->cpus;
+		boot_cpu = FALSE;
+		per_cpu = TRUE;
 	} else if (symbol_exists("boot_cpu_data")) {
         	cpu_data = symbol_value("boot_cpu_data");
 		boot_cpu = TRUE;
@@ -4369,19 +4420,26 @@ x86_64_display_cpu_data(void)
 		else
                 	fprintf(fp, "%sCPU %d:\n", cpu ? "\n" : "", cpu);
 
+		if (per_cpu)
+			cpu_data = symbol_value("per_cpu__cpu_info") +
+				kt->__per_cpu_offset[cpu];
+
                 dump_struct("cpuinfo_x86", cpu_data, 0);
-		fprintf(fp, "\n");
 
 		if (_cpu_pda) {
 			readmem(cpu_pda, KVADDR, &cpu_pda_addr,
 				sizeof(unsigned long), "_cpu_pda addr", FAULT_ON_ERROR);
+			fprintf(fp, "\n");
 			dump_struct("x8664_pda", cpu_pda_addr, 0);
 			cpu_pda += sizeof(void *);
-		} else {
+		} else if (VALID_STRUCT(x8664_pda)) {
+			fprintf(fp, "\n");
 			dump_struct("x8664_pda", cpu_pda, 0);
 			cpu_pda += SIZE(x8664_pda);
 		}
-                cpu_data += SIZE(cpuinfo_x86);
+
+		if (!per_cpu)
+			cpu_data += SIZE(cpuinfo_x86);
         }
 }
 
@@ -5669,7 +5727,7 @@ x86_64_print_eframe_regs_hyper(struct bt_info *bt)
 	if ((sp = value_search(up[16], &offset))) {
                	fprintf(fp, "%s", sp->name);
               	if (offset)
-               		fprintf(fp, (output_radix == 16) ? 
+               		fprintf(fp, (*gdb_output_radix == 16) ? 
 					"+0x%lx" : "+%ld", offset);
 	} else
        		fprintf(fp, "unknown or invalid address");

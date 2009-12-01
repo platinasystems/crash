@@ -15,9 +15,10 @@ clean: pre-stamp
 	dh_testdir
 	dh_testroot
 	rm -f build-stamp configure-stamp	
-	rm -Rf $(CURDIR)/gdb-6.1 configure
+	rm -Rf $(CURDIR)/gdb-6.1
 	cp -a $(CURDIR)/debian/gdb-6.1.back $(CURDIR)/gdb-6.1 
 	$(MAKE) clean
+	rm -Rf $(CURDIR)/configure
 	find . -name "*~" -exec rm {} \;
 
 	dh_clean

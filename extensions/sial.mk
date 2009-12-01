@@ -15,7 +15,7 @@ lib-sial:
 	cd libsial && make
         
 sial.so: ../defs.h sial.c lib-sial
-	gcc -g -I.. -Ilibsial -I../gdb-6.1/bfd -I../gdb-6.1/include -I../gdb-6.1/gdb -I../gdb-6.1/gdb/config -nostartfiles -shared -rdynamic -o sial.so sial.c -fPIC $(TARGET_FLAGS) -Llibsial -lsial 
+	gcc -g -I.. -Ilibsial -I../$(GDB)/bfd -I../$(GDB)/include -I../$(GDB)/gdb -I../$(GDB)/gdb/config -I../$(GDB)/gdb/common -I../$(GDB) -nostartfiles -shared -rdynamic -o sial.so sial.c -fPIC $(TARGET_FLAGS) $(GDB_FLAGS) -Llibsial -lsial 
 
 clean:
 	cd libsial && make clean
