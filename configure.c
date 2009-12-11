@@ -998,7 +998,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("Vendor: Red Hat, Inc.\n");
 	printf("Packager: Dave Anderson <anderson@redhat.com>\n");
 	printf("ExclusiveOS: Linux\n");
-	printf("ExclusiveArch: i386 alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x\n");
+	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x\n");
 	printf("Buildroot: %%{_tmppath}/%%{name}-root\n");
 	printf("BuildRequires: ncurses-devel zlib-devel\n");
 	printf("Requires: binutils\n");

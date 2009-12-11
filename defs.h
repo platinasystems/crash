@@ -791,6 +791,7 @@ struct machdep_table {
 	void (*get_xendump_regs)(struct xendump_data *, struct bt_info *, ulong *, ulong *);
 	void (*clear_machdep_cache)(void);
 	int (*xen_kdump_p2m_create)(struct xen_kdump_data *);
+	int (*in_alternate_stack)(int, ulong);
 };
 
 /*
@@ -3666,6 +3667,7 @@ ulong generic_get_stackbase(ulong);
 ulong generic_get_stacktop(ulong);
 void dump_task_table(int);
 void sort_context_array(void);
+int in_irq_ctx(ulonglong, int, ulong);
 
 /*
  *  extensions.c
@@ -3712,6 +3714,7 @@ int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
 void back_trace(struct bt_info *);
+int in_alternate_stack(int, ulong);
 ulong cpu_map_addr(const char *type);
 #define BT_RAW                     (0x1ULL)
 #define BT_SYMBOLIC_ARGS           (0x2ULL)

@@ -2099,6 +2099,22 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 	}
 }
 
+int
+in_alternate_stack(int cpu, ulong address)
+{
+	if (machdep->in_alternate_stack)
+		if (machdep->in_alternate_stack(cpu, address))
+			return TRUE;
+
+	if (tt->flags & IRQSTACKS) {
+		if (in_irq_ctx(BT_SOFTIRQ, cpu, address) ||
+                    in_irq_ctx(BT_HARDIRQ, cpu, address))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
 /*
  *  Gather the EIP, ESP and stack address for the target task, and passing 
  *  them on to the machine-specific back trace command.
@@ -2168,16 +2184,30 @@ back_trace(struct bt_info *bt)
 	}
 	
 	if (bt->hp) {
-		if (bt->hp->esp && !INSTACK(bt->hp->esp, bt))
+		if (bt->hp->esp && !INSTACK(bt->hp->esp, bt) &&
+		    !in_alternate_stack(bt->tc->processor, bt->hp->esp))
 			error(INFO, 
-			    "non-process stack address for this task: %lx\n    (valid range: %lx - %lx)\n",
+		    	    "non-process stack address for this task: %lx\n"
+			    "    (valid range: %lx - %lx)\n",
 				bt->hp->esp, bt->stackbase, bt->stacktop);
+
 		eip = bt->hp->eip;
 		esp = bt->hp->esp;
 
 		machdep->get_stack_frame(bt, eip ? NULL : &eip, 
 			esp ? NULL : &esp);
-	 
+
+		if (in_irq_ctx(BT_HARDIRQ, bt->tc->processor, esp)) {
+			bt->stackbase = tt->hardirq_ctx[bt->tc->processor];
+			bt->stacktop = bt->stackbase + STACKSIZE();
+			alter_stackbuf(bt);
+			bt->flags |= BT_HARDIRQ;
+		} else if (in_irq_ctx(BT_SOFTIRQ, bt->tc->processor, esp)) {
+			bt->stackbase = tt->softirq_ctx[bt->tc->processor];
+			bt->stacktop = bt->stackbase + STACKSIZE();
+			alter_stackbuf(bt);
+			bt->flags |= BT_SOFTIRQ;
+		}
         } else if (XEN_HYPER_MODE())
 		machdep->get_stack_frame(bt, &eip, &esp);
 	else if (NETDUMP_DUMPFILE())
@@ -2253,6 +2283,11 @@ back_trace(struct bt_info *bt)
 					    SIZE(irq_ctx) - 
 					    (sizeof(char *)*2));
 				fprintf(fp, "--- <hard IRQ> ---\n");
+				if (in_irq_ctx(BT_SOFTIRQ, bt->tc->processor, btloc.hp->esp)) {
+					btloc.flags |= BT_SOFTIRQ;
+					btloc.stackbase = tt->softirq_ctx[bt->tc->processor];
+					btloc.stacktop = btloc.stackbase + STACKSIZE();
+				}
                 		break;
 
         		case BT_SOFTIRQ:
@@ -2349,20 +2384,36 @@ restore_stack(struct bt_info *bt)
 		break;
 	}
 
-	bt->flags &= ~(BT_HARDIRQ|BT_SOFTIRQ); 
-	bt->stackbase = GET_STACKBASE(bt->tc->task);
-        bt->stacktop = GET_STACKTOP(bt->tc->task);
-
-        if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
-            bt->stacktop - bt->stackbase, 
-	    "restore_stack contents", RETURN_ON_ERROR)) {
-        	error(INFO, "restore_stack of stack at %lx failed\n", 
-			bt->stackbase);
-		type = 0;
+	if ((type == BT_HARDIRQ) && bt->instptr &&
+	    in_irq_ctx(BT_SOFTIRQ, bt->tc->processor, bt->stkptr)) {
+		bt->flags &= ~BT_HARDIRQ; 
+		bt->flags |= BT_SOFTIRQ; 
+                bt->stackbase = tt->softirq_ctx[bt->tc->processor];
+                bt->stacktop = bt->stackbase + STACKSIZE();
+		if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+		    bt->stacktop - bt->stackbase, 
+		    "restore softirq_ctx stack", RETURN_ON_ERROR)) {
+			error(INFO, 
+			    "read of softirq stack at %lx failed\n", 
+				bt->stackbase);
+			type = 0;
+		}
+	} else {
+		bt->flags &= ~(BT_HARDIRQ|BT_SOFTIRQ); 
+		bt->stackbase = GET_STACKBASE(bt->tc->task);
+	        bt->stacktop = GET_STACKTOP(bt->tc->task);
+	
+	        if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+	            bt->stacktop - bt->stackbase, 
+		    "restore_stack contents", RETURN_ON_ERROR)) {
+	        	error(INFO, "restore_stack of stack at %lx failed\n", 
+				bt->stackbase);
+			type = 0;
+		}
+	
+		if (!(bt->instptr && INSTACK(bt->stkptr, bt)))
+			type = 0;
 	}
-
-	if (!(bt->instptr && INSTACK(bt->stkptr, bt)))
-		type = 0;
 
 	if (type) {
 		if (!BT_REFERENCE_CHECK(bt))

@@ -1,3 +1,17 @@
+crash (4.1.2-1) unstable; urgency=low
+
+  * New upstream version 4.1.1 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix for amd64 with CONFIG_NEED_MULTIPLE_NODES on kernels >= 2.6.31
+  - Fix for snap.c extension module to handle NUMA systems with multiple
+  nodes.
+  - Handle corrupt Elf32_Phdr/Elf64_Phdr structures in ELF vmcore.
+  - Prepare for integration of gdb 7.0
+  - Fix x86 bt with the stak is >= 3 level deep and handeling an IRQ.
+  - Fix handcrafted backsrace starting point command bt -S
+
+ -- Troy Heber <troyh@debian.org>  Fri, 11 Dec 2009 10:55:06 -0700
+
 crash (4.1.1-1) unstable; urgency=low
 
   * New upstream version 4.1.1 (see
