@@ -2346,6 +2346,9 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 		}
 	}
 
+	if (STREQ(name, "invalid_op"))
+		eframe_check = 8;
+
 	if (bt->flags & BT_SCHEDULE)
 		name = "schedule";
 

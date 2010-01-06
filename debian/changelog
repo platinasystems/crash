@@ -1,3 +1,27 @@
+crash (5.0.0-1) unstable; urgency=low
+
+  * New upstream version 5.0.0 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Fix for the ppc64 "irq" command where the "irq_desc_t" is no longer
+  recognized as a typedef for "struct irq_desc".
+  - Fix for 2.6.26 and later ppc64 CONFIG_SPARSEMEM_VMEMMAP kernels to
+  recognize VMEMMAP_REGION virtual addresses
+  - Fix for segmentation violation when running the "ps -r" command option on
+  2.6.25 or later kernels.
+  - Fix for the "mount" command on 2.6.32 and later kernels.
+  - Fix for the "bt" command on 2.6.29 and later x86_64 kernels to always
+  recognize and display BUG()-induced exception frames.
+  - Fix for the "rd" and "kmem" commands to prevent the unnecessary "WARNING:
+  sparsemem: invalid section number: <number>" message when testing whether an
+  address is represented by a page structure in CONFIG_SPARSEMEM_EXTREME
+  kernels.        
+  - Fix for a 4.0-8.11 regression that introduced a bug in determining the
+  number of cpus in ppc64 kernels when the cpu_possible_[map/mask] has more
+  cpus than the cpu_online_[map/mask].  In that case, the kernel contains
+  per-cpu runqueue data and "swapper" tasks for the extra cpus.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 06 Jan 2010 15:31:08 -0700
+
 crash (4.1.2-1) unstable; urgency=low
 
   * New upstream version 4.1.1 (see

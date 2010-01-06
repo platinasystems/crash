@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,7 @@
 static int ppc64_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static int ppc64_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong ppc64_vmalloc_start(void);
+static int ppc64_vmemmap_to_phys(ulong, physaddr_t *, int);
 static int ppc64_is_task_addr(ulong);
 static int ppc64_verify_symbol(const char *, ulong, char);
 static ulong ppc64_get_task_pgd(ulong);
@@ -136,6 +137,8 @@ ppc64_init(int when)
 		machdep->line_number_hooks = ppc64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = NULL;
+		if (symbol_exists("vmemmap_populate"))
+			machdep->flags |= VMEMMAP;
 		break;
 
 	case POST_GDB:
@@ -196,6 +199,8 @@ ppc64_init(int when)
 
 		STRUCT_SIZE_INIT(irqdesc, "irqdesc");
 		STRUCT_SIZE_INIT(irq_desc_t, "irq_desc_t");
+		if (INVALID_SIZE(irqdesc) && INVALID_SIZE(irq_desc_t))
+			STRUCT_SIZE_INIT(irq_desc_t, "irq_desc");
 		/* as of 2.3.x PPC uses the generic irq handlers */
 		if (VALID_SIZE(irq_desc_t))
 			machdep->dump_irq = generic_dump_irq;
@@ -321,6 +326,8 @@ ppc64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_ORIG", others++ ? "|" : "");
 	if (machdep->flags & VM_4_LEVEL)
 		fprintf(fp, "%sVM_4_LEVEL", others++ ? "|" : "");
+	if (machdep->flags & VMEMMAP)
+		fprintf(fp, "%sVMEMMAP", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -646,6 +653,9 @@ ppc64_kvtop(struct task_context *tc, ulong kvaddr,
         if (!IS_KVADDR(kvaddr))
                 return FALSE;
 
+	if (REGION_ID(kvaddr) == VMEMMAP_REGION_ID)
+		return ppc64_vmemmap_to_phys(kvaddr, paddr, verbose);
+
 	if (!vt->vmalloc_start) {
 		*paddr = VTOP(kvaddr);
 		return TRUE;
@@ -660,6 +670,39 @@ ppc64_kvtop(struct task_context *tc, ulong kvaddr,
 		return ppc64_vtop_level4(kvaddr, (ulong *)vt->kernel_pgd[0], paddr, verbose);
 	else
 		return ppc64_vtop(kvaddr, (ulong *)vt->kernel_pgd[0], paddr, verbose);
+}
+
+/*
+ *  If the vmemmap address translation information is stored in the kernel,
+ *  make the translation. 
+ */
+static int
+ppc64_vmemmap_to_phys(ulong kvaddr, physaddr_t *paddr, int verbose)
+{
+	if (!(machdep->flags & VMEMMAP))
+		return FALSE;
+
+	/*
+	 *  If possible, make the translation here.
+	 */
+
+		/* TBD -- kernel assist required */
+
+	/*
+	 *  During runtime, just fail the command.
+	 */
+	if (vt->flags & VM_INIT)
+		error(FATAL, "cannot translate vmemmap address: %lx\n",
+			 kvaddr); 
+
+	/*
+	 *  During vm_init() initialization, print a warning message.
+	 */
+	error(WARNING, 
+	    "cannot translate vmemmap kernel virtual addresses:\n"
+	    "         commands requiring page structure contents will fail\n\n");
+
+	return FALSE;
 }
 
 /*
@@ -2468,7 +2511,20 @@ ppc64_paca_init(void)
 		kt->flags |= PER_CPU_OFF;
 		cpus++;
 	}
-	kt->cpus = cpus;
+	switch (map)
+	{
+	case POSSIBLE:
+		if (cpus > kt->cpus) {
+			i = get_highest_cpu_online() + 1;
+			if (i > kt->cpus)
+				kt->cpus = i;
+		}
+		break;
+	case ONLINE:
+	case PRESENT:
+		kt->cpus = cpus;
+		break;
+	}
 	if (kt->cpus > 1)
 		kt->flags |= SMP;
 }

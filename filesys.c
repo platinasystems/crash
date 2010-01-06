@@ -1160,6 +1160,12 @@ cmd_mount(void)
                 switch(c)
 		{
 		case 'i':
+			if (INVALID_MEMBER(super_block_s_dirty)) {
+				error(INFO, 
+				    "the super_block.s_dirty linked list does "
+                                    "not exist in this kernel\n");
+				option_not_supported(c);
+			}
 			flags |= MOUNT_PRINT_INODES;
 			break;
 
@@ -1276,9 +1282,11 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
                 space(MINSPACE),
 		space(MINSPACE));
 		
-	s_dirty = OFFSET(super_block_s_dirty);
+	dirp = dentry = mnt_parent = sb_s_files = s_dirty = 0;
 
-	dirp = dentry = mnt_parent = sb_s_files = 0;
+	if (VALID_MEMBER(super_block_s_dirty))
+		s_dirty = OFFSET(super_block_s_dirty);
+
 	dentry_list = NULL;
 	mntlist = 0;
 	ld = &list_data;

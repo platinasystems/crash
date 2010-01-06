@@ -853,6 +853,8 @@ vm_init(void)
 
 	PG_reserved_flag_init();
 	PG_slab_flag_init();
+
+	vt->flags |= VM_INIT;
 }
 
 /*
@@ -10800,6 +10802,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sVM_EVENT", others++ ? "|" : "");\
 	if (vt->flags & PGCNT_ADJ)
 		fprintf(fp, "%sPGCNT_ADJ", others++ ? "|" : "");\
+	if (vt->flags & VM_INIT)
+		fprintf(fp, "%sVM_INIT", others++ ? "|" : "");\
 
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
@@ -12901,8 +12905,11 @@ nr_to_section(ulong nr)
 
 	if (IS_SPARSEMEM_EX()) {
 		if (SECTION_NR_TO_ROOT(nr) >= NR_SECTION_ROOTS()) {
-			error(WARNING, 
-			   "sparsemem: invalid section number: %ld\n", nr);
+			if (!STREQ(pc->curcmd, "rd") && 
+			    !STREQ(pc->curcmd, "kmem"))
+				error(WARNING, 
+			   	    "sparsemem: invalid section number: %ld\n",
+					 nr);
 			return 0;
 		}
 	}

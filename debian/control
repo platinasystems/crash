@@ -3,12 +3,12 @@ Section: utils
 Priority: optional
 Maintainer: Troy Heber <troyh@debian.org>
 Uploaders:
-Build-Depends: debhelper (>= 7), binutils-dev, zlib1g-dev, libncurses5-dev
+Build-Depends: debhelper (>= 7.0.50~), quilt (>= 0.47), binutils-dev, zlib1g-dev, libncurses5-dev
 Standards-Version: 3.8.3.0
 
 Package: crash
 Architecture: i386 ia64 alpha powerpc amd64
-Depends: ${shlibs:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Suggests: kernel-patch-lkcd, dumputils
 Description: kernel debugging utility, allowing gdb like syntax
  The core analysis suite is a self-contained tool that can be used to

@@ -1,79 +1,27 @@
 #!/usr/bin/make -f
-# Sample debian/rules that uses debhelper.
-# GNU copyright 1997 to 1999 by Joey Hess.
 
 # Uncomment this to turn on verbose mode.
-#export DH_VERBOSE=1
+export DH_VERBOSE=1
 
-build: build-stamp
 
-pre-stamp:
-	cp -a $(CURDIR)/gdb-6.1 $(CURDIR)/debian/gdb-6.1.back
-	touch pre-stamp
+%:
+	dh --with quilt $@
 
-clean: pre-stamp
-	dh_testdir
-	dh_testroot
-	rm -f build-stamp configure-stamp	
-	rm -Rf $(CURDIR)/gdb-6.1
-	cp -a $(CURDIR)/debian/gdb-6.1.back $(CURDIR)/gdb-6.1 
-	$(MAKE) clean
+override_dh_auto_clean:
+	cp $(CURDIR)/Makefile $(CURDIR)/debian/Makefile.ori
+	dh_auto_clean
+
+override_dh_clean:
+	dh_clean
+	cp $(CURDIR)/debian/Makefile.ori $(CURDIR)/Makefile
 	rm -Rf $(CURDIR)/configure
-	find . -name "*~" -exec rm {} \;
+	rm -Rf $(CURDIR)/gdb-7.0
+	rm -Rf $(CURDIR)/gdb.files
+	rm -Rf $(CURDIR)/build_data.c
 
-	dh_clean
+override_dh_auto_install:
+	dh_auto_install
+	cp $(CURDIR)/debian/Makefile.ori $(CURDIR)/Makefile
 
-configure: configure-stamp
-configure-stamp:
-	dh_testdir
-	# Add here commands to configure the package.
-
-	touch configure-stamp
-
-
-build-stamp: configure-stamp 
-	dh_testdir
-
-	# Add here commands to compile the package.
-	$(MAKE)
-
-	touch build-stamp
-
-install: build
-	dh_testdir
-	dh_testroot
-	dh_clean
-	dh_installdirs
-	dh_installmodules
-
-	# Add here commands to install the package into debian/crash
-	# mkdir $(CURDIR)/debian/crash
-	$(MAKE) install DESTDIR=$(CURDIR)/debian/crash
-	install -m 755 crash.8 \
-	$(CURDIR)/debian/crash/usr/share/man/man8
-
-# Build architecture-independent files here.
-binary-indep: build install
-# We have nothing to do by default.
-
-# Build architecture-dependent files here.
-binary-arch: build install
-	dh_testdir
-	dh_testroot
-	dh_installdocs
-	dh_installexamples
-	dh_installman
-	dh_installchangelogs 
-	dh_link
-	dh_strip
-	dh_compress
-	dh_fixperms
-	dh_installdeb
-	dh_shlibdeps
-	dh_gencontrol
-	dh_installmodules
-	dh_md5sums
-	dh_builddeb
-
-binary: binary-indep binary-arch
-.PHONY: build clean binary-indep binary-arch binary install configure
+override_dh_auto_test:
+	# Crash does not provide a testsuite

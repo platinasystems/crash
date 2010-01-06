@@ -25,7 +25,7 @@ PROGRAM=crash
 # Supported targets: X86 ALPHA PPC IA64 PPC64
 # TARGET will be configured automatically by configure
 #
-TARGET=X86_64
+TARGET=
 
 ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
 ifeq ($(ARCH), ppc64)
@@ -35,10 +35,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=gdb-6.1
-GDB_FILES=${GDB_6.1_FILES}
-GDB_OFILES=${GDB_6.1_OFILES}
-GDB_PATCH_FILES=gdb-6.1.patch
+GDB=gdb-7.0
+GDB_FILES=${GDB_7.0_FILES}
+GDB_OFILES=
+GDB_PATCH_FILES=gdb-7.0.patch
 
 #
 # Default installation directory
@@ -212,7 +212,7 @@ GDB_7.0_OFILES=${GDB}/gdb/symtab.o
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
 #
-GDB_FLAGS=-DGDB_6_1
+GDB_FLAGS=
 
 #
 # WARNING_OPTIONS and WARNING_ERROR are both applied on a per-file basis. 
@@ -229,7 +229,7 @@ TARGET_CFLAGS=
 
 CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
 
-GPL_FILES=COPYING
+GPL_FILES=COPYING3
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
@@ -515,7 +515,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=4.1.2
+VERSION=5.0.0
 RELEASE=0
 
 release: make_configure
