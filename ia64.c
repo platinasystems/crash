@@ -1,8 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2277,7 +2277,7 @@ ia64_get_smp_cpus(void)
 	int cpus;
 
 	if ((cpus = get_cpus_online()))
-		return cpus;
+		return MAX(cpus, get_highest_cpu_online()+1);
 	else
 		return kt->cpus;
 }

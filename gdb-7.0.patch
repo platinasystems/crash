@@ -435,7 +435,7 @@
  {
 +#ifdef CRASH_MERGE
 +  extern int gdb_readmem_callback(unsigned long, void *, int, int);
-+  if (gdb_readmem_callback(memaddr, myaddr, len, 1))
++  if (gdb_readmem_callback(memaddr, (void *)myaddr, len, 1))
 +        return 0;
 +  else
 +        return EIO;
@@ -1133,6 +1133,15 @@
  
  $(TUI)$(EXEEXT): tui-main.o libgdb.a $(ADD_DEPS) $(CDEPS) $(TDEPLIBS)
  	rm -f $(TUI)$(EXEEXT)
+@@ -1137,7 +1138,7 @@ $(TUI)$(EXEEXT): tui-main.o libgdb.a $(A
+ # Convenience rule to handle recursion.
+ $(LIBGNU) $(GNULIB_H): all-lib
+ all-lib: gnulib/Makefile
+-	@$(MAKE) $(FLAGS_TO_PASS) DO=all DODIRS=gnulib subdir_do
++	@$(MAKE) $(FLAGS_TO_PASS) DO=all DODIRS=gnulib subdir_do -s
+ .PHONY: all-lib
+ 
+ # Create a library of the gdb object files and build GDB by linking
 @@ -1346,12 +1347,12 @@ $(srcdir)/copying.c: @MAINTAINER_MODE_TR
  	mv $(srcdir)/copying.tmp $(srcdir)/copying.c
  
@@ -1240,3 +1249,41 @@
  LDFLAGS = @LDFLAGS@
  LIBCFLAGS = $(CFLAGS)
  CXXFLAGS = @CXXFLAGS@
+--- gdb-7.0/libiberty/Makefile.in.orig
++++ gdb-7.0/libiberty/Makefile.in
+@@ -167,7 +167,7 @@ REQUIRED_OFILES =							\
+ 	./getopt.o ./getopt1.o ./getpwd.o ./getruntime.o		\
+ 	./hashtab.o ./hex.o						\
+ 	./lbasename.o ./lrealpath.o					\
+-	./make-relative-prefix.o ./make-temp-file.o			\
++	./make-relative-prefix.o ./make-temp-file.o ./mkstemps.o	\
+ 	./objalloc.o ./obstack.o					\
+ 	./partition.o ./pexecute.o ./physmem.o				\
+ 	./pex-common.o ./pex-one.o @pexecute@				\
+@@ -188,7 +188,7 @@ CONFIGURED_OFILES = ./asprintf.o ./atexi
+ 	./getcwd.o ./getpagesize.o ./gettimeofday.o			\
+ 	./index.o ./insque.o						\
+ 	./memchr.o ./memcmp.o ./memcpy.o ./memmem.o ./memmove.o		\
+-	 ./mempcpy.o ./memset.o ./mkstemps.o				\
++	 ./mempcpy.o ./memset.o 					\
+ 	./pex-djgpp.o ./pex-msdos.o					\
+ 	 ./pex-unix.o ./pex-win32.o					\
+ 	 ./putenv.o							\
+--- gdb-7.0/gdb/symtab.c.orig
++++ gdb-7.0/gdb/symtab.c
+@@ -867,6 +867,7 @@ find_pc_sect_psymtab (CORE_ADDR pc, stru
+   /* Try just the PSYMTABS_ADDRMAP mapping first as it has better granularity
+      than the later used TEXTLOW/TEXTHIGH one.  */
+ 
++#ifndef __i386__
+   ALL_OBJFILES (objfile)
+     if (objfile->psymtabs_addrmap != NULL)
+       {
+@@ -901,6 +902,7 @@ find_pc_sect_psymtab (CORE_ADDR pc, stru
+ 	    return pst;
+ 	  }
+       }
++#endif
+ 
+   /* Existing PSYMTABS_ADDRMAP mapping is present even for PARTIAL_SYMTABs
+      which still have no corresponding full SYMTABs read.  But it is not

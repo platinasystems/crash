@@ -33,6 +33,20 @@ typedef struct xc_core_header {
     unsigned int xch_pages_offset;
 } xc_core_header_t;
 
+/*
+ *  Based upon the original xensource xc_core_header struct above, 
+ *  but with unsigned long offset values so that it can be used
+ *  with the original dumpfile format and new ELF-style format.
+ */
+struct xen_core_header {
+    unsigned int xch_magic;
+    unsigned int xch_nr_vcpus;
+    unsigned int xch_nr_pages;
+    unsigned long xch_ctxt_offset;
+    unsigned long xch_index_offset;
+    unsigned long xch_pages_offset;
+};
+
 struct pfn_offset_cache {
 	off_t file_offset;
 	ulong pfn;
@@ -70,7 +84,7 @@ struct xendump_data {
 	struct xc_core_data {
 		int p2m_frames;
 		ulong *p2m_frame_index_list;
-		struct xc_core_header header;
+		struct xen_core_header header;
 		int elf_class;
 		uint64_t format_version;
 		off_t elf_strtab_offset;

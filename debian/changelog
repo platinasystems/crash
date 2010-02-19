@@ -1,3 +1,36 @@
+crash (5.0.1-1) unstable; urgency=low
+
+  * Fix FTBFS with gcc-4.5 bug (Closes: #564973).
+  * Use POSIX compliant "uname -m" instead of arch. (Closes: #568325).
+  * New upstream version 5.0.1 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  - Use archive version of mkstemps() function
+  - Fix irq command on 2.6.33+ kernels.
+  - Defend against corrupted cach_cache kmem_cache structs
+  - Fix swap, kmem -i and vm -p commands on 2.6.33+ kernels
+  - Fix for 2.6.30+ kernels configured without CONFIG_SMP
+  - Fix for x86, s390, s390x and ia64 architectures to set the system cpu
+  count equal to the highest cpu online plus one
+  - Fix to recognize the symbol type change of per-cpu variables from 
+  'd' or 'D' to 'V'.
+  - Fix for the "struct" and "union" commands when passed an address that is
+  in a valid kernel virtual address region but is either unmapped or
+  non-existent.
+  - Update for 2.6.33 and later s390 and s390x kernels to account for the
+  "_lowcore" structure member name change from "st_status_fixed_logout"  to
+  "psw_save_area".
+  - Fix for very large Xen domU dumpfiles that locate the base offset of
+  relevant ELF sections beyond the 4GB mark.
+  - If a kernel crash occurs during a kernel module loading operation, it is
+  possible that a subsequent crash session on the vmcore may result in a
+  segmentation violation during the "please wait...  (gathering module symbol
+  data)" phase.  
+  -  Fix for a gdb-7.0 regression that causes the line number capability to
+  fail with certain ranges of x86 base kernel text addresses. 
+  - Preparation for future s390x ELF dumpfile format.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 19 Feb 2010 13:55:53 -0700
+
 crash (5.0.0-1) unstable; urgency=low
 
   * New upstream version 5.0.0 (see

@@ -1,0 +1,50 @@
+diff --git a/extensions/snap.mk b/extensions/snap.mk
+index 9f02425..e62a338 100644
+--- a/extensions/snap.mk
++++ b/extensions/snap.mk
+@@ -13,19 +13,19 @@
+ # GNU General Public License for more details.
+ #
+ 
+-ifeq ($(shell arch), i686)
++ifeq ($(shell uname -m), i686)
+   TARGET=X86
+   TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64
+ endif
+-ifeq ($(shell arch), ppc64)
++ifeq ($(shell uname -m), ppc64)
+   TARGET=PPC64
+   TARGET_CFLAGS=-m64
+ endif
+-ifeq ($(shell arch), ia64)
++ifeq ($(shell uname -m), ia64)
+   TARGET=IA64
+   TARGET_CFLAGS=
+ endif
+-ifeq ($(shell arch), x86_64)
++ifeq ($(shell uname -m), x86_64)
+   TARGET=X86_64
+   TARGET_CFLAGS=
+ endif
+diff --git a/gdb-7.0.patch b/gdb-7.0.patch
+index 3662830..465e980 100644
+--- a/gdb-7.0.patch
++++ b/gdb-7.0.patch
+@@ -1233,7 +1233,7 @@
+  AS_FOR_BUILD = @AS_FOR_BUILD@
+  CC_FOR_BUILD = @CC_FOR_BUILD@
+  CFLAGS_FOR_BUILD = @CFLAGS_FOR_BUILD@
+-+ifeq ($(shell arch), ppc64)
+++ifeq ($(shell uname -m), ppc64)
+ +CFLAGS_FOR_BUILD += -m64 -fPIC
+ +endif
+  CXXFLAGS_FOR_BUILD = @CXXFLAGS_FOR_BUILD@
+@@ -1243,7 +1243,7 @@
+  GNATMAKE = @GNATMAKE@
+  
+  CFLAGS = @CFLAGS@
+-+ifeq ($(shell arch), ppc64)
+++ifeq ($(shell uname -m), ppc64)
+ +CFLAGS += -m64 -fPIC
+ +endif
+  LDFLAGS = @LDFLAGS@
