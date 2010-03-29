@@ -1607,6 +1607,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long kobj_map;
 	long page_flags;
 	long module_sect_attr;
+	long task_struct_utime;
+	long task_struct_stime;
 };
 
 struct array_table {
@@ -3717,6 +3719,7 @@ int get_cpus_online(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
 int get_highest_cpu_online(void);
+int get_cpus_to_display(void);
 int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
@@ -3939,6 +3942,7 @@ struct machine_specific {
 #define SCHED_TEXT    (0x40)
 #define PHYS_BASE     (0x80)
 #define VM_XEN_RHEL4 (0x100)
+#define FRAMEPOINTER (0x200)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 
@@ -3984,6 +3988,11 @@ struct ppc64_pt_regs {
         long result;         /* Result of a system call */
 };
 
+struct ppc64_vmemmap {
+        unsigned long phys;
+        unsigned long virt;
+};
+
 /*
  * Used to store the HW interrupt stack. It is only for 2.4.
  */
@@ -4010,6 +4019,11 @@ struct machine_specific {
 
 	uint pte_shift;
 	uint l2_masked_bits;
+
+	int vmemmap_cnt;
+	int vmemmap_psize;
+	ulong vmemmap_base;
+	struct ppc64_vmemmap *vmemmap_list;
 };
 
 #define IS_LAST_L4_READ(l4)   ((ulong)(l4) == machdep->machspec->last_level4_read)
@@ -4027,6 +4041,7 @@ void ppc64_dump_machdep_table(ulong);
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
 #define VM_ORIG     (0x2)
+#define VMEMMAP_AWARE (0x4)
 
 #define REGION_SHIFT       (60UL)
 #define REGION_ID(addr)    (((unsigned long)(addr)) >> REGION_SHIFT)

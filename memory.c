@@ -7212,6 +7212,8 @@ kmem_cache_list(void)
         ulong cache, cache_cache, name;
 	long next_offset, name_offset;
 	char *cache_buf;
+	int has_cache_chain;
+	ulong cache_chain;
 	char buf[BUFSIZE];
 
 	if (vt->flags & KMEM_CACHE_UNAVAIL) {
@@ -7222,6 +7224,14 @@ kmem_cache_list(void)
 	if (vt->flags & KMALLOC_SLUB) {
 		kmem_cache_list_slub();
 		return;		
+	}
+
+	if (symbol_exists("cache_chain")) {	
+		has_cache_chain = TRUE;
+		cache_chain = symbol_value("cache_chain");
+	} else {
+		has_cache_chain = FALSE;
+		cache_chain = 0;
 	}
 
         name_offset = vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2) ?
@@ -7259,6 +7269,10 @@ kmem_cache_list(void)
 		fprintf(fp, "%lx %s\n", cache, buf);
 
 		cache = ULONG(cache_buf + next_offset);
+
+		if (has_cache_chain && (cache == cache_chain))
+			readmem(cache, KVADDR, &cache, sizeof(char *),
+				"cache_chain", FAULT_ON_ERROR);
 
 		if (vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2))
 			cache -= next_offset;
@@ -9196,9 +9210,6 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 					tmp = INT(slab_buf + OFFSET(slab_inuse));
 					si->inuse += tmp;
 	
-					if (ACTIVE())
-						gather_cpudata_list_v2_nodes(si, index); 
-
 					si->s_mem = ULONG(slab_buf + 
 						OFFSET(slab_s_mem));
 					gather_slab_cached_count(si);
@@ -12094,8 +12105,11 @@ dump_memory_nodes(int initialize)
 		else
 			node_present_pages = 0;
 
-		readmem(pgdat+OFFSET(pglist_data_bdata), KVADDR, &bdata,
-			sizeof(ulong), "pglist bdata", FAULT_ON_ERROR);
+		if (VALID_MEMBER(pglist_data_bdata))
+			readmem(pgdat+OFFSET(pglist_data_bdata), KVADDR, &bdata,
+				sizeof(ulong), "pglist bdata", FAULT_ON_ERROR);
+		else
+			bdata = BADADDR;
 
 		if (initialize) {
 			nt->node_id = id;
@@ -12140,8 +12154,9 @@ dump_memory_nodes(int initialize)
 				MKSTR(node_size)),
 			    mkstring(buf2, flen, CENTER|LJUST|LONG_HEX, 
 				MKSTR(pgdat)),
-			    mkstring(buf3, flen, CENTER|LONG_HEX, 
-				MKSTR(bdata)),
+			    bdata == BADADDR ? 
+			    mkstring(buf3, flen, CENTER, "----") :
+			    mkstring(buf3, flen, CENTER|LONG_HEX, MKSTR(bdata)),
 			    mkstring(buf4, flen, CENTER|LJUST|LONG_HEX,
                                 MKSTR(node_zones)));
 			fprintf(fp, "%s", buf5);

@@ -1,3 +1,51 @@
+crash (5.0.2-1) unstable; urgency=low
+
+  * New upstream version 5.0.2 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for the "mod -[sS]" command if the attempt to load a kernel module
+    fails due to an internal gdb error.
+  * Fix for the "mod -[sS]" command options, which may display the error
+    message "mod: <module>: last symbol is not _MODULE_END_<module>?".
+  * Fix for the reading of dumpfiles created with the "snap" extension module
+    when used on an x86 machine with a single PT_LOAD segment that starts at a
+    non-zero address.
+  * Fixes for several bugs in the s390 and s390x stack backtrace code
+  * Fix for the "mach -m" command option on x86 or x86_64 systems whose
+    BIOS-provided e820 map contains EFI-related memory type value that has not
+    been mapped to an E820 type (pre-2.6.27), or if the type is E820_UNUSABLE
+    (2.6.28 and later). 
+  * Fix for SIAL extension module if a script uses structures that contain
+    members of type "bool".
+  * Fix to prevent a stream of harmless but annoying error messages when
+    running "crash -d4" (or any larger -d debug value) on x86 machines.  
+  * Fix for the "kmem -s list" command option on non-CONFIG_SLUB kernels that
+    contain a "cache_chain" list_head symbol instead of having a "#define
+    cache_chain (cache_cache.next)" construct.
+  * Fix for the x86_64 "bt" command to recognize, and take advantage of,
+    kernels that were built with CONFIG_FRAME_POINTER.
+  * Fix to prevent a crash session that is run over a network connection that
+    is killed/removed from going into 100% cpu-time loop.
+  * Change the output of "ps -t" to display the task_struct's utime and stime
+    values unmodified on kernels using a cputime_t (unsigned long) to store
+    those values.
+  *  Fix for the x86 "bt" command if the kdump-generated NMI interrupts a
+     process in kernel space at a pointer before the full user-mode exception
+     frame (pt_regs) gets written on the kernel stack.
+  *  Fix for the "bt -e" command on 2.6.30 or later x86 kernels if the x86.c
+     file was built with D_FORTIFY_SOURCE.
+  *  Fix for initialization-time failure on 2.6.34 and later kernels that were
+     configured with CONFIG_NO_BOOTMEM.
+  * Fix for the processor speed value displayed on ppc and ppc64 machines at
+    session invocation, and by the "sys" and "mach" commands. 
+  * Implemented support to recognize an IBM-proposed kernel patch for ppc64
+    CONFIG_SPARSEMEM_VMEMMAP kernels that will store vmemmap page mapping
+    information.
+  * Fix for "kmem -[sS]" command options on live CONFIG_SLAB systems to
+    prevent the redundant reading of the shared array_cache object list from
+    the per-node kmem_list3 data structures. 
+
+ -- Troy Heber <troyh@debian.org>  Mon, 29 Mar 2010 10:21:20 -0600
+
 crash (5.0.1-1) unstable; urgency=low
 
   * Fix FTBFS with gcc-4.5 bug (Closes: #564973).

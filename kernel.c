@@ -1535,7 +1535,7 @@ BUG_x86(void)
 			continue;
 
 		if ((vaddr = htol(strip_ending_char(arglist[0], ':'), 
-		    RETURN_ON_ERROR, NULL)) >= spn->value)
+		    RETURN_ON_ERROR|QUIET, NULL)) >= spn->value)
 			continue; 
 
 		if (STREQ(arglist[2], "ud2a")) {
@@ -1658,7 +1658,7 @@ generic_dis_filter(ulong value, char *buf)
 }
 
 #define FRAMESIZE_DEBUG_MESSAGE \
-"\nx86 usage: bt -F [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n\nx86_64 usage: bt -F [clear|dump|validate] [-I rip]\n  If rip:  \"validate\" will verbosely recalculate the framesize.\n  If !rip: \"clear\" will clear the framesize cache.\n           \"dump\" will dump the current framesize cache entries.\n"
+"\nx86 usage: bt -F [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n\nx86_64 usage: bt -F [clear|dump|validate|framepointer|noframepointer] [-I rip]\n  If rip:  \"validate\" will verbosely recalculate the framesize without\n           framepointers (no stack reference).\n  If !rip: \"clear\" will clear the framesize cache.\n           \"dump\" will dump the current framesize cache entries.\n           \"framepointer/noframepointer\" toggle the FRAMEPOINTER flag and\n           clear the framesize cache."
 
 
 /*
@@ -1858,6 +1858,10 @@ cmd_bt(void)
 				hook.esp = (ulong)-1;
 			else if (STREQ(optarg, "novalidate"))
 				hook.esp = (ulong)-2;
+			else if (STREQ(optarg, "framepointer"))
+				hook.esp = (ulong)-3;
+			else if (STREQ(optarg, "noframepointer"))
+				hook.esp = (ulong)-4;
 			else if (STREQ(optarg, "clear")) {
 				kt->flags &= ~(RA_SEEK|NO_RA_SEEK);
 				hook.esp = 0;
@@ -3870,8 +3874,8 @@ display_sys_stats(void)
 		fprintf(fp, "\n");
 	}
 	
-
-        fprintf(fp, "        CPUS: %d\n", kt->cpus);
+	fprintf(fp, "        CPUS: %d\n",
+		machine_type("PPC64") ? get_cpus_to_display() : kt->cpus);
 	if (ACTIVE())
         	get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
         fprintf(fp, "        DATE: %s\n", 
@@ -6254,6 +6258,18 @@ get_cpus_possible()
 	FREEBUF(buf);
 
 	return possible;
+}
+
+/*
+ *  When displaying cpus, return the number of cpus online if possible, 
+ *  otherwise kt->cpus.
+ */
+int
+get_cpus_to_display(void)
+{
+	int online = get_cpus_online();
+
+	return (online ? online : kt->cpus);
 }
 
 /*

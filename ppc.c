@@ -461,7 +461,7 @@ static ulong
 ppc_processor_speed(void)
 {
 	ulong res, value, ppc_md, md_setup_res;
-	ulong we_have_of, prep_setup_res;
+	ulong prep_setup_res;
 	ulong node, type, name, properties;
 	char str_buf[16];
 	ulong len, mhz = 0;
@@ -469,22 +469,7 @@ ppc_processor_speed(void)
 	if (machdep->mhz)
 		return(machdep->mhz);
 
-	/* first, check if the have_of variable a) exists, and b) is TRUE */
-	if(symbol_exists("have_of")) {
-		get_symbol_data("have_of", sizeof(void *), &we_have_of);
-	} else {
-		we_have_of = 0;
-	}
-
-	if(we_have_of) {
-		/* we have a machine with open firmware, so search the OF nodes 
-		 * for cpu nodes.
-		 * Too bad we can't call kernel helper functions here :)
-		 */
-		
-		if(!symbol_exists("allnodes"))
-			return (machdep->mhz = 0);
-		
+	if(symbol_exists("allnodes")) {
 		get_symbol_data("allnodes", sizeof(void *), &node);
 		while(node) {
 			readmem(node+OFFSET(device_node_type),
@@ -545,54 +530,53 @@ ppc_processor_speed(void)
 			}
 			if(!properties) {
 				/* didn't find the cpu speed for some reason */
-				mhz = 0;
+				return (machdep->mhz = 0);
 			}
 		}
-	} else {
-		/* for machines w/o OF */
-		/* untested, but in theory this should work on prep machines */
-
-		if (symbol_exists("res")) {
-			get_symbol_data("res", sizeof(void *), &res);
-			
-			if (symbol_exists("prep_setup_residual")) {
-				get_symbol_data("prep_setup_residual", 
-					sizeof(void *), &prep_setup_res);
-				get_symbol_data("ppc_md", sizeof(void *), 
-					&ppc_md);
-				readmem(ppc_md + 
-			 	    OFFSET(machdep_calls_setup_residual), 
-				    KVADDR, &md_setup_res, 
-				    sizeof(ulong), "ppc_md setup_residual",
-				    FAULT_ON_ERROR);
-				
-				if(prep_setup_res == md_setup_res) {
-				/* PREP machine */
-					readmem(res+
-					    OFFSET(RESIDUAL_VitalProductData)+
-					    OFFSET(VPD_ProcessorHz),
-					    KVADDR, &mhz, sizeof(ulong), 
-					    "res VitalProductData", 
-					    FAULT_ON_ERROR);
-					
-					mhz = (mhz > 1024) ? mhz >> 20 : mhz;
-				}
-			}
-			
-			if(!mhz) {
-			  /* everything else seems to do this the same way... */
-				readmem(res + 
-				    OFFSET(bd_info_bi_intfreq),
-				    KVADDR, &mhz, sizeof(ulong), 
-				    "bd_info bi_intfreq", FAULT_ON_ERROR);
-				
-				mhz /= 1000000;
-			}
-		}
-		/* else...well, we don't have OF, or a residual structure, so
-		 * just print unknown MHz
-		 */
 	}
+	/* for machines w/o OF */
+	/* untested, but in theory this should work on prep machines */
+
+	if (symbol_exists("res") && !mhz) {
+		get_symbol_data("res", sizeof(void *), &res);
+			
+		if (symbol_exists("prep_setup_residual")) {
+			get_symbol_data("prep_setup_residual", 
+				sizeof(void *), &prep_setup_res);
+			get_symbol_data("ppc_md", sizeof(void *), 
+				&ppc_md);
+			readmem(ppc_md + 
+		 	    OFFSET(machdep_calls_setup_residual), 
+			    KVADDR, &md_setup_res, 
+			    sizeof(ulong), "ppc_md setup_residual",
+			    FAULT_ON_ERROR);
+				
+			if(prep_setup_res == md_setup_res) {
+			/* PREP machine */
+				readmem(res+
+				    OFFSET(RESIDUAL_VitalProductData)+
+				    OFFSET(VPD_ProcessorHz),
+				    KVADDR, &mhz, sizeof(ulong), 
+				    "res VitalProductData", 
+				    FAULT_ON_ERROR);
+					
+				mhz = (mhz > 1024) ? mhz >> 20 : mhz;
+			}
+		}
+			
+		if(!mhz) {
+			/* everything else seems to do this the same way... */
+			readmem(res + 
+				OFFSET(bd_info_bi_intfreq),
+				KVADDR, &mhz, sizeof(ulong), 
+				"bd_info bi_intfreq", FAULT_ON_ERROR);
+				
+			mhz /= 1000000;
+		}
+	}
+	/* else...well, we don't have OF, or a residual structure, so
+	 * just print unknown MHz
+	 */
 
 	return (machdep->mhz = mhz);
 }

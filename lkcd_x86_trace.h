@@ -467,6 +467,7 @@ typedef struct sframe_rec {
 #define EX_FRAME	0x1	/* this frame is an interrupt or exception 
 				   frame, pt_regs field of sframe_t is valid 
 				   in this case */
+#define INCOMPLETE_EX_FRAME 0x2
 
 /* Stack segment structure
  */

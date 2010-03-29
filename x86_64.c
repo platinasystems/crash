@@ -80,6 +80,7 @@ static void x86_64_post_init(void);
 static void parse_cmdline_args(void);
 static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
+static void x86_64_framepointer_init(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
 static int x86_64_xendump_page_index(ulong, struct xendump_data *);
@@ -94,7 +95,8 @@ static ulong x86_64_get_stackbase_hyper(ulong);
 static ulong x86_64_get_stacktop_hyper(ulong);
 static int x86_64_framesize_cache_resize(void);
 static int x86_64_framesize_cache_func(int, ulong, int *, int);
-static int x86_64_get_framesize(struct bt_info *, ulong);
+static ulong x86_64_get_framepointer(struct bt_info *, ulong);
+static int x86_64_get_framesize(struct bt_info *, ulong, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
 static void x86_64_get_active_set(void);
 
@@ -388,6 +390,7 @@ x86_64_init(int when)
 				MEMBER_OFFSET("cpu_user_regs", "cs") - sizeof(ulong);
                 }
 		x86_64_irq_eframe_link_init();
+		x86_64_framepointer_init();
 		break;
 
 	case POST_VM:
@@ -436,6 +439,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sPHYS_BASE", others++ ? "|" : "");
 	if (machdep->flags & FRAMESIZE_DEBUG)
 		fprintf(fp, "%sFRAMESIZE_DEBUG", others++ ? "|" : "");
+	if (machdep->flags & FRAMEPOINTER)
+		fprintf(fp, "%sFRAMEPOINTER", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -2668,7 +2673,7 @@ in_exception_stack:
 				bt, ofp);
                         rsp += SIZE(pt_regs);  /* guaranteed kernel mode */
 			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
-			    bt->eframe_ip)) >= 0))
+			    bt->eframe_ip, rsp)) >= 0))
 				rsp += framesize;
                         level++;
                         irq_eframe = 0;
@@ -2694,7 +2699,7 @@ in_exception_stack:
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
 				if ((framesize = x86_64_get_framesize(bt, 
-				    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
+				    bt->eframe_ip ?  bt->eframe_ip : *up, rsp)) >= 0) {
 					rsp += framesize;
 					i += framesize/sizeof(ulong);
 				}
@@ -2739,7 +2744,7 @@ in_exception_stack:
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
 			level++;
-			if ((framesize = x86_64_get_framesize(bt, bt->instptr)) >= 0)
+			if ((framesize = x86_64_get_framesize(bt, bt->instptr, rsp)) >= 0)
 				rsp += framesize;
 		}
 	}
@@ -2787,7 +2792,7 @@ in_exception_stack:
                         case BACKTRACE_ENTRY_DISPLAYED:
                                 level++;
 				if ((framesize = x86_64_get_framesize(bt, 
-				    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
+				    bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
 					rsp += framesize;
 					i += framesize/sizeof(ulong);
 				}
@@ -2898,7 +2903,7 @@ in_exception_stack:
 			rsp += SIZE(pt_regs);
 			irq_eframe = 0;
 			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
-			    bt->eframe_ip)) >= 0))
+			    bt->eframe_ip, rsp)) >= 0))
 				rsp += framesize;
 		}
 		level++;
@@ -2978,7 +2983,7 @@ in_exception_stack:
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
 			if ((framesize = x86_64_get_framesize(bt, 
-			    bt->eframe_ip ? bt->eframe_ip : *up)) >= 0) {
+			    bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
 				rsp += framesize;
 				i += framesize/sizeof(ulong);
 			}
@@ -4504,6 +4509,7 @@ static char *e820type[] = {
         "E820_RESERVED",
         "E820_ACPI",
         "E820_NVS",
+	"E820_UNUSABLE",
 };
 
 static void
@@ -4532,8 +4538,11 @@ x86_64_display_memmap(void)
                 addr = ULONGLONG(e820entry_ptr + OFFSET(e820entry_addr));
                 size = ULONGLONG(e820entry_ptr + OFFSET(e820entry_size));
                 type = UINT(e820entry_ptr + OFFSET(e820entry_type));
-                fprintf(fp, "%016llx - %016llx  %s\n", addr, addr+size,
-			e820type[type]);
+		fprintf(fp, "%016llx - %016llx  ", addr, addr+size);
+		if (type >= (sizeof(e820type)/sizeof(char *)))
+			fprintf(fp, "type %d\n", type);
+		else
+			fprintf(fp, "%s\n", e820type[type]);
         }
 }
 
@@ -4773,6 +4782,31 @@ void
 x86_64_clear_machdep_cache(void)
 {
 	machdep->machspec->last_upml_read = 0;
+}
+
+#define PUSH_RBP_MOV_RSP_RBP 0xe5894855
+
+static void
+x86_64_framepointer_init(void)
+{
+	unsigned int push_rbp_mov_rsp_rbp;
+	int i, check;
+	char *checkfuncs[] = {"sys_open", "sys_fork", "sys_read"};
+
+	if (pc->flags & KERNEL_DEBUG_QUERY)
+		return;
+
+        for (i = check = 0; i < 3; i++) {
+                if (!readmem(symbol_value(checkfuncs[i]), KVADDR,
+                    &push_rbp_mov_rsp_rbp, sizeof(uint),
+                    "framepointer check", RETURN_ON_ERROR))
+			return;
+		if (push_rbp_mov_rsp_rbp == 0xe5894855)
+			check++;
+        }
+
+	if (check == 3)
+		machdep->flags |= FRAMEPOINTER;
 }
 
 static void 
@@ -6122,20 +6156,51 @@ retry:
 	return TRUE;
 }
 
+ulong
+x86_64_get_framepointer(struct bt_info *bt, ulong rsp)
+{
+	ulong stackptr, framepointer, retaddr;
+
+	framepointer = 0;
+	stackptr = rsp - sizeof(ulong);
+
+	if (!INSTACK(stackptr, bt))
+		return 0;
+
+	if (!readmem(stackptr, KVADDR, &framepointer,
+	    sizeof(ulong), "framepointer", RETURN_ON_ERROR|QUIET)) 
+		return 0;
+
+	if (!INSTACK(framepointer, bt)) 
+		return 0;
+
+	if (framepointer <= (rsp+sizeof(ulong)))
+		return 0;
+
+	if (!readmem(framepointer + sizeof(ulong), KVADDR, &retaddr,
+	    sizeof(ulong), "return address", RETURN_ON_ERROR|QUIET)) 
+		return 0;
+
+	if (!is_kernel_text(retaddr))
+		return 0;
+
+	return framepointer;
+}
+
 #define BT_FRAMESIZE_IGNORE_MASK \
 	(BT_OLD_BACK_TRACE|BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL|BT_FRAMESIZE_DISABLE)
  
 static int
-x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
+x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 {
-	int c, framesize, instr, arg;
+	int c, framesize, instr, arg, max;
 	struct syment *sp;
 	long max_instructions;
 	ulong offset;
 	char buf[BUFSIZE];
 	char buf2[BUFSIZE];
 	char *arglist[MAXARGS];
-	ulong locking_func, textaddr_save, current;
+	ulong locking_func, textaddr_save, current, framepointer;
 	char *p1, *p2;
 	int reterror;
 	int arg_exists;
@@ -6178,7 +6243,26 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 	} else
 		textaddr_save = 0;
 
-	framesize = 0;
+	if ((machdep->flags & FRAMEPOINTER) && 
+	    rsp && !exception && !textaddr_save) {
+		framepointer = x86_64_get_framepointer(bt, rsp);
+		if (CRASHDEBUG(3)) {
+			if (framepointer)
+				fprintf(fp, 
+				    " rsp: %lx framepointer: %lx -> %ld\n", 
+					rsp, framepointer, framepointer - rsp);
+			else
+				fprintf(fp, 
+				    " rsp: %lx framepointer: (unknown)\n", rsp);
+		}
+		if (framepointer) {
+			framesize = framepointer - rsp;
+			return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
+				textaddr, &framesize, 0));
+		}
+	}
+
+	framesize = max = 0;
         max_instructions = textaddr - sp->value; 
 	instr = arg = -1;
 
@@ -6198,7 +6282,7 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 		strcpy(buf2, buf);
 
 		if (CRASHDEBUG(3))
-			fprintf(pc->saved_fp, buf2);
+			fprintf(fp, buf2);
 
 		c = parse_line(buf, arglist);
 
@@ -6237,12 +6321,15 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 		if (STRNEQ(arglist[instr], "push")) {
 			framesize += 8;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
+				fprintf(fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
-	 	} else if (STRNEQ(arglist[instr], "pop")) {
-			framesize -= 8;
+			max = framesize;
+	 	} else if (STRNEQ(arglist[instr], "pop") || 
+		    STRNEQ(arglist[instr], "leaveq")) {
+			if (framesize > 0)
+				framesize -= 8;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
+				fprintf(fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
 		} else if (arg_exists && STRNEQ(arglist[instr], "add") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
@@ -6252,9 +6339,10 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			offset =  htol(p2+1, RETURN_ON_ERROR, &reterror);
 			if (reterror)
 				continue;
-			framesize -= offset;
+			if (framesize > 0)
+				framesize -= offset;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
+				fprintf(fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
 		} else if (arg_exists && STRNEQ(arglist[instr], "sub") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
@@ -6265,14 +6353,22 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr)
 			if (reterror)
 				continue;
 			framesize += offset;
+			max = framesize;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(pc->saved_fp, "%s\t[framesize: %d]\n", 
+				fprintf(fp, "%s\t[framesize: %d]\n", 
 					strip_linefeeds(buf2), framesize);
+		} else if (STRNEQ(arglist[instr], "retq")) {
+			if (!exception) {
+				framesize = max;
+				if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
+					fprintf(fp, "%s\t[framesize restored to: %d]\n", 
+						strip_linefeeds(buf2), max);
+			}
 		} else if (STRNEQ(arglist[instr], "retq_NOT_CHECKED")) {
 			bt->flags |= BT_FRAMESIZE_DISABLE;
 			framesize = -1;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(pc->saved_fp, "%s\t[framesize: DISABLED]\n", 
+				fprintf(fp, "%s\t[framesize: DISABLED]\n", 
 					strip_linefeeds(buf2));
 			break;
 		} 
@@ -6305,16 +6401,34 @@ x86_64_framesize_debug(struct bt_info *bt)
 			framesize = -1;
 			x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
 				&framesize, exception);
-		} else  /* clear all entries */
+		} else { /* clear all entries */
 			BZERO(&x86_64_framesize_cache[0], 
 			    sizeof(struct framesize_cache)*framesize_cache_entries);
+			fprintf(fp, "framesize cache cleared\n");
+		}
 		break;
 
 	case -1:
 		if (!bt->hp->eip)
 			error(INFO, "x86_64_framesize_debug: ignoring command\n");
 		else
-			x86_64_get_framesize(bt, bt->hp->eip);
+			x86_64_get_framesize(bt, bt->hp->eip, 0);
+		break;
+
+	case -3:
+		machdep->flags |= FRAMEPOINTER;
+		BZERO(&x86_64_framesize_cache[0], 
+			sizeof(struct framesize_cache)*framesize_cache_entries);
+		fprintf(fp, 
+			"framesize cache cleared and FRAMEPOINTER turned ON\n");
+		break;
+
+	case -4:
+		machdep->flags &= ~FRAMEPOINTER;
+		BZERO(&x86_64_framesize_cache[0], 
+			sizeof(struct framesize_cache)*framesize_cache_entries);
+		fprintf(fp,
+			"framesize cache cleared and FRAMEPOINTER turned OFF\n");
 		break;
 
 	default:

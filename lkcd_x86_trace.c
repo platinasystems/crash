@@ -1533,8 +1533,15 @@ find_trace(
                 				pc = sp1->value + offset;
 					flag = EX_FRAME;
 				} else {
-					curframe->error = KLE_BAD_RA;
-					flag = 0;
+					if (!XEN_HYPER_MODE() &&
+					    !is_kernel_thread(bt->task) &&
+					    (bt->stacktop == machdep->get_stacktop(bt->task)) &&
+					    (((ulong)(bp+4) + SIZE(pt_regs)) > bt->stacktop))
+						flag = INCOMPLETE_EX_FRAME;
+					else {
+						curframe->error = KLE_BAD_RA;
+						flag = 0;
+					}
 				}
 #else
 				curframe->error = KLE_BAD_RA;
@@ -1899,6 +1906,14 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 				print_eframe(ofp, pt);
 			}
 #ifdef REDHAT
+			if (CRASHDEBUG(1) && (frmp->flag == INCOMPLETE_EX_FRAME)) {
+				fprintf(ofp, " INCOMPLETE EXCEPTION FRAME:\n");
+				fprintf(ofp,
+				    "    user stacktop: %lx  frame #%d: %lx  (+pt_regs: %lx)\n",
+					bt->stacktop, frmp->level, (ulong)frmp->fp,
+					(ulong)frmp->fp + SIZE(pt_regs));
+			}
+
 			if (trace->bt->flags & BT_FULL) {
                                 fprintf(ofp, "    [RA: %x  SP: %x  FP: %x  "
                                         "SIZE: %d]\n", frmp->ra, frmp->sp,
