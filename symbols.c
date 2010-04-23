@@ -822,6 +822,11 @@ symname_hash_init(void)
 
         for (sp = st->symtable; sp < st->symend; sp++) 
 		symname_hash_install(sp);
+
+	if ((sp = symbol_search("__per_cpu_start")))
+		st->__per_cpu_start = sp->value;
+	if ((sp = symbol_search("__per_cpu_end")))
+		st->__per_cpu_end = sp->value;
 }
 
 /*
@@ -2348,6 +2353,13 @@ dump_symbol_table(void)
 			value_symbol(st->first_ksymbol) : "");
 	} else
 		fprintf(fp, "(unused)\n");
+	if (st->__per_cpu_start || st->__per_cpu_end) {
+		fprintf(fp, "     __per_cpu_start: %lx\n", st->__per_cpu_start);
+		fprintf(fp, "       __per_cpu_end: %lx\n", st->__per_cpu_end);
+	} else {
+		fprintf(fp, "     __per_cpu_start: (unused)\n");
+		fprintf(fp, "       __per_cpu_end: (unused)\n");
+	}
 
         fprintf(fp, "    symval_hash[%d]: %lx\n", SYMVAL_HASH,
                 (ulong)&st->symval_hash[0]);
@@ -4053,6 +4065,51 @@ symbol_exists(char *symbol)
 }
 
 /*
+ *  Determine whether a per-cpu symbol exists.
+
+ *  The old-style per-cpu symbol names were pre-pended with 
+ *  "per_cpu__", whereas the new-style ones (as of 2.6.34) 
+ *  are not.  This function allows the symbol argument to 
+ *  use either the old- or new-sytle format, and find either
+ *  type.
+ */
+struct syment *
+per_cpu_symbol_search(char *symbol)
+{
+	struct syment *sp;
+	char old[BUFSIZE];
+	char *new;
+
+	if (STRNEQ(symbol, "per_cpu__")) {
+		if ((sp = symbol_search(symbol)))
+			return sp;
+		new = symbol + strlen("per_cpu__");
+		if ((sp = symbol_search(new))) {
+			if ((sp->type == 'V') ||
+			    ((sp->value >= st->__per_cpu_start) && 
+		    	    (sp->value < st->__per_cpu_end)))
+				return sp;
+		}
+	} else {
+		if ((sp = symbol_search(symbol))) {
+			if ((sp->type == 'V') ||
+			    ((sp->value >= st->__per_cpu_start) && 
+		    	    (sp->value < st->__per_cpu_end)))
+				return sp;
+		}
+
+		sprintf(old, "per_cpu__%s", symbol);
+		if ((sp = symbol_search(old)))
+			return sp;
+	}
+
+	if (CRASHDEBUG(1))
+		error(INFO, "per_cpu_symbol_search(%s): NULL\n", symbol);
+
+	return NULL;
+}
+
+/*
  *  Determine whether a static kernel symbol exists.
  */
 int
@@ -4643,7 +4700,7 @@ cmd_datatype_common(ulong flags)
 			aflag++;
 	        } else {
 			fprintf(fp, "symbol not found: %s\n", args[optind]);
-	                fprintf(fp, "possible aternatives:\n");
+	                fprintf(fp, "possible alternatives:\n");
 	                if (!symbol_query(args[optind], "  ", NULL))
 	                   	fprintf(fp, "  (none found)\n");
 			goto freebuf;
@@ -5159,7 +5216,7 @@ void
 cmd_p(void)
 {
         int c;
-	struct syment *sp;
+	struct syment *sp, *percpu_sp;
 	unsigned restore_radix;
 	int leader, do_load_module_filter, success;
 	char buf1[BUFSIZE]; 
@@ -5198,7 +5255,8 @@ cmd_p(void)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
 	if ((sp = symbol_search(args[optind])) && !args[optind+1]) {
-		if (STRNEQ(sp->name, "per_cpu__") && display_per_cpu_info(sp))
+		if ((percpu_sp = per_cpu_symbol_search(args[optind])) &&
+		    display_per_cpu_info(percpu_sp))
 			return;
 		sprintf(buf2, "%s = ", args[optind]);
 		leader = strlen(buf2);
@@ -6397,6 +6455,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mm_struct_env_start));
 	fprintf(fp, "             mm_struct_env_end: %ld\n", 
 		OFFSET(mm_struct_env_end));
+	fprintf(fp, "            mm_struct_rss_stat: %ld\n",
+		OFFSET(mm_struct_rss_stat));
+	fprintf(fp, "             mm_rss_stat_count: %ld\n",
+		OFFSET(mm_rss_stat_count));
 
 	fprintf(fp, "          vm_area_struct_vm_mm: %ld\n", 
 		OFFSET(vm_area_struct_vm_mm));

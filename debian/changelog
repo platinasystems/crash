@@ -1,3 +1,26 @@
+crash (5.0.3-1) unstable; urgency=low
+
+  * New upstream version 5.0.3 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for running against 2.6.34 and later kernels to recognize and handle
+    changes in the kernel's per-cpu data symbol naming, which no longer
+    prefixes "per_cpu__" to declared per-cpu symbol names.
+  * Fix for "swap" and "kmem -i" commands on 2.6.29 or later, big-endian,
+    ppc64 kernels, where the swap_info_struct.flags member was changed from an
+    int to a long.
+  * Fix for the "vm" and "ps" command's task RSS value on 2.6.34 or later
+    kernels.
+  * Fixed "possible aternatives" spelling typo used in informational messages
+    when an incorrect/unknown symbol name is used in "rd", "dis", "sym" and
+    "struct" commands.
+  * Fix for CONFIG_SPARSEMEM kernels that are not configured with
+    CONFIG_SPARSEMEM_EXTREME.
+  * Change the output of the "kmem -[cC]" options to indicate that they are
+    not supported when that is relevant.  
+
+
+ -- Troy Heber <troyh@debian.org>  Fri, 23 Apr 2010 10:12:03 -0600
+
 crash (5.0.2-1) unstable; urgency=low
 
   * New upstream version 5.0.2 (see

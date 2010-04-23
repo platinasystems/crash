@@ -1193,7 +1193,7 @@ cmd_dis(void)
 			req->flags |= GNU_FUNCTION_ONLY;
 		} else {
                         fprintf(fp, "symbol not found: %s\n", args[optind]);
-                        fprintf(fp, "possible aternatives:\n");
+                        fprintf(fp, "possible alternatives:\n");
                         if (!symbol_query(args[optind], "  ", NULL))
                                 fprintf(fp, "  (none found)\n");
 			FREEBUF(req->buf);
@@ -5266,13 +5266,13 @@ dump_timer_data(void)
 	int flen, tdx, old_timers_exist;
         struct tv_range tv[TVN];
 
-	if (symbol_exists("tvec_bases")) {
-		dump_timer_data_tvec_bases_v1();
-		return;
-	} else if (symbol_exists("per_cpu__tvec_bases")) {
+	if (per_cpu_symbol_search("per_cpu__tvec_bases")) {
 		dump_timer_data_tvec_bases_v2();
 		return;
-	}
+	} else if (symbol_exists("tvec_bases")) {
+		dump_timer_data_tvec_bases_v1();
+		return;
+	} 
 
 	BZERO(tv, sizeof(struct tv_range) * TVN);
 
@@ -5538,6 +5538,7 @@ dump_timer_data_tvec_bases_v2(void)
 	ulong *vec, jiffies, highest, function;
 	ulong tvec_bases;
 	long count;
+	struct syment *sp;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -5605,11 +5606,11 @@ next_cpu:
 
         qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
 
+	sp = per_cpu_symbol_search("per_cpu__tvec_bases");
         if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
-                tvec_bases = symbol_value("per_cpu__tvec_bases") +
-                        kt->__per_cpu_offset[cpu];
+                tvec_bases = sp->value + kt->__per_cpu_offset[cpu];
         else
-                tvec_bases =  symbol_value("per_cpu__tvec_bases");
+                tvec_bases =  sp->value;
 
 	if (symbol_exists("boot_tvec_bases")) {
 		readmem(tvec_bases, KVADDR, &tvec_bases, sizeof(void *),
@@ -5690,6 +5691,7 @@ static void
 init_tv_ranges(struct tv_range *tv, int vec_root_size, int vec_size, int cpu)
 {
 	ulong tvec_bases;
+	struct syment *sp;
 
 	if (kt->flags & TVEC_BASES_V1) {
                 tv[1].base = symbol_value("tvec_bases") +
@@ -5709,11 +5711,11 @@ init_tv_ranges(struct tv_range *tv, int vec_root_size, int vec_size, int cpu)
                 tv[5].base = tv[4].end;
                 tv[5].end = tv[5].base + SIZE(tvec_s);
 	} else if (kt->flags & TVEC_BASES_V2) {
-		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) 
-			tvec_bases = symbol_value("per_cpu__tvec_bases") +
-				kt->__per_cpu_offset[cpu];
+		sp = per_cpu_symbol_search("per_cpu__tvec_bases");
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+			tvec_bases = sp->value + kt->__per_cpu_offset[cpu];
 		else		
-			tvec_bases =  symbol_value("per_cpu__tvec_bases");
+			tvec_bases =  sp->value;
 
 		if (symbol_exists("boot_tvec_bases")) {
 			readmem(tvec_bases, KVADDR, &tvec_bases, sizeof(void *), 

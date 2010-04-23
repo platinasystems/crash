@@ -1497,6 +1497,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long module_sections_attrs;
 	long swap_info_struct_inuse_pages;
 	long s390_lowcore_psw_save_area;
+	long mm_struct_rss_stat;
+	long mm_rss_stat_count;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1939,6 +1941,8 @@ struct symbol_table_data {
 	off_t dwarf_eh_frame_file_offset;
 	ulong dwarf_eh_frame_size;
 	ulong first_ksymbol;
+	ulong __per_cpu_start;
+	ulong __per_cpu_end;
 };
 
 /* flags for st */
@@ -3387,6 +3391,7 @@ char *value_to_symstr(ulong, char *, ulong);
 char *value_symbol(ulong);
 ulong symbol_value(char *);
 ulong symbol_value_module(char *, char *);
+struct syment *per_cpu_symbol_search(char *);
 int symbol_exists(char *s);
 int kernel_symbol_exists(char *s);
 int get_syment_array(char *, struct syment **, int);
