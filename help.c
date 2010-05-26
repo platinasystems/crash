@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1727,6 +1727,40 @@ char *help_mach[] = {
 "    00000000fee00000 - 00000000fee10000  E820_RESERVED",
 "    00000000ffb00000 - 0000000100000000  E820_RESERVED",
 NULL               
+};
+
+char *help_map[] = {
+"map",
+"store KVM dumpfile memory map data",    
+"[-a][-f [filename]]",
+"  The layout of KVM guest dumpfiles created with \"virsh dump\" does not allow",
+"  the crash utility to access the system's memory in a random access manner.",
+"  Therefore, during crash session initialization, a potentially time-consuming",
+"  dumpfile scan procedure is required to create a physical-memory-to-file-offset",
+"  map for use during the session.",
+" ",  
+"  This command may be used to append the memory map data to the dumpfile or",
+"  to store it in a permanent file.  After this has been done, subsequent crash",
+"  sessions using the dumpfile will no longer require the scan procedure:",
+" ", 
+"    -a  Append the memory map to the end of the KVM dumpfile.",
+"    -f  Create a memory map file.  If no filename argument is entered, the",
+"        filename will consist of the dumpfile name with \".map\" appended,",
+"        and will be located in the same directory as the dumpfile; it will",
+"        be recognized and used automatically during subsequent %s sessions.",
+"        However, if a \"filename\" argument is entered, and the default location",
+"        and naming convention are not used, then the new memory map file will",
+"        have to be added to the %s command line during invocation.",
+"\nEXAMPLES", 
+"    %s> map",
+"    MAP FILE IN USE: vmcore.map",
+"    %s> map -a",
+"    MAP FILE APPENDED TO: vmcore",
+"    %s> map -f",
+"    MAP FILE CREATED: vmcore.map",
+"    %s> map -f /tmp/vmcore.map",
+"    MAP FILE CREATED: /tmp/vmcore.map",
+NULL
 };
 
 char *help_timer[] = {

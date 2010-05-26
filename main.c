@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -420,6 +420,14 @@ main(int argc, char **argv)
                                 pc->readmem = read_kvmdump;
                                 pc->writemem = write_kvmdump;
 
+			} else if (is_kvmdump_mapfile(argv[optind])) {
+				if (pc->kvmdump_mapfile) {
+                                        error(INFO,
+                                            "too many KVM map file arguments\n");
+                                        program_usage(SHORT_FORM);
+				}
+				pc->kvmdump_mapfile = argv[optind];
+                                
                         } else if (is_xendump(argv[optind])) {
                                 if (pc->flags & MEMORY_SOURCES) {
                                         error(INFO,
@@ -1170,6 +1178,7 @@ dump_program_context(void)
 	fprintf(fp, "       system_map: %s\n", pc->system_map);
 	fprintf(fp, "   namelist_debug: %s\n", pc->namelist_debug);
 	fprintf(fp, "   debuginfo_file: %s\n", pc->debuginfo_file);
+	fprintf(fp, "  kvmdump_mapfile: %s\n", pc->kvmdump_mapfile);
 	fprintf(fp, "    memory_module: %s\n", pc->memory_module);
 	fprintf(fp, "    memory_device: %s\n", pc->memory_device);
 	fprintf(fp, "     machine_type: %s\n", pc->machine_type);

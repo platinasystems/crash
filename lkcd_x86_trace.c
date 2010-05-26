@@ -5,8 +5,8 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -1535,10 +1535,19 @@ find_trace(
 				} else {
 					if (!XEN_HYPER_MODE() &&
 					    !is_kernel_thread(bt->task) &&
-					    (bt->stacktop == machdep->get_stacktop(bt->task)) &&
-					    (((ulong)(bp+4) + SIZE(pt_regs)) > bt->stacktop))
-						flag = INCOMPLETE_EX_FRAME;
-					else {
+					    (bt->stacktop == machdep->get_stacktop(bt->task))) {
+					    	if (((ulong)(bp+4) + SIZE(pt_regs)) > bt->stacktop)
+							flag = INCOMPLETE_EX_FRAME;
+						else if ((sp1 = eframe_label(NULL, pc)) &&
+					    	    	STREQ(sp1->name, "system_call"))
+							flag = EX_FRAME|SET_EX_FRAME_ADDR;
+						else if (STREQ(closest_symbol(pc), "ret_from_fork"))
+							flag = EX_FRAME|SET_EX_FRAME_ADDR;
+						else {
+							curframe->error = KLE_BAD_RA;
+							flag = 0;
+						}
+					} else {
 						curframe->error = KLE_BAD_RA;
 						flag = 0;
 					}
@@ -1828,6 +1837,32 @@ dump_stack_frame(trace_t *trace, sframe_t *curframe, FILE *ofp)
 }
 
 /*
+ *  eframe_address()
+ */
+static uaddr_t *
+eframe_address(sframe_t *frmp, struct bt_info *bt)
+{
+	ulong esp0, pt;
+
+	if (!(frmp->flag & SET_EX_FRAME_ADDR) ||
+	    INVALID_MEMBER(task_struct_thread) || 
+	    (((esp0 = MEMBER_OFFSET("thread_struct", "esp0")) < 0) &&
+	     ((esp0 = MEMBER_OFFSET("thread_struct", "sp0")) < 0)))
+		return frmp->asp;
+	/*  
+	 * Work required in rarely-seen SET_EX_FRAME_ADDR circumstances.
+	 */
+	pt = ULONG(tt->task_struct + OFFSET(task_struct_thread) + esp0) 
+	    	- SIZE(pt_regs);
+
+	if (!INSTACK(pt, bt))
+		return frmp->asp;
+
+	return ((uint32_t *)(bt->stackbuf + (pt - bt->stackbase)));
+}
+
+
+/*
  * print_trace()
  */
 void
@@ -1837,7 +1872,6 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 #ifdef REDHAT
 	kaddr_t fp = 0;
 	kaddr_t last_fp, last_pc, next_fp, next_pc;
-	uaddr_t *pt;
 	struct bt_info *bt;
 
 	bt = trace->bt;
@@ -1898,15 +1932,14 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 			fprintf(ofp, " [0x%x]\n", frmp->pc);
 #endif
 			if (frmp->flag & EX_FRAME) {
-				pt = frmp->asp;
 				if (CRASHDEBUG(1))
 					fprintf(ofp, 
 					    " EXCEPTION FRAME: %lx\n", 
 						(unsigned long)frmp->sp);
-				print_eframe(ofp, pt);
+				print_eframe(ofp, eframe_address(frmp, bt));
 			}
 #ifdef REDHAT
-			if (CRASHDEBUG(1) && (frmp->flag == INCOMPLETE_EX_FRAME)) {
+			if (CRASHDEBUG(1) && (frmp->flag & INCOMPLETE_EX_FRAME)) {
 				fprintf(ofp, " INCOMPLETE EXCEPTION FRAME:\n");
 				fprintf(ofp,
 				    "    user stacktop: %lx  frame #%d: %lx  (+pt_regs: %lx)\n",
@@ -2586,7 +2619,15 @@ eframe_label(char *funcname, ulong eip)
 		    (efp->sysenter = symbol_search("ia32_sysenter_target"))) {
                 	if ((sp = symbol_search("sysexit_ret_end_marker")))
                         	efp->sysenter_end = sp;
-                	else if ((sp = symbol_search("system_call")))
+			else if (THIS_KERNEL_VERSION >= LINUX(2,6,33)) {
+				if ((sp = symbol_search("sysexit_audit")) ||
+				    (sp = symbol_search("sysenter_exit")))
+                        		efp->sysenter_end = 
+						next_symbol(NULL, sp);
+				else error(WARNING, 
+					"cannot determine end of %s function\n",
+						efp->sysenter->name);
+                	} else if ((sp = symbol_search("system_call")))
                         	efp->sysenter_end = sp;
 			else
 				error(WARNING, 

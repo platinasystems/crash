@@ -5,8 +5,8 @@
 /*
  *  lkcd_x86_trace.h
  *
- *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2010 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2010 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -467,7 +467,8 @@ typedef struct sframe_rec {
 #define EX_FRAME	0x1	/* this frame is an interrupt or exception 
 				   frame, pt_regs field of sframe_t is valid 
 				   in this case */
-#define INCOMPLETE_EX_FRAME 0x2
+#define INCOMPLETE_EX_FRAME  0x2
+#define SET_EX_FRAME_ADDR    0x4
 
 /* Stack segment structure
  */

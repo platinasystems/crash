@@ -411,6 +411,7 @@ struct program_context {
 	ulong ifile_in_progress;        /* original xxx_IFILE flags */
 	off_t ifile_offset;             /* current offset into input file */
 	char *runtime_ifile_cmd;        /* runtime command using input file */
+	char *kvmdump_mapfile;          /* storage of physical to file offsets */
 };
 
 #define READMEM  pc->readmem
@@ -3183,6 +3184,7 @@ void cmd_extend(void);       /* extensions.c */
 #if defined(S390) || defined(S390X)
 void cmd_s390dbf(void);
 #endif
+void cmd_map(void);          /* kvmdump.c */
 
 /*
  *  main.c
@@ -3624,6 +3626,7 @@ extern char *help_wr[];
 #if defined(S390) || defined(S390X)
 extern char *help_s390dbf[];
 #endif
+extern char *help_map[];
 
 /*
  *  task.c
@@ -3936,6 +3939,7 @@ struct machine_specific {
 	ulong *current;
 	ulong *crash_nmi_rsp;
 	ulong vsyscall_page;
+	ulong thread_return;
 };
 
 #define KSYMS_START    (0x1)
@@ -4286,6 +4290,7 @@ struct xendump_data *get_xendump_data(void);
  * kvmdump.c
  */
 int is_kvmdump(char *);
+int is_kvmdump_mapfile(char *);
 int kvmdump_init(char *, FILE *);
 int read_kvmdump(int, void *, int, ulong, physaddr_t);
 int write_kvmdump(int, void *, int, ulong, physaddr_t);

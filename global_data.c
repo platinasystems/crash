@@ -1,8 +1,8 @@
 /* global_data.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -89,6 +89,7 @@ struct command_table_entry linux_command_table[] = {
 	{"list",    cmd_list,    help__list,   REFRESH_TASK_TABLE},
 	{"log",     cmd_log,     help_log,     0},
 	{"mach",    cmd_mach,    help_mach,    0},
+	{"map",     cmd_map,     help_map,     HIDDEN_COMMAND},
 	{"mod",     cmd_mod,     help_mod,     0},
 	{"mount",   cmd_mount,   help_mount,   0},
 	{"net",	    cmd_net,	help_net,      REFRESH_TASK_TABLE},
