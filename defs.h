@@ -388,6 +388,7 @@ struct program_context {
 #define UD2A_INSTRUCTION  (0x100)
 #define IRQ_IN_USE        (0x200)
 #define MODULE_TREE       (0x400)
+#define IGNORE_ERRORS     (0x800)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -895,6 +896,7 @@ extern struct machdep_table *machdep;
 #define FOREACH_f_FLAG   (0x80000)
 #define FOREACH_o_FLAG  (0x100000)
 #define FOREACH_T_FLAG  (0x200000)
+#define FOREACH_F_FLAG  (0x400000)
 
 struct foreach_data {
 	ulong flags;
@@ -1500,6 +1502,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long s390_lowcore_psw_save_area;
 	long mm_struct_rss_stat;
 	long mm_rss_stat_count;
+	long module_module_init;
+	long module_init_text_size;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2020,6 +2024,8 @@ struct load_module {
 	ulong mod_bss_start;
 	int mod_sections;
 	struct mod_section_data *mod_section_data;
+        ulong mod_init_text_size;
+        ulong mod_init_module_ptr;
 };
 
 #define IN_MODULE(A,L) \
@@ -3443,6 +3449,7 @@ long OFFSET_option(long, long, char *, char *, int, char *, char *);
 long SIZE_option(long, long, char *, char *, int, char *, char *);
 void dump_trace(void **);
 int enumerator_value(char *, long *);
+struct load_module *init_module_function(ulong);
 
 /*  
  *  memory.c 
@@ -3496,6 +3503,8 @@ int generic_is_uvaddr(ulong, struct task_context *);
 void fill_stackbuf(struct bt_info *);
 void alter_stackbuf(struct bt_info *);
 int vaddr_type(ulong, struct task_context *);
+char *format_stack_entry(struct bt_info *bt, char *, ulong, ulong);
+int in_user_stack(ulong, ulong);
 
 /*
  *  filesys.c 
@@ -3780,6 +3789,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_XEN_STOP_THIS_CPU (0x8000000000ULL)
 #define BT_THREAD_GROUP     (0x10000000000ULL)
 #define BT_SAVE_EFRAME_IP   (0x20000000000ULL)
+#define BT_FULL_SYM_SLAB    (0x40000000000ULL)
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)

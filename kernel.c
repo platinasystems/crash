@@ -1658,7 +1658,7 @@ generic_dis_filter(ulong value, char *buf)
 }
 
 #define FRAMESIZE_DEBUG_MESSAGE \
-"\nx86 usage: bt -F [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n\nx86_64 usage: bt -F [clear|dump|validate|framepointer|noframepointer] [-I rip]\n  If rip:  \"validate\" will verbosely recalculate the framesize without\n           framepointers (no stack reference).\n  If !rip: \"clear\" will clear the framesize cache.\n           \"dump\" will dump the current framesize cache entries.\n           \"framepointer/noframepointer\" toggle the FRAMEPOINTER flag and\n           clear the framesize cache."
+"\nx86 usage: bt -D [size|clear|dump|seek|noseek|validate|novalidate] [-I eip]\n  If eip:  set its associated framesize to size.\n           \"validate/novalidate\" will turn on/off V bit for this eip entry.\n  If !eip: \"clear\" will clear the framesize cache and RA seek/noseek flags.\n           \"dump\" will dump the current framesize cache entries.\n           \"seek/noseek\" turns on/off RA seeking.\n           \"validate/novalidate\" turns on/off V bit for all current entries.\n\nx86_64 usage: bt -D [clear|dump|validate|framepointer|noframepointer] [-I rip]\n  If rip:  \"validate\" will verbosely recalculate the framesize without\n           framepointers (no stack reference).\n  If !rip: \"clear\" will clear the framesize cache.\n           \"dump\" will dump the current framesize cache entries.\n           \"framepointer/noframepointer\" toggle the FRAMEPOINTER flag and\n           clear the framesize cache."
 
 
 /*
@@ -1759,11 +1759,15 @@ cmd_bt(void)
 	if (kt->flags & USE_OLD_BT)
 		bt->flags |= BT_OLD_BACK_TRACE;
 
-        while ((c = getopt(argcnt, args, "fF:I:S:aloreEgstTd:R:O")) != EOF) {
+        while ((c = getopt(argcnt, args, "D:fFI:S:aloreEgstTd:R:O")) != EOF) {
                 switch (c)
 		{
 		case 'f':
 			bt->flags |= BT_FULL;
+			break;
+
+		case 'F':
+			bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
 			break;
 
 		case 'o':
@@ -1840,7 +1844,7 @@ cmd_bt(void)
 				NULL, NUM_HEX|NUM_EXPR);
 			break;
 
-		case 'F':
+		case 'D':
 			if (STREQ(optarg, "seek")) {
 				kt->flags |= RA_SEEK;
 				kt->flags &= ~NO_RA_SEEK;
@@ -1903,7 +1907,7 @@ cmd_bt(void)
 
 		default:
 			argerrs++;
-			if (optopt == 'F') {
+			if (optopt == 'D') {
 				fprintf(fp, FRAMESIZE_DEBUG_MESSAGE);
 				return;
 			}
@@ -2664,6 +2668,9 @@ module_init(void)
 			"core_size");
         	MEMBER_OFFSET_INIT(module_core_text_size, "module", 
 			"core_text_size");
+		MEMBER_OFFSET_INIT(module_module_init, "module", "module_init");
+		MEMBER_OFFSET_INIT(module_init_text_size, "module", 
+			"init_text_size");
 
 		/*
 		 *  Make sure to pick the kernel "modules" list_head symbol,

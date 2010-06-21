@@ -1572,6 +1572,52 @@ cmd_wr(void)
 	writemem(addr, memtype, buf, size, "write memory", FAULT_ON_ERROR); 
 }
 
+
+char *
+format_stack_entry(struct bt_info *bt, char *retbuf, ulong value, ulong limit)
+{
+	char buf[BUFSIZE];
+	char slab[BUFSIZE];
+
+	if (BITS32()) {
+		if ((bt->flags & BT_FULL_SYM_SLAB) && accessible(value)) {
+			if ((!limit || (value <= limit)) &&
+			    in_ksymbol_range(value) &&
+			    strlen(value_to_symstr(value, buf, 0)))
+				sprintf(retbuf, INT_PRLEN == 16 ? 
+				    "%-16s" : "%-8s", buf);
+			else if (vaddr_to_kmem_cache(value, slab, !VERBOSE)) {
+				if (CRASHDEBUG(1))
+					sprintf(buf, "[%lx:%s]", value, slab);
+				else
+					sprintf(buf, "[%s]", slab);
+				sprintf(retbuf, INT_PRLEN == 16 ? 
+					"%-16s" : "%-8s", buf);
+			} else
+				sprintf(retbuf, "%08lx", value);
+		} else
+			sprintf(retbuf, "%08lx", value);
+	} else {
+		if ((bt->flags & BT_FULL_SYM_SLAB) && accessible(value)) {
+			if ((!limit || (value <= limit)) && 
+			    in_ksymbol_range(value) &&
+			    strlen(value_to_symstr(value, buf, 0)))
+				sprintf(retbuf, "%-16s", buf);
+			else if (vaddr_to_kmem_cache(value, slab, !VERBOSE)) {
+				if (CRASHDEBUG(1))
+					sprintf(buf, "[%lx:%s]", value, slab);
+				else 
+					sprintf(buf, "[%s]", slab);
+				sprintf(retbuf, "%-16s", buf);
+			} else
+				sprintf(retbuf, "%016lx", value);
+		} else
+			sprintf(retbuf, "%016lx", value);
+	}
+
+	return retbuf;
+}
+
 /*
  *  For processors with "traditional" kernel/user address space distinction.
  */
@@ -3427,6 +3473,27 @@ clear_vma_cache(void)
 	vt->vma_cache_index = 0;
 }
 
+/*
+ *  Check whether an address is a user stack address based
+ *  upon its vm_area_struct flags.
+ */
+int
+in_user_stack(ulong task, ulong vaddr) 
+{
+	ulong vma, vm_flags;
+	char *vma_buf;
+
+	if ((vma = vm_area_dump(task, UVADDR|VERIFY_ADDR, vaddr, 0))) {
+		vma_buf = fill_vma_cache(vma);
+		vm_flags = SIZE(vm_area_struct_vm_flags) == sizeof(short) ?
+			USHORT(vma_buf+ OFFSET(vm_area_struct_vm_flags)) :
+			ULONG(vma_buf+ OFFSET(vm_area_struct_vm_flags));
+
+		if (vm_flags & (VM_GROWSUP|VM_GROWSDOWN))
+			return TRUE;
+	}
+	return FALSE;
+}
 
 /*
  *  Fill in the task_mem_usage structure with the RSS, virtual memory size,
@@ -4346,7 +4413,7 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 					 mkstring(buf4, 8, CENTER|RJUST, "-----"),
 					 count);
 				else
-                                fprintf(fp, "%s%s%s%s%s%s%8ld %2d ",
+                                fprintf(fp, "%s%s%s%s%s%s%8lx %2d ",
 					mkstring(buf0, VADDR_PRLEN, 
 					LJUST|LONG_HEX, MKSTR(pp)),
                                        	space(MINSPACE),
@@ -4798,7 +4865,7 @@ dump_mem_map(struct meminfo *mi)
                                         mkstring(buf4, 8, CENTER|RJUST, "-----"),
                                         count);
 				else
-                                fprintf(fp, "%s%s%s%s%s%s%8ld %2d ",
+                                fprintf(fp, "%s%s%s%s%s%s%8lx %2d ",
 					mkstring(buf0, VADDR_PRLEN, 
 					LJUST|LONG_HEX, MKSTR(pp)),
                                        	space(MINSPACE),
@@ -6411,10 +6478,13 @@ dump_zone_free_area(ulong free_area, int num, ulong verbose)
 			"neither page.list or page.lru exist?\n");
 
                 cnt = do_list(ld);
-		if (cnt < 0) 
-			error(FATAL, 
+		if (cnt < 0) {
+			error(pc->curcmd_flags & IGNORE_ERRORS ? INFO : FATAL, 
 			    "corrupted free list from free_area_struct: %lx\n", 
 				free_area);
+			if (pc->curcmd_flags & IGNORE_ERRORS)
+				break;
+		}
 
 		if (!verbose)
 			fprintf(fp, "%6d %6ld\n", cnt, cnt*chunk_size);
@@ -6467,10 +6537,13 @@ multiple_lists:
 				OFFSET(list_head_next);
 
 			cnt = do_list(ld);
-			if (cnt < 0) 
-				error(FATAL, 
+			if (cnt < 0) {
+				error(pc->curcmd_flags & IGNORE_ERRORS ? INFO : FATAL, 
 				    "corrupted free list %d from free_area struct: %lx\n", 
 					j, free_area);
+				if (pc->curcmd_flags & IGNORE_ERRORS)
+					goto bailout;
+			}
 
 			if (!verbose)
 				fprintf(fp, "%6d %6ld\n", cnt, cnt*chunk_size);
@@ -6479,6 +6552,7 @@ multiple_lists:
 		}
 	}
 
+bailout:
 	FREEBUF(free_area_buf2);
 	FREEBUF(free_list_buf);
 	return total_free;
@@ -10465,6 +10539,7 @@ kmem_search(struct meminfo *mi)
 
 	vaddr = 0;
 	pc->curcmd_flags &= ~HEADER_PRINTED;
+	pc->curcmd_flags |= IGNORE_ERRORS;
 
 	switch (mi->memtype)
 	{
@@ -14655,6 +14730,28 @@ get_cpu_slab_ptr(struct meminfo *si, int cpu, ulong *cpu_freelist)
 	case TYPE_CODE_ARRAY:
 		cpu_slab_ptr = ULONG(si->cache_buf +
 			OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*cpu));
+
+		if (cpu_slab_ptr && cpu_freelist &&
+		    VALID_MEMBER(kmem_cache_cpu_freelist)) {
+			if (readmem(cpu_slab_ptr + OFFSET(kmem_cache_cpu_freelist),
+			    KVADDR, &freelist, sizeof(void *),
+			    "kmem_cache_cpu.freelist", RETURN_ON_ERROR))
+				*cpu_freelist = freelist;
+		}
+	
+		if (cpu_slab_ptr && VALID_MEMBER(kmem_cache_cpu_page)) {
+			if (!readmem(cpu_slab_ptr + OFFSET(kmem_cache_cpu_page),
+			    KVADDR, &page, sizeof(void *),
+			    "kmem_cache_cpu.page", RETURN_ON_ERROR))
+				cpu_slab_ptr = 0;
+			else
+				cpu_slab_ptr = page;
+		}
+		break;
+
+	case TYPE_CODE_PTR:
+		cpu_slab_ptr = ULONG(si->cache_buf + OFFSET(kmem_cache_cpu_slab)) +
+			kt->__per_cpu_offset[cpu];
 
 		if (cpu_slab_ptr && cpu_freelist &&
 		    VALID_MEMBER(kmem_cache_cpu_freelist)) {

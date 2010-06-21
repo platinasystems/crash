@@ -1054,7 +1054,10 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("mkdir -p %%{buildroot}%%{_includedir}/crash\n");
 	printf("cp defs.h %%{buildroot}%%{_includedir}/crash\n");
 	printf("mkdir -p %%{buildroot}%%{_libdir}/crash/extensions\n");
+	printf("if [ -f extensions/sial.so ]\n");
+	printf("then\n");
 	printf("cp extensions/sial.so %%{buildroot}%%{_libdir}/crash/extensions\n");
+	printf("fi\n");
 	printf("cp extensions/dminfo.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/snap.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/trace.so %%{buildroot}%%{_libdir}/crash/extensions\n");

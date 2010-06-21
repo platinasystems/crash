@@ -2195,6 +2195,7 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
 	int i, u_idx;
 	ulong *up;
 	ulong words, addr;
+	char buf[BUFSIZE];
 
 	if (rsp < bt->frameptr)
 		return;
@@ -2211,7 +2212,7 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
 			fprintf(ofp, "%s    %lx: ", i ? "\n" : "", addr);
 		
 		up = (ulong *)(&bt->stackbuf[u_idx*sizeof(ulong)]);
-		fprintf(ofp, "%016lx ", *up);
+		fprintf(ofp, "%s ", format_stack_entry(bt, buf, *up, 0));
 		addr += sizeof(ulong);
 	}
 	fprintf(ofp, "\n");
@@ -2921,6 +2922,10 @@ in_exception_stack:
 					bt->stackbase);
 
 			case BT_EXCEPTION_STACK:
+				if (in_user_stack(bt->tc->task, rsp)) {
+					done = TRUE;
+					break;
+				}
 				error(FATAL, STACK_TRANSITION_ERRMSG_E_P,
 					bt_in->stkptr, rsp, bt->stackbase);
 
@@ -3786,6 +3791,8 @@ static int
 x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 	long rip, long rsp, long rflags)
 {
+	int estack;
+
 	if ((rflags & RAZ_MASK) || !(rflags & 0x2))
 		return FALSE;
 
@@ -3797,6 +3804,21 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 		    IS_KVADDR(rsp) &&
 		    (rsp == (kvaddr + SIZE(pt_regs))))
                         return TRUE;
+
+		if (is_kernel_text(rip) && 
+		    (bt->flags & BT_EXCEPTION_STACK) &&
+		    in_user_stack(bt->tc->task, rsp))
+                        return TRUE;
+
+		if (is_kernel_text(rip) && !IS_KVADDR(rsp) &&
+		    (bt->flags & BT_EFRAME_SEARCH) &&
+		    x86_64_in_exception_stack(bt, NULL))
+			return TRUE;
+
+		if (is_kernel_text(rip) && 
+		    x86_64_in_exception_stack(bt, &estack) &&
+		    (estack <= 1))
+			return TRUE;
         }
 
         if ((cs == 0x10) && kvaddr) {

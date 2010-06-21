@@ -1531,6 +1531,7 @@ ppc64_display_full_frame(struct bt_info *bt, ulong nextsp, FILE *ofp)
         int i, u_idx;
         ulong *nip;
         ulong words, addr;
+	char buf[BUFSIZE];
 
 	if (!INSTACK(nextsp, bt)) 
 		nextsp =  bt->stacktop;
@@ -1544,7 +1545,7 @@ ppc64_display_full_frame(struct bt_info *bt, ulong nextsp, FILE *ofp)
                         fprintf(ofp, "%s    %lx: ", i ? "\n" : "", addr);
 
                 nip = (ulong *)(&bt->stackbuf[u_idx*sizeof(ulong)]);
-                fprintf(ofp, "%016lx ", *nip);
+                fprintf(ofp, "%s ", format_stack_entry(bt, buf, *nip, 0));
                 addr += sizeof(ulong);
         }
         fprintf(ofp, "\n");

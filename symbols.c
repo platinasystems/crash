@@ -1320,12 +1320,19 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				ngplsyms, nksyms);
 		lm->mod_flags = MOD_EXT_SYMS;
 		lm->mod_ext_symcnt = mcnt;
-		if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+		lm->mod_init_module_ptr = ULONG(modbuf + 
+			OFFSET(module_module_init));
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 			lm->mod_etext_guess = lm->mod_base +
 				UINT(modbuf + OFFSET(module_core_text_size));
-		else
+			lm->mod_init_text_size = 
+				UINT(modbuf + OFFSET(module_init_text_size));
+		} else {
 			lm->mod_etext_guess = lm->mod_base +
 				ULONG(modbuf + OFFSET(module_core_text_size));
+			lm->mod_init_text_size = 
+				ULONG(modbuf + OFFSET(module_init_text_size));
+		}
 		lm->mod_text_start = lm->mod_base;
 
 		st->ext_module_symtable[mcnt].value = lm->mod_base;
@@ -2516,6 +2523,10 @@ dump_symbol_table(void)
                         lm->mod_bss_start,
                         lm->mod_bss_start ?
                         lm->mod_bss_start - lm->mod_base : 0);
+		fprintf(fp, "    mod_init_text_size: %ld\n",
+			lm->mod_init_text_size);
+		fprintf(fp, "   mod_init_module_ptr: %lx\n",
+			lm->mod_init_module_ptr);
 
 		fprintf(fp, "          mod_sections: %d\n", lm->mod_sections);
 		fprintf(fp, "      mod_section_data: %lx %s\n",
@@ -6513,6 +6524,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(module_core_size));
 	fprintf(fp, "         module_core_text_size: %ld\n",
 		OFFSET(module_core_text_size));
+	fprintf(fp, "         module_init_text_size: %ld\n",
+		OFFSET(module_init_text_size));
+	fprintf(fp, "            module_module_init: %ld\n",
+		OFFSET(module_module_init));
 	fprintf(fp, "             module_num_symtab: %ld\n",
 		OFFSET(module_num_symtab));
 	fprintf(fp, "                 module_symtab: %ld\n",
@@ -9814,4 +9829,33 @@ get_thisfile(void)
 	}
 
 	return pc->program_path;
+}
+
+/*
+ *  Check whether an address fits into any existing init_module() functions,
+ *  and if so, return the load_module.
+ */
+struct load_module *
+init_module_function(ulong vaddr)
+{
+	int i;
+	struct load_module *lm;
+
+	if (((kt->flags & (KMOD_V1|KMOD_V2)) == KMOD_V1) ||
+	    INVALID_MEMBER(module_init_text_size) ||
+	    INVALID_MEMBER(module_module_init))
+		return NULL;
+
+        for (i = 0; i < st->mods_installed; i++) {
+                lm = &st->load_modules[i];
+		if (!lm->mod_init_module_ptr || !lm->mod_init_text_size)
+			continue;
+
+		if ((vaddr >= lm->mod_init_module_ptr) &&
+		    (vaddr < (lm->mod_init_module_ptr+lm->mod_init_text_size)) 
+		    && accessible(vaddr))
+			return lm;
+	}
+
+	return NULL;
 }

@@ -836,6 +836,7 @@ s390x_back_trace_cmd(struct bt_info *bt)
 	unsigned long panic_start = 0, panic_end = 0;
 	unsigned long stack_end, stack_start, stack_base;
 	unsigned long r14;
+	char buf[BUFSIZE];
 	int cpu = bt->tc->processor;
 
 	if (bt->hp && bt->hp->eip) {
@@ -953,8 +954,9 @@ s390x_back_trace_cmd(struct bt_info *bt)
 					fprintf(fp, "%s    %016lx: ", 
                                             j ? "\n" : "", old_backchain + j);
 				}
-				fprintf(fp," %016lx",
-                                    ULONG(&stack[old_backchain - stack_base + j]));
+				fprintf(fp," %s",
+				    format_stack_entry(bt, buf,
+                                    ULONG(&stack[old_backchain - stack_base + j]), 0));
 			}
 			fprintf(fp, "\n");
 		}

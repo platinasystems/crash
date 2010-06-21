@@ -6,8 +6,8 @@
 /*
  *  unwind.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -62,7 +62,7 @@ typedef unsigned long long u64;
 
 static struct unw_reg_state *alloc_reg_state(void);
 static void free_reg_state(struct unw_reg_state *);
-static void rse_function_params(struct unw_frame_info *, char *);
+static void rse_function_params(struct bt_info *bt, struct unw_frame_info *, char *);
 static int load_unw_table(int);
 static void verify_unw_member(char *, long);
 static void verify_common_struct(char *, long);
@@ -1756,7 +1756,7 @@ restart:
                                 bsp, name, ip);
 
 			if (bt->flags & BT_FULL)
-                        	rse_function_params(info, name);
+                        	rse_function_params(bt, info, name);
                         if (bt->flags & BT_LINE_NUMBERS)
                                 ia64_dump_line_number(ip);
 
@@ -2282,13 +2282,13 @@ unw_init_frame_info (struct unw_frame_info *info, struct bt_info *bt, ulong sw)
 #define MAX_REGISTER_PARAMS (8)
 
 static void 
-rse_function_params(struct unw_frame_info *info, char *name)
+rse_function_params(struct bt_info *bt, struct unw_frame_info *info, char *name)
 {
 	int i;
 	int numargs; 
 	char is_nat[MAX_REGISTER_PARAMS];
 	int retval[MAX_REGISTER_PARAMS];
-	char buf1[BUFSIZE], buf2[BUFSIZE], *p1;
+	char buf1[BUFSIZE], buf2[BUFSIZE], buf3[BUFSIZE], *p1;
 	ulong arglist[MAX_REGISTER_PARAMS];
 	ulong ip;
 
@@ -2328,8 +2328,14 @@ rse_function_params(struct unw_frame_info *info, char *name)
 			sprintf(buf2, "unknown");
 		if (is_nat[i])
 			sprintf(buf2, "[NAT]");
-		else 
-			sprintf(buf2, "%lx", arglist[i]);
+		else { 
+			if (bt->flags & BT_FULL_SYM_SLAB)
+				sprintf(buf2, "%s", 
+					format_stack_entry(bt, buf3, 
+					arglist[i], kt->end));
+			else
+				sprintf(buf2, "%lx", arglist[i]);
+		}
 		
 		sprintf(p1, "%s%s", i ? ", " : "", buf2);
 		if (strlen(buf1) >= 80) 
