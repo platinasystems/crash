@@ -995,6 +995,8 @@ static int x86_is_uvaddr(ulong, struct task_context *);
 static void x86_init_kernel_pgd(void);
 static ulong xen_m2p_nonPAE(ulong);
 static int x86_xendump_p2m_create(struct xendump_data *);
+static int x86_pvops_xendump_p2m_create(struct xendump_data *);
+static void x86_debug_dump_page(FILE *, char *, char *);
 static int x86_xen_kdump_p2m_create(struct xen_kdump_data *);
 static char *x86_xen_kdump_load_page(ulong, char *);
 static char *x86_xen_kdump_load_page_PAE(ulong, char *);
@@ -2411,7 +2413,7 @@ x86_uvtop_xen_wpt_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, i
 	ulonglong page_middle, pseudo_page_middle;
 	ulonglong page_middle_entry;
 	ulonglong page_table, pseudo_page_table;
-	ulonglong page_table_entry;
+	ulonglong page_table_entry, pte;
 	ulonglong physpage, pseudo_physpage;
 	ulonglong ull;
 	ulong offset;
@@ -2568,18 +2570,19 @@ x86_uvtop_xen_wpt_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, i
         *paddr = pseudo_physpage + PAGEOFFSET(vaddr);
 
         if (verbose) {
+		physpage = PAE_PAGEBASE(physpage);
                 fprintf(fp, " PAGE: %s [machine]\n", 
 			mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX, 
 			MKSTR(&physpage)));
-
-                pseudo_physpage += (PAGEOFFSET(vaddr) |
-                        (page_table_entry & (_PAGE_NX|machdep->pageoffset)));
-
+		
                 fprintf(fp, " PAGE: %s\n\n",
                         mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX,
                         MKSTR(&pseudo_physpage)));
 
-                x86_translate_pte(0, 0, pseudo_physpage);
+		pte = pseudo_physpage | PAGEOFFSET(page_table_entry) |
+			(page_table_entry & _PAGE_NX);
+
+                x86_translate_pte(0, 0, pte);
         }
 
         return TRUE;
@@ -2996,7 +2999,7 @@ x86_kvtop_xen_wpt_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, 
         ulonglong page_middle, pseudo_page_middle;
         ulonglong page_middle_entry;
         ulonglong page_table, pseudo_page_table;
-        ulonglong page_table_entry;
+        ulonglong page_table_entry, pte;
         ulonglong physpage, pseudo_physpage;
         ulonglong ull;
         ulong offset;
@@ -3120,18 +3123,19 @@ x86_kvtop_xen_wpt_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, 
         *paddr = pseudo_physpage + PAGEOFFSET(kvaddr);
 
         if (verbose) {
+		physpage = PAE_PAGEBASE(physpage);
                 fprintf(fp, " PAGE: %s [machine]\n",
                         mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX,
                         MKSTR(&physpage)));
-
-		pseudo_physpage += (PAGEOFFSET(kvaddr) | 
-			(page_table_entry & _PAGE_NX));
 
                 fprintf(fp, " PAGE: %s\n\n",
                         mkstring(buf, VADDR_PRLEN, RJUST|LONGLONG_HEX,
                         MKSTR(&pseudo_physpage)));
 
-                x86_translate_pte(0, 0, pseudo_physpage);
+		pte = pseudo_physpage | PAGEOFFSET(page_table_entry) |
+			(page_table_entry & _PAGE_NX);
+
+		x86_translate_pte(0, 0, pte);
         }
 
         return TRUE;
@@ -3280,6 +3284,8 @@ x86_dump_machdep_table(ulong arg)
         fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
         fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 	fprintf(fp, " xendump_p2m_create: x86_xendump_p2m_create()\n");
+	fprintf(fp, " xendump_p2m_create: %s\n", PVOPS_XEN() ?
+		"x86_pvops_xendump_p2m_create()" : "x86_xendump_p2m_create()");
 	fprintf(fp, " xendump_panic_task: x86_xendump_panic_task()\n");
 	fprintf(fp, "   get_xendump_regs: x86_get_xendump_regs()\n");
 	fprintf(fp, "xen_kdump_p2m_create: x86_xen_kdump_p2m_create()\n");
@@ -4150,11 +4156,14 @@ static void
 x86_init_kernel_pgd(void)
 {
         int i;
-	ulong value;
+	ulong value = 0;
 
-	if (XEN()) 
-		get_symbol_data("swapper_pg_dir", sizeof(ulong), &value);
-	else
+	if (XEN()) { 
+		if (PVOPS_XEN())
+     			value = symbol_value("swapper_pg_dir");
+		else
+			get_symbol_data("swapper_pg_dir", sizeof(ulong), &value);
+	} else
      		value = symbol_value("swapper_pg_dir");
 
        	for (i = 0; i < NR_CPUS; i++)
@@ -4530,6 +4539,13 @@ x86_xendump_p2m_create(struct xendump_data *xd)
 	ulonglong *ulp;
 	off_t offset; 
 
+	/*
+	 *  Check for pvops Xen kernel before presuming it's HVM.
+	 */
+	if (symbol_exists("pv_init_ops") && symbol_exists("xen_patch") &&
+	    (xd->xc_core.header.xch_magic == XC_CORE_MAGIC))
+		return x86_pvops_xendump_p2m_create(xd);
+
         if (!symbol_exists("phys_to_machine_mapping")) {
                 xd->flags |= XC_CORE_NO_P2M;
                 return TRUE;
@@ -4622,6 +4638,132 @@ x86_xendump_p2m_create(struct xendump_data *xd)
 	machdep->last_pmd_read = 0;
 
 	return TRUE;
+}
+
+static int 
+x86_pvops_xendump_p2m_create(struct xendump_data *xd)
+{
+	int i, p, idx;
+	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
+	ulong *up;
+	ulonglong *ulp;
+	off_t offset; 
+
+	if ((ctrlreg_offset = MEMBER_OFFSET("vcpu_guest_context", "ctrlreg")) ==
+	     INVALID_OFFSET)
+		error(FATAL, 
+		    "cannot determine vcpu_guest_context.ctrlreg offset\n");
+	else if (CRASHDEBUG(1))
+		fprintf(xd->ofp, 
+		    "MEMBER_OFFSET(vcpu_guest_context, ctrlreg): %ld\n",
+			ctrlreg_offset);
+
+	offset = (off_t)xd->xc_core.header.xch_ctxt_offset + 
+		(off_t)ctrlreg_offset;
+
+	if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+		error(FATAL, "cannot lseek to xch_ctxt_offset\n");
+
+	if (read(xd->xfd, &ctrlreg, sizeof(ctrlreg)) !=
+	    sizeof(ctrlreg))
+		error(FATAL, "cannot read vcpu_guest_context ctrlreg[8]\n");
+
+	mfn = (ctrlreg[3] >> PAGESHIFT()) | (ctrlreg[3] << (BITS()-PAGESHIFT()));
+
+	for (i = 0; CRASHDEBUG(1) && (i < 8); i++) {
+		fprintf(xd->ofp, "ctrlreg[%d]: %lx", i, ctrlreg[i]);
+		if (i == 3)
+			fprintf(xd->ofp, " -> mfn: %lx", mfn);
+		fprintf(xd->ofp, "\n");
+	}
+
+	if (!xc_core_mfn_to_page(mfn, machdep->pgd))
+		error(FATAL, "cannot read/find cr3 page\n");
+
+	if (CRASHDEBUG(1)) {
+		fprintf(xd->ofp, "contents of page directory page:\n");	
+
+		if (machdep->flags & PAE) {
+			ulp = (ulonglong *)machdep->pgd;
+			fprintf(xd->ofp, 
+			    "%016llx %016llx %016llx %016llx\n",
+				*ulp, *(ulp+1), *(ulp+2), *(ulp+3));
+		} else {
+			up = (ulong *)machdep->pgd;
+			for (i = 0; i < 256; i++) {
+				fprintf(xd->ofp, 
+				    "%08lx: %08lx %08lx %08lx %08lx\n", 
+					(ulong)((i * 4) * sizeof(ulong)),
+					*up, *(up+1), *(up+2), *(up+3));
+				up += 4;
+			}
+		}
+	}
+
+	kvaddr = symbol_value("max_pfn");
+	if (!x86_xendump_load_page(kvaddr, xd->page))
+		return FALSE;
+	up = (ulong *)(xd->page + PAGEOFFSET(kvaddr));
+	if (CRASHDEBUG(1))
+		fprintf(xd->ofp, "max_pfn: %lx\n", *up);
+
+        xd->xc_core.p2m_frames = (*up/(PAGESIZE()/sizeof(ulong))) +
+                ((*up%(PAGESIZE()/sizeof(ulong))) ? 1 : 0);
+
+	if ((xd->xc_core.p2m_frame_index_list = (ulong *)
+	    malloc(xd->xc_core.p2m_frames * sizeof(int))) == NULL)
+        	error(FATAL, "cannot malloc p2m_frame_index_list");
+
+	machdep->last_ptbl_read = BADADDR;
+	machdep->last_pmd_read = BADADDR;
+	kvaddr = symbol_value("p2m_top");
+
+	for (p = 0; p < xd->xc_core.p2m_frames; p += XEN_PFNS_PER_PAGE) {
+		if (!x86_xendump_load_page(kvaddr, xd->page))
+			return FALSE;
+
+		if ((idx = x86_xendump_page_index(kvaddr)) == MFN_NOT_FOUND)
+			return FALSE;
+
+		if (CRASHDEBUG(7)) {
+			x86_debug_dump_page(xd->ofp, xd->page,
+				"contents of page:");
+		}
+
+		up = (ulong *)(xd->page);
+
+		for (i = 0; i < XEN_PFNS_PER_PAGE; i++, up++) {
+			if ((p+i) >= xd->xc_core.p2m_frames)
+				break;
+			if ((idx = x86_xendump_page_index(*up)) == MFN_NOT_FOUND)
+				return FALSE;
+			xd->xc_core.p2m_frame_index_list[p+i] = idx;
+		}
+
+		kvaddr += PAGESIZE();
+        }
+
+	machdep->last_ptbl_read = 0;
+	machdep->last_pmd_read = 0;
+
+	return TRUE;
+}
+
+static void
+x86_debug_dump_page(FILE *ofp, char *page, char *name)
+{
+        int i;
+        ulong *up;
+
+        fprintf(ofp, "%s\n", name);
+
+        up = (ulong *)page;
+        for (i = 0; i < 256; i++) {
+                fprintf(ofp, "%016lx: %08lx %08lx %08lx %08lx\n",
+                        (ulong)((i * 4) * sizeof(ulong)),
+                        *up, *(up+1), *(up+2), *(up+3));
+                up += 4;
+        }
 }
 
 /*

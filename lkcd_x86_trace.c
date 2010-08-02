@@ -88,6 +88,7 @@ static struct syment *eframe_label(char *, ulong);
 static int dump_framesize_cache(FILE *, struct framesize_cache *);
 static int modify_framesize_cache_entry(FILE *, ulong, int);
 static int framesize_debug(struct bt_info *, FILE *);
+static int kernel_entry_from_user_space(sframe_t *, struct bt_info *);
 
 k_error_t klib_error = 0;
 
@@ -1658,7 +1659,8 @@ find_trace(
 				eframe_label(func_name, pc) ||
 				strstr(func_name, "syscall_call") ||
 				strstr(func_name, "signal_return") ||
-				strstr(func_name, "reschedule")) {
+				strstr(func_name, "reschedule") ||
+				kernel_entry_from_user_space(curframe, bt)) {
 #else
 			} else if (strstr(func_name, "system_call")) {
 #endif
@@ -1802,6 +1804,16 @@ find_trace(
 		sp = curframe->fp + 4;
 	}
 	return(trace->nframes);
+}
+
+static int 
+kernel_entry_from_user_space(sframe_t *curframe, struct bt_info *bt)
+{
+	if (((curframe->fp + 4 + SIZE(pt_regs)) == GET_STACKTOP(bt->task)) &&
+	    !is_kernel_thread(bt->tc->task))
+		return TRUE;
+	else
+		return FALSE;
 }
 
 #ifndef REDHAT

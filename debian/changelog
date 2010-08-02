@@ -1,3 +1,55 @@
+crash (5.0.6-1) unstable; urgency=low
+
+  * New upstream version 5.0.6 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for support of xendump and Xen kdump dumpfiles from 2.6.27 and and
+    later x86_64 kernels. 
+  * Fix for the "s390dbf" command to allow the command's output to be
+    redirected to a pipe. 
+  * Fix for the x86 "bt" command to generically recognize the end of trace
+    condition for tasks entering the kernel from user-space without having to
+    hardwire any more kernel entry point function names.  Without the patch, a
+    task that took a clock interrupt from user-space and crashed while
+    operating on the soft IRQ stack failed with the error message "bt: cannot
+    resolve stack trace". (anderson@redhat.com)
+  * Display the "machine type mismatch" warning when attempting to use a ppc64
+    vmlinux file on a non-ppc64 64-bit host.  Without the patch, the fact that
+    ppc64 vmlinux ELF files are type ET_DYN, and not type ET_EXEC like all of
+    the other architectures, was allowing the vmlinux to be accepted without
+    the mismatch warning, and would subsequently fail without a meaningful
+    explanation being displayed.  (anderson@redhat.com)
+  * Fix for the x86_64 "bt" command if the kdump-generated NMI interrupts a
+    multi-threaded task that has just entered kernel space but has not changed
+    the RSP stack pointer register from its user-space per-thread stack
+    location to the kernel stack.  Without the patch, the command follows the
+    display of the exception frame on the NMI exception stack with the message
+    "WARNING: possibly bogus exception frame", displays the error message "bt:
+    cannot transition from exception stack to current process stack", and does
+    not display the user-space exception frame.  (anderson@redhat.com)
+  * Added the "set" command to the list of commands acceptable when running
+    in --minimal mode.  The command is limited to the setting of internal
+    variables since there is no task context in that mode.
+    (anderson@redhat.com)
+  * Fix for the "vtop" command when run against x86 Xen PAE kernels.  Without
+    the patch, the "PAGE:" displays (machine and pseudo-physical) contained
+    non-zero values in the lower 12 bits, and the translation of the PTE entry
+    was incorrect as a result of receiving the incorrect contents in the lower
+    12-bits of the PTE entry.  (anderson@redhat.com)
+  * Implemented support for running against live x86_64 pv_ops/Xen guest
+    kernels.  (anderson@redhat.com)
+  * Implemented support for xendump ELF dumpfiles generated from x86_64
+    pvops/Xen guest kernels.  (anderson@redhat.com)
+  * Implemented support for running against live x86 pv_ops/Xen guest kernels.
+    (anderson@redhat.com)
+  * Implemented support for xendump ELF dumpfiles generated from x86 pvops/Xen
+    guest kernels.  (anderson@redhat.com)
+  * Determine the bit positions of PG_reserved and PG_slab using the newer
+    pageflags enumerator values if available.  (anderson@redhat.com)
+  * Fix to prevent the "repeat" command from keeping a crash session alive if
+    the controlling terminal session is killed.  (anderson@redhat.com)
+
+ -- Troy Heber <troyh@debian.org>  Mon, 02 Aug 2010 09:06:32 -0600
+
 crash (5.0.5-1) unstable; urgency=low
 
   * New upstream version 5.0.5 (see

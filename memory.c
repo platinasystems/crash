@@ -3491,6 +3491,11 @@ in_user_stack(ulong task, ulong vaddr)
 
 		if (vm_flags & (VM_GROWSUP|VM_GROWSDOWN))
 			return TRUE;
+		/*
+		 *  per-thread stack
+		 */
+		if ((vm_flags & (VM_READ|VM_WRITE)) == (VM_READ|VM_WRITE))
+			return TRUE;
 	}
 	return FALSE;
 }
@@ -3961,6 +3966,13 @@ PG_reserved_flag_init(void)
 	ulong vaddr, flags;
 	char *buf;
 
+	if (enumerator_value("PG_reserved", &flags)) {
+		vt->PG_reserved = 1 << flags;
+		if (CRASHDEBUG(2))
+			fprintf(fp, "PG_reserved (enum): %lx\n", vt->PG_reserved);
+		return;
+	}
+
 	vaddr = kt->stext ? kt->stext : symbol_value("sys_read");
 
 	if (!phys_to_page((physaddr_t)VTOP(vaddr), &pageptr))
@@ -4023,6 +4035,13 @@ PG_slab_flag_init(void)
 #define PG_reclaim              17      /* To be reclaimed asap */
 		vt->PG_head_tail_mask = ((1L << PG_compound) | (1L << PG_reclaim));
 
+		return;
+	}
+
+	if (enumerator_value("PG_slab", &flags)) {
+		vt->PG_slab = flags;
+	       	if (CRASHDEBUG(2))
+			fprintf(fp, "PG_slab (enum): %lx\n", vt->PG_slab);
 		return;
 	}
 

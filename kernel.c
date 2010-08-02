@@ -63,6 +63,7 @@ kernel_init()
 	struct syment *sp1, *sp2;
 	char *rqstruct;
 	char *irq_desc_type_name;	
+	ulong pv_init_ops;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
@@ -120,6 +121,26 @@ kernel_init()
 		}
                 if ((kt->m2p_page = (char *)malloc(PAGESIZE())) == NULL)
                        	error(FATAL, "cannot malloc m2p page.");
+	}
+
+	if (PVOPS() && readmem(symbol_value("pv_init_ops"), KVADDR, &pv_init_ops,
+	    sizeof(void *), "pv_init_ops", RETURN_ON_ERROR) &&
+	    (p1 = value_symbol(pv_init_ops)) && 
+	    STREQ(p1, "xen_patch")) {
+		kt->flags |= ARCH_XEN | ARCH_PVOPS_XEN;
+		kt->xen_flags |= WRITABLE_PAGE_TABLES;
+		if (machine_type("X86"))
+                	get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
+		if (machine_type("X86_64")) {
+			if (!try_get_symbol_data("end_pfn", sizeof(ulong), &kt->p2m_table_size))
+				get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
+		}
+                if ((kt->m2p_page = (char *)malloc(PAGESIZE())) == NULL)
+                       	error(FATAL, "cannot malloc m2p page.");
+
+		kt->pvops_xen.p2m_top_entries = get_array_length("p2m_top", NULL, 0);
+		kt->pvops_xen.p2m_top = symbol_value("p2m_top");
+		kt->pvops_xen.p2m_missing = symbol_value("p2m_missing");
 	}
 
 	if (symbol_exists("smp_num_cpus")) {
@@ -4272,6 +4293,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
 	if (kt->flags & ARCH_XEN)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
+	if (kt->flags & ARCH_PVOPS_XEN)
+		fprintf(fp, "%sARCH_PVOPS_XEN", others++ ? "|" : "");
 	if (kt->flags & ARCH_OPENVZ)
 		fprintf(fp, "%sARCH_OPENVZ", others++ ? "|" : "");
 	if (kt->flags & ARCH_PVOPS)
@@ -4380,7 +4403,8 @@ dump_kernel_table(int verbose)
 			LONG_PRLEN, kt->__per_cpu_offset[i]);
 		if ((i % 4) == 0) {
 			for (j = i, more = FALSE; j < nr_cpus; j++) {
-				if (kt->__per_cpu_offset[j])
+				if (kt->__per_cpu_offset[j] &&
+				    (kt->__per_cpu_offset[j] != kt->__per_cpu_offset[i]))
 					more = TRUE;
 			}
 		}
@@ -4454,8 +4478,12 @@ no_cpu_flags:
 	for (i = 0; verbose && (i < P2M_MAPPING_CACHE); i++) {
 		if (!kt->p2m_mapping_cache[i].mapping)
 			continue;
-		fprintf(fp, "       [%d] mapping: %lx start: %lx end: %lx (%ld mfns)\n",
-			i, kt->p2m_mapping_cache[i].mapping,
+		fprintf(fp, "       [%d] mapping: %lx pfn: ", i, kt->p2m_mapping_cache[i].mapping);
+		if (PVOPS_XEN())
+			fprintf(fp, "%lx ", kt->p2m_mapping_cache[i].pfn);
+		else
+			fprintf(fp, "n/a ");
+		fprintf(fp, "start: %lx end: %lx (%ld mfns)\n",
 			kt->p2m_mapping_cache[i].start,
 			kt->p2m_mapping_cache[i].end,
 			kt->p2m_mapping_cache[i].end -  kt->p2m_mapping_cache[i].start + 1);
@@ -4473,6 +4501,11 @@ no_cpu_flags:
 		fprintf(fp, "(%ld%%)\n", kt->p2m_page_cache_hits * 100 / kt->p2m_pages_searched);
 	else
 		fprintf(fp, "\n");
+
+	fprintf(fp, "              pvops_xen:\n");
+	fprintf(fp, "                    p2m_top: %lx\n", kt->pvops_xen.p2m_top);
+	fprintf(fp, "            p2m_top_entries: %d\n", kt->pvops_xen.p2m_top_entries);
+	fprintf(fp, "                p2m_missing: %lx\n", kt->pvops_xen.p2m_missing);
 }
 
 /*
@@ -6299,7 +6332,7 @@ xen_m2p(ulonglong machine)
 	if (pfn == XEN_MFN_NOT_FOUND) {
 		if (CRASHDEBUG(1))
 			error(INFO, 
-			    "xen_machine_to_pseudo_PAE: machine address %lx not found\n",
+			    "xen_m2p: machine address %lx not found\n",
                            	 machine);
 		return XEN_MACHADDR_NOT_FOUND;
 	}
@@ -6310,12 +6343,15 @@ xen_m2p(ulonglong machine)
 static ulong
 __xen_m2p(ulonglong machine, ulong mfn)
 {
-	ulong mapping, kmfn, pfn, p, i, c;
+	ulong mapping, p2m, kmfn, pfn, p, i, e, c;
 	ulong start, end;
 	ulong *mp;
 
 	mp = (ulong *)kt->m2p_page;
-	mapping = kt->phys_to_machine_mapping;
+	if (PVOPS_XEN())
+		mapping = UNINITIALIZED;
+	else
+		mapping = kt->phys_to_machine_mapping;
 
 	/*
 	 *  Check the FIFO cache first.
@@ -6339,7 +6375,7 @@ __xen_m2p(ulonglong machine, ulong mfn)
                 	for (i = 0; i < XEN_PFNS_PER_PAGE; i++) {
 				kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
                         	if (kmfn == mfn) {
-					p = P2M_MAPPING_TO_PAGE_INDEX(c);
+					p = P2M_MAPPING_PAGE_PFN(c);
 					pfn = p + i;
 
                                 	if (CRASHDEBUG(1))
@@ -6359,47 +6395,100 @@ __xen_m2p(ulonglong machine, ulong mfn)
 		}
 	}
 
-	/*
-	 *  The machine address was not cached, so search from the
-	 *  beginning of the phys_to_machine_mapping array, caching
-	 *  only the found machine address.
-	 */
-	for (p = 0; p < kt->p2m_table_size; p += XEN_PFNS_PER_PAGE) 
-	{
-		if (mapping != kt->last_mapping_read) {
-			if (!readmem(mapping, KVADDR, mp, PAGESIZE(), 
-		    	    "phys_to_machine_mapping page", RETURN_ON_ERROR))
-				error(FATAL, 
-			     	    "cannot access phys_to_machine_mapping page\n");
-			else
-				kt->last_mapping_read = mapping;
+	if (PVOPS_XEN()) {
+		/*
+		 *  The machine address was not cached, so search from the
+		 *  beginning of the p2m_top array, caching the contiguous
+		 *  range containing the found machine address.
+		 */
+		for (e = p = 0, p2m = kt->pvops_xen.p2m_top;
+		     e < kt->pvops_xen.p2m_top_entries; 
+		     e++, p += XEN_PFNS_PER_PAGE, p2m += sizeof(void *)) {
+
+			if (!readmem(p2m, KVADDR, &mapping,
+			    sizeof(void *), "p2m_top", RETURN_ON_ERROR))
+				error(FATAL, "cannot access p2m_top[] entry\n");
+
+			if (mapping != kt->last_mapping_read) {
+				if (mapping != kt->pvops_xen.p2m_missing) {
+					if (!readmem(mapping, KVADDR, mp, 
+					    PAGESIZE(), "p2m_top page", 
+					    RETURN_ON_ERROR))
+						error(FATAL, 
+				     	    	    "cannot access "
+						    "p2m_top[] page\n");
+					kt->last_mapping_read = mapping;
+				}
+			}
+
+			if (mapping == kt->pvops_xen.p2m_missing)
+				continue;
+
+			kt->p2m_pages_searched++;
+
+			if (search_mapping_page(mfn, &i, &start, &end)) {
+				pfn = p + i;
+				if (CRASHDEBUG(1))
+				    console("pages: %d mfn: %lx (%llx) p: %ld"
+					" i: %ld pfn: %lx (%llx)\n",
+					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
+					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+	
+				c = kt->p2m_cache_index;
+				kt->p2m_mapping_cache[c].start = start;
+				kt->p2m_mapping_cache[c].end = end;
+				kt->p2m_mapping_cache[c].mapping = mapping;
+				kt->p2m_mapping_cache[c].pfn = p;
+				kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
+	
+				return pfn;
+			}
 		}
-
-		kt->p2m_pages_searched++;
-
-		if (search_mapping_page(mfn, &i, &start, &end)) {
-			pfn = p + i;
-			if (CRASHDEBUG(1))
-			    console("pages: %d mfn: %lx (%llx) p: %ld"
-				" i: %ld pfn: %lx (%llx)\n",
-				(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
-				p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
-
-			c = kt->p2m_cache_index;
-			kt->p2m_mapping_cache[c].start = start;
-			kt->p2m_mapping_cache[c].end = end;
-			kt->p2m_mapping_cache[c].mapping = mapping;
-			kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
-
-			return pfn;
+	} else {
+		/*
+		 *  The machine address was not cached, so search from the
+		 *  beginning of the phys_to_machine_mapping array, caching
+		 *  the contiguous range containing the found machine address.
+		 */
+		for (p = 0; p < kt->p2m_table_size; p += XEN_PFNS_PER_PAGE) 
+		{
+			if (mapping != kt->last_mapping_read) {
+				if (!readmem(mapping, KVADDR, mp, PAGESIZE(), 
+			    	    "phys_to_machine_mapping page", 
+				    RETURN_ON_ERROR))
+					error(FATAL, 
+				     	    "cannot access"
+					    " phys_to_machine_mapping page\n");
+				else
+					kt->last_mapping_read = mapping;
+			}
+	
+			kt->p2m_pages_searched++;
+	
+			if (search_mapping_page(mfn, &i, &start, &end)) {
+				pfn = p + i;
+				if (CRASHDEBUG(1))
+				    console("pages: %d mfn: %lx (%llx) p: %ld"
+					" i: %ld pfn: %lx (%llx)\n",
+					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
+					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+	
+				c = kt->p2m_cache_index;
+				kt->p2m_mapping_cache[c].start = start;
+				kt->p2m_mapping_cache[c].end = end;
+				kt->p2m_mapping_cache[c].mapping = mapping;
+				kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
+	
+				return pfn;
+			}
+	
+			mapping += PAGESIZE();
 		}
-
-		mapping += PAGESIZE();
-	}
+	}	
 
 	if (CRASHDEBUG(1))
 		console("machine address %llx not found\n", machine);
-
+	
 	return (XEN_MFN_NOT_FOUND);
 }
 

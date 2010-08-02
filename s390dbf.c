@@ -1325,7 +1325,7 @@ void cmd_s390dbf()
 	int i,c;
 
 	command_t cmd = {
-		.ofp = stdout,
+		.ofp = fp,
 		.efp = stderr,
 		.cmdstr = "s390dbf",
 		.command = "s390dbf",
