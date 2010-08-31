@@ -1747,30 +1747,32 @@ retry_pid_hash:
 			console("pid_hash[%d]: %lx task: %lx (node: %lx) next: %lx pprev: %lx\n",
 				i, pid_hash[i], next, kpp, pnext, pprev);
 
-		while (next) {
-                        if (!IS_TASK_ADDR(next)) {
-                                error(INFO,
-                                    "%sinvalid task address in pid_hash: %lx\n",
-                                        DUMPFILE() ? "\n" : "", next);
-                                if (DUMPFILE())
-                                        break;
-                                hq_close();
-                                retries++;
-                                goto retry_pid_hash;
+		while (1) {
+			if (next) {
+                        	if (!IS_TASK_ADDR(next)) {
+                                	error(INFO,
+                                    	"%sinvalid task address in pid_hash: %lx\n",
+                                        	DUMPFILE() ? "\n" : "", next);
+                                	if (DUMPFILE())
+                                        	break;
+                                	hq_close();
+                                	retries++;
+                                	goto retry_pid_hash;
 
-                        }
+                        	}
 
-                        if (!is_idle_thread(next) && !hq_enter(next)) {
-                                error(INFO,
-                                    "%sduplicate task in pid_hash: %lx\n",
-                                        DUMPFILE() ? "\n" : "", next);
-                                if (DUMPFILE())
-                                        break;
-                                hq_close();
-                                retries++;
-                                goto retry_pid_hash;
-                        }
+                        	if (!is_idle_thread(next) && !hq_enter(next)) {
+                                	error(INFO,
+                                    	"%sduplicate task in pid_hash: %lx\n",
+                                        	DUMPFILE() ? "\n" : "", next);
+                                	if (DUMPFILE())
+                                        	break;
+                                	hq_close();
+                                	retries++;
+                                	goto retry_pid_hash;
+                        	}
 
+			}
                         cnt++;
 
 			if (!pnext) 
@@ -4293,6 +4295,7 @@ static long _EXCLUSIVE_ = TASK_STATE_UNINITIALIZED;
 static void
 initialize_task_state(void)
 {
+	int i, len;
 	ulong bitpos;
 	ulong str, task_state_array;
 	char buf[BUFSIZE];
@@ -4312,8 +4315,10 @@ old_defaults:
 		return;
 	}
 		
+	if ((len = get_array_length("task_state_array", NULL, 0)) <= 0)
+		goto old_defaults;
 	bitpos = 0;
-	while (str) {
+	for (i = 0; i < len; i++) {
 		if (!read_string(str, buf, BUFSIZE-1))
 			break;
 

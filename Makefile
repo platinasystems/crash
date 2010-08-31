@@ -32,6 +32,12 @@ ifeq ($(ARCH), ppc64)
 CONF_FLAGS = -m64
 endif
 
+ifeq ($(TARGET), ARM)
+ifeq ($(ARCH), i386)
+GDB_CONF_FLAGS = --target=arm-elf-linux
+endif
+endif
+
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
@@ -74,11 +80,12 @@ UNWIND_HFILES=unwind.h unwind_i.h rse.h unwind_x86.h unwind_x86_64.h
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
 	alpha.c x86.c ppc.c ia64.c s390.c s390x.c s390dbf.c ppc64.c x86_64.c \
+	arm.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
 	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c \
-	unwind_x86_32_64.c \
+	unwind_x86_32_64.c unwind_arm.c \
  	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
 	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c
 
@@ -90,11 +97,12 @@ SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
 	alpha.o x86.o ppc.o ia64.o s390.o s390x.o s390dbf.o ppc64.o x86_64.o \
+	arm.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
-	unwind_x86_32_64.o \
+	unwind_x86_32_64.o unwind_arm.o \
  	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
 	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o
 
@@ -240,11 +248,17 @@ GDB_INCLUDE_DIRECTORY=./${GDB}/include
 
 REDHATFLAGS=-DREDHAT
 
+# target could be set on command line when invoking make. Like: make target=ARM
+# otherwise target will be the same as the host
+ifneq ($(target),)
+CONF_TARGET_FLAG="-t$(target)"
+endif
+
 # To build the extensions library by default, uncomment the third command
 # line below.  Otherwise they can be built by entering "make extensions".
 
 all: make_configure
-	@./configure -p "RPMPKG=${RPMPKG}" -b
+	@./configure ${CONF_TARGET_FLAG} -p "RPMPKG=${RPMPKG}" -b
 	@make --no-print-directory gdb_merge
 #	@make --no-print-directory extensions
 
@@ -254,7 +268,7 @@ gdb_merge: force
 	@echo "${LDFLAGS} -lz -ldl -rdynamic" > ${GDB}/gdb/mergelibs
 	@echo "../../${PROGRAM} ../../${PROGRAM}lib.a" > ${GDB}/gdb/mergeobj
 	@if [ ! -f ${GDB}/config.status ]; then \
-	  (cd ${GDB}; ./configure --with-separate-debug-dir=/usr/lib/debug \
+	  (cd ${GDB}; ./configure ${GDB_CONF_FLAGS} --with-separate-debug-dir=/usr/lib/debug \
 	    --with-bugurl="" --with-expat=no --with-python=no; \
 	  make --no-print-directory;) \
 	else (cd ${GDB}/gdb; make --no-print-directory;); fi
@@ -407,6 +421,9 @@ ppc64.o: ${GENERIC_HFILES} ppc64.c
 x86_64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86_64.c
 	cc -c ${CRASH_CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+arm.o: ${GENERIC_HFILES} ${REDHAT_HFILES} arm.c
+	cc -c ${CRASH_CFLAGS} arm.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
 	cc -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -447,6 +464,9 @@ lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c
 
 unwind_x86_32_64.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_x86_32_64.c
 	cc -c ${CRASH_CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+unwind_arm.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_arm.c
+	cc -c ${CRASH_CFLAGS} unwind_arm.c -o unwind_arm.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
 	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V1 -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -515,7 +535,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=5.0.6
+VERSION=5.0.7
 RELEASE=0
 
 release: make_configure
@@ -591,7 +611,7 @@ dis:
 	objdump --disassemble --line-numbers ${PROGRAM} > ${PROGRAM}.dis
 
 extensions: make_configure
-	@./configure -q -b
+	@./configure ${CONF_TARGET_FLAG} -q -b
 	@make --no-print-directory do_extensions
 
 do_extensions:

@@ -169,6 +169,7 @@ get_qemu128 (FILE *fp, union qemu_uint128_t *result)
 #define RAM_SAVE_FLAG_MEM_SIZE	0x04
 #define RAM_SAVE_FLAG_PAGE	0x08
 #define RAM_SAVE_FLAG_EOS	0x10
+#define RAM_SAVE_FLAG_CONTINUE	0x20
 #define RAM_SAVE_ADDR_MASK	(~4095LL)
 
 #define RAM_OFFSET_COMPRESSED	(~(off_t)255)
@@ -192,36 +193,81 @@ ram_alloc (struct qemu_device_ram *dram, uint64_t size)
 	dram->last_ram_offset = size;
 }
 
+static int
+get_string (FILE *fp, char *name)
+{
+	size_t items;
+	int sz = (uint8_t) getc (fp);
+	if (sz == EOF)
+		return -1;
+	items = fread (name, sz, 1, fp);
+	name[sz] = 0;
+	return sz;
+}
+
+static void
+ram_read_blocks (FILE *fp, uint64_t size)
+{
+	char name[257];
+	/* The RAM block table is a list of block names followed by
+	   their sizes.  Read it until the sizes sum up to SIZE bytes.  */
+	while (size) {
+		get_string (fp, name);
+		size -= get_be64 (fp);
+	}
+}
+
 static uint32_t
 ram_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
 {
+	char name[257];
 	struct qemu_device_ram *dram = (struct qemu_device_ram *)d;
 	uint64_t header;
+	static int pc_ram = 0;
 
-	do {
+	for (;;) {
 		uint64_t addr;
 		off_t entry;
 
 		header = get_be64 (fp);
+		if (feof (fp) || ferror (fp))
+			return 0;
+		if (header & RAM_SAVE_FLAG_EOS)
+			break;
+
 		assert (!(header & RAM_SAVE_FLAG_FULL));
 
 		addr = header & RAM_SAVE_ADDR_MASK;
-		if (header & RAM_SAVE_FLAG_MEM_SIZE)
-			ram_alloc (dram, addr);
 
-		else if (header & RAM_SAVE_FLAG_COMPRESS) {
-//			dram->offsets[addr / 4096] =
+		if (header & RAM_SAVE_FLAG_MEM_SIZE) {
+			ram_alloc (dram, addr);
+			if (d->version_id >= 4)
+				ram_read_blocks(fp, addr);
+			continue;
+		}
+
+		if (d->version_id >= 4 && !(header & RAM_SAVE_FLAG_CONTINUE)) {
+			get_string(fp, name);
+			if (strcmp(name, "pc.ram") == 0)
+				pc_ram = 1;
+			else
+				pc_ram = 0;
+		}
+
+		if (header & RAM_SAVE_FLAG_COMPRESS) {
 			entry = RAM_OFFSET_COMPRESSED | getc(fp);
-			store_mapfile_offset(addr, &entry);
+			if ((d->version_id == 3) || 
+			    (d->version_id >= 4 && pc_ram))
+				store_mapfile_offset(addr, &entry);
 		}
 		else if (header & RAM_SAVE_FLAG_PAGE) {
-//			dram->offsets[addr / 4096] = ftell (fp);
 			entry = ftell(fp);
-			store_mapfile_offset(addr, &entry);
+			if ((d->version_id == 3) || 
+			    (d->version_id >= 4 && pc_ram))
+				store_mapfile_offset(addr, &entry);
 			fseek (fp, 4096, SEEK_CUR);
 		}
-
-	} while (!(header & RAM_SAVE_FLAG_EOS) && !feof (fp) && !ferror (fp));
+	}
 
 	dram->fp = fp;
 	return QEMU_FEATURE_RAM;
@@ -264,7 +310,7 @@ ram_init_load (struct qemu_device_list *dl,
 		ram_free
 	};
 
-	assert (version_id == 3);
+	assert (version_id == 3 || version_id == 4);
 	kvm->mapinfo.ram_version_id = version_id;
 	return device_alloc (dl, sizeof (struct qemu_device_ram),
 			     &ram, section_id, instance_id, version_id);
@@ -780,19 +826,13 @@ device_get (const struct qemu_device_loader *devices,
 	char name[257];
 	uint32_t section_id, instance_id, version_id;
 //	bool live;
-	size_t items;
-	int sz;
 
 	section_id = get_be32 (fp);
 	if (sec != QEMU_VM_SECTION_START &&
 	    sec != QEMU_VM_SECTION_FULL)
 		return device_find (dl, section_id);
 
-	sz = getc (fp);
-	if (sz == EOF)
-		return NULL;
-	items = fread (name, sz, 1, fp);
-	name[sz] = 0;
+	get_string(fp, name);
 
 	instance_id = get_be32 (fp);
 	version_id = get_be32 (fp);

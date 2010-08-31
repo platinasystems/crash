@@ -3966,7 +3966,7 @@ PG_reserved_flag_init(void)
 	ulong vaddr, flags;
 	char *buf;
 
-	if (enumerator_value("PG_reserved", &flags)) {
+	if (enumerator_value("PG_reserved", (long *)&flags)) {
 		vt->PG_reserved = 1 << flags;
 		if (CRASHDEBUG(2))
 			fprintf(fp, "PG_reserved (enum): %lx\n", vt->PG_reserved);
@@ -4038,7 +4038,7 @@ PG_slab_flag_init(void)
 		return;
 	}
 
-	if (enumerator_value("PG_slab", &flags)) {
+	if (enumerator_value("PG_slab", (long *)&flags)) {
 		vt->PG_slab = flags;
 	       	if (CRASHDEBUG(2))
 			fprintf(fp, "PG_slab (enum): %lx\n", vt->PG_slab);

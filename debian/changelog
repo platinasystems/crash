@@ -1,3 +1,31 @@
+crash (5.0.7-1) unstable; urgency=low
+
+  * New upstream version 5.0.7 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Introduction of ARM processor support for the crash utility. 
+  * Fix to support KVM dumpfiles that have "ram" device header sections with a
+    version_id of 4. 
+  * Fix for KVM dumpfiles from guests that were provisioned with more than
+    3.5GB of RAM. 
+  * Minor fix to memory.c to address a compiler warning when building with
+    "make warn", or a compiler failure when using "make Warn".
+  * Fix for a segmentation violation caused by the "mount" command in the rare
+    circumstance where the "init" task (pid 1) does not exist.
+  * CONFIG_PREEMPT_RT x86_64 realtime kernels allocate only 3 exception stacks
+    to handle the 5 possible exception types, and therefore the same per-cpu
+    stack may be used for different exception types.  This could cause "bt"
+    output that contained exception stack name strings to be incorrect.  The
+    patch displays all exception stack name strings in RT kernels to all show
+    "RT", as in "--- <RT exception stack> ---".
+  * Fix for the potential to miss one or more tasks in 2.6.23 and earlier
+    kernels, presumably due to catching an entry the kernel's pid_hash[] chain
+    in transition.  Without the patch, the task will simply not be seen in the
+    gathered task list.
+  * Fix to correct a presumption that the kernel's task_state_array[] is NULL
+    terminated.
+
+ -- Troy Heber <troyh@debian.org>  Tue, 31 Aug 2010 11:16:58 -0600
+
 crash (5.0.6-1) unstable; urgency=low
 
   * New upstream version 5.0.6 (see

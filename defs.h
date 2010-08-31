@@ -84,6 +84,9 @@
 #ifdef S390X
 #define NR_CPUS  (64)
 #endif
+#ifdef ARM
+#define NR_CPUS  (1)
+#endif
 
 #define BUFSIZE  (1500)
 #define NULLCHAR ('\0')
@@ -1513,6 +1516,20 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mm_rss_stat_count;
 	long module_module_init;
 	long module_init_text_size;
+	long cpu_context_save_fp;
+	long cpu_context_save_sp;
+	long cpu_context_save_pc;
+	long elf_prstatus_pr_pid;
+	long elf_prstatus_pr_reg;
+	long irq_desc_t_name;
+	long thread_info_cpu_context;
+	long unwind_table_list;
+	long unwind_table_start;
+	long unwind_table_stop;
+	long unwind_table_begin_addr;
+	long unwind_table_end_addr;
+	long unwind_idx_addr;
+	long unwind_idx_insn;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1625,6 +1642,10 @@ struct size_table {         /* stash of commonly-used sizes */
 	long module_sect_attr;
 	long task_struct_utime;
 	long task_struct_stime;
+	long cpu_context_save;
+	long elf_prstatus;
+	long note_buf;
+	long unwind_idx;
 };
 
 struct array_table {
@@ -2098,6 +2119,49 @@ struct load_module {
 /*
  *  Machine specific stuff
  */
+
+#ifdef ARM
+#define _32BIT_
+#define MACHINE_TYPE		"ARM"
+
+#define PAGEBASE(X)		(((ulong)(X)) & (ulong)machdep->pagemask)
+
+#define PTOV(X) \
+	((unsigned long)(X)-(machdep->machspec->phys_base)+(machdep->kvbase))
+#define VTOP(X) \
+	((unsigned long)(X)-(machdep->kvbase)+(machdep->machspec->phys_base))
+
+#define IS_VMALLOC_ADDR(X) 	arm_is_vmalloc_addr((ulong)(X))
+
+#define MODULES_VADDR   	(machdep->machspec->modules_vaddr)
+#define MODULES_END     	(machdep->machspec->modules_end)
+#define VMALLOC_START   	(machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END     	(machdep->machspec->vmalloc_end)
+
+#define PGDIR_SHIFT   		(21)
+#define PTRS_PER_PTE		(512)
+#define PTRS_PER_PGD		(2048)
+
+#define PGD_OFFSET(vaddr)       ((vaddr) >> PGDIR_SHIFT)
+#define PTE_OFFSET(vaddr)       (((vaddr) >> PAGESHIFT()) & (PTRS_PER_PTE - 1))
+
+#define __SWP_TYPE_SHIFT	3
+#define __SWP_TYPE_BITS		6
+#define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
+#define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+
+#define SWP_TYPE(entry)		(((entry) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
+#define SWP_OFFSET(entry)	((entry) >> __SWP_OFFSET_SHIFT)
+
+#define __swp_type(entry)	SWP_TYPE(entry)
+#define __swp_offset(entry)	SWP_OFFSET(entry)
+
+#define TIF_SIGPENDING		(2)
+
+#define _SECTION_SIZE_BITS	28
+#define _MAX_PHYSMEM_BITS	32
+
+#endif  /* ARM */
 
 #ifdef X86
 #define _32BIT_
@@ -2795,6 +2859,10 @@ struct efi_memory_desc_t {
 #define SIZEOF_16BIT  (2)
 #define SIZEOF_8BIT   (1)
 
+#ifdef ARM
+#define MAX_HEXADDR_STRLEN (8)
+#define UVADDR_PRLEN       (8)
+#endif
 #ifdef X86
 #define MAX_HEXADDR_STRLEN (8)             
 #define UVADDR_PRLEN       (8)
@@ -2872,15 +2940,111 @@ struct efi_memory_desc_t {
 
 /*
  * IRQ line status.
+ * For kernels up to and including 2.6.17
  */
-#define IRQ_INPROGRESS  1       /* IRQ handler active - do not enter! */
-#define IRQ_DISABLED    2       /* IRQ disabled - do not enter! */
-#define IRQ_PENDING     4       /* IRQ pending - replay on enable */
-#define IRQ_REPLAY      8       /* IRQ has been replayed but not acked yet */
-#define IRQ_AUTODETECT  16      /* IRQ is being autodetected */
-#define IRQ_WAITING     32      /* IRQ not yet seen - for autodetection */
-#define IRQ_LEVEL       64      /* IRQ level triggered */
-#define IRQ_MASKED      128     /* IRQ masked - shouldn't be seen again */
+#define IRQ_INPROGRESS_2_6_17  1       /* IRQ handler active - do not enter! */
+#define IRQ_DISABLED_2_6_17    2       /* IRQ disabled - do not enter! */
+#define IRQ_PENDING_2_6_17     4       /* IRQ pending - replay on enable */
+#define IRQ_REPLAY_2_6_17      8       /* IRQ has been replayed but not acked yet */
+#define IRQ_AUTODETECT_2_6_17  16      /* IRQ is being autodetected */
+#define IRQ_WAITING_2_6_17     32      /* IRQ not yet seen - for autodetection */
+#define IRQ_LEVEL_2_6_17       64      /* IRQ level triggered */
+#define IRQ_MASKED_2_6_17      128     /* IRQ masked - shouldn't be seen again */
+
+/*
+ * For kernel 2.6.21 and later
+ */
+#define IRQ_TYPE_NONE_2_6_21		0x00000000	/* Default, unspecified type */
+#define IRQ_TYPE_EDGE_RISING_2_6_21	0x00000001	/* Edge rising type */
+#define IRQ_TYPE_EDGE_FALLING_2_6_21	0x00000002	/* Edge falling type */
+#define IRQ_TYPE_EDGE_BOTH_2_6_21 	(IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING)
+#define IRQ_TYPE_LEVEL_HIGH_2_6_21	0x00000004	/* Level high type */
+#define IRQ_TYPE_LEVEL_LOW_2_6_21	0x00000008	/* Level low type */
+#define IRQ_TYPE_SENSE_MASK_2_6_21	0x0000000f	/* Mask of the above */
+#define IRQ_TYPE_PROBE_2_6_21		0x00000010	/* Probing in progress */
+
+#define IRQ_INPROGRESS_2_6_21		0x00000100	/* IRQ handler active - do not enter! */
+#define IRQ_DISABLED_2_6_21		0x00000200	/* IRQ disabled - do not enter! */
+#define IRQ_PENDING_2_6_21		0x00000400	/* IRQ pending - replay on enable */
+#define IRQ_REPLAY_2_6_21		0x00000800	/* IRQ has been replayed but not acked yet */
+#define IRQ_AUTODETECT_2_6_21		0x00001000	/* IRQ is being autodetected */
+#define IRQ_WAITING_2_6_21		0x00002000	/* IRQ not yet seen - for autodetection */
+#define IRQ_LEVEL_2_6_21		0x00004000	/* IRQ level triggered */
+#define IRQ_MASKED_2_6_21		0x00008000	/* IRQ masked - shouldn't be seen again */
+#define IRQ_PER_CPU_2_6_21		0x00010000	/* IRQ is per CPU */
+#define IRQ_NOPROBE_2_6_21		0x00020000	/* IRQ is not valid for probing */
+#define IRQ_NOREQUEST_2_6_21		0x00040000	/* IRQ cannot be requested */
+#define IRQ_NOAUTOEN_2_6_21		0x00080000	/* IRQ will not be enabled on request irq */
+#define IRQ_WAKEUP_2_6_21		0x00100000	/* IRQ triggers system wakeup */
+#define IRQ_MOVE_PENDING_2_6_21		0x00200000	/* need to re-target IRQ destination */
+#define IRQ_NO_BALANCING_2_6_21		0x00400000	/* IRQ is excluded from balancing */
+#define IRQ_SPURIOUS_DISABLED_2_6_21	0x00800000	/* IRQ was disabled by the spurious trap */
+#define IRQ_MOVE_PCNTXT_2_6_21		0x01000000	/* IRQ migration from process context */
+#define IRQ_AFFINITY_SET_2_6_21		0x02000000	/* IRQ affinity was set from userspace*/
+
+/*
+ * Select proper IRQ value depending on kernel version
+ */
+#define IRQ_TYPE_NONE		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_NONE_2_6_21 : 0)
+#define IRQ_TYPE_EDGE_RISING	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_EDGE_RISING_2_6_21 : 0)
+#define IRQ_TYPE_EDGE_FALLING	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_EDGE_FALLING_2_6_21 : 0)
+#define IRQ_TYPE_EDGE_BOTH	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_EDGE_BOTH_2_6_21 : 0)
+#define IRQ_TYPE_LEVEL_HIGH	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_LEVEL_HIGH_2_6_21 : 0)
+#define IRQ_TYPE_LEVEL_LOW	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_LEVEL_LOW_2_6_21 : 0)
+#define IRQ_TYPE_SENSE_MASK	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_SENSE_MASK_2_6_21 : 0)
+#define IRQ_TYPE_PROBE		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_TYPE_PROBE_2_6_21 : 0)
+
+#define IRQ_INPROGRESS		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_INPROGRESS_2_6_21 : IRQ_INPROGRESS_2_6_17)
+#define IRQ_DISABLED		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_DISABLED_2_6_21 : IRQ_DISABLED_2_6_17)
+#define IRQ_PENDING		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_PENDING_2_6_21 : IRQ_PENDING_2_6_17)
+#define IRQ_REPLAY		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_REPLAY_2_6_21 : IRQ_REPLAY_2_6_17)
+#define IRQ_AUTODETECT		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_AUTODETECT_2_6_21 : IRQ_AUTODETECT_2_6_17)
+#define IRQ_WAITING		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_WAITING_2_6_21 : IRQ_WAITING_2_6_17)
+#define IRQ_LEVEL		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_LEVEL_2_6_21 : IRQ_LEVEL_2_6_17)
+#define IRQ_MASKED		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_MASKED_2_6_21 : IRQ_MASKED_2_6_17)
+#define IRQ_PER_CPU		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_PER_CPU_2_6_21 : 0)
+#define IRQ_NOPROBE		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_NOPROBE_2_6_21 : 0)
+#define IRQ_NOREQUEST		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_NOREQUEST_2_6_21 : 0)
+#define IRQ_NOAUTOEN		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_NOAUTOEN_2_6_21 : 0)
+#define IRQ_WAKEUP		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_WAKEUP_2_6_21 : 0)
+#define IRQ_MOVE_PENDING	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_MOVE_PENDING_2_6_21 : 0)
+#define IRQ_NO_BALANCING	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_NO_BALANCING_2_6_21 : 0)
+#define IRQ_SPURIOUS_DISABLED	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_SPURIOUS_DISABLED_2_6_21 : 0)
+#define IRQ_MOVE_PCNTXT		\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_MOVE_PCNTXT_2_6_21 : 0)
+#define IRQ_AFFINITY_SET	\
+	(THIS_KERNEL_VERSION >= LINUX(2,6,21) ? IRQ_AFFINITY_SET_2_6_21 : 0)
+
+#ifdef ARM
+#define SA_PROBE                SA_ONESHOT
+#define SA_SAMPLE_RANDOM        SA_RESTART
+#define SA_SHIRQ                0x04000000
+#define SA_RESTORER             0x04000000
+#endif
 
 #ifdef X86
 #define SA_PROBE                SA_ONESHOT
@@ -3212,6 +3376,9 @@ void program_usage(int);
 #define SHORT_FORM (0)
 void dump_program_context(void);
 void dump_build_data(void);
+#ifdef ARM
+#define machdep_init(X) arm_init(X)
+#endif
 #ifdef X86
 #define machdep_init(X) x86_init(X)
 #endif
@@ -3570,6 +3737,9 @@ void help_init(void);
 void cmd_usage(char *, int);
 void display_version(void);
 void display_help_screen(char *);
+#ifdef ARM
+#define dump_machdep_table(X) arm_dump_machdep_table(X)
+#endif
 #ifdef X86
 #define dump_machdep_table(X) x86_dump_machdep_table(X)
 #endif
@@ -3847,6 +4017,58 @@ void read_in_kernel_config(int);
  */
 void dev_init(void);
 void dump_dev_table(void);
+
+#ifdef ARM
+void arm_init(int);
+void arm_dump_machdep_table(ulong);
+int arm_is_vmalloc_addr(ulong);
+void arm_dump_backtrace_entry(struct bt_info *, int, ulong, ulong);
+
+#define display_idt_table() \
+        error(FATAL, "-d option is not applicable to ARM architecture\n")
+
+struct arm_pt_regs {
+	ulong uregs[18];
+};
+
+#define ARM_cpsr	uregs[16]
+#define ARM_pc		uregs[15]
+#define ARM_lr		uregs[14]
+#define ARM_sp		uregs[13]
+#define ARM_ip		uregs[12]
+#define ARM_fp		uregs[11]
+#define ARM_r10		uregs[10]
+#define ARM_r9		uregs[9]
+#define ARM_r8		uregs[8]
+#define ARM_r7		uregs[7]
+#define ARM_r6		uregs[6]
+#define ARM_r5		uregs[5]
+#define ARM_r4		uregs[4]
+#define ARM_r3		uregs[3]
+#define ARM_r2		uregs[2]
+#define ARM_r1		uregs[1]
+#define ARM_r0		uregs[0]
+#define ARM_ORIG_r0	uregs[17]
+
+#define KSYMS_START	(0x1)
+#define PHYS_BASE	(0x2)
+
+struct machine_specific {
+	ulong phys_base;
+	ulong vmalloc_start_addr;
+	ulong modules_vaddr;
+	ulong modules_end;
+	ulong kernel_text_start;
+	ulong kernel_text_end;
+	ulong exception_text_start;
+	ulong exception_text_end;
+	ulong crash_task_pid;
+	struct arm_pt_regs *crash_task_regs;
+};
+
+int init_unwind_tables(void);
+void unwind_backtrace(struct bt_info *);
+#endif /* ARM */
 
 /*
  *  alpha.c
@@ -4264,6 +4486,7 @@ int xen_minor_version(void);
 int get_netdump_arch(void);
 void *get_regs_from_elf_notes(struct task_context *);
 void map_cpus_to_prstatus(void);
+int arm_kdump_phys_base(ulong *);
 
 /*
  *  diskdump.c

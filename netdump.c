@@ -32,6 +32,7 @@ static void dump_Elf64_Ehdr(Elf64_Ehdr *);
 static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
+static void get_netdump_regs_arm(struct bt_info *, ulong *, ulong *);
 static physaddr_t xen_kdump_p2m(physaddr_t);
 static void check_dumpfile_size(char *);
 
@@ -166,6 +167,12 @@ is_netdump(char *file, ulong source_query)
 		{
 		case EM_386:
 			if (machine_type_mismatch(file, "X86", NULL, 
+			    source_query))
+				goto bailout;
+			break;
+
+		case EM_ARM:
+			if (machine_type_mismatch(file, "ARM", NULL,
 			    source_query))
 				goto bailout;
 			break;
@@ -2094,6 +2101,10 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	case EM_S390:
 		machdep->get_stack_frame(bt, eip, esp);
 		break;
+
+	case EM_ARM:
+		return get_netdump_regs_arm(bt, eip, esp);
+		break;
 	default:
 		error(FATAL, 
 		   "support for ELF machine type %d not available\n",
@@ -2393,6 +2404,40 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
+static void
+get_netdump_regs_arm(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	Elf64_Nhdr *note;
+	size_t len;
+
+	if ((bt->task == tt->panic_task) ||
+		(is_task_active(bt->task) && nd->num_prstatus_notes > 1)) {
+		/*
+		 * Registers are saved during the dump process for the
+		 * panic task. Whereas in kdump, regs are captured for all
+		 * CPUs if they responded to an IPI.
+		 */
+                if (nd->num_prstatus_notes > 1) {
+			if (!nd->nt_prstatus_percpu[bt->tc->processor])
+				error(FATAL,
+				      "cannot determine NT_PRSTATUS ELF note "
+				      "for %s task: %lx\n",
+				       (bt->task == tt->panic_task) ?
+				       "panic" : "active", bt->task);
+                        note = (Elf64_Nhdr *)
+                                nd->nt_prstatus_percpu[bt->tc->processor];
+		} else
+			note = (Elf64_Nhdr *)nd->nt_prstatus;
+
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		bt->machdep = (void *)((char *)note + len +
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	}
+
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
 int 
 is_partial_netdump(void)
 {
@@ -2644,6 +2689,7 @@ xen_minor_version(void)
 static void *get_ppc64_regs_from_elf_notes(struct task_context *);
 static void *get_x86_regs_from_elf_notes(struct task_context *);
 static void *get_x86_64_regs_from_elf_notes(struct task_context *);
+static void *get_arm_regs_from_elf_notes(struct task_context *);
 
 int get_netdump_arch(void)
 {
@@ -2670,6 +2716,8 @@ get_regs_from_elf_notes(struct task_context *tc)
 		return get_ppc64_regs_from_elf_notes(tc);
 	case EM_X86_64:
 		return get_x86_64_regs_from_elf_notes(tc);
+	case EM_ARM:
+		return get_arm_regs_from_elf_notes(tc);
 	default:
 		error(FATAL,
 		    "support for ELF machine type %d not available\n",
@@ -2784,5 +2832,70 @@ get_ppc64_regs_from_elf_notes(struct task_context *tc)
 		    "cannot determine register set for task \"%s\"\n",
 			tc->comm);
 	
+	return pt_regs;
+}
+
+/*
+ * In case of ARM we need to determine correct PHYS_OFFSET from the kdump file.
+ * This is done by taking lowest physical address (LMA) from given load
+ * segments. Normally this is the right one.
+ *
+ * Alternative would be to store phys_base in VMCOREINFO but current kernel
+ * kdump doesn't do that yet.
+ */
+int arm_kdump_phys_base(ulong *phys_base)
+{
+	struct pt_load_segment *pls;
+	ulong paddr = ULONG_MAX;
+	int i;
+
+	for (i = 0; i < nd->num_pt_load_segments; i++) {
+		pls = &nd->pt_load_segments[i];
+		if (pls->phys_start < paddr)
+			paddr = pls->phys_start;
+	}
+
+	if (paddr != ULONG_MAX) {
+		*phys_base = paddr;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void *
+get_arm_regs_from_elf_notes(struct task_context *tc)
+{
+	Elf32_Nhdr *note_32;
+	Elf64_Nhdr *note_64;
+	void *note;
+	size_t len;
+	void *pt_regs;
+
+	len = 0;
+	pt_regs = NULL;
+
+	if ((tc->task == tt->panic_task) ||
+	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
+		if (nd->num_prstatus_notes > 1)
+			note = (void *)
+				nd->nt_prstatus_percpu[tc->processor];
+		else
+			note = (void *)nd->nt_prstatus;
+		if (nd->elf32) {
+			note_32 = (Elf32_Nhdr *)note;
+			len = sizeof(Elf32_Nhdr);
+			len = roundup(len + note_32->n_namesz, 4);
+		} else if (nd->elf64) {
+			note_64 = (Elf64_Nhdr *)note;
+			len = sizeof(Elf64_Nhdr);
+			len = roundup(len + note_64->n_namesz, 4);
+		}
+
+		pt_regs = (void *)((char *)note + len +
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	} else
+		error(FATAL,
+		    "cannot determine arm register set for task \"%s\"\n",
+			tc->comm);
 	return pt_regs;
 }
