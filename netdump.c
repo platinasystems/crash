@@ -24,6 +24,8 @@
 static struct vmcore_data vmcore_data = { 0 };
 static struct vmcore_data *nd = &vmcore_data;
 static struct xen_kdump_data xen_kdump_data = { 0 };
+static struct proc_kcore_data proc_kcore_data = { 0 };
+static struct proc_kcore_data *pkd = &proc_kcore_data;
 static void netdump_print(char *, ...);
 static void dump_Elf32_Ehdr(Elf32_Ehdr *);
 static void dump_Elf32_Phdr(Elf32_Phdr *, int);
@@ -35,6 +37,8 @@ static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_arm(struct bt_info *, ulong *, ulong *);
 static physaddr_t xen_kdump_p2m(physaddr_t);
 static void check_dumpfile_size(char *);
+static int proc_kcore_init_32(FILE *fp);
+static int proc_kcore_init_64(FILE *fp);
 
 #define ELFSTORE 1
 #define ELFREAD  0
@@ -257,6 +261,11 @@ is_netdump(char *file, ulong source_query)
 			
 			
 		goto bailout;
+	}
+
+	if (source_query == KCORE_LOCAL) {
+		close(fd);
+		return TRUE;
 	}
 
 	switch (DUMPFILE_FORMAT(tmp_flags))
@@ -1294,6 +1303,9 @@ dump_Elf64_Ehdr(Elf64_Ehdr *elf)
         case EM_X86_64:
                 netdump_print("(EM_X86_64)\n");
                 break;
+	case EM_S390:
+                netdump_print("(EM_S390)\n");
+                break;
         default:
                 netdump_print("(unsupported)\n");
                 break;
@@ -1876,6 +1888,24 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		if (store)
 			nd->nt_prpsinfo = (void *)note;
 		break;
+	case NT_FPREGSET:
+		netdump_print("(NT_FPREGSET)\n");
+		break;
+	case NT_S390_TIMER:
+		netdump_print("(NT_S390_TIMER)\n");
+		break;
+	case NT_S390_TODCMP:
+		netdump_print("(NT_S390_TODCMP)\n");
+		break;
+	case NT_S390_TODPREG:
+		netdump_print("(NT_S390_TODPREG)\n");
+		break;
+	case NT_S390_CTRS:
+		netdump_print("(NT_S390_CTRS)\n");
+		break;
+	case NT_S390_PREFIX:
+		netdump_print("(NT_S390_PREFIX)\n");
+		break;
 	case NT_TASKSTRUCT:
 		netdump_print("(NT_TASKSTRUCT)\n");
 		if (store) {
@@ -2003,19 +2033,24 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
                 break;
 	}
 
-	if (store && machine_type("S390X"))
-		machdep->dumpfile_init(nd->num_prstatus_notes, note);
+	if (machine_type("S390X")) {
+		if (store)
+			machdep->dumpfile_init(nd->num_prstatus_notes, note);
 
-	uptr = (ulonglong *)(ptr + note->n_namesz);
-
-        /*
-         * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
-         */
-        if ((nd->flags & KDUMP_ELF64) && (note->n_namesz == 5))
-                uptr = (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3));
-
-        if (xen_core)
-                uptr = (ulonglong *)roundup((ulong)uptr, 4);
+		uptr = (ulonglong *)
+	    	    ((void *)note + roundup(sizeof(*note) + note->n_namesz, 4));
+	} else {
+		uptr = (ulonglong *)(ptr + note->n_namesz);
+	
+		/*
+		 * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
+		 */
+		if ((nd->flags & KDUMP_ELF64) && (note->n_namesz == 5))
+			uptr = (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3));
+	
+		if (xen_core)
+			uptr = (ulonglong *)roundup((ulong)uptr, 4);
+	}
 
 	if (BITS32() && (xen_core || (note->n_type == NT_PRSTATUS))) {
 		iptr = (int *)uptr;
@@ -2037,6 +2072,10 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 				netdump_print("                         ");
 		}
 		lf = 0;
+	} else if (note->n_descsz == 4) {
+		i = 0; lf = 1;
+		iptr = (int *)uptr;
+		netdump_print("                         %08lx\n", *iptr); 
 	} else {
 		for (i = lf = 0; i < note->n_descsz/sizeof(ulonglong); i++) {
 			if (((i%2)==0)) {
@@ -2168,7 +2207,7 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 			*ripp = ULONG(user_regs + rip_offset);
 
 			if (*ripp && *rspp)
-				return;
+				bt->flags |= BT_KDUMP_ELF_REGS;
 		}
 			
 		bt->machdep = (void *)user_regs;
@@ -2189,7 +2228,7 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 	char *sym;
 	ulong *up;
 	ulong ipintr_eip, ipintr_esp, ipintr_func;
-	ulong halt_eip, halt_esp;
+	ulong halt_eip, halt_esp, panic_eip, panic_esp;
 	int check_hardirq, check_softirq;
 	ulong stackbase, stacktop;
 
@@ -2201,7 +2240,7 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
 
 	ipintr_eip = ipintr_esp = ipintr_func = panic = altered = 0;
-	halt_eip = halt_esp = 0;
+	halt_eip = halt_esp = panic_eip = panic_esp = 0;
 	check_hardirq = check_softirq = tt->flags & IRQSTACKS ? TRUE : FALSE;
 	search = ((bt->flags & BT_TEXT_SYMBOLS) && (tt->flags & TASK_INIT_DONE))
 		|| (machdep->flags & OMIT_FRAME_PTR);
@@ -2224,7 +2263,7 @@ retry:
 		} else if (STREQ(sym, "netconsole_netdump") || 
 		    STREQ(sym, "netpoll_start_netdump") ||
 		    STREQ(sym, "start_disk_dump") ||
-		    STREQ(sym, "crash_kexec") ||
+		    (STREQ(sym, "crash_kexec") && !KVMDUMP_DUMPFILE()) ||
 		    STREQ(sym, "disk_dump")) {
 			*eip = *up;
 			*esp = search ?
@@ -2238,6 +2277,8 @@ retry:
                         *esp = search ?
 			    bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
 				*(up-1);
+			panic_eip = *eip;
+			panic_esp = *esp;
 			panic = TRUE;
                         continue;   /* keep looking for die */
                 }
@@ -2265,7 +2306,8 @@ next_sysrq:
                 		if (STREQ(sym, "sysrq_handle_crash")) 
 					goto next_sysrq; 
 			}
-                        return;
+			if (!panic)
+				return;
                 }
 
 		/* 
@@ -2281,6 +2323,14 @@ next_sysrq:
                 }
 
                 if (STREQ(sym, "crash_nmi_callback")) {
+                        *eip = *up;
+                        *esp = search ?
+                            bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
+                                *(up-1);
+                        return;
+                }
+
+                if (STREQ(sym, "stop_this_cpu")) {
                         *eip = *up;
                         *esp = search ?
                             bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
@@ -2312,6 +2362,12 @@ next_sysrq:
                 }
 	}
 
+	if (panic) {
+		*eip = panic_eip;
+		*esp = panic_esp;
+		return;
+	}
+
 	if (ipintr_eip) {
         	*eip = ipintr_eip;
         	*esp = ipintr_esp;
@@ -2323,9 +2379,6 @@ next_sysrq:
         	*esp = halt_esp;
 		return;
 	}
-
-	if (panic)
-		return;
 
 	bt->flags &= ~(BT_HARDIRQ|BT_SOFTIRQ);
 
@@ -2367,6 +2420,9 @@ next_sysrq:
 		    "starting backtrace locations of the active (non-crashing) "
 		    "xen tasks\n    cannot be determined: try -t or -T options\n");
  
+	if (KVMDUMP_DUMPFILE())
+		bt->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
+
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
@@ -2898,4 +2954,287 @@ get_arm_regs_from_elf_notes(struct task_context *tc)
 		    "cannot determine arm register set for task \"%s\"\n",
 			tc->comm);
 	return pt_regs;
+}
+
+/*
+ *  Read from /proc/kcore.
+ */
+int
+read_proc_kcore(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr) 
+{
+	int i; 
+	size_t readcnt;
+	ulong kvaddr;
+	Elf32_Phdr *lp32;
+	Elf64_Phdr *lp64;
+	off_t offset;
+
+	if (!machdep->verify_paddr(paddr)) {
+		if (CRASHDEBUG(1))
+			error(INFO, "verify_paddr(%lx) failed\n", paddr);
+		return READ_ERROR;
+	}
+
+	/*
+	 *  Turn the physical address into a unity-mapped kernel 
+	 *  virtual address, which should work for 64-bit architectures,
+	 *  and for lowmem access for 32-bit architectures.
+	 */
+	offset = UNINITIALIZED;
+	kvaddr = (ulong)paddr | machdep->kvbase;
+	readcnt = cnt;
+
+	switch (pkd->flags & (KCORE_ELF32|KCORE_ELF64)) 
+	{
+	case KCORE_ELF32:
+		for (i = 0; i < pkd->segments; i++) {
+			lp32 = pkd->load32 + i;
+			if ((kvaddr >= lp32->p_vaddr) &&
+			    (kvaddr < (lp32->p_vaddr + lp32->p_memsz))) {
+				offset = (off_t)(kvaddr - lp32->p_vaddr) + 
+					(off_t)lp32->p_offset;
+				break;
+			}
+		}
+		/*
+		 *  If it's not accessible via unity-mapping, check whether
+		 *  it's a request for a vmalloc address that can be found 
+                 *  in the header.
+		 */
+		if (pc->curcmd_flags & MEMTYPE_KVADDR)
+			pc->curcmd_flags &= ~MEMTYPE_KVADDR;
+		else
+			break;
+
+		for (i = 0; i < pkd->segments; i++) {
+			lp32 = pkd->load32 + i;
+			if ((addr >= lp32->p_vaddr) &&
+			    (addr < (lp32->p_vaddr + lp32->p_memsz))) {
+				offset = (off_t)(addr - lp32->p_vaddr) + 
+					(off_t)lp32->p_offset;
+				break;
+			}
+		}
+
+		break;
+
+	case KCORE_ELF64:
+		for (i = 0; i < pkd->segments; i++) {
+			lp64 = pkd->load64 + i;
+			if ((kvaddr >= lp64->p_vaddr) &&
+			    (kvaddr < (lp64->p_vaddr + lp64->p_memsz))) {
+				offset = (off_t)(kvaddr - lp64->p_vaddr) + 
+					(off_t)lp64->p_offset;
+				break;
+			}
+		}
+
+		break;
+	}
+
+	if (offset == UNINITIALIZED)
+		return SEEK_ERROR;
+
+        if (lseek(fd, offset, SEEK_SET) != offset)
+		perror("lseek");
+
+	if (read(fd, bufptr, readcnt) != readcnt)
+		return READ_ERROR;
+
+	return cnt;
+}
+
+/*
+ *  place holder -- cannot write to /proc/kcore
+ */
+int
+write_proc_kcore(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
+{
+	error(FATAL, "cannot write to /proc/kcore\n");
+	return FALSE;
+}
+
+int
+is_proc_kcore(char *file, ulong source_query)
+{
+	if (STREQ(file, "/proc/kcore") || same_file(file, "/proc/kcore")) {
+		if (!is_netdump(file, source_query))
+			error(FATAL, 
+			    "cannot translate the ELF header of /proc/kcore\n");
+		pkd->flags |= KCORE_LOCAL;
+		return TRUE;
+	} else
+		return FALSE;
+}
+
+int
+proc_kcore_init(FILE *fp)
+{
+	if (BITS32())
+		return proc_kcore_init_32(fp);
+	else 
+		return proc_kcore_init_64(fp);
+}
+
+static int
+proc_kcore_init_32(FILE *fp)
+{
+	Elf32_Ehdr *elf32;
+	Elf32_Phdr *load32;
+	char eheader[MAX_KCORE_ELF_HEADER_SIZE];
+	char buf[BUFSIZE];
+	size_t size;
+
+	size = MAX_KCORE_ELF_HEADER_SIZE;
+
+	if (read(pc->mfd, eheader, size) != size) {
+		sprintf(buf, "/proc/kcore: read");
+		perror(buf);
+		goto bailout;
+	}
+
+	if (lseek(pc->mfd, 0, SEEK_SET) != 0) {
+		sprintf(buf, "/proc/kcore: lseek");
+		perror(buf);
+		goto bailout;
+	}
+
+	elf32 = (Elf32_Ehdr *)&eheader[0];
+	load32 = (Elf32_Phdr *)&eheader[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
+
+	pkd->segments = elf32->e_phnum - 1;
+
+	size = (ulong)(load32+(elf32->e_phnum)) - (ulong)elf32;
+	if ((pkd->elf_header = (char *)malloc(size)) == NULL) {
+		error(INFO, "/proc/kcore: cannot malloc ELF header buffer\n");
+		clean_exit(1);
+	}
+
+	BCOPY(&eheader[0], &pkd->elf_header[0], size);	
+	pkd->elf32 = (Elf32_Ehdr *)pkd->elf_header;
+	pkd->load32 = (Elf32_Phdr *)
+		&pkd->elf_header[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
+	pkd->flags |= KCORE_ELF32;
+	
+	if (CRASHDEBUG(1))
+		kcore_memory_dump(fp);
+
+	return TRUE;
+bailout:
+	return FALSE;
+}
+
+static int
+proc_kcore_init_64(FILE *fp)
+{
+	Elf64_Ehdr *elf64;
+	Elf64_Phdr *load64;
+	char eheader[MAX_KCORE_ELF_HEADER_SIZE];
+	char buf[BUFSIZE];
+	size_t size;
+
+	size = MAX_KCORE_ELF_HEADER_SIZE;
+
+	if (read(pc->mfd, eheader, size) != size) {
+		sprintf(buf, "/proc/kcore: read");
+		perror(buf);
+		goto bailout;
+	}
+
+	if (lseek(pc->mfd, 0, SEEK_SET) != 0) {
+		sprintf(buf, "/proc/kcore: lseek");
+		perror(buf);
+		goto bailout;
+	}
+
+	elf64 = (Elf64_Ehdr *)&eheader[0];
+	load64 = (Elf64_Phdr *)&eheader[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
+
+	pkd->segments = elf64->e_phnum - 1;
+
+	size = (ulong)(load64+(elf64->e_phnum)) - (ulong)elf64;
+	if ((pkd->elf_header = (char *)malloc(size)) == NULL) {
+		error(INFO, "/proc/kcore: cannot malloc ELF header buffer\n");
+		clean_exit(1);
+	}
+
+	BCOPY(&eheader[0], &pkd->elf_header[0], size);	
+	pkd->elf64 = (Elf64_Ehdr *)pkd->elf_header;
+	pkd->load64 = (Elf64_Phdr *)
+		&pkd->elf_header[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
+	pkd->flags |= KCORE_ELF64;
+	
+	if (CRASHDEBUG(1))
+		kcore_memory_dump(fp);
+
+	return TRUE;
+bailout:
+	return FALSE;
+}
+
+int
+kcore_memory_dump(FILE *ofp)
+{
+	int i, others;
+	Elf32_Phdr *lp32;
+	Elf64_Phdr *lp64;
+
+	if (!(pkd->flags & KCORE_LOCAL))
+		return FALSE;
+
+	fprintf(ofp, "proc_kcore_data:\n");
+	fprintf(ofp, "       flags: %lx (", nd->flags);
+	others = 0;
+	if (pkd->flags & KCORE_LOCAL)
+		fprintf(ofp, "%sKCORE_LOCAL", others++ ? "|" : "");
+	if (pkd->flags & KCORE_ELF32)
+		fprintf(ofp, "%sKCORE_ELF32", others++ ? "|" : "");
+	if (pkd->flags & KCORE_ELF64)
+		fprintf(ofp, "%sKCORE_ELF64", others++ ? "|" : "");
+	fprintf(ofp, ")\n");
+	fprintf(ofp, "    segments: %d\n",
+		pkd->segments);
+	fprintf(ofp, "  elf_header: %lx\n", (ulong)pkd->elf_header);
+	fprintf(ofp, "       elf64: %lx\n", (ulong)pkd->elf64);
+	fprintf(ofp, "      load64: %lx\n", (ulong)pkd->load64);
+	fprintf(ofp, "       elf32: %lx\n", (ulong)pkd->elf32);
+	fprintf(ofp, "      load32: %lx\n\n", (ulong)pkd->load32);
+
+	for (i = 0; i < pkd->segments; i++) {
+		if (pkd->flags & KCORE_ELF32)
+			break;
+
+		lp64 = pkd->load64 + i;
+
+		fprintf(ofp, "  Elf64_Phdr:\n");
+		fprintf(ofp, "        p_type: %x\n", lp64->p_type);
+		fprintf(ofp, "       p_flags: %x\n", lp64->p_flags);
+		fprintf(ofp, "      p_offset: %llx\n", (ulonglong)lp64->p_offset);
+		fprintf(ofp, "       p_vaddr: %llx\n", (ulonglong)lp64->p_vaddr);
+		fprintf(ofp, "       p_paddr: %llx\n", (ulonglong)lp64->p_paddr);
+		fprintf(ofp, "      p_filesz: %llx\n", (ulonglong)lp64->p_filesz);
+		fprintf(ofp, "       p_memsz: %llx\n", (ulonglong)lp64->p_memsz);
+		fprintf(ofp, "       p_align: %lld\n", (ulonglong)lp64->p_align);
+		fprintf(ofp, "\n");
+	}
+
+	for (i = 0; i < pkd->segments; i++) {
+		if (pkd->flags & KCORE_ELF64)
+			break;
+
+		lp32 = pkd->load32 + i;
+
+		fprintf(ofp, "  Elf32_Phdr:\n");
+		fprintf(ofp, "        p_type: %x\n", lp32->p_type);
+		fprintf(ofp, "       p_flags: %x\n", lp32->p_flags);
+		fprintf(ofp, "      p_offset: %x\n", lp32->p_offset);
+		fprintf(ofp, "       p_vaddr: %x\n", lp32->p_vaddr);
+		fprintf(ofp, "       p_paddr: %x\n", lp32->p_paddr);
+		fprintf(ofp, "      p_filesz: %x\n", lp32->p_filesz);
+		fprintf(ofp, "       p_memsz: %x\n", lp32->p_memsz);
+		fprintf(ofp, "       p_align: %d\n", lp32->p_align);
+		fprintf(ofp, "\n");
+	}
+
+	return TRUE;
 }

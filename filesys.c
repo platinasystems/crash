@@ -29,6 +29,7 @@ static int redhat_kernel_directory_v2(char *);
 static int redhat_debug_directory(char *);
 static int file_dump(ulong, ulong, ulong, int, int);
 static ulong *create_dentry_array(ulong, int *);
+static ulong *create_dentry_array_percpu(ulong, int *);
 static void show_fuser(char *, char *);
 static int mount_point(char *);
 static int open_file_reference(struct reference *);
@@ -45,6 +46,9 @@ static int memory_driver_init(void);
 static int create_memory_device(dev_t);
 static void *radix_tree_lookup(ulong, ulong, int);
 static int match_file_string(char *, char *, char *);
+static ulong get_root_vfsmount(char *);
+static char *vfsmount_devname(ulong, char *, int);
+
 
 #define DENTRY_CACHE (20)
 #define INODE_CACHE  (20)
@@ -177,6 +181,13 @@ memory_source_init(void)
 	                                        strerror(errno));
 	                } else
 	                        pc->flags |= MFD_RDWR;
+		} else if (STREQ(pc->live_memsrc, "/proc/kcore")) {
+			if ((pc->mfd = open("/proc/kcore", O_RDONLY)) < 0)
+				error(FATAL, "/proc/kcore: %s\n", 
+					strerror(errno));
+			if (!proc_kcore_init(fp))
+				error(FATAL, 
+				    "/proc/kcore: initialization failed\n");
 		} else
 			error(FATAL, "unknown memory device: %s\n",
 				pc->live_memsrc);
@@ -1278,6 +1289,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 	int mount_cnt; 
 	static int devlen = 0;
 	char mount_files_header[BUFSIZE];
+	long per_cpu_s_files;
 
         sprintf(mount_files_header, "%s%s%s%sTYPE%sPATH\n",
                 mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "DENTRY"),
@@ -1290,6 +1302,8 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 
 	if (VALID_MEMBER(super_block_s_dirty))
 		s_dirty = OFFSET(super_block_s_dirty);
+
+	per_cpu_s_files = MEMBER_EXISTS("file", "f_sb_list_cpu");
 
 	dentry_list = NULL;
 	mntlist = 0;
@@ -1394,12 +1408,12 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 		}
 
 		if (flags & MOUNT_PRINT_FILES) {
-			if (sb_s_files != -1) {
-				/* 
-				 * Have list of open files in super_block.
-				 */
-				dentry_list = 
-				    create_dentry_array(sbp+sb_s_files, &cnt);
+			if (sb_s_files != INVALID_OFFSET) {
+				dentry_list = per_cpu_s_files ?
+					create_dentry_array_percpu(sbp+
+					    sb_s_files, &cnt) :
+					create_dentry_array(sbp+sb_s_files, 
+					    &cnt);
 			}
 			files_header_printed = 0;
 			for (i=0, dp = dentry_list; i<cnt; i++, dp++) {
@@ -1767,6 +1781,56 @@ create_dentry_array(ulong list_addr, int *count)
 }
 
 /*
+ *  Walk each per-cpu open file list and return an array of open dentries.
+ */
+static ulong *
+create_dentry_array_percpu(ulong percpu_list_addr, int *count)
+{
+	int i, j, c, total;
+	int cpu; 
+	ulong percpu_list_offset, list_addr;
+	ulong *dentry_list;
+	struct percpu_list {
+		ulong *dentry_list;
+		int count;
+	} *percpu_list;
+
+	if ((cpu = get_highest_cpu_online()) < 0)
+		error(FATAL, "cannot determine highest cpu online\n");
+
+	percpu_list = (struct percpu_list *)
+		GETBUF(sizeof(struct percpu_list) * (cpu+1));
+
+        readmem(percpu_list_addr, KVADDR, &percpu_list_offset, sizeof(void *), 
+	    "percpu file list head offset", FAULT_ON_ERROR);
+
+	for (c = total = 0; c < (cpu+1); c++) {
+		list_addr = percpu_list_offset + kt->__per_cpu_offset[c];
+		percpu_list[c].dentry_list = create_dentry_array(list_addr, 
+			&percpu_list[c].count);
+		total += percpu_list[c].count;
+	}
+
+	if (total) {
+		dentry_list = (ulong *)GETBUF(total * sizeof(ulong));
+
+		for (c = i = 0; c < (cpu+1); c++) {
+			if (percpu_list[c].count == 0)
+				continue;
+			for (j = 0; j < percpu_list[c].count; j++)
+				dentry_list[i++] = 
+					percpu_list[c].dentry_list[j];
+			FREEBUF(percpu_list[c].dentry_list);
+		}
+	} else 
+		dentry_list = NULL;
+
+	FREEBUF(percpu_list);
+	*count = total;
+	return dentry_list;
+}
+
+/*
  *  Stash vfs structure offsets
  */
 void
@@ -1884,6 +1948,8 @@ vfs_init(void)
 			"radix_tree_root","height");
 		MEMBER_OFFSET_INIT(radix_tree_root_rnode, 
 			"radix_tree_root","rnode");
+		MEMBER_OFFSET_INIT(radix_tree_node_slots, 
+			"radix_tree_node","slots");
 	}
 }
 
@@ -2623,8 +2689,12 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 
 	if (flags & DUMP_FULL_NAME) {
 		if (VALID_MEMBER(file_f_vfsmnt)) {
-			vfsmnt = ULONG(file_buf + OFFSET(file_f_vfsmnt));
+			vfsmnt = get_root_vfsmount(file_buf);
 			get_pathname(dentry, pathname, BUFSIZE, 1, vfsmnt);
+			if (STRNEQ(pathname, "/pts/") &&
+			    STREQ(vfsmount_devname(vfsmnt, buf1, BUFSIZE),
+			    "devpts"))
+				string_insert("/dev", pathname);
 		} else {
 			get_pathname(dentry, pathname, BUFSIZE, 1, 0);
 		}
@@ -2829,7 +2899,7 @@ get_pathname_component(ulong dentry,
         } else if ((read_string(d_name_name, pathbuf, BUFSIZE)) != d_name_len)
                 len = 0;
 
-	return d_name_len;
+	return len;
 }
 
 /*
@@ -3295,7 +3365,8 @@ get_live_memory_source(void)
 	int use_module, crashbuiltin;
 	struct stat stat1, stat2;
 
-	pc->flags |= DEVMEM;
+	if (!(pc->flags & PROC_KCORE))
+		pc->flags |= DEVMEM;
 	if (pc->live_memsrc)
 		goto live_report;
 
@@ -3613,22 +3684,12 @@ cleanup_memory_driver(void)
 
 /*
  *  Use the kernel's radix_tree_lookup() function as a template to dump
- *  a radix tree's entries, which depends upon the likelihood that the
- *  following items in the kernel's radix tree library will remain unchanged.
+ *  a radix tree's entries. 
  */
 
-#define RADIX_TREE_MAP_SHIFT  6
-#define RADIX_TREE_MAP_SIZE  (1UL << RADIX_TREE_MAP_SHIFT)
-#define RADIX_TREE_MAP_MASK  (RADIX_TREE_MAP_SIZE-1)
-#define RADIX_TREE_TAGS         2
-#define RADIX_TREE_TAG_LONGS    \
-	((RADIX_TREE_MAP_SIZE + BITS_PER_LONG - 1) / BITS_PER_LONG)
-
-struct radix_tree_node {
-        unsigned int    count;
-        void            *slots[RADIX_TREE_MAP_SIZE];
-	unsigned long	tags[RADIX_TREE_TAGS][RADIX_TREE_TAG_LONGS];
-};
+ulong RADIX_TREE_MAP_SHIFT = UNINITIALIZED;
+ulong RADIX_TREE_MAP_SIZE = UNINITIALIZED;
+ulong RADIX_TREE_MAP_MASK = UNINITIALIZED;
 
 /*
  *  do_radix_tree argument usage: 
@@ -3671,22 +3732,21 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 	if (!VALID_STRUCT(radix_tree_root) || !VALID_STRUCT(radix_tree_node) ||
 	    !VALID_MEMBER(radix_tree_root_height) ||
 	    !VALID_MEMBER(radix_tree_root_rnode) ||
+	    !VALID_MEMBER(radix_tree_node_slots) ||
 	    !ARRAY_LENGTH(height_to_maxindex)) 
 		error(FATAL, 
 		   "radix trees do not exist (or have changed their format)\n");
 
-	if (!(nlen = 
-	    datatype_info("radix_tree_node", "slots", MEMBER_SIZE_REQUEST)))
-		error(FATAL, 
-		    "cannot determine length of radix_tree_node.slots array\n");
-	else if ((nlen / sizeof(void *)) != RADIX_TREE_MAP_SIZE)
-		error(FATAL, 
-		    "unexpected length of radix_tree_node.slots array: %ld\n",
-			nlen / sizeof(void *));
-
-	if (SIZE(radix_tree_node) != sizeof(struct radix_tree_node))
-		error(FATAL, 
-		    "unexpected length of radix_tree_node structure\n");
+	if (RADIX_TREE_MAP_SHIFT == UNINITIALIZED) {
+		if (!(nlen = datatype_info("radix_tree_node", "slots", 
+		    MEMBER_SIZE_REQUEST)))
+			error(FATAL, "cannot determine length of " 
+				     "radix_tree_node.slots[] array\n");
+		nlen /= sizeof(void *);
+		RADIX_TREE_MAP_SHIFT = ffsl(nlen) - 1;
+		RADIX_TREE_MAP_SIZE = (1UL << RADIX_TREE_MAP_SHIFT);
+		RADIX_TREE_MAP_MASK = (RADIX_TREE_MAP_SIZE-1);
+	}
 
 	ilen = ARRAY_LENGTH(height_to_maxindex);
 	height_to_maxindex = (long *)GETBUF(ilen * sizeof(long));
@@ -3696,7 +3756,7 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 
 	if (CRASHDEBUG(1)) {
 		fprintf(fp, "radix_tree_node.slots[%ld]\n", 
-			nlen/sizeof(void *));
+			RADIX_TREE_MAP_SIZE);
 		fprintf(fp, "height_to_maxindex[%d]: ", ilen);
 		for (i = 0; i < ilen; i++)
 			fprintf(fp, "%lu ", height_to_maxindex[i]);
@@ -3720,6 +3780,7 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 	
 	maxindex = height_to_maxindex[height];
 	FREEBUF(height_to_maxindex);
+	FREEBUF(radix_tree_root_buf);
 
 	root_rnode = root + OFFSET(radix_tree_root_rnode);
 
@@ -3781,30 +3842,36 @@ static void *
 radix_tree_lookup(ulong root_rnode, ulong index, int height)
 {
 	unsigned int shift;
-	void *slot;
-	struct radix_tree_node slotbuf;
+	ulong rnode;
+	ulong *slots;
 
 	shift = (height-1) * RADIX_TREE_MAP_SHIFT;
 
-	readmem(root_rnode, KVADDR, &slot, sizeof(void *),
+	readmem(root_rnode, KVADDR, &rnode, sizeof(void *),
 		"radix_tree_root rnode", FAULT_ON_ERROR);
 
+	if (rnode & 1)
+		rnode &= ~1;
+
+	slots = (ulong *)GETBUF(sizeof(void *) * RADIX_TREE_MAP_SIZE);
+
 	while (height > 0) {
+		if (rnode == 0)
+			break;
 
-		if (slot == NULL)
-			return NULL;
+		readmem((ulong)rnode+OFFSET(radix_tree_node_slots), KVADDR, 
+			&slots[0], sizeof(void *) * RADIX_TREE_MAP_SIZE,
+			"radix_tree_node.slots array", FAULT_ON_ERROR);
 
-		readmem((ulong)slot, KVADDR, &slotbuf, 
-			sizeof(struct radix_tree_node),
-			"radix_tree_node struct", FAULT_ON_ERROR);
+		rnode = slots[((index >> shift) & RADIX_TREE_MAP_MASK)];
 
-		slot = slotbuf.slots[((index >> shift) & RADIX_TREE_MAP_MASK)];
-		
 		shift -= RADIX_TREE_MAP_SHIFT;
 		height--;
 	}
 
-	return slot;
+	FREEBUF(slots);
+
+	return (void *)rnode;
 }
 
 int
@@ -3845,4 +3912,50 @@ match_file_string(char *filename, char *string, char *buffer)
         pclose(pipe);
 
 	return found;
+}
+
+static char *
+vfsmount_devname(ulong vfsmnt, char *buf, int maxlen)
+{
+	ulong devp;
+
+	BZERO(buf, maxlen);
+
+	if (!readmem(vfsmnt + OFFSET(vfsmount_mnt_devname),
+	    KVADDR, &devp, sizeof(void *), "vfsmount mnt_devname", 
+	    QUIET|RETURN_ON_ERROR))
+		return buf;
+
+	if (read_string(devp, buf, BUFSIZE-1))
+		return buf;
+
+	return buf;
+}
+
+static ulong
+get_root_vfsmount(char *file_buf)
+{
+	char buf[BUFSIZE];
+	ulong vfsmnt;
+	ulong mnt_parent;
+
+	vfsmnt = ULONG(file_buf + OFFSET(file_f_vfsmnt));
+
+	if (!strlen(vfsmount_devname(vfsmnt, buf, BUFSIZE)))
+		return vfsmnt;
+
+	if (STREQ(buf, "udev")) {
+		if (!readmem(vfsmnt + OFFSET(vfsmount_mnt_parent), KVADDR, 
+	    	    &mnt_parent, sizeof(void *), "vfsmount mnt_parent", 
+	    	    QUIET|RETURN_ON_ERROR))
+			return vfsmnt;
+
+		if (!strlen(vfsmount_devname(mnt_parent, buf, BUFSIZE)))
+			return vfsmnt;
+
+		if (STREQ(buf, "udev"))
+			return mnt_parent;
+	}
+
+	return vfsmnt;
 }

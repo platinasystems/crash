@@ -1,8 +1,8 @@
 /* alpha.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -589,6 +589,8 @@ alpha_print_stack_entry(struct gnu_request *req,
 			ulong flags,
 			struct bt_info *bt)
 {
+	struct load_module *lm;
+
 	if (BT_REFERENCE_CHECK(bt)) {
                 switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
                 {
@@ -606,10 +608,13 @@ alpha_print_stack_entry(struct gnu_request *req,
 			break;
 		}
 	} else {
-		fprintf(fp, "%s#%d [%lx] %s at %lx\n",
+		fprintf(fp, "%s#%d [%lx] %s at %lx",
         		req->curframe < 10 ? " " : "", req->curframe, req->sp,
 			STREQ(name, "strace") ?  "strace (via entSys)" : name, 
 			callpc);
+		if (module_symbol(callpc, NULL, &lm, NULL, 0))
+			fprintf(fp, " [%s]", lm->mod_name);
+		fprintf(fp, "\n");
 	}
 
 	if (!(flags & BT_SPECULATE))

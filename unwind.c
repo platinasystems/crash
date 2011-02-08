@@ -1696,6 +1696,7 @@ unwind_v3(struct bt_info *bt)
 	struct pt_regs *pt;
         int frame;
         char *name;
+	struct load_module *lm;
 	static int unw_in_progress = FALSE;
 
 	if (bt->debug)
@@ -1751,9 +1752,12 @@ restart:
                                 break;
                         }
                 } else {
-                        fprintf(fp, "%s#%d [BSP:%lx] %s at %lx\n",
+                        fprintf(fp, "%s#%d [BSP:%lx] %s at %lx",
                                 frame >= 10 ? "" : " ", frame,
                                 bsp, name, ip);
+			if (module_symbol(ip, NULL, &lm, NULL, 0))
+				fprintf(fp, " [%s]", lm->mod_name);
+			fprintf(fp, "\n");
 
 			if (bt->flags & BT_FULL)
                         	rse_function_params(bt, info, name);

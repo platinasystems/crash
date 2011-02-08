@@ -1,3 +1,65 @@
+crash (5.1.1-1) unstable; urgency=low
+
+  * New upstream version 5.1.1 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for the potential to miss tasks when walking the pid_hash table in
+    2.6.24 and later kernels.
+  * Enhancement for the ARM architecture's "bt" command  to print out the user
+    space register set for tasks entering the kernel via the syscall entry
+    point. 
+  * Rework of the handling of "set" commands that are put in .crashrc files so
+    that only the following options are resolved prior to session
+    initialization: silent, console, core, edit, namelist, and zero_excluded.
+    All others are resolved immediately after session initialization is
+    complete.  Accordingly, the use of "set -c <cpu>", "set -p", "set -a
+    [task|pid]" and set [pid|task]" are now acceptable .crashrc commands.
+  * The entering of "set -v" in a .crashrc file would cause an immediate
+    segmentation violation.  The "set" command rework above defers the command
+    until session initialization is complete.
+  * The entering of "set dumpfile <filename>" in a .crashrc file would cause a
+    fatal "seek" error during session initalization with most most dumpfile
+    types, so the "dumpfile" option has been removed from the "set" command.
+  * The execution of "alias" commands from a .crashrc file used to be
+    performed immediately; that behavior has been changed so that they are
+    executed immediately after session initialization is complete.
+  * Enhancement of the "repeat" command to allow command aliases.
+  * Fix for running "kmem -s" on a live system if an offline cpu is brought
+    back online while the command is executing.  Without the patch, the online
+    operation may cause a segmentation violation.
+  * Change the behavior of "bt -[tT]" to allow the command options to be run
+    on active tasks on live systems.  Without the patch, both command options
+    would display the task data banner followed by "(active)".  
+  * Fix for the ARM architecuture's "irq" command when run on 2.6.36 and later
+    kernels.  Without the patch, the command fails with the error message
+    "irq: invalid kernel virtual address: 23  type: irq_chip typename".   The
+    fix replaces the custom ARM IRQ dumping function with the
+    architecture-neutral version.
+  * Introduced support for using /proc/kcore as an alternative source of live
+    memory to /dev/mem.  Doing so allows vmalloc memory access on 32-bit
+    architectures when the underlying mapped physical memory is in highmem,
+    which is not allowed by the /dev/mem driver.  It would also be usable on
+    systems that are configured with CONFIG_STRICT_DEVMEM but still configured
+    with CONFIG_PROC_KCORE.  To enforce the use of /proc/kcore, it may be
+    entered on the command line.
+  * If a live crash session attempts to use /dev/mem as a live memory source,
+    and it is determined that the system is configured with
+    CONFIG_STRICT_DEVMEM, /proc/kcore will automatically be tried as an
+    alternative.  
+  * Fix to allow "/dev/crash" to be entered on the command line for live
+    sessions.  Because it is used automatically if it exists, it is never
+    necessary to enter it on the command line.  However, if it is used,
+    without the patch, the session fails during initializaion with the error
+    message "crash: /dev/crash: No such file or directory" if the crash.ko
+    driver is a module (RHEL4/RHEL5), or "crash: /dev/crash: not a supported
+    file format" if the driver is built into the kernel (RHEL6).
+  * Fix for the ARM "bt" command to address the issue behind faulty warning
+    messages that indicate "WARNING: UNWIND: unsupported personality routine".
+  * Fix for the ARM "bt" command to address the issue behind faulty warning
+    messages that indicate "bt: WARNING: UNWIND: cannot find index for
+    <address>".
+
+ -- Troy Heber <troyh@debian.org>  Tue, 08 Feb 2011 10:00:47 -0700
+
 crash (5.0.7-1) unstable; urgency=low
 
   * New upstream version 5.0.7 (see

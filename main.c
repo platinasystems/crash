@@ -60,6 +60,7 @@ static struct option long_options[] = {
 	{"active", 0, 0, 0},
 	{"minimal", 0, 0, 0},
 	{"mod", required_argument, 0, 0},
+	{"kvmhost", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -219,6 +220,9 @@ main(int argc, char **argv)
 			else if (STREQ(long_options[option_index].name, "minimal")) 
 				pc->flags |= MINIMAL_MODE;
 
+		        else if (STREQ(long_options[option_index].name, "kvmhost"))
+				set_kvmhost_type(optarg);
+
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
 					long_options[option_index].name);
@@ -351,6 +355,12 @@ main(int argc, char **argv)
 			continue;
 		}
 
+		if (STREQ(argv[optind], "/dev/crash")) {
+			pc->memory_device = argv[optind];
+			optind++;
+			continue;
+		}
+
        		if (!file_exists(argv[optind], NULL)) {
                 	error(INFO, "%s: %s\n", argv[optind], strerror(ENOENT));
                 	program_usage(SHORT_FORM);
@@ -379,6 +389,18 @@ main(int argc, char **argv)
 				pc->dumpfile = NULL;
 				pc->readmem = read_dev_mem;
 				pc->writemem = write_dev_mem;
+				pc->live_memsrc = argv[optind];
+
+			} else if (is_proc_kcore(argv[optind], KCORE_LOCAL)) {
+				if (pc->flags & MEMORY_SOURCES) {
+					error(INFO, 
+					    "too many dumpfile arguments\n");
+					program_usage(SHORT_FORM);
+				}
+				pc->flags |= PROC_KCORE;
+				pc->dumpfile = NULL;
+				pc->readmem = read_proc_kcore;
+				pc->writemem = write_proc_kcore;
 				pc->live_memsrc = argv[optind];
 
 			} else if (is_netdump(argv[optind], NETDUMP_LOCAL)) {
@@ -860,6 +882,7 @@ setup_environment(int argc, char **argv)
 	pc->cmdgencur = 0;
 	pc->cmd_table = linux_command_table;
 	kt->BUG_bytes = -1;
+	kt->flags |= PRE_KERNEL_INIT;
 
 	/*
 	 *  Get gdb version before initializing it since this might be one 
@@ -1147,6 +1170,9 @@ dump_program_context(void)
         if (pc->flags & PRELOAD_EXTENSIONS)
                 sprintf(&buf[strlen(buf)], 
 			"%sPRELOAD_EXTENSIONS", others++ ? "|" : "");
+        if (pc->flags & PROC_KCORE)
+                sprintf(&buf[strlen(buf)], 
+			"%sPROC_KCORE", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");
@@ -1348,6 +1374,10 @@ dump_program_context(void)
 		fprintf(fp, "%sMODULE_TREE", others ? "|" : "");
         if (pc->curcmd_flags & IGNORE_ERRORS)
 		fprintf(fp, "%sIGNORE_ERRORS", others ? "|" : "");
+        if (pc->curcmd_flags & FROM_RCFILE)
+		fprintf(fp, "%sFROM_RCFILE", others ? "|" : "");
+        if (pc->curcmd_flags & MEMTYPE_KVADDR)
+		fprintf(fp, "%sMEMTYPE_KVADDR", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

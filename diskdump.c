@@ -72,6 +72,7 @@ static int get_dump_level(void);
 ulong *diskdump_flags = &diskdump_data.flags;
 
 static int __diskdump_memory_dump(FILE *);
+static void dump_vmcoreinfo(FILE *);
 
 /* For split dumpfile */
 static struct diskdump_data **dd_list = NULL;
@@ -189,6 +190,8 @@ static int read_dump_header(char *file)
 	struct disk_dump_header *header = NULL;
 	struct disk_dump_sub_header *sub_header = NULL;
 	struct kdump_sub_header *sub_header_kdump = NULL;
+	unsigned char *notes_buf = NULL;
+	size_t size;
 	int bitmap_len;
 	int block_size = (int)sysconf(_SC_PAGESIZE);
 	off_t offset;
@@ -251,6 +254,9 @@ restart:
 		goto err;
 	else if (STRNEQ(header->utsname.machine, "arm") &&
 	    machine_type_mismatch(file, "ARM", NULL, 0))
+		goto err;
+	else if (STRNEQ(header->utsname.machine, "s390x") &&
+	    machine_type_mismatch(file, "S390X", NULL, 0))
 		goto err;
 
 	if (header->block_size != block_size) {
@@ -348,11 +354,38 @@ restart:
 		dd->machine_type = EM_IA_64;
 	else if (machine_type("PPC64"))
 		dd->machine_type = EM_PPC64;
+	else if (machine_type("S390X"))
+		dd->machine_type = EM_S390;
 	else {
 		error(INFO, "%s: unsupported machine type: %s\n", 
 			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
 			MACHINE_TYPE);
 		goto err;
+	}
+
+	/* process elf notes data */
+	if (KDUMP_CMPRS_VALID() && (dd->header->header_version >= 4) &&
+		(sub_header_kdump->offset_note) &&
+		(sub_header_kdump->size_note) && (machdep->process_elf_notes)) {
+		size = sub_header_kdump->size_note;
+		offset = sub_header_kdump->offset_note;
+
+		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+			error(INFO, "compressed kdump: cannot lseek dump elf"
+				" notes\n");
+			goto err;
+		}
+
+		if ((notes_buf = malloc(size)) == NULL)
+			error(FATAL, "compressed kdump: cannot malloc notes"
+				" buffer\n");
+
+		if (read(dd->dfd, notes_buf, size) < size) {
+			error(INFO, "compressed kdump: cannot read notes data"
+				"\n");
+			goto err;
+		}
+		machdep->process_elf_notes(notes_buf, size);
 	}
 
 	/* For split dumpfile */
@@ -375,6 +408,7 @@ restart:
 	if (!is_split) {
 		max_sect_len = divideup(header->max_mapnr, BITMAP_SECT_LEN);
 		pfn = 0;
+		dd->filename = file;
 	}
 	else {
 		ulong start = sub_header_kdump->start_pfn;
@@ -399,6 +433,8 @@ err:
 		free(sub_header);
 	if (sub_header_kdump)
 		free(sub_header_kdump);
+	if (notes_buf)
+		free(notes_buf);
 	if (dd->bitmap)
 		free(dd->bitmap);
 	if (dd->dumpable_bitmap)
@@ -750,6 +786,9 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	case EM_X86_64:
 		return get_netdump_regs_x86_64(bt, eip, esp);
 		break;
+	case EM_S390:
+		return machdep->get_stack_frame(bt, eip, esp);
+		break;
 
 	default:
 		error(FATAL, "%s: unsupported machine type: %s\n",
@@ -784,6 +823,43 @@ diskdump_free_memory(void)
 int diskdump_memory_used(void)
 {
         return 0;
+}
+
+static void dump_vmcoreinfo(FILE *fp)
+{
+	char *buf = NULL;
+	unsigned long i = 0;
+	unsigned long size_vmcoreinfo = dd->sub_header_kdump->size_vmcoreinfo;
+	off_t offset = dd->sub_header_kdump->offset_vmcoreinfo;
+	const off_t failed = (off_t)-1;
+
+	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+		error(INFO, "compressed kdump: cannot lseek dump vmcoreinfo\n");
+		return;
+	}
+
+	if ((buf = malloc(size_vmcoreinfo)) == NULL) {
+		error(FATAL, "compressed kdump: cannot malloc vmcoreinfo"
+				" buffer\n");
+	}
+
+	if (read(dd->dfd, buf, size_vmcoreinfo) < size_vmcoreinfo) {
+		error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
+		goto err;
+	}
+
+	fprintf(fp, "                      ");
+	for (i = 0; i < size_vmcoreinfo; i++) {
+		fprintf(fp, "%c", buf[i]);
+		if (buf[i] == '\n')
+			fprintf(fp, "                      ");
+	}
+	if (buf[i - 1] != '\n')
+		fprintf(fp, "\n");
+err:
+	if (buf)
+		free(buf);
+	return;
 }
 
 /*
@@ -828,6 +904,8 @@ __diskdump_memory_dump(FILE *fp)
 		fprintf(fp, "(EM_IA_64)\n"); break;
 	case EM_PPC64:
 		fprintf(fp, "(EM_PPC64)\n"); break;
+	case EM_S390:
+		fprintf(fp, "(EM_S390)\n"); break;
 	default:
 		fprintf(fp, "(unknown)\n"); break;
 	}
@@ -953,6 +1031,22 @@ __diskdump_memory_dump(FILE *fp)
 		if (KDUMP_SPLIT()) {
 			fprintf(fp, "           start_pfn: %lu\n", dd->sub_header_kdump->start_pfn);
 			fprintf(fp, "             end_pfn: %lu\n", dd->sub_header_kdump->end_pfn);
+		}
+		if (dh->header_version >= 3) {
+			fprintf(fp, "   offset_vmcoreinfo: %lx\n",
+				(ulong)dd->sub_header_kdump->offset_vmcoreinfo);
+			fprintf(fp, "     size_vmcoreinfo: %lu\n",
+				dd->sub_header_kdump->size_vmcoreinfo);
+			if (dd->sub_header_kdump->offset_vmcoreinfo &&
+				dd->sub_header_kdump->size_vmcoreinfo) {
+				dump_vmcoreinfo(fp);
+			}
+		}
+		if (dh->header_version >= 4) {
+			fprintf(fp, "         offset_note: %lx\n",
+				(ulong)dd->sub_header_kdump->offset_note);
+			fprintf(fp, "           size_note: %lu\n",
+				dd->sub_header_kdump->size_note);
 		}
 		fprintf(fp, "\n");
 	} else

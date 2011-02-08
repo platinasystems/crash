@@ -454,6 +454,16 @@ replace_string(char *s, char *c, char r)
 	return s;
 }
 
+void
+string_insert(char *insert, char *where)
+{
+	char *p;
+
+	p = GETBUF(strlen(insert) + strlen(where) + 1);
+	sprintf(p, "%s%s", insert, where);
+	strcpy(where, p);
+	FREEBUF(p);
+}
 
 /*
  *  Prints a string verbatim, allowing strings with % signs to be displayed
@@ -1681,13 +1691,17 @@ cmd_set(void)
 {
 	int i, c;
 	ulong value;
-	int cpu, runtime;
+	int cpu, runtime, from_rc_file;
 	char buf[BUFSIZE];
 	char *extra_message;
 	struct task_context *tc;
 
+#define defer()  do { } while (0)
+#define already_done()  do { } while (0)
+
 	extra_message = NULL;
-	runtime = pc->flags & RUNTIME;
+	runtime = pc->flags & RUNTIME ? TRUE : FALSE;
+	from_rc_file = pc->curcmd_flags & FROM_RCFILE ? TRUE : FALSE;
 
         while ((c = getopt(argcnt, args, "pvc:a:")) != EOF) {
                 switch(c)
@@ -1696,12 +1710,9 @@ cmd_set(void)
 			if (XEN_HYPER_MODE() || (pc->flags & MINIMAL_MODE))
 				option_not_supported(c);
 
-			if (!runtime) {
-				error(INFO, 
-				    "cpu setting not allowed from .%src\n",
-					pc->program_name);
-				break;
-			}
+			if (!runtime)
+				return;
+
 		        if (ACTIVE()) {
                 		error(INFO, "not allowed on a live system\n");
 				argerrs++;
@@ -1733,6 +1744,9 @@ cmd_set(void)
 			return;
 
 		case 'v':
+			if (!runtime)
+				return;
+
 			show_options();
 			return;
 
@@ -1801,7 +1815,9 @@ cmd_set(void)
 		if (STREQ(args[optind], "debug")) {
                         if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "on"))
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on"))
                                         pc->debug = 1;
                                 else if (STREQ(args[optind], "off"))
                                         pc->debug = 0;
@@ -1821,7 +1837,9 @@ cmd_set(void)
                 } else if (STREQ(args[optind], "hash")) {
                         if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "on"))
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on"))
                                         pc->flags |= HASH;
                                 else if (STREQ(args[optind], "off"))
                                         pc->flags &= ~HASH;
@@ -1844,7 +1862,9 @@ cmd_set(void)
                 } else if (STREQ(args[optind], "unwind")) {
                         if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "on")) {
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on")) {
 				    	if ((kt->flags & DWARF_UNWIND_CAPABLE) ||
 					    !runtime) {
                                         	kt->flags |= DWARF_UNWIND;
@@ -1880,7 +1900,9 @@ cmd_set(void)
                } else if (STREQ(args[optind], "refresh")) {
                         if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "on"))
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on"))
                                         tt->flags |= TASK_REFRESH;
                                 else if (STREQ(args[optind], "off")) {
                                         tt->flags &= ~TASK_REFRESH;
@@ -1909,7 +1931,9 @@ cmd_set(void)
                } else if (STREQ(args[optind], "scroll")) {
                         if (args[optind+1] && pc->scroll_command) {
                                 optind++;
-                                if (STREQ(args[optind], "on"))
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on"))
                                         pc->flags |= SCROLL;
                                 else if (STREQ(args[optind], "off"))
                                         pc->flags &= ~SCROLL;
@@ -2035,7 +2059,9 @@ cmd_set(void)
                 } else if (STREQ(args[optind], "radix")) {
                        if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "10") ||
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "10") ||
 				    STRNEQ(args[optind], "dec") ||
 				    STRNEQ(args[optind], "ten")) 
 					pc->output_radix = 10;
@@ -2059,8 +2085,8 @@ cmd_set(void)
 			return;
 
                 } else if (STREQ(args[optind], "hex")) {
-			pc->output_radix = 16;
 			if (runtime) {
+				pc->output_radix = 16;
 				gdb_pass_through("set output-radix 16", 
 					NULL, GNU_FROM_TTY_OFF);
 				fprintf(fp, "output radix: 16 (hex)\n");
@@ -2068,8 +2094,8 @@ cmd_set(void)
 			return;
 
                 } else if (STREQ(args[optind], "dec")) {
-			pc->output_radix = 10;
 			if (runtime) {
+				pc->output_radix = 10;
                                 gdb_pass_through("set output-radix 10", 
                                         NULL, GNU_FROM_TTY_OFF);
 				fprintf(fp, "output radix: 10 (decimal)\n");
@@ -2078,11 +2104,13 @@ cmd_set(void)
 
                } else if (STREQ(args[optind], "edit")) {
                         if (args[optind+1]) {
-				if (runtime)
+				if (runtime && !from_rc_file)
 					error(FATAL, 
 		                "cannot change editing mode during runtime\n");
                                 optind++;
-                                if (STREQ(args[optind], "vi"))
+				if (from_rc_file)
+					already_done();
+                                else if (STREQ(args[optind], "vi"))
                                         pc->editing_mode = "vi";
                                 else if (STREQ(args[optind], "emacs"))
                                         pc->editing_mode = "emacs";
@@ -2095,26 +2123,32 @@ cmd_set(void)
                         return;
 
                 } else if (STREQ(args[optind], "vi")) {
-			if (runtime)
-				error(FATAL, 
+			if (runtime) {
+				if (!from_rc_file)
+					error(FATAL, 
 		               "cannot change editing mode during runtime\n"); 
-			else
+				fprintf(fp, "edit: %s\n", pc->editing_mode);
+			} else
 				pc->editing_mode = "vi";
 			return;
 
                 } else if (STREQ(args[optind], "emacs")) {
-			if (runtime)
-				error(FATAL, 
+			if (runtime) {
+				if (!from_rc_file)
+					error(FATAL, 
 		               "cannot change %s editing mode during runtime\n",
-					pc->editing_mode);
-			else
+						pc->editing_mode);
+				fprintf(fp, "edit: %s\n", pc->editing_mode);
+			} else
 				pc->editing_mode = "emacs";
 			return;
 
                 } else if (STREQ(args[optind], "print_max")) {
 			optind++;
 			if (args[optind]) {
-				if (decimal(args[optind], 0))
+				if (!runtime)
+					defer();
+				else if (decimal(args[optind], 0))
 					*gdb_print_max = atoi(args[optind]);
 				else if (hexadecimal(args[optind], 0))
 					*gdb_print_max = (unsigned int)
@@ -2131,7 +2165,9 @@ cmd_set(void)
                 } else if (STREQ(args[optind], "null-stop")) {
 			optind++;
 			if (args[optind]) {
-				if (STREQ(args[optind], "on"))
+				if (!runtime)
+					defer();
+				else if (STREQ(args[optind], "on"))
 					*gdb_stop_print_at_null = 1;
 				else if (STREQ(args[optind], "off"))
 					*gdb_stop_print_at_null = 0;
@@ -2150,39 +2186,6 @@ cmd_set(void)
 					*gdb_stop_print_at_null ? "on" : "off");
 			return;
 
-                } else if (STREQ(args[optind], "dumpfile")) {
-			optind++;
-                        if (!runtime && args[optind]) {
-				pc->flags &= ~(DUMPFILE_TYPES);
-				if (is_netdump(args[optind], NETDUMP_LOCAL))
-					pc->flags |= NETDUMP;
-				else if (is_kdump(args[optind], KDUMP_LOCAL))
-					pc->flags |= KDUMP;
-				else if (is_kvmdump(args[optind]))
-					pc->flags |= KVMDUMP;
-				else if (is_xendump(args[optind]))
-					pc->flags |= XENDUMP;
-				else if (is_diskdump(args[optind]))
-					pc->flags |= DISKDUMP;
-				else if (is_lkcd_compressed_dump(args[optind])) 
-                               		pc->flags |= LKCD;
-                        	else if (is_mclx_compressed_dump(args[optind])) 
-                                	pc->flags |= MCLXCD;
-                        	else 
-                                	error(FATAL, 
-					    "%s: not a supported file format\n",
-                                        	args[optind]);
-				if ((pc->dumpfile = (char *)
-				    malloc(strlen(args[optind])+1)) == NULL) {
-					error(INFO, 
-				 "cannot malloc memory for dumpfile: %s: %s\n",
-						args[optind], strerror(errno));
-				} else 
-					strcpy(pc->dumpfile, args[optind]);
-					
-			}
-			return;
-
                 } else if (STREQ(args[optind], "namelist")) {
 			optind++;
                         if (!runtime && args[optind]) {
@@ -2199,12 +2202,16 @@ cmd_set(void)
                                 } else
                                         strcpy(pc->namelist, args[optind]);
 			}
+			if (runtime)
+				fprintf(fp, "namelist: %s\n", pc->namelist);
 			return;
 
                 } else if (STREQ(args[optind], "free")) {
-
-			fprintf(fp, "%d pages freed\n",
-				dumpfile_memory(DUMPFILE_FREE_MEM));
+			if (!runtime)
+				defer();
+			else
+				fprintf(fp, "%d pages freed\n",
+					dumpfile_memory(DUMPFILE_FREE_MEM));
 			return;
 
                 } else if (STREQ(args[optind], "data_debug")) {
@@ -2216,7 +2223,9 @@ cmd_set(void)
 
                         if (args[optind+1]) {
                                 optind++;
-                                if (STREQ(args[optind], "on"))
+				if (from_rc_file)
+					already_done();
+                                else if (STREQ(args[optind], "on"))
                                         *diskdump_flags |= ZERO_EXCLUDED;
                                 else if (STREQ(args[optind], "off"))
                                         *diskdump_flags &= ~ZERO_EXCLUDED;
@@ -2285,6 +2294,9 @@ invalid_set_command:
 	if (extra_message)
 		strcat(buf, extra_message);
 	error(runtime ? FATAL : INFO, buf);
+
+#undef defer
+#undef already_done
 }
 
 /*

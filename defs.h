@@ -85,7 +85,7 @@
 #define NR_CPUS  (64)
 #endif
 #ifdef ARM
-#define NR_CPUS  (1)
+#define NR_CPUS  (4)
 #endif
 
 #define BUFSIZE  (1500)
@@ -193,10 +193,11 @@ struct number_option {
 #define CRASHBUILTIN (0x2000000000000000ULL)
 #define PRELOAD_EXTENSIONS \
 		     (0x4000000000000000ULL)
+#define PROC_KCORE   (0x8000000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE)
 #define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP)
 #define REMOTE()            (pc->flags & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
@@ -223,6 +224,9 @@ struct number_option {
 #define KDUMP_ELF32     (0x20)
 #define KDUMP_ELF64     (0x40)
 #define KDUMP_LOCAL     (0x80)  
+#define KCORE_LOCAL    (0x100)     
+#define KCORE_ELF32    (0x200)
+#define KCORE_ELF64    (0x400)
 #define KVMDUMP_LOCAL    (0x1)
 #define KVMDUMP_VALID()  (kvm->flags & (KVMDUMP_LOCAL))
 
@@ -392,6 +396,8 @@ struct program_context {
 #define IRQ_IN_USE        (0x200)
 #define MODULE_TREE       (0x400)
 #define IGNORE_ERRORS     (0x800)
+#define FROM_RCFILE      (0x1000)
+#define MEMTYPE_KVADDR   (0x2000)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -488,8 +494,9 @@ struct new_utsname {
 #define RELOC_FORCE          (0x4000000)
 #define ARCH_OPENVZ          (0x8000000)
 #define ARCH_PVOPS          (0x10000000)
-#define IN_KERNEL_INIT      (0x20000000)
+#define PRE_KERNEL_INIT     (0x20000000)
 #define ARCH_PVOPS_XEN      (0x40000000)
+#define IRQ_DESC_TREE       (0x80000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
@@ -569,6 +576,7 @@ struct kernel_table {                   /* kernel data */
 		ulong p2m_top;
 		ulong p2m_missing;
 	} pvops_xen;
+	int highest_irq;
 };
 
 /*
@@ -807,6 +815,7 @@ struct machdep_table {
 	int (*xen_kdump_p2m_create)(struct xen_kdump_data *);
 	int (*in_alternate_stack)(int, ulong);
 	void (*dumpfile_init)(int, void *);
+	void (*process_elf_notes)(void *, unsigned long);
 };
 
 /*
@@ -936,7 +945,7 @@ struct reference {
 };
 
 struct offset_table {                    /* stash of commonly-used offsets */
-	long list_head_next;
+	long list_head_next;             /* add new entries to end of table */
 	long list_head_prev;
 	long task_struct_pid;
 	long task_struct_state;
@@ -1530,6 +1539,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long unwind_table_end_addr;
 	long unwind_idx_addr;
 	long unwind_idx_insn;
+	long signal_struct_nr_threads;
+	long module_init_size;
+	long module_percpu;
+	long radix_tree_node_slots;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1646,6 +1659,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long elf_prstatus;
 	long note_buf;
 	long unwind_idx;
+	long softirq_action;
+	long irq_data;
 };
 
 struct array_table {
@@ -1909,6 +1924,10 @@ struct alias_data {                 /* command alias storage */
 #endif /* !GDB_COMMON */
 
 
+#define SYMBOL_NAME_USED (0x1)
+#define MODULE_SYMBOL    (0x2)
+#define IS_MODULE_SYMBOL(SYM)  ((SYM)->flags & MODULE_SYMBOL)
+
 struct syment {
         ulong value;
         char *name;
@@ -1916,10 +1935,10 @@ struct syment {
 	struct syment *name_hash_next;
 	char type;
 	unsigned char cnt;
-	unsigned char pad1;
+	unsigned char flags;
 	unsigned char pad2;
 };
-                
+
 #define NAMESPACE_INIT     (1)
 #define NAMESPACE_REUSE    (2)
 #define NAMESPACE_FREE     (3)
@@ -1978,6 +1997,8 @@ struct symbol_table_data {
 	ulong first_ksymbol;
 	ulong __per_cpu_start;
 	ulong __per_cpu_end;
+	off_t dwarf_debug_frame_file_offset;
+	ulong dwarf_debug_frame_size;
 };
 
 /* flags for st */
@@ -1998,6 +2019,7 @@ struct symbol_table_data {
 #define MODSECT_V1      (0x2000)
 #define MODSECT_V2      (0x4000)
 #define MODSECT_V3      (0x8000)
+#define MODSECT_VMASK   (MODSECT_V1|MODSECT_V2|MODSECT_V3)
 
 #endif /* !GDB_COMMON */
 
@@ -2013,6 +2035,7 @@ struct symbol_table_data {
 #define MOD_KALLSYMS    (0x8)
 #define MOD_INITRD     (0x10)
 #define MOD_NOPATCH    (0x20)
+#define MOD_INIT       (0x40)
 
 #define SEC_FOUND       (0x10000)
 
@@ -2056,10 +2079,23 @@ struct load_module {
 	struct mod_section_data *mod_section_data;
         ulong mod_init_text_size;
         ulong mod_init_module_ptr;
+	ulong mod_init_size;
+	struct syment *mod_init_symtable;
+	struct syment *mod_init_symend;
+	ulong mod_percpu;
+	ulong mod_percpu_size;
 };
 
 #define IN_MODULE(A,L) \
  (((ulong)(A) >= (L)->mod_base) && ((ulong)(A) < ((L)->mod_base+(L)->mod_size)))
+
+#define IN_MODULE_INIT(A,L) \
+ (((ulong)(A) >= (L)->mod_init_module_ptr) && ((ulong)(A) < ((L)->mod_init_module_ptr+(L)->mod_init_size)))
+
+#define IN_MODULE_PERCPU(A,L) \
+ (((ulong)(A) >= (L)->mod_percpu) && ((ulong)(A) < ((L)->mod_percpu+(L)->mod_percpu_size)))
+
+#define MODULE_PERCPU_SYMS_LOADED(L) ((L)->mod_percpu && (L)->mod_percpu_size)
 
 #ifndef GDB_COMMON
 
@@ -3455,6 +3491,7 @@ char *upper_case(char *, char *);
 char *first_nonspace(char *);
 char *first_space(char *);
 char *replace_string(char *, char *, char);
+void string_insert(char *, char *);
 char *null_first_space(char *);
 int parse_line(char *, char **);
 void print_verbatim(FILE *, char *);
@@ -3551,6 +3588,8 @@ void datatype_init(void);
 struct syment *symbol_search(char *);
 struct syment *value_search(ulong, ulong *);
 struct syment *value_search_base_kernel(ulong, ulong *);
+struct syment *value_search_module(ulong, ulong *);
+struct syment *symbol_search_next(char *, struct syment *);
 ulong highest_bss_symbol(void);
 int in_ksymbol_range(ulong);
 int module_symbol(ulong, struct syment **, 
@@ -3566,6 +3605,7 @@ void show_symbol(struct syment *, ulong, ulong);
 #define SHOW_HEX_OFFS (0x4)
 #define SHOW_DEC_OFFS (0x8)
 #define SHOW_RADIX() (*gdb_output_radix == 16 ? SHOW_HEX_OFFS : SHOW_DEC_OFFS)
+#define SHOW_MODULE  (0x10)
 int symbol_query(char *, char *, struct syment **);
 struct syment *next_symbol(char *, struct syment *);
 struct syment *prev_symbol(char *, struct syment *);
@@ -3612,6 +3652,7 @@ char *load_module_filter(char *, int);
 #define LM_DIS_FILTER (2)
 long datatype_info(char *, char *, struct datatype_member *);
 int get_symbol_type(char *, char *, struct gnu_request *);
+int get_symbol_length(char *);
 int text_value_cache(ulong, uint32_t, uint32_t *);
 int text_value_cache_byte(ulong, unsigned char *);
 void dump_text_value_cache(int);
@@ -3915,6 +3956,7 @@ int get_cpus_online(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
 int get_highest_cpu_online(void);
+int get_highest_cpu_present(void);
 int get_cpus_to_display(void);
 int in_cpu_map(int, int);
 void paravirt_init(void);
@@ -3969,6 +4011,9 @@ ulong cpu_map_addr(const char *type);
 #define BT_THREAD_GROUP     (0x10000000000ULL)
 #define BT_SAVE_EFRAME_IP   (0x20000000000ULL)
 #define BT_FULL_SYM_SLAB    (0x40000000000ULL)
+#define BT_KDUMP_ELF_REGS   (0x80000000000ULL)
+#define BT_USER_SPACE      (0x100000000000ULL)
+#define BT_KERNEL_SPACE    (0x200000000000ULL)
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)
@@ -4062,7 +4107,6 @@ struct machine_specific {
 	ulong kernel_text_end;
 	ulong exception_text_start;
 	ulong exception_text_end;
-	ulong crash_task_pid;
 	struct arm_pt_regs *crash_task_regs;
 };
 
@@ -4487,6 +4531,11 @@ int get_netdump_arch(void);
 void *get_regs_from_elf_notes(struct task_context *);
 void map_cpus_to_prstatus(void);
 int arm_kdump_phys_base(ulong *);
+int is_proc_kcore(char *, ulong);
+int proc_kcore_init(FILE *);
+int read_proc_kcore(int, void *, int, ulong, physaddr_t);
+int write_proc_kcore(int, void *, int, ulong, physaddr_t);
+int kcore_memory_dump(FILE *);
 
 /*
  *  diskdump.c
@@ -4542,6 +4591,8 @@ int kvmdump_memory_dump(FILE *);
 void get_kvmdump_regs(struct bt_info *, ulong *, ulong *);
 ulong get_kvmdump_panic_task(void);
 int kvmdump_phys_base(unsigned long *);
+void kvmdump_display_regs(int, FILE *);
+void set_kvmhost_type(char *);
 
 /*
  * qemu.c

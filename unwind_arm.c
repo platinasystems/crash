@@ -38,10 +38,6 @@
  *        (prel31 offset)
  *     2. if bit31 is set, this contains the EHT entry itself
  *     3. if 0x1, cannot unwind.
- *
- * In case 1. @insn points to the EH table that comes directly after index
- * table. This offset is relative to address of @insn which implies that we must
- * allocate both index table and EH table in single chunk.
  */
 struct unwind_idx {
 	ulong	addr;
@@ -55,6 +51,7 @@ struct unwind_idx {
  * @end: pointer to the last element +1 of the index table
  * @begin_addr: start address which this table covers
  * @end_addr: end address which this table covers
+ * @kv_base: kernel virtual address of the start of the index table
  *
  * Kernel stores per-module unwind tables in this format. There can be more than
  * one table per module as we have different ELF sections in the module.
@@ -65,6 +62,7 @@ struct unwind_table {
 	struct unwind_idx	*end;
 	ulong			begin_addr;
 	ulong			end_addr;
+	ulong			kv_base;
 };
 
 /*
@@ -75,7 +73,8 @@ static struct unwind_table	*module_unwind_tables;
 
 struct unwind_ctrl_block {
 	ulong	vrs[16];
-	ulong	*insn;
+	ulong	insn;
+	ulong	insn_kvaddr;
 	int	entries;
 	int	byte;
 };
@@ -98,12 +97,14 @@ static int init_kernel_unwind_table(void);
 static void free_kernel_unwind_table(void);
 static int read_module_unwind_table(struct unwind_table *, ulong);
 static int init_module_unwind_tables(void);
+static int unwind_get_insn(struct unwind_ctrl_block *);
 static ulong unwind_get_byte(struct unwind_ctrl_block *);
 static ulong get_value_from_stack(ulong *);
 static int unwind_exec_insn(struct unwind_ctrl_block *);
 static int is_core_kernel_text(ulong);
-static struct unwind_idx *search_index(ulong);
-static ulong *prel31_to_addr(ulong *);
+static struct unwind_table *search_table(ulong);
+static struct unwind_idx *search_index(const struct unwind_table *, ulong);
+static ulong prel31_to_addr(ulong, ulong);
 static int unwind_frame(struct stackframe *, ulong);
 
 /*
@@ -169,7 +170,6 @@ static int
 init_kernel_unwind_table(void)
 {
 	ulong idx_start, idx_end, idx_size;
-	ulong tab_end, tab_size;
 
 	kernel_unwind_table = calloc(sizeof(*kernel_unwind_table), 1);
 	if (!kernel_unwind_table)
@@ -177,24 +177,14 @@ init_kernel_unwind_table(void)
 
 	idx_start = symbol_value("__start_unwind_idx");
 	idx_end = symbol_value("__stop_unwind_idx");
-	tab_end = symbol_value("__stop_unwind_tab");
-
-	/*
-	 * Calculate sizes of the idx table and the EH table.
-	 */
 	idx_size = idx_end - idx_start;
-	tab_size = tab_end - idx_start;
 
-	kernel_unwind_table->idx = calloc(tab_size, 1);
+	kernel_unwind_table->idx = calloc(idx_size, 1);
 	if (!kernel_unwind_table->idx)
 		goto fail;
 
-	/*
-	 * Now read in both the index table and the EH table. We need to read in
-	 * both because prel31 offsets in the index table are relative to the
-	 * index address.
-	 */
-	if (!readmem(idx_start, KVADDR, kernel_unwind_table->idx, tab_size,
+	/* now read in the index table */
+	if (!readmem(idx_start, KVADDR, kernel_unwind_table->idx, idx_size,
 		     "master kernel unwind table", RETURN_ON_ERROR))
 		goto fail;
 
@@ -203,10 +193,11 @@ init_kernel_unwind_table(void)
 		((char *)kernel_unwind_table->idx + idx_size);
 	kernel_unwind_table->begin_addr = kernel_unwind_table->start->addr;
 	kernel_unwind_table->end_addr = (kernel_unwind_table->end - 1)->addr;
+	kernel_unwind_table->kv_base = idx_start;
 
 	if (CRASHDEBUG(1)) {
 		fprintf(fp, "UNWIND: master kernel table start\n");
-		fprintf(fp, "UNWIND: size      : %ld\n", tab_size);
+		fprintf(fp, "UNWIND: size      : %ld\n", idx_size);
 		fprintf(fp, "UNWIND: start     : %p\n", kernel_unwind_table->start);
 		fprintf(fp, "UNWIND: end       : %p\n", kernel_unwind_table->end);
 		fprintf(fp, "UNWIND: begin_addr: 0x%lx\n",
@@ -277,6 +268,7 @@ read_module_unwind_table(struct unwind_table *tbl, ulong addr)
 	tbl->end = (struct unwind_idx *)((char *)tbl->start + idx_size);
 	tbl->begin_addr = TABLE_VALUE(buf, unwind_table_begin_addr);
 	tbl->end_addr = TABLE_VALUE(buf, unwind_table_end_addr);
+	tbl->kv_base = idx_start;
 
 	if (CRASHDEBUG(1)) {
 		fprintf(fp, "UNWIND: module table start\n");
@@ -360,6 +352,22 @@ fail:
 }
 
 /*
+ * Read next unwind instruction pointed by ctrl->insn_kvaddr into
+ * ctrl->insn. As a side-effect, increase the ctrl->insn_kvaddr to
+ * point to the next instruction.
+ */
+static int
+unwind_get_insn(struct unwind_ctrl_block *ctrl)
+{
+	if (readmem(ctrl->insn_kvaddr, KVADDR, &ctrl->insn, sizeof(ctrl->insn),
+		    "unwind insn", RETURN_ON_ERROR)) {
+		ctrl->insn_kvaddr += sizeof(ctrl->insn);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/*
  * Return next insn byte from ctl or 0 in case of failure. As a side-effect,
  * changes ctrl according the next byte.
  */
@@ -373,11 +381,11 @@ unwind_get_byte(struct unwind_ctrl_block *ctrl)
 		return 0;
 	}
 
-	ret = (*ctrl->insn >> (ctrl->byte * 8)) & 0xff;
+	ret = (ctrl->insn >> (ctrl->byte * 8)) & 0xff;
 
-	if (!ctrl->byte) {
-		ctrl->insn++;
-		ctrl->entries--;
+	if (!ctrl->byte && --ctrl->entries > 0) {
+		if (!unwind_get_insn(ctrl))
+			return 0;
 		ctrl->byte = 3;
 	} else {
 		ctrl->byte--;
@@ -520,65 +528,63 @@ is_core_kernel_text(ulong pc)
 	return FALSE;
 }
 
-static struct unwind_idx *
-search_index(ulong ip)
+static struct unwind_table *
+search_table(ulong ip)
 {
-	struct unwind_idx *start = NULL;
-	struct unwind_idx *end = NULL;
-
 	/*
 	 * First check if this address is in the master kernel unwind table or
 	 * some of the module unwind tables.
 	 */
 	if (is_core_kernel_text(ip)) {
-		start = kernel_unwind_table->start;
-		end = kernel_unwind_table->end;
+		return kernel_unwind_table;
 	} else {
 		struct unwind_table *tbl;
 
 		for (tbl = &module_unwind_tables[0]; tbl->idx; tbl++) {
-			if (ip >= tbl->begin_addr && ip < tbl->end_addr) {
-				start = tbl->start;
-				end = tbl->end;
-				break;
-			}
+			if (ip >= tbl->begin_addr && ip < tbl->end_addr)
+				return tbl;
 		}
-	}
-
-	if (start && end) {
-		/*
-		 * Do a binary search for the addresses in the index table.
-		 * Addresses are guaranteed to be sorted in ascending order.
-		 */
-		while (start < end - 1) {
-			struct unwind_idx *mid = start + ((end - start + 1) >> 1);
-
-			if (ip < mid->addr)
-				end = mid;
-			else
-				start = mid;
-		}
-
-		return start;
 	}
 
 	return NULL;
 }
 
+static struct unwind_idx *
+search_index(const struct unwind_table *tbl, ulong ip)
+{
+	struct unwind_idx *start = tbl->start;
+	struct unwind_idx *end = tbl->end;
+
+	/*
+	 * Do a binary search for the addresses in the index table.
+	 * Addresses are guaranteed to be sorted in ascending order.
+	 */
+	while (start < end - 1) {
+		struct unwind_idx *mid = start + ((end - start + 1) >> 1);
+
+		if (ip < mid->addr)
+			end = mid;
+		else
+			start = mid;
+	}
+
+	return start;
+}
 /*
- * Convert a prel31 symbol to an absolute address.
+ * Convert a prel31 symbol to an absolute kernel virtual address.
  */
-static ulong *
-prel31_to_addr(ulong *ptr)
+static ulong
+prel31_to_addr(ulong addr, ulong insn)
 {
 	/* sign extend to 32 bits */
-	long offset = (((long)*ptr) << 1) >> 1;
-	return (ulong *)((ulong)ptr + offset);
+	long offset = ((long)insn << 1) >> 1;
+	return addr + offset;
 }
 
 static int
 unwind_frame(struct stackframe *frame, ulong stacktop)
 {
+	const struct unwind_table *tbl;
 	struct unwind_ctrl_block ctrl;
 	struct unwind_idx *idx;
 	ulong low, high;
@@ -586,12 +592,16 @@ unwind_frame(struct stackframe *frame, ulong stacktop)
 	low = frame->sp;
 	high = stacktop;
 
-	idx = search_index(frame->pc);
-	if (!idx) {
-		error(WARNING, "UNWIND: cannot find index for %lx\n",
+	if (!is_kernel_text(frame->pc))
+		return FALSE;
+
+	tbl = search_table(frame->pc);
+	if (!tbl) {
+		error(WARNING, "UNWIND: cannot find unwind table for %lx\n",
 		      frame->pc);
 		return FALSE;
 	}
+	idx = search_index(tbl, frame->pc);
 
 	ctrl.vrs[FP] = frame->fp;
 	ctrl.vrs[SP] = frame->sp;
@@ -609,11 +619,29 @@ unwind_frame(struct stackframe *frame, ulong stacktop)
 		/* can't unwind */
 		return FALSE;
 	} else if ((idx->insn & 0x80000000) == 0) {
-		/* insn contains offset to eht entry */
-		ctrl.insn = prel31_to_addr(&idx->insn);
+		/* insn contains prel31 offset to the EHT entry */
+
+		/*
+		 * Calculate a byte offset for idx->insn from the
+		 * start of our copy of the index table. This offset
+		 * is used to get a kernel virtual address of the
+		 * unwind index entry (idx_kvaddr).
+		 */
+		ulong idx_offset = (ulong)&idx->insn - (ulong)tbl->start;
+		ulong idx_kvaddr = tbl->kv_base + idx_offset;
+
+		/*
+		 * Now compute a kernel virtual address for the EHT
+		 * entry by adding prel31 offset (idx->insn) to the
+		 * unwind index entry address (idx_kvaddr) and read
+		 * the EHT entry.
+		 */
+		ctrl.insn_kvaddr = prel31_to_addr(idx_kvaddr, idx->insn);
+		if (!unwind_get_insn(&ctrl))
+			return FALSE;
 	} else if ((idx->insn & 0xff000000) == 0x80000000) {
-		/* eht entry is in insn itself */
-		ctrl.insn = &idx->insn;
+		/* EHT entry is encoded in the insn itself */
+		ctrl.insn = idx->insn;
 	} else {
 		error(WARNING, "UNWIND: unsupported instruction %lx\n",
 		      idx->insn);
@@ -621,12 +649,14 @@ unwind_frame(struct stackframe *frame, ulong stacktop)
 	}
 
 	/* check the personality routine */
-	if ((*ctrl.insn & 0xff000000) == 0x80000000) {
+	if ((ctrl.insn & 0xff000000) == 0x80000000) {
+		/* personality routine 0 */
 		ctrl.byte = 2;
 		ctrl.entries = 1;
-	} else if ((*ctrl.insn & 0xff000000) == 0x81000000) {
+	} else if ((ctrl.insn & 0xff000000) == 0x81000000) {
+		/* personality routine 1 */
 		ctrl.byte = 1;
-		ctrl.entries = 1 + ((*ctrl.insn & 0x00ff0000) >> 16);
+		ctrl.entries = 1 + ((ctrl.insn & 0x00ff0000) >> 16);
 	} else {
 		error(WARNING, "UNWIND: unsupported personality routine\n");
 		return FALSE;

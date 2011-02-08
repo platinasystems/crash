@@ -1561,6 +1561,7 @@ ppc64_print_stack_entry(int frame,
 		      ulong lr, 	
 		      struct bt_info *bt)
 {
+	struct load_module *lm;
 	char *lrname = NULL;
 	if (BT_REFERENCE_CHECK(bt)) {
 		switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
@@ -1579,6 +1580,8 @@ ppc64_print_stack_entry(int frame,
 		fprintf(fp, "%s#%d [%lx] %s at %lx",
 			frame < 10 ? " " : "", frame,
 			req->sp, req->name, req->pc);
+		if (module_symbol(req->pc, NULL, &lm, NULL, 0))
+			fprintf(fp, " [%s]", lm->mod_name);
 	
 		if (req->ra) {
 			/*

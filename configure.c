@@ -60,7 +60,9 @@ void make_rh_rpm_package(char *, int);
 void unconfigure(void);
 void set_warnings(int);
 void show_configuration(void);
-void get_current_configuration(void);
+void target_rebuild_instructions(struct supported_gdb_version *, char *);
+void arch_mismatch(struct supported_gdb_version *);
+void get_current_configuration(struct supported_gdb_version *);
 void makefile_setup(FILE **, FILE **);
 void makefile_create(FILE **, FILE **);
 char *strip_linefeeds(char *);
@@ -78,6 +80,9 @@ int parse_line(char *, char **);
 struct supported_gdb_version *setup_gdb_defaults(void);
 struct supported_gdb_version *store_gdb_defaults(struct supported_gdb_version *);
 void make_spec_file(struct supported_gdb_version *);
+void set_initial_target(struct supported_gdb_version *);
+char *target_to_name(int);
+int name_to_target(char *);
 
 #define TRUE 1
 #define FALSE 0
@@ -92,6 +97,7 @@ void make_spec_file(struct supported_gdb_version *);
 #undef X86_64
 #undef ARM
 
+#define UNKNOWN 0
 #define X86     1
 #define ALPHA   2
 #define PPC     3
@@ -120,7 +126,10 @@ void make_spec_file(struct supported_gdb_version *);
 #define TARGET_CFLAGS_S390X  "TARGET_CFLAGS="
 #define TARGET_CFLAGS_PPC64  "TARGET_CFLAGS=-m64"
 #define TARGET_CFLAGS_X86_64 "TARGET_CFLAGS="
-#define TARGET_CFLAGS_ARM    "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_ARM            "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_ARM_ON_X86     "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_ARM_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_X86_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 
 /*
  *  The original plan was to allow the use of a particular version
@@ -192,6 +201,8 @@ struct supported_gdb_version {
 
 struct target_data {
 	int target;
+	int host;
+	int initial_gdb_target;
 	int flags;
 	char program[MAXSTRLEN];
 	char gdb_version[MAXSTRLEN];
@@ -250,9 +261,33 @@ main(int argc, char **argv)
 	exit(0);
 }
 
+void
+target_rebuild_instructions(struct supported_gdb_version *sp, char *target)
+{
+	fprintf(stderr, 
+	    "\nIn order to build a crash binary for the %s architecture:\n",
+		target);
+
+	fprintf(stderr, " 1. remove the %s subdirectory\n",
+		&sp->GDB[strlen("GDB=")]);
+	fprintf(stderr, " 2. perform a \"make clean\"\n");
+	fprintf(stderr, " 3. retry the build\n\n");
+}
 
 void
-get_current_configuration(void)
+arch_mismatch(struct supported_gdb_version *sp)
+{
+	fprintf(stderr,
+	    "\nThe initial build in this source tree was for the %s architecture.\n",
+		target_to_name(target_data.initial_gdb_target));
+
+	target_rebuild_instructions(sp, target_to_name(target_data.target));
+
+	exit(1);
+}
+
+void
+get_current_configuration(struct supported_gdb_version *sp)
 {
 	FILE *fp;
 	static char buf[512];
@@ -285,18 +320,71 @@ get_current_configuration(void)
 #ifdef __arm__
         target_data.target = ARM;
 #endif
-        /* override target if specified on command line */
-	if (target_data.target_as_param != 0) {
-		if (target_data.target == X86 &&
-		    strcmp(target_data.target_as_param, "ARM") == 0) {
-			/* debugging of ARM core files only supported on X86 */
+
+	set_initial_target(sp);
+
+        /* 
+	 * Override target if specified on command line.
+	 */
+	target_data.host = target_data.target;
+
+	if (target_data.target_as_param) {
+		if ((target_data.target == X86 || target_data.target == X86_64) &&
+		    (name_to_target((char *)target_data.target_as_param) == ARM)) {
+			/* 
+			 *  Debugging of ARM core files supported on X86, and on
+			 *  X86_64 when built as a 32-bit executable.
+			 */
 			target_data.target = ARM;
+		} else if ((target_data.target == X86_64) &&
+			(name_to_target((char *)target_data.target_as_param) == X86)) {
+			/*
+			 *  Build an X86 crash binary on an X86_64 host.
+			 */
+			target_data.target = X86;
+		} else if (name_to_target((char *)target_data.target_as_param) ==
+			target_data.host) {
+			if ((target_data.initial_gdb_target != UNKNOWN) &&
+			    (target_data.host != target_data.initial_gdb_target))
+				arch_mismatch(sp);
 		} else {
 			fprintf(stderr,
-				"target \"%s\" is not supported on this architecture\n",
-				target_data.target_as_param);
+			    "\ntarget=%s is not supported on the %s host architecture\n\n",
+				target_data.target_as_param,
+				target_to_name(target_data.host));
+			exit(1);
 		}
         }
+
+	/*
+	 *  Impose implied (sticky) target if an initial build has been
+	 *  done in the source tree.
+	 */
+	if (target_data.initial_gdb_target && 
+	    (target_data.target != target_data.initial_gdb_target)) {
+		if ((target_data.initial_gdb_target == ARM) &&
+		    (target_data.target != ARM)) {
+			if ((target_data.target == X86) || 
+			    (target_data.target == X86_64))
+				target_data.target = ARM;
+			else
+				arch_mismatch(sp);
+		}
+		if ((target_data.target == ARM) &&
+		    (target_data.initial_gdb_target != ARM))
+			arch_mismatch(sp);
+
+		if ((target_data.initial_gdb_target == X86) &&
+		    (target_data.target != X86)) {
+			if (target_data.target == X86_64) 
+				target_data.target = X86;
+			else
+				arch_mismatch(sp);
+		}
+		if ((target_data.target == X86) &&
+		    (target_data.initial_gdb_target != X86))
+			arch_mismatch(sp);
+	}
 
         if ((fp = fopen("Makefile", "r")) == NULL) {
 		perror("Makefile");
@@ -425,7 +513,7 @@ build_configure(struct supported_gdb_version *sp)
 	char *target;
 	char *target_CFLAGS;
 
-	get_current_configuration();
+	get_current_configuration(sp);
 
 	target = target_CFLAGS = NULL;
 
@@ -433,7 +521,10 @@ build_configure(struct supported_gdb_version *sp)
 	{
 	case X86:
 		target = TARGET_X86;
-		target_CFLAGS = TARGET_CFLAGS_X86;
+		if (target_data.host == X86_64)
+                        target_CFLAGS = TARGET_CFLAGS_X86_ON_X86_64;
+                else
+			target_CFLAGS = TARGET_CFLAGS_X86;
 		break;
 	case ALPHA:
 		target = TARGET_ALPHA;
@@ -465,7 +556,12 @@ build_configure(struct supported_gdb_version *sp)
                 break;
 	case ARM:
                 target = TARGET_ARM;
-                target_CFLAGS = TARGET_CFLAGS_ARM;
+                if (target_data.host == X86)
+                        target_CFLAGS = TARGET_CFLAGS_ARM_ON_X86;
+                else if (target_data.host == X86_64)
+                        target_CFLAGS = TARGET_CFLAGS_ARM_ON_X86_64;
+		else
+                        target_CFLAGS = TARGET_CFLAGS_ARM;
                 break;
 	}
 
@@ -509,7 +605,7 @@ release_configure(char *gdb_version, struct supported_gdb_version *sp)
 	char buf[512];
 	char gdb_files[MAXSTRLEN];
 
-	get_current_configuration();
+	get_current_configuration(sp);
 
 	sprintf(buf, "%s/gdb", gdb_version);
 	if (!file_exists(buf)) {
@@ -620,7 +716,7 @@ gdb_configure(struct supported_gdb_version *sp)
 	FILE *fp1, *fp2;
 	char buf[512];
 
-	get_current_configuration();
+	get_current_configuration(sp);
 
 	makefile_setup(&fp1, &fp2);
 
@@ -1000,7 +1096,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	char *Version, *Release;
 	char buf[512];
 
-	get_current_configuration();
+	get_current_configuration(sp);
 
 	Release = strstr(target_data.release, "-");
 	if (!Release) {
@@ -1183,4 +1279,123 @@ store_gdb_defaults(struct supported_gdb_version *sp)
 		fprintf(stderr, "WARNING: \"make clean\" may be required before rebuilding\n\n");
 
 	return sp; 
+}
+
+void
+set_initial_target(struct supported_gdb_version *sp)
+{
+	FILE *fp;
+	char crash_target[512];
+	char buf[512];
+
+	target_data.initial_gdb_target = UNKNOWN;
+
+	sprintf(crash_target, "%s/crash.target",
+		&sp->GDB[strlen("GDB=")]);
+
+	if (!file_exists(crash_target)) {
+		if (target_data.target_as_param &&
+		    file_exists(&sp->GDB[strlen("GDB=")])) {
+			fprintf(stderr, 
+			    "\nThe \"%s\" file does not exist.\n",
+				crash_target);
+			target_rebuild_instructions(sp, (char *)target_data.target_as_param);
+			exit(1);
+		}
+		return;
+	}
+
+        if ((fp = fopen(crash_target, "r")) == NULL) {
+                perror(crash_target);
+                return;
+        }
+	
+        if (!fgets(buf, 512, fp)) {
+                perror(crash_target);
+		fclose(fp);
+                return;
+	}
+
+	fclose(fp);
+
+	if (strncmp(buf, "X86_64", strlen("X86_64")) == 0) 
+		target_data.initial_gdb_target = X86_64;
+	else if (strncmp(buf, "X86", strlen("X86")) == 0) 
+		target_data.initial_gdb_target = X86;
+	else if (strncmp(buf, "ALPHA", strlen("ALPHA")) == 0)
+		target_data.initial_gdb_target = ALPHA;
+	else if (strncmp(buf, "PPC64", strlen("PPC64")) == 0)
+		target_data.initial_gdb_target = PPC64;
+	else if (strncmp(buf, "PPC", strlen("PPC")) == 0)
+		target_data.initial_gdb_target = PPC;
+	else if (strncmp(buf, "IA64", strlen("IA64")) == 0)
+		target_data.initial_gdb_target = IA64;
+	else if (strncmp(buf, "S390X", strlen("S390X")) == 0)
+		target_data.initial_gdb_target = S390X;
+	else if (strncmp(buf, "S390", strlen("S390")) == 0)
+		target_data.initial_gdb_target = S390;
+	else if (strncmp(buf, "ARM", strlen("ARM")) == 0)
+		target_data.initial_gdb_target = ARM;
+}
+
+char *
+target_to_name(int target)
+{
+	switch (target)
+	{
+	case X86:    return("X86");
+	case ALPHA:  return("ALPHA");
+	case PPC:    return("PPC");
+	case IA64:   return("IA64");
+	case S390:   return("S390");
+	case S390X:  return("S390X");
+	case PPC64:  return("PPC64");
+	case X86_64: return("X86_64");
+	case ARM:    return("ARM"); 
+	}
+
+	return "UNKNOWN";
+}
+
+int
+name_to_target(char *name)
+{
+	if (strncmp(name, "X86_64", strlen("X86_64")) == 0)
+                return X86_64;
+	else if (strncmp(name, "x86_64", strlen("x86_64")) == 0)
+                return X86_64;
+        else if (strncmp(name, "X86", strlen("X86")) == 0)
+                return X86;
+        else if (strncmp(name, "x86", strlen("x86")) == 0)
+                return X86;
+        else if (strncmp(name, "ALPHA", strlen("ALPHA")) == 0)
+                return ALPHA;
+        else if (strncmp(name, "alpha", strlen("alpha")) == 0)
+                return ALPHA;
+        else if (strncmp(name, "PPC64", strlen("PPC64")) == 0)
+                return PPC64;
+        else if (strncmp(name, "ppc64", strlen("ppc64")) == 0)
+                return PPC64;
+        else if (strncmp(name, "PPC", strlen("PPC")) == 0)
+                return PPC;
+        else if (strncmp(name, "ppc", strlen("ppc")) == 0)
+                return PPC;
+        else if (strncmp(name, "IA64", strlen("IA64")) == 0)
+                return IA64;
+        else if (strncmp(name, "ia64", strlen("ia64")) == 0)
+                return IA64;
+        else if (strncmp(name, "S390X", strlen("S390X")) == 0)
+                return S390X;
+        else if (strncmp(name, "s390x", strlen("s390x")) == 0)
+                return S390X;
+        else if (strncmp(name, "S390", strlen("S390")) == 0)
+                return S390;
+        else if (strncmp(name, "s390", strlen("s390")) == 0)
+                return S390;
+        else if (strncmp(name, "ARM", strlen("ARM")) == 0)
+                return ARM;
+        else if (strncmp(name, "arm", strlen("arm")) == 0)
+                return ARM;
+
+	return UNKNOWN;
 }

@@ -124,3 +124,51 @@ struct xen_kdump_data {
 #define KDUMP_MFN_LIST  (0x4)
 
 #define P2M_FAILURE ((physaddr_t)(0xffffffffffffffffLL))
+
+/*
+ * S390 CPU timer ELF note
+ */
+#ifndef NT_S390_TIMER
+#define NT_S390_TIMER 0x301
+#endif
+
+/*
+ * S390 TOD clock comparator ELF note
+ */
+#ifndef NT_S390_TODCMP
+#define NT_S390_TODCMP 0x302
+#endif
+
+/*
+ * S390 TOD programmable register ELF note
+ */
+#ifndef NT_S390_TODPREG
+#define NT_S390_TODPREG 0x303
+#endif
+
+/*
+ * S390 control registers ELF note
+ */
+#ifndef NT_S390_CTRS
+#define NT_S390_CTRS 0x304
+#endif
+
+/*
+ * S390 prefix ELF note
+ */
+#ifndef NT_S390_PREFIX
+#define NT_S390_PREFIX 0x305
+#endif
+
+#define MAX_KCORE_ELF_HEADER_SIZE (32768)
+
+struct proc_kcore_data {
+	uint flags;
+	uint segments;
+	char *elf_header;
+        Elf64_Ehdr *elf64;
+	Elf64_Phdr *load64;
+        Elf32_Ehdr *elf32;
+	Elf32_Phdr *load32;
+};
+

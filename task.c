@@ -270,6 +270,7 @@ task_init(void)
 	MEMBER_OFFSET_INIT(task_struct_sighand, "task_struct", "sighand");
 	 
 	MEMBER_OFFSET_INIT(signal_struct_count, "signal_struct", "count");
+	MEMBER_OFFSET_INIT(signal_struct_nr_threads, "signal_struct", "nr_threads");
 	MEMBER_OFFSET_INIT(signal_struct_action, "signal_struct", "action");
 	MEMBER_OFFSET_INIT(signal_struct_shared_pending, "signal_struct",
 		"shared_pending");
@@ -2005,7 +2006,7 @@ do_chained:
                 }
 
 		if (pid_tasks_0 == 0)
-			continue;
+			goto chain_next;
 
 		next = pid_tasks_0 - OFFSET(task_struct_pids);
 
@@ -2041,7 +2042,7 @@ do_chained:
 		}
 
 		cnt++;
-
+chain_next:
 		if (pnext) {
 			kpp = pnext;
 			upid = pnext - OFFSET(upid_pid_chain);
@@ -4647,13 +4648,32 @@ get_panic_ksp(struct bt_info *bt, ulong *ksp)
 static ulong
 get_panic_context(void)
 {
+	int i;
         struct task_context *tc;
 	ulong panic_threads_addr;
 	ulong task;
+	char *tp;
 
 	tt->panic_processor = -1;
 	task = NO_TASK;
         tc = FIRST_CONTEXT();
+
+        for (i = 0; i < NR_CPUS; i++) {
+                if (!(task = tt->active_set[i]))
+			continue;
+
+		if (!task_exists(task)) {
+			error(WARNING, 
+			  "active task %lx on cpu %d not found in PID hash\n\n",
+				task, i);
+			if ((tp = fill_task_struct(task))) {
+				if ((tc = store_context(NULL, task, tp))) 
+					tt->running_tasks++;
+				else
+					continue;
+			}
+		}
+	}
 
 	/* 
 	 *  --no_panic command line option
@@ -6473,27 +6493,13 @@ get_active_set_panic_task()
 	ulong panic_task, die_task, crash_kexec_task;
 	ulong xen_panic_task;
 	ulong xen_sysrq_task;
-	char *tp;
-	struct task_context *tc;
 
 	panic_task = die_task = crash_kexec_task = xen_panic_task = NO_TASK;
 	xen_sysrq_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
-                if (!(task = tt->active_set[i]))
+                if (!(task = tt->active_set[i]) || !task_exists(task))
 			continue;
-
-		if (!task_exists(task)) {
-			error(WARNING, 
-			  "active task %lx on cpu %d not found in PID hash\n\n",
-				task, i);
-                	if ((tp = fill_task_struct(task))) {
-                        	if ((tc = store_context(NULL, task, tp))) 
-                                	tt->running_tasks++;
-				else
-					continue;
-                	}
-		}
 
         	open_tmpfile();
 		raw_stack_dump(GET_STACKBASE(task), STACKSIZE());
@@ -7527,8 +7533,14 @@ dump_signal_data(struct task_context *tc, ulong flags)
 			fprintf(fp, "\n");
 			return;
 		}
-		fprintf(fp, "COUNT: %d\n",
-			INT(signal_buf + OFFSET(signal_struct_count)));
+		if (VALID_MEMBER(signal_struct_count))
+			fprintf(fp, "COUNT: %d\n",
+				INT(signal_buf + OFFSET(signal_struct_count)));
+		else if (VALID_MEMBER(signal_struct_nr_threads))
+			fprintf(fp, "NR_THREADS: %d\n",
+				INT(signal_buf + OFFSET(signal_struct_nr_threads)));
+		else
+			fprintf(fp, "\n");
 
 		if (flags & TASK_INDENT)
 			INDENT(2);

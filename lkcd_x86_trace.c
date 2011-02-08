@@ -1352,6 +1352,35 @@ eframe_incr(kaddr_t addr, char *funcname)
 	return val;
 }
 
+static int 
+xen_top_of_stack(struct bt_info *bt, char *funcname)
+{
+	ulong stkptr, contents;
+
+	for (stkptr = bt->stacktop-4; stkptr > bt->stackbase; stkptr--) {
+		contents = GET_STACK_ULONG(stkptr);
+		if (kl_funcname(contents) == funcname)
+			return TRUE;
+		if (valid_ra(contents))
+			break;
+	}
+
+	return FALSE;
+}
+
+static char *
+xen_funcname(struct bt_info *bt, ulong pc) 
+{
+	char *funcname = kl_funcname(pc);
+
+	if (xen_top_of_stack(bt, funcname) &&
+	    (pc >= symbol_value("hypercall")) &&
+	    (pc < symbol_value("ret_from_intr")))
+		return "hypercall";
+
+	return funcname;
+}
+
 /*
  * find_trace()
  *
@@ -1474,15 +1503,20 @@ find_trace(
 
 #ifdef REDHAT
 		if (XEN_HYPER_MODE()) {
-			func_name = kl_funcname(pc);
+			func_name = xen_funcname(bt, pc);
 			if (STREQ(func_name, "idle_loop") || STREQ(func_name, "hypercall")
 				|| STREQ(func_name, "process_softirqs")
 				|| STREQ(func_name, "tracing_off")
 				|| STREQ(func_name, "page_fault")
-				|| STREQ(func_name, "handle_exception")) {
+				|| STREQ(func_name, "handle_exception")
+				|| xen_top_of_stack(bt, func_name)) {
 				UPDATE_FRAME(func_name, pc, 0, sp, bp, asp, 0, 0, bp - sp, 0);
 				return(trace->nframes);
 			}
+		} else if (STREQ(closest_symbol(pc), "cpu_idle")) {
+			func_name = kl_funcname(pc);
+			UPDATE_FRAME(func_name, pc, 0, sp, bp, asp, 0, 0, bp - sp, 0);
+			return(trace->nframes);
 		}
 
 		ra = GET_STACK_ULONG(bp + 4);
@@ -1716,6 +1750,7 @@ find_trace(
 				}
 			} else if (strstr(func_name, "call_do_IRQ") ||
 				strstr(func_name, "common_interrupt") ||
+				strstr(func_name, "reboot_interrupt") ||
 				strstr(func_name, "call_function_interrupt")) {
 				/* Interrupt frame */
 				sp = curframe->fp + 4;
@@ -2581,6 +2616,7 @@ print_stack_entry(struct bt_info *bt, int level, ulong esp, ulong eip,
 {
 	char buf[BUFSIZE];
 	struct syment *sp;
+	struct load_module *lm;
 
 	if (frmp && frmp->prev && STREQ(frmp->funcname, "error_code") &&
 	    (sp = x86_jmp_error_code((ulong)frmp->prev->pc)))
@@ -2595,10 +2631,13 @@ print_stack_entry(struct bt_info *bt, int level, ulong esp, ulong eip,
 	if ((sp = eframe_label(funcname, eip))) 
 		funcname = sp->name;
 
-	fprintf(ofp, "%s#%d [%8lx] %s%s at %lx\n",
+	fprintf(ofp, "%s#%d [%8lx] %s%s at %lx",
                 level < 10 ? " " : "", level, esp, 
 		funcname_display(funcname), 
 		strlen(buf) ? buf : "", eip);
+	if (module_symbol(eip, NULL, &lm, NULL, 0))
+		fprintf(ofp, " [%s]", lm->mod_name);
+	fprintf(ofp, "\n");
 
         if (bt->flags & BT_LINE_NUMBERS) {
                 get_line_number(eip, buf, FALSE);

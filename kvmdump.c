@@ -26,8 +26,10 @@ static off_t mapfile_offset(uint64_t);
 static void kvmdump_mapfile_create(char *);
 static void kvmdump_mapfile_append(void);
 static char *mapfile_in_use(void);
+static void write_mapfile_registers(void);
 static void write_mapfile_trailer(void);
 static void read_mapfile_trailer(void);
+static void read_mapfile_registers(void);
 
 #define RAM_OFFSET_COMPRESSED (~(off_t)255)
 #define QEMU_COMPRESSED       ((WRITE_ERROR)-1)
@@ -132,10 +134,13 @@ kvmdump_init(char *filename, FILE *fptr)
 		kvm->page_cache[i].bufptr = cachebuf + (i * page_size);
 	}
 
+	kvmdump_regs_store(KVMDUMP_REGS_START, NULL);
+
 	if (qemu_init(filename)) {
 		switch (kvm->flags & (TMPFILE|MAPFILE|MAPFILE_APPENDED))
 		{
 		case TMPFILE:
+			kvmdump_regs_store(KVMDUMP_REGS_END, NULL);
 			write_mapfile_trailer();
 			break;
 
@@ -143,6 +148,7 @@ kvmdump_init(char *filename, FILE *fptr)
 		case MAPFILE_APPENDED:
 		case MAPFILE|MAPFILE_APPENDED:
 			read_mapfile_trailer();
+			kvmdump_regs_store(KVMDUMP_REGS_END, NULL);
 			break;
 		}
 
@@ -155,7 +161,7 @@ kvmdump_init(char *filename, FILE *fptr)
 
 		kvm->flags |= KVMDUMP_LOCAL; 
 		return TRUE;
-	} else
+	} else 
 		return FALSE;
 }
 
@@ -230,6 +236,16 @@ kvmdump_memory_dump(FILE *ofp)
 		fprintf(ofp, "%sMAPFILE_APPENDED", others++ ? "|" : "");
 	if (kvm->flags & NO_PHYS_BASE)
 		fprintf(ofp, "%sNO_PHYS_BASE", others++ ? "|" : "");
+	if (kvm->flags & KVMHOST_32)
+		fprintf(ofp, "%sKVMHOST_32", others++ ? "|" : "");
+	if (kvm->flags & KVMHOST_64)
+		fprintf(ofp, "%sKVMHOST_64", others++ ? "|" : "");
+	if (kvm->flags & REGS_FROM_MAPFILE)
+		fprintf(ofp, "%sREGS_FROM_MAPFILE", others++ ? "|" : "");
+	if (kvm->flags & REGS_FROM_DUMPFILE)
+		fprintf(ofp, "%sREGS_FROM_DUMPFILE", others++ ? "|" : "");
+	if (kvm->flags & REGS_NOT_AVAIL)
+		fprintf(ofp, "%sREGS_NOT_AVAIL", others++ ? "|" : "");
 	fprintf(ofp, ")\n");
 
 	fprintf(ofp, "            mapfd: %d\n", kvm->mapfd);
@@ -280,8 +296,14 @@ kvmdump_memory_dump(FILE *ofp)
 				(ulonglong)kvm->page_cache[i].paddr);
 	}
 
+	fprintf(ofp, "      cpu_devices: %d\n", kvm->cpu_devices);
+	fprintf(ofp, "        registers: %s\n",
+		kvm->registers ? "" : "(not used)");
+	for (i = 0; i < kvm->cpu_devices; i++) {
+		fprintf(ofp, "  CPU %d:\n", i);
+		kvmdump_display_regs(i, ofp);
+	}
 	fprintf(ofp, "\n");
-	fflush(ofp);
 
 	dump_qemu_header(ofp);
 
@@ -307,16 +329,165 @@ kvmdump_memory_dump(FILE *ofp)
 	return TRUE;
 }
 
-void 
-get_kvmdump_regs(struct bt_info *bt, ulong *pc, ulong *sp)
+void
+kvmdump_display_regs(int cpu, FILE *ofp)
 {
-	machdep->get_stack_frame(bt, pc, sp);
+	struct register_set *rp;
+
+	if (cpu >= kvm->cpu_devices) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	rp = &kvm->registers[cpu];
+
+	if (machine_type("X86_64")) {
+		fprintf(ofp, 
+		    "    RIP: %016llx  RSP: %016llx  RFLAGS: %08llx\n"
+		    "    RAX: %016llx  RBX: %016llx  RCX: %016llx\n"
+		    "    RDX: %016llx  RSI: %016llx  RDI: %016llx\n"
+		    "    RBP: %016llx   R8: %016llx   R9: %016llx\n"
+		    "    R10: %016llx  R11: %016llx  R12: %016llx\n"
+		    "    R13: %016llx  R14: %016llx  R15: %016llx\n"
+		    "    CS: %04x  SS: %04x\n",
+			(ulonglong)rp->ip,
+			(ulonglong)rp->regs[R_ESP],
+			(ulonglong)rp->flags,
+			(ulonglong)rp->regs[R_EAX], 
+			(ulonglong)rp->regs[R_EBX],
+			(ulonglong)rp->regs[R_ECX], 
+			(ulonglong)rp->regs[R_EDX],
+			(ulonglong)rp->regs[R_ESI],
+			(ulonglong)rp->regs[R_EDI],
+			(ulonglong)rp->regs[R_EBP],
+			(ulonglong)rp->regs[8], 
+			(ulonglong)rp->regs[9],
+			(ulonglong)rp->regs[10], 
+			(ulonglong)rp->regs[11],
+			(ulonglong)rp->regs[12], 
+			(ulonglong)rp->regs[13],
+			(ulonglong)rp->regs[14], 
+			(ulonglong)rp->regs[15],
+			rp->cs,
+			rp->ss);
+	}
+
+	if (machine_type("X86")) {
+		fprintf(ofp,
+		    "    EAX: %08llx  EBX: %08llx  ECX: %08llx  EDX: %08llx\n"
+		    "    DS:  %04x      ESI: %08llx  ES:  %04x      EDI: %08llx\n"
+		    "    SS:  %04x      ESP: %08llx  EBP: %08llx  GS:  %04x\n"
+		    "    CS:  %04x      EIP: %08llx  EFLAGS: %08llx\n",
+			(ulonglong)rp->regs[R_EAX], 
+			(ulonglong)rp->regs[R_EBX],
+			(ulonglong)rp->regs[R_ECX], 
+			(ulonglong)rp->regs[R_EDX],
+			rp->ds,
+			(ulonglong)rp->regs[R_ESI], 
+			rp->ds,
+			(ulonglong)rp->regs[R_EDI],
+			rp->ss,
+			(ulonglong)rp->regs[R_ESP], 
+			(ulonglong)rp->regs[R_EBP],
+			rp->gs,
+			rp->cs,
+			(ulonglong)rp->ip,
+			(ulonglong)rp->flags);
+	}
 }
+
+void 
+get_kvmdump_regs(struct bt_info *bt, ulong *ipp, ulong *spp)
+{
+	ulong ip, sp;
+	struct register_set *rp;
+
+	ip = sp = 0;
+
+	if (!is_task_active(bt->task)) {
+		machdep->get_stack_frame(bt, ipp, spp);
+		return;
+	}
+
+	bt->flags |= BT_DUMPFILE_SEARCH;
+	if (machine_type("X86_64"))
+		machdep->get_stack_frame(bt, ipp, spp);
+	else if (machine_type("X86"))
+		get_netdump_regs_x86(bt, ipp, spp);
+	if (bt->flags & BT_DUMPFILE_SEARCH)
+		return;
+
+	if ((kvm->registers == NULL) ||
+	    (bt->tc->processor >= kvm->cpu_devices))
+		return;
+
+	rp = &kvm->registers[bt->tc->processor];
+	ip = (ulong)rp->ip;
+	sp = (ulong)rp->regs[R_ESP];
+	if (is_kernel_text(ip) &&
+	    (((sp >= GET_STACKBASE(bt->task)) &&
+	      (sp < GET_STACKTOP(bt->task))) ||
+	    in_alternate_stack(bt->tc->processor, sp))) {
+		*ipp = ip; 
+		*spp = sp;
+		bt->flags |= BT_KERNEL_SPACE;
+		return;
+	}
+
+	if (!is_kernel_text(ip) && 
+	    in_user_stack(bt->tc->task, sp))
+		bt->flags |= BT_USER_SPACE;
+}
+
 
 ulong
 get_kvmdump_panic_task(void)
 {
-	return NO_TASK;
+	int i;
+	struct bt_info *bt;
+	ulong panic_task, task, rip, rsp;
+	char *sym;
+
+	if (machine_type("X86") || !get_active_set())
+		return NO_TASK;
+
+	bt = (struct bt_info *)GETBUF(sizeof(struct bt_info));
+
+	for (i = 0, panic_task = NO_TASK; i < NR_CPUS; i++) {
+		if (!(task = tt->active_set[i]) ||
+		    !(bt->tc = task_to_context(task)))
+			continue;
+
+		bt->task = task;
+		bt->stackbase = GET_STACKBASE(task);
+		bt->stacktop = GET_STACKTOP(task);
+		if (!bt->stackbuf)
+                	bt->stackbuf = GETBUF(bt->stacktop - bt->stackbase);
+		alter_stackbuf(bt);
+
+		bt->flags |= BT_DUMPFILE_SEARCH;
+		machdep->get_stack_frame(bt, &rip, &rsp);
+		if (!(bt->flags & BT_DUMPFILE_SEARCH))
+			continue;
+
+		sym = closest_symbol(rip);
+		if (STREQ(sym, "panic") ||
+		    STREQ(sym, "die") ||
+		    STREQ(sym, "die_nmi") ||
+		    STREQ(sym, "sysrq_handle_crash")) {
+			if (CRASHDEBUG(1))
+				fprintf(fp, "get_kvmdump_panic_task: %lx\n", 
+					task);
+			panic_task = task;
+			break;
+		}
+	}
+
+	if (bt->stackbuf)
+		FREEBUF(bt->stackbuf);
+	FREEBUF(bt);
+
+	return panic_task;
 }
 
 int
@@ -418,14 +589,18 @@ int
 store_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 {
         if (lseek(kvm->mapfd, mapfile_offset(physaddr), SEEK_SET) < 0) {
-		error(INFO, "%s: lseek: %s\n", 
-			mapfile_in_use(), strerror(errno));
+		error(INFO, "store_mapfile_offset: "
+	    	    "lseek error: physaddr: %llx  %s offset: %llx\n", 
+			(unsigned long long)physaddr, mapfile_in_use(),
+			(unsigned long long)mapfile_offset(physaddr));
 		return SEEK_ERROR;
 	}
 
         if (write(kvm->mapfd, entry_ptr, sizeof(off_t)) != sizeof(off_t)) {
-		error(INFO, "%s: write: %s\n", 
-			mapfile_in_use(), strerror(errno));
+		error(INFO, "store_mapfile_offset: "
+	    	    "write error: physaddr: %llx  %s offset: %llx\n", 
+			(unsigned long long)physaddr, mapfile_in_use(),
+			(unsigned long long)mapfile_offset(physaddr));
 		return WRITE_ERROR;
 	}
 	
@@ -441,14 +616,21 @@ load_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 		physaddr -= 0x20000000;
 	}
  
-        if (lseek(kvm->mapfd, mapfile_offset(physaddr), SEEK_SET) < 0) {
-		error(INFO, "load_memfile_offset: lseek: %s\n", 
-			strerror(errno));
+	if (lseek(kvm->mapfd, mapfile_offset(physaddr), SEEK_SET) < 0) {
+		if (CRASHDEBUG(1))
+			error(INFO, "load_mapfile_offset: "
+		    	    "lseek error: physaddr: %llx  %s offset: %llx\n", 
+				(unsigned long long)physaddr, mapfile_in_use(),
+				(unsigned long long)mapfile_offset(physaddr));
 		return SEEK_ERROR;
 	}
 
-        if (read(kvm->mapfd, entry_ptr, sizeof(off_t)) != sizeof(off_t)) {
-		error(INFO, "load_memfile_offset: read: %s\n", strerror(errno));
+	if (read(kvm->mapfd, entry_ptr, sizeof(off_t)) != sizeof(off_t)) {
+		if (CRASHDEBUG(1)) 
+			error(INFO, "load_mapfile_offset: "
+		    	    "read error: physaddr: %llx  %s offset: %llx\n", 
+				(unsigned long long)physaddr, mapfile_in_use(),
+				(unsigned long long)mapfile_offset(physaddr));
 		return READ_ERROR;
 	}
 
@@ -737,6 +919,9 @@ mapfile_in_use(void)
 static void
 write_mapfile_trailer(void)
 {
+	if (kvm->cpu_devices)
+		write_mapfile_registers();
+
         kvm->mapinfo.magic = MAPFILE_MAGIC;
 
         if (lseek(kvm->mapfd, 0, SEEK_END) < 0)
@@ -744,6 +929,28 @@ write_mapfile_trailer(void)
 
 	if (write(kvm->mapfd, &kvm->mapinfo, sizeof(struct mapinfo_trailer)) 
 	    != sizeof(struct mapinfo_trailer))
+		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
+}
+
+static void
+write_mapfile_registers(void)
+{
+	size_t regs_size;
+	uint64_t ncpus, magic;
+
+        if (lseek(kvm->mapfd, 0, SEEK_END) < 0)
+		error(FATAL, "%s: lseek: %s\n", mapfile_in_use(), strerror(errno));
+
+	regs_size = sizeof(struct register_set) * kvm->cpu_devices;
+	if (write(kvm->mapfd, &kvm->registers[0], regs_size) != regs_size)
+		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
+
+	ncpus = kvm->cpu_devices;
+	if (write(kvm->mapfd, &kvm->cpu_devices, sizeof(uint64_t)) != sizeof(uint64_t))
+		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
+
+	magic = REGS_MAGIC;
+	if (write(kvm->mapfd, &magic, sizeof(uint64_t)) != sizeof(uint64_t))
 		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
 }
 
@@ -770,4 +977,142 @@ read_mapfile_trailer(void)
 			pc->dumpfile, mapfile_in_use());
 
 	kvm->mapinfo = trailer;
+
+	read_mapfile_registers();
+}
+
+static void
+read_mapfile_registers(void)
+{
+	size_t regs_size;
+	uint64_t ncpus, magic;
+	off_t offset;
+
+	if ((offset = lseek(kvm->mapfd, 0, SEEK_END)) < 0)
+		error(FATAL, "%s: lseek: %s\n", 
+			mapfile_in_use(), strerror(errno));
+
+	offset -= sizeof(struct mapinfo_trailer) + 
+		sizeof(magic) + sizeof(ncpus);
+
+        if (lseek(kvm->mapfd, offset, SEEK_SET) < 0)
+                error(FATAL, "%s: lseek: %s\n",
+                        mapfile_in_use(), strerror(errno));
+
+	if (read(kvm->mapfd, &ncpus, sizeof(uint64_t)) != sizeof(uint64_t))
+		error(FATAL, "%s: read: %s\n", 
+			mapfile_in_use(), strerror(errno));
+
+	if (read(kvm->mapfd, &magic, sizeof(uint64_t)) != sizeof(uint64_t))
+		error(FATAL, "%s: read: %s\n", 
+			mapfile_in_use(), strerror(errno));
+
+	if ((magic != REGS_MAGIC) || (ncpus >= NR_CPUS)) {
+		kvm->flags |= REGS_NOT_AVAIL;
+		return;
+	}
+
+	regs_size = sizeof(struct register_set) * ncpus;
+	offset -= regs_size;
+        if (lseek(kvm->mapfd, offset, SEEK_SET) < 0)
+                error(FATAL, "%s: lseek: %s\n",
+                        mapfile_in_use(), strerror(errno));
+
+	if (read(kvm->mapfd, &kvm->registers[0], regs_size) != regs_size)
+		error(FATAL, "%s: read: %s\n", 
+			mapfile_in_use(), strerror(errno));
+
+	kvm->cpu_devices = ncpus;
+	kvm->flags |= REGS_FROM_MAPFILE;
+}
+
+void
+set_kvmhost_type(char *host)
+{
+	if (!machine_type("X86")) {
+		error(INFO, 
+		    "--kvmhost is only applicable to the X86 architecture\n");
+		return;
+	}
+
+	if (STREQ(host, "32")) {
+		kvm->flags &= ~KVMHOST_64;
+		kvm->flags |= KVMHOST_32;
+	} else if (STREQ(host, "64")) {
+		kvm->flags &= ~KVMHOST_32;
+		kvm->flags |= KVMHOST_64;
+	} else
+		error(INFO, "invalid --kvmhost argument: %s\n", host);
+}
+
+#include "qemu-load.h"
+
+int
+kvmdump_regs_store(uint32_t cpu, struct qemu_device_x86 *dx86)
+{
+	struct register_set *rp;
+	int retval;
+
+	retval = TRUE;
+
+	switch (cpu)
+	{
+	case KVMDUMP_REGS_START:
+		if ((kvm->registers = 
+		    calloc(NR_CPUS, sizeof(struct register_set))) == NULL)
+			error(FATAL, "kvmdump_regs_store: "
+				"cannot malloc KVM register_set array\n");
+		kvm->cpu_devices = 0;
+		break;
+
+	case KVMDUMP_REGS_END:
+		if (kvm->cpu_devices == 0) {
+			free(kvm->registers);
+			kvm->registers = NULL;
+		} else if ((kvm->registers = realloc(kvm->registers, 
+		    	sizeof(struct register_set) * kvm->cpu_devices)) == NULL) 
+			error(FATAL, "kvmdump_regs_store: "
+				"cannot realloc KVM registers array\n");
+		break;
+
+	default:
+		if (cpu >= NR_CPUS) {
+			if (machine_type("X86") && 
+		    	    !(kvm->flags & (KVMHOST_32|KVMHOST_64)))
+				return FALSE;
+			break;
+		}
+
+		rp = &kvm->registers[cpu];
+		rp->ip = dx86->eip;
+		rp->flags = dx86->eflags;
+		rp->cs = dx86->cs.selector;
+		rp->ss = dx86->ss.selector;
+		rp->ds = dx86->ds.selector;
+		rp->es = dx86->es.selector;
+		rp->fs = dx86->fs.selector;
+		rp->gs = dx86->gs.selector;
+		BCOPY(dx86->regs, rp->regs, 16*sizeof(uint64_t));
+		kvm->cpu_devices = cpu+1;
+		kvm->flags |= REGS_FROM_DUMPFILE;
+
+		if (machine_type("X86_64") || 
+		    (kvm->flags & (KVMHOST_32|KVMHOST_64)))
+			break;
+
+		if ((rp->regs[R_EAX] & UPPER_32_BITS) ||
+		    (rp->regs[R_EBX] & UPPER_32_BITS) ||
+		    (rp->regs[R_ECX] & UPPER_32_BITS) ||
+		    (rp->regs[R_EDX] & UPPER_32_BITS) ||
+		    (rp->regs[R_ESI] & UPPER_32_BITS) ||
+		    (rp->regs[R_EDI] & UPPER_32_BITS) ||
+		    (rp->regs[R_ESP] & UPPER_32_BITS) ||
+		    (rp->regs[R_EBP] & UPPER_32_BITS) ||
+		    (rp->ip & UPPER_32_BITS))
+			retval = FALSE;
+
+		break;
+	}
+
+	return retval;
 }
