@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,6 +18,7 @@
 
 #include "defs.h"
 #include <sys/mman.h>
+#include <ctype.h>
 
 struct meminfo {           /* general purpose memory information structure */
         ulong cache;       /* used by the various memory searching/dumping */
@@ -69,6 +70,48 @@ struct meminfo {           /* general purpose memory information structure */
 		ulong size;
 	} *vmlist;
 	ulong container;
+};
+
+/*
+ * Search modes
+ */
+
+#define SEARCH_ULONG	(0)
+#define SEARCH_UINT	(1)
+#define SEARCH_USHORT	(2)
+#define SEARCH_CHARS	(3)
+#define SEARCH_DEFAULT	(SEARCH_ULONG)
+
+/* search mode information */
+struct searchinfo {
+	int mode;
+	int vcnt;
+	union {
+		/* default ulong search */
+		struct {
+			ulong value[MAXARGS];
+			ulong mask;
+		} s_ulong;
+
+		/* uint search */
+		struct {
+			uint value[MAXARGS];
+			uint mask;
+		} s_uint;
+
+		/* ushort search */
+		struct {
+			ushort value[MAXARGS];
+			ushort mask;
+		} s_ushort;
+
+		/* string (chars) search */
+		struct {
+			char *value[MAXARGS];
+			int len[MAXARGS];
+			int started_flag;  /* string search needs history */
+		} s_chars;
+	} s_parms;
 };
 
 static char *memtype_string(int, int);
@@ -131,15 +174,24 @@ static void dump_vmlist(struct meminfo *);
 static int dump_page_lists(struct meminfo *);
 static void dump_kmeminfo(void);
 static int page_to_phys(ulong, physaddr_t *); 
-static int phys_to_page(physaddr_t, ulong *); 
 static void display_memory(ulonglong, long, ulong, int); 
-static void search(ulong, ulong, ulong, int, ulong *, int);
+static ulong search_ulong(ulong *, ulong, int, struct searchinfo *);
+static ulong search_uint(ulong *, ulong, int, struct searchinfo *);
+static ulong search_ushort(ulong *, ulong, int, struct searchinfo *);
+static ulong search_chars(ulong *, ulong, int, struct searchinfo *);
+static ulonglong search_ulong_p(ulong *, ulonglong, int, struct searchinfo *);
+static ulonglong search_uint_p(ulong *, ulonglong, int, struct searchinfo *);
+static ulonglong search_ushort_p(ulong *, ulonglong, int, struct searchinfo *);
+static ulonglong search_chars_p(ulong *, ulonglong, int, struct searchinfo *);
+static void search_virtual(ulong, ulong, int, struct searchinfo *);
+static void search_physical(ulonglong, ulonglong, struct searchinfo *);
 static int next_upage(struct task_context *, ulong, ulong *);
 static int next_kpage(ulong, ulong *);
-static ulong last_vmalloc_address(void);
-static ulong next_vmlist_vaddr(ulong);
+static int next_physpage(ulonglong, ulonglong *);
+static int next_vmlist_vaddr(ulong, ulong *);
+static int next_module_vaddr(ulong, ulong *);
 static int next_identity_mapping(ulong, ulong *);
-static int vm_area_page_dump(ulong, ulong, ulong, ulong, void *, 
+static int vm_area_page_dump(ulong, ulong, ulong, ulong, ulong,
 	struct reference *);
 static int dump_swap_info(ulong, ulong *, ulong *);
 static void swap_info_init(void);
@@ -1115,7 +1167,6 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	void *location;
 	char readtype[20];
 	char *addrtype;
-	ulong origaddr;
 	struct memloc mem;
 	int per_line;
 	int hx;
@@ -1158,7 +1209,6 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 		fprintf(fp, "<addr: %llx count: %ld flag: %lx (%s)>\n", 
 			addr, count, flag, addrtype);
 
-	origaddr = addr;
 	BZERO(&mem, sizeof(struct memloc));
 	hx = linelen = typesz = per_line = ascii_start = 0;
 	location = NULL;
@@ -1720,7 +1770,8 @@ accessible(ulong kva)
  *               the error message.
  */
 
-#define PRINT_ERROR_MESSAGE ((!(error_handle & QUIET)) || CRASHDEBUG(1))
+#define PRINT_ERROR_MESSAGE ((!(error_handle & QUIET) && !STREQ(pc->curcmd, "search")) || \
+	(CRASHDEBUG(1) && !STREQ(pc->curcmd, "search")) || CRASHDEBUG(2))
 
 #define INVALID_UVADDR   "invalid user virtual address: %llx  type: \"%s\"\n"
 #define INVALID_KVADDR   "invalid kernel virtual address: %llx  type: \"%s\"\n"
@@ -1915,7 +1966,7 @@ read_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	int readcnt;
 
 	if (!machdep->verify_paddr(paddr)) {
-		if (CRASHDEBUG(1))
+		if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search"))
 			error(INFO, "verify_paddr(%lx) failed\n", paddr);
 		return READ_ERROR;
 	}
@@ -1965,7 +2016,7 @@ try_dev_kmem:
 	 */
 	if ((readcnt != cnt) && readcnt && (machdep->flags & DEVMEMRD) && 
 	     !errno) {
-		if (CRASHDEBUG(1))
+		if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search"))
 			error(INFO, "read(/dev/mem, %lx, %ld): %ld (%lx)\n",
 				paddr, cnt, readcnt, readcnt);	
 		cnt -= readcnt;
@@ -3138,7 +3189,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 	ulong vma;
 	ulong vm_start;
 	ulong vm_end;
-	void *vm_next, *vm_mm;
+	ulong vm_next, vm_mm;
 	char *dentry_buf, *vma_buf, *file_buf;
 	ulong vm_flags;
 	ulong vm_file, inode;
@@ -3202,7 +3253,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 	    !DO_REF_SEARCH(ref)) 
 		fprintf(fp, vma_header);
 
-	for (found = FALSE; vma; vma = (ulong)vm_next) {
+	for (found = FALSE; vma; vma = vm_next) {
 
 		if ((flag & PHYSADDR) && !DO_REF_SEARCH(ref))
 			fprintf(fp, "%s", vma_header);
@@ -3211,9 +3262,9 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		BZERO(buf1, BUFSIZE);
 		vma_buf = fill_vma_cache(vma);
 
-		vm_mm = VOID_PTR(vma_buf + OFFSET(vm_area_struct_vm_mm));
+		vm_mm = ULONG(vma_buf + OFFSET(vm_area_struct_vm_mm));
 		vm_end = ULONG(vma_buf + OFFSET(vm_area_struct_vm_end));
-		vm_next = VOID_PTR(vma_buf + OFFSET(vm_area_struct_vm_next));
+		vm_next = ULONG(vma_buf + OFFSET(vm_area_struct_vm_next));
 		vm_start = ULONG(vma_buf + OFFSET(vm_area_struct_vm_start));
 		vm_flags = SIZE(vm_area_struct_vm_flags) == sizeof(short) ?
 			USHORT(vma_buf+ OFFSET(vm_area_struct_vm_flags)) :
@@ -3335,7 +3386,7 @@ vm_area_page_dump(ulong vma,
 		  ulong task, 
 		  ulong start, 
 		  ulong end, 
-		  void *mm,
+		  ulong mm,
 		  struct reference *ref)
 {
 	physaddr_t paddr;
@@ -3347,7 +3398,7 @@ vm_area_page_dump(ulong vma,
 	char buf3[BUFSIZE];
 	char buf4[BUFSIZE];
 
-	if ((ulong)mm == symbol_value("init_mm")) 
+	if (mm == symbol_value("init_mm"))
 		return FALSE;
 
 	if (!ref || DO_REF_DISPLAY(ref))
@@ -9703,8 +9754,6 @@ dump_saved_slab_data(void)
 static void
 dump_slab(struct meminfo *si)
 {
-	uint16_t s_offset;
-
 	si->s_mem = ULONG(si->slab_buf + OFFSET(kmem_slab_s_s_mem));
 	si->s_mem = PTOB(BTOP(si->s_mem));
 
@@ -9723,7 +9772,6 @@ dump_slab(struct meminfo *si)
 	si->s_freep = VOID_PTR(si->slab_buf + OFFSET(kmem_slab_s_s_freep));
 	si->s_inuse = ULONG(si->slab_buf + OFFSET(kmem_slab_s_s_inuse));
 	si->s_index = ULONG_PTR(si->slab_buf + OFFSET(kmem_slab_s_s_index));
-	s_offset = USHORT(si->slab_buf + OFFSET(kmem_slab_s_s_offset));
 
 	if (!(si->flags & ADDRESS_SPECIFIED)) {
 		fprintf(fp, slab_hdr);
@@ -10838,7 +10886,7 @@ page_to_phys(ulong pp, physaddr_t *phys)
 /*
  *  Return the page pointer associated with this physical address.
  */
-static int 
+int 
 phys_to_page(physaddr_t phys, ulong *pp)
 {
 	int n;
@@ -11273,6 +11321,46 @@ address_space_start(struct task_context *tc, ulong *addr)
 	return TRUE;
 }
 
+
+int
+generic_get_kvaddr_ranges(struct vaddr_range *rp)
+{
+	int i, cnt;
+
+	if (XEN_HYPER_MODE())
+		return 0;
+
+	cnt = 0;
+
+	rp[cnt].type = KVADDR_UNITY_MAP;
+	rp[cnt].start = machdep->kvbase;
+	rp[cnt++].end = vt->vmalloc_start;
+
+	rp[cnt].type = KVADDR_VMALLOC;
+	rp[cnt].start = vt->vmalloc_start;
+	rp[cnt++].end = (ulong)(-1);
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "kvaddr ranges:\n");
+		for (i = 0; i < cnt; i++) {
+			fprintf(fp, "  [%d] %lx %lx ", i,
+				rp[i].start, rp[i].end);
+			switch (rp[i].type)
+			{
+			case KVADDR_UNITY_MAP:
+				fprintf(fp, "KVADDR_UNITY_MAP\n");
+				break;
+			case KVADDR_VMALLOC:
+				fprintf(fp, "KVADDR_VMALLOC\n");
+				break;
+			}
+		}
+	}
+
+	return cnt;
+}
+
+
 /*
  *  Search for a given value between a starting and ending address range,
  *  applying an optional mask for "don't care" bits.  As an alternative
@@ -11280,22 +11368,63 @@ address_space_start(struct task_context *tc, ulong *addr)
  *  space".  For processors with ambiguous user/kernel address spaces,
  *  -u or -k must be used (with or without -s) as a differentiator.
  */
+
+
 void
 cmd_search(void)
 {
-        int c;
-	ulong start, end, mask, memtype, len;
-	ulong uvaddr_end;
-	int sflag;
-	struct meminfo meminfo;
-	ulong value_array[MAXARGS];
+        int i, c, ranges;
+	ulonglong start, end;
+	ulong mask, memtype, len;
+	ulong uvaddr_start, uvaddr_end;
+	ulong kvaddr_start, kvaddr_end, range_start, range_end;
+	int sflag, Kflag, Vflag, pflag;
+	struct searchinfo searchinfo;
 	struct syment *sp;
+	struct node_table *nt;
+	struct vaddr_range vaddr_ranges[MAX_KVADDR_RANGES];
+	struct vaddr_range *vrp;
 
-	start = end = mask = sflag = memtype = len = 0;
+#define vaddr_overflow(ADDR) (BITS32() && ((ADDR) > 0xffffffffULL))
+
+	start = end = mask = sflag = pflag = Kflag = Vflag = memtype = len = 0;
+	kvaddr_start = kvaddr_end = 0;
+	uvaddr_start = UNINITIALIZED;
 	uvaddr_end = COMMON_VADDR_SPACE() ? (ulong)(-1) : machdep->kvbase;
-	BZERO(value_array, sizeof(ulong) * MAXARGS);
+	BZERO(&searchinfo, sizeof(struct searchinfo));
 
-        while ((c = getopt(argcnt, args, "l:uks:e:v:m:")) != EOF) {
+	vrp = &vaddr_ranges[0];
+	ranges = machdep->get_kvaddr_ranges(vrp);
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "kvaddr ranges:\n");
+		for (i = 0; i < ranges; i++) {
+			fprintf(fp, "  [%d] %lx %lx ", i,
+				vrp[i].start, vrp[i].end);
+			switch (vrp[i].type)
+			{
+			case KVADDR_UNITY_MAP:
+				fprintf(fp, "KVADDR_UNITY_MAP\n");
+				break;
+			case KVADDR_START_MAP:
+				fprintf(fp, "KVADDR_START_MAP\n");
+				break;
+			case KVADDR_VMALLOC:
+				fprintf(fp, "KVADDR_VMALLOC\n");
+				break;
+			case KVADDR_MODULES:
+				fprintf(fp, "KVADDR_MODULES\n");
+				break;
+			case KVADDR_VMEMMAP:
+				fprintf(fp, "KVADDR_VMEMMAP\n");
+				break;
+			}
+		}
+	}
+
+	searchinfo.mode = SEARCH_ULONG;	/* default search */
+
+        while ((c = getopt(argcnt, args, "l:ukKVps:e:v:m:hwc")) != EOF) {
                 switch(c)
                 {
 		case 'u':
@@ -11304,45 +11433,67 @@ cmd_search(void)
  			 	    "-u option is not applicable to the "
 				    "Xen hypervisor\n");
 
+			if (is_kernel_thread(CURRENT_TASK()) || 
+			    !task_mm(CURRENT_TASK(), TRUE))
+				error(FATAL, 
+				    "current context has no user address space\n");
+
 			if (!sflag) {
-				address_space_start(CURRENT_CONTEXT(),&start);
-				sflag++;
+				address_space_start(CURRENT_CONTEXT(),
+					&uvaddr_start);
+				start = (ulonglong)uvaddr_start;
 			}
 			memtype = UVADDR;
 			sflag++;
 			break;
 
+		case 'p':
+			if (XEN_HYPER_MODE())
+				error(FATAL, 
+ 			 	    "-p option is not applicable to the "
+				    "Xen hypervisor\n");
+
+			memtype = PHYSADDR;
+			if (!sflag) {
+				nt = &vt->node_table[0];
+				start = nt->start_paddr;
+			}
+			sflag++;
+			break;
+
+		case 'V':
+		case 'K':
 		case 'k':
 			if (XEN_HYPER_MODE())
 				error(FATAL, 
- 			 	    "-k option is not applicable to the "
-				    "Xen hypervisor\n");
+ 			 	    "-%c option is not applicable to the "
+				    "Xen hypervisor\n", c);
 
-			if (!sflag) {
-				start = machdep->kvbase;
-				if (machine_type("IA64") &&
-				    (start < machdep->identity_map_base) &&
-				    (kt->stext > start))
-					start = kt->stext;
-				sflag++;
-			}
+			if (!sflag)
+				start = vrp[0].start;	
 			memtype = KVADDR;
 			sflag++;
+			if (c == 'K')
+				Kflag++;
+			else if (c == 'V')
+				Vflag++;
 			break;
 
 		case 's':
 			if ((sp = symbol_search(optarg)))
-				start = sp->value;
+				start = (ulonglong)sp->value;
 			else
-				start = htol(optarg, FAULT_ON_ERROR, NULL);
+				start = htoll(optarg, FAULT_ON_ERROR, NULL);
 			sflag++;
 			break;
 
 		case 'e':
                         if ((sp = symbol_search(optarg)))
-                                end = sp->value;
+                                end = (ulonglong)sp->value;
                         else
-                        	end = htol(optarg, FAULT_ON_ERROR, NULL);
+				end = htoll(optarg, FAULT_ON_ERROR, NULL);
+			if (!end)
+				error(FATAL, "invalid ending address: 0\n");
                         break;
 
 		case 'l':
@@ -11352,6 +11503,27 @@ cmd_search(void)
 		case 'm':
                         mask = htol(optarg, FAULT_ON_ERROR, NULL);
                         break;
+
+		case 'h':
+			if (searchinfo.mode != SEARCH_DEFAULT)
+				error(INFO, "WARNING: overriding previously"
+					" set search mode with \"h\"\n");
+			searchinfo.mode = SEARCH_USHORT;
+			break;
+
+		case 'w':
+			if (searchinfo.mode != SEARCH_DEFAULT)
+				error(INFO, "WARNING: overriding previously"
+					" set search mode with \"w\"\n");
+			searchinfo.mode = SEARCH_UINT;
+			break;
+
+		case 'c':
+			if (searchinfo.mode != SEARCH_DEFAULT)
+				error(INFO, "WARNING: overriding previously"
+					" set search type with \"c\"\n");
+			searchinfo.mode = SEARCH_CHARS;
+			break;
 
                 default:
                         argerrs++;
@@ -11365,94 +11537,230 @@ cmd_search(void)
 			error(FATAL, 
 				"the \"-s start\" option is required for"
 				" the Xen hypervisor\n");
+	} else if (!memtype) {
+		memtype = KVADDR;
+		if (!sflag++)
+			start = vrp[0].start;	
 	}
 
-        if (argerrs || !sflag || !args[optind] || (len && end))
+        if (argerrs || !sflag || !args[optind] || (len && end) || !memtype)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (!memtype)
-		memtype = vaddr_type(start, CURRENT_CONTEXT());
-
+	/*
+	 *  Verify starting address.
+	 */
 	switch (memtype)
 	{
 	case UVADDR:
-		if (!IS_UVADDR(start, CURRENT_CONTEXT())) {
-			error(INFO, "invalid user virtual address: %lx\n", 
+		if (vaddr_overflow(start) ||
+		    !IS_UVADDR((ulong)start, CURRENT_CONTEXT())) {
+			error(INFO, "invalid user virtual address: %llx\n", 
 				start);
                 	cmd_usage(pc->curcmd, SYNOPSIS);
 		}
 		break;
 
 	case KVADDR:
-		if (!IS_KVADDR(start)) {
-			error(INFO, "invalid kernel virtual address: %lx\n",
-				start);
+		if (vaddr_overflow(start) ||
+		    !IS_KVADDR((ulong)start)) {
+			error(INFO, "invalid kernel virtual address: %llx\n",
+				(ulonglong)start);
                		cmd_usage(pc->curcmd, SYNOPSIS);
 		}
 		break;
 
 	case AMBIGUOUS:	
 		error(INFO, 
-		    "ambiguous virtual address: %lx  (requires -u or -k)\n",
-			start);
+		    "ambiguous virtual address: %llx  (requires -u or -k)\n",
+			(ulonglong)start);
                	cmd_usage(pc->curcmd, SYNOPSIS);
 	}
 
+	/*
+	 *  Set up ending address if necessary.
+	 */
 	if (!end && !len) {
 		switch (memtype)
 		{
 		case UVADDR:
-			end = uvaddr_end;
+			end = (ulonglong)uvaddr_end;
 			break;
 
 		case KVADDR:
 			if (XEN_HYPER_MODE())
 				end = (ulong)(-1);
-			else if (vt->vmalloc_start < machdep->identity_map_base)
-				end = (ulong)(-1);
 			else {
-				meminfo.memtype = KVADDR;
-				meminfo.spec_addr = 0;
-				meminfo.flags = (ADDRESS_SPECIFIED|GET_HIGHEST);
-				dump_vmlist(&meminfo);
-				end = meminfo.retval;
-				if (end < start)
-					end = (ulong)(-1);
+				range_end = 0;
+				for (i = 0; i < ranges; i++) {
+					if (vrp[i].end > range_end)
+						range_end = vrp[i].end;	
+				}
+				end = (ulonglong)range_end;
 			}
 			break;
+
+		case PHYSADDR:
+			nt = &vt->node_table[vt->numnodes-1];
+			end = nt->start_paddr + (nt->size * PAGESIZE());
+			break;
 		}
-	} else if (len)  
+	} else if (len) 
 		end = start + len;
 
+	/*
+	 *  Final verification and per-type start/end variable setting.
+	 */
 	switch (memtype)
 	{
 	case UVADDR:
-		if (is_kernel_thread(CURRENT_TASK()) || !task_mm(CURRENT_TASK(), TRUE))
-			error(FATAL, "current context has no user address space\n");
-		if (end > uvaddr_end) {
+		uvaddr_start = (ulong)start;
+
+		if (end > (ulonglong)uvaddr_end) {
 			error(INFO, 
-	          "address range starts in user space and ends kernel space\n");
-               		cmd_usage(pc->curcmd, SYNOPSIS);
+				"ending address %lx is in kernel space: %llx\n", end);
+			cmd_usage(pc->curcmd, SYNOPSIS);
 		}
-			/* FALLTHROUGH */
-	case KVADDR:
-		if (end < start) {
+
+		if (end < (ulonglong)uvaddr_end)
+			uvaddr_end = (ulong)end;
+
+		if (uvaddr_end < uvaddr_start) {
 			error(INFO, 
 			   "ending address %lx is below starting address %lx\n",
-				end, start);
+				uvaddr_end, uvaddr_start);
+               		cmd_usage(pc->curcmd, SYNOPSIS);
+		}
+		break;
+
+	case KVADDR:
+		kvaddr_start = (ulong)start;
+		kvaddr_end = (ulong)end;
+
+		if (kvaddr_end < kvaddr_start) {
+			error(INFO, 
+			   "ending address %lx is below starting address %lx\n",
+				kvaddr_end, kvaddr_start);
+               		cmd_usage(pc->curcmd, SYNOPSIS);
+		}
+		break;
+
+	case PHYSADDR:
+		if (end < start) {
+			error(INFO, 
+			   "ending address %llx is below starting address %llx\n",
+				(ulonglong)end, (ulonglong)start);
                		cmd_usage(pc->curcmd, SYNOPSIS);
 		}
 		break;
 	}
 
-	c = 0;
+	if (mask) {
+		switch (searchinfo.mode) 
+		{
+		case SEARCH_ULONG:
+			searchinfo.s_parms.s_ulong.mask = mask;
+			break;
+		case SEARCH_UINT:
+			searchinfo.s_parms.s_uint.mask = mask;
+			break;
+		case SEARCH_USHORT:
+			searchinfo.s_parms.s_ushort.mask = mask;
+			break;
+		case SEARCH_CHARS:
+			error(INFO, "mask ignored on string search\n");
+			break;
+		}
+	}
+			
+		
+	searchinfo.vcnt = 0;
 	while (args[optind]) {
-		value_array[c] = htol(args[optind], FAULT_ON_ERROR, NULL);
-		c++;
+		switch (searchinfo.mode) 
+		{
+		case SEARCH_ULONG:
+			searchinfo.s_parms.s_ulong.value[searchinfo.vcnt] = 
+				htol(args[optind], FAULT_ON_ERROR, NULL);
+			searchinfo.vcnt++;
+			break;
+		case SEARCH_UINT:
+			searchinfo.s_parms.s_uint.value[searchinfo.vcnt] = 
+				htol(args[optind], FAULT_ON_ERROR, NULL);
+			searchinfo.vcnt++;
+			break;
+		case SEARCH_USHORT:
+			searchinfo.s_parms.s_ushort.value[searchinfo.vcnt] = 
+				htol(args[optind], FAULT_ON_ERROR, NULL);
+			searchinfo.vcnt++;
+			break;
+		case SEARCH_CHARS:
+			/* parser can deliver empty strings */
+			if (strlen(args[optind])) { 
+				searchinfo.s_parms.s_chars.value[searchinfo.vcnt] = 
+					args[optind];
+				searchinfo.s_parms.s_chars.len[searchinfo.vcnt] = 
+					strlen(args[optind]);
+				searchinfo.vcnt++;
+			}
+			break;
+		}
 		optind++;
 	}
 
-	search(start, end, mask, memtype, value_array, c);
+	if (!searchinfo.vcnt)
+                cmd_usage(pc->curcmd, SYNOPSIS);
+	
+	switch (memtype)
+	{
+	case PHYSADDR:
+		search_physical(start, end, &searchinfo);
+		break;
+
+	case UVADDR:
+		search_virtual(uvaddr_start, uvaddr_end, memtype, 
+			&searchinfo);
+		break;
+
+	case KVADDR:
+		if (XEN_HYPER_MODE()) {
+			search_virtual(kvaddr_start, kvaddr_end, memtype, 
+				&searchinfo);
+			break;
+		}
+
+		for (i = 0; i < ranges; i++) {
+
+			if ((kvaddr_start >= vrp[i].end) ||
+			    (kvaddr_end <= vrp[i].start)) 
+				continue;
+
+			range_start = kvaddr_start > vrp[i].start ?
+				kvaddr_start : vrp[i].start;
+			range_end = (kvaddr_end < vrp[i].end) ?
+				kvaddr_end : vrp[i].end;
+
+			pc->curcmd_private = vrp[i].type;
+
+			switch (vrp[i].type)
+			{
+			case KVADDR_UNITY_MAP:
+			case KVADDR_START_MAP:
+				if (Vflag)
+					continue;
+				break;
+
+			case KVADDR_VMALLOC:
+			case KVADDR_MODULES:
+			case KVADDR_VMEMMAP:
+				if (Kflag)
+					continue;
+				break;
+			}
+
+			search_virtual(range_start, range_end, memtype,
+					 &searchinfo);
+		}
+		break;
+	}
 }
 
 /*
@@ -11461,25 +11769,334 @@ cmd_search(void)
 
 #define SEARCHMASK(X) ((X) | mask) 
 
-static void
-search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
+static ulong
+search_ulong(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 {
 	int i, j;
+	ulong mask = si->s_parms.s_ulong.mask;
+	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j]))
+				fprintf(fp, "%lx: %lx\n", addr, *bufptr);
+                }
+	}
+	return addr;
+}
+
+/* phys search uses ulonglong address representation */
+static ulonglong
+search_ulong_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	ulong mask = si->s_parms.s_ulong.mask;
+	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j]))
+				fprintf(fp, "%llx: %lx\n", addr, *bufptr);
+                }
+	}
+	return addr;
+}
+
+static ulong
+search_uint(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int cnt = longcnt * (sizeof(long)/sizeof(int));
+	uint *ptr = (uint *)bufptr;
+	uint mask = si->s_parms.s_uint.mask;
+
+	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j]))
+				fprintf(fp, "%lx: %x\n", addr, *ptr);
+                }
+	}
+	return addr;
+}
+
+/* phys search uses ulonglong address representation */
+static ulonglong
+search_uint_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int cnt = longcnt * (sizeof(long)/sizeof(int));
+	uint *ptr = (uint *)bufptr;
+	uint mask = si->s_parms.s_uint.mask;
+
+	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j]))
+				fprintf(fp, "%llx: %x\n", addr, *ptr);
+                }
+	}
+	return addr;
+}
+
+static ulong
+search_ushort(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int cnt = longcnt * (sizeof(long)/sizeof(short));
+	ushort *ptr = (ushort *)bufptr;
+	ushort mask = si->s_parms.s_ushort.mask;
+
+	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j]))
+				fprintf(fp, "%lx: %x\n", addr, *ptr);
+                }
+	}
+	return addr;
+}
+
+/* phys search uses ulonglong address representation */
+static ulonglong
+search_ushort_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int cnt = longcnt * (sizeof(long)/sizeof(short));
+	ushort *ptr = (ushort *)bufptr;
+	ushort mask = si->s_parms.s_ushort.mask;
+
+	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j]))
+				fprintf(fp, "%llx: %x\n", addr, *ptr);
+                }
+	}
+	return addr;
+}
+
+/*
+ * String search "memory" to remember possible matches that cross
+ * page (or search buffer) boundaries.
+ * The cross_match zone is the last strlen-1 chars of the page for
+ * each of the possible targets.
+ */
+struct cross_match {
+	int cnt;	/* possible hits in the cross_match zone */
+	ulong addr; 	/* starting addr of crossing match zone for this target */
+	ulonglong addr_p; /* for physical search */
+	char hit[BUFSIZE]; /* array of hit locations in the crossing match zone */
+			/* This should really be the much-smaller MAXARGLEN, but
+			 * no one seems to be enforcing that in the parser.
+			 */
+} cross[MAXARGS];
+
+ulong cross_match_next_addr; /* the expected starting value of the next page */
+ulonglong cross_match_next_addr_p; /* the expected starting value of the next physical page */
+	
+#define CHARS_CTX 56
+
+static void
+report_match(ulong addr, char *ptr1, int len1, char *ptr2, int len2)
+{
+	int i;
+	fprintf(fp, "%lx: ", addr);
+	for (i = 0; i < len1; i++) {
+		if (isprint(ptr1[i]))
+			fprintf(fp, "%c", ptr1[i]);
+		else
+			fprintf(fp, ".");
+	}
+	for (i = 0; i < len2; i++) {
+		if (isprint(ptr2[i]))
+			fprintf(fp, "%c", ptr2[i]);
+		else
+			fprintf(fp, ".");
+	}
+	fprintf(fp, "\n");	
+}
+	
+static ulong
+search_chars(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int len;
+	char *target;
+	int charcnt = longcnt * sizeof(long);
+	char *ptr = (char *)bufptr;
+
+	/* is this the first page of this search? */
+	if (si->s_parms.s_chars.started_flag == 0) {
+		for (j = 0; j < si->vcnt; j++) {
+			cross[j].cnt = 0;   /* no hits */
+		}
+		cross_match_next_addr = (ulong)-1; /* no page match for first page */
+		si->s_parms.s_chars.started_flag++;
+	}
+
+	if (cross_match_next_addr == addr) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (cross[j].cnt) {
+				target = si->s_parms.s_chars.value[j];
+				len = si->s_parms.s_chars.len[j];
+				for (i = 0; i < len - 1; i++) {
+					if (cross[j].hit[i] &&
+						!strncmp(&target[len - 1 - i], ptr, i + 1)) 
+							report_match(cross[j].addr + i, 
+									target, len,
+									&ptr[i+1], 
+									CHARS_CTX - len);
+				}
+			}
+		}
+	}
+
+	/* set up for possible cross matches on this page */
+	cross_match_next_addr = addr + charcnt;
+	for (j = 0; j < si->vcnt; j++) {
+		len = si->s_parms.s_chars.len[j];
+		cross[j].cnt = 0;
+		cross[j].addr = addr + longcnt * sizeof(long) - (len - 1);
+		for (i = 0; i < len - 1; i++) 
+			cross[j].hit[i] = 0;
+	}
+	
+	for (i = 0; i < charcnt; i++, ptr++, addr++) {
+		for (j = 0; j < si->vcnt; j++) {
+			target = si->s_parms.s_chars.value[j];
+			len = si->s_parms.s_chars.len[j];
+			if ((i + len) > charcnt) {
+				/* check for cross match */
+				if (!strncmp(target, ptr, charcnt - i)) {
+					cross[j].hit[len + i - charcnt - 1] = 1;
+					cross[j].cnt++;
+				} 
+			} else {
+				if (!strncmp(target, ptr, len)) {
+					int slen = CHARS_CTX;
+					if ((i + CHARS_CTX) > charcnt) 
+						slen = charcnt - i;
+					report_match(addr, ptr, slen, (char *)0, 0);
+				}
+			}
+		}
+	}
+	return addr;
+}
+						
+
+static void
+report_match_p(ulonglong addr, char *ptr1, int len1, char *ptr2, int len2)
+{
+	int i;
+	fprintf(fp, "%llx: ", addr);
+	for (i = 0; i < len1; i++) {
+		if (isprint(ptr1[i]))
+			fprintf(fp, "%c", ptr1[i]);
+		else
+			fprintf(fp, ".");
+	}
+	for (i = 0; i < len2; i++) {
+		if (isprint(ptr2[i]))
+			fprintf(fp, "%c", ptr2[i]);
+		else
+			fprintf(fp, ".");
+	}
+	fprintf(fp, "\n");	
+}
+
+static ulonglong
+search_chars_p(ulong *bufptr, ulonglong addr_p, int longcnt, struct searchinfo *si)
+{
+	int i, j;
+	int len;
+	char *target;
+	int charcnt = longcnt * sizeof(long);
+	char *ptr = (char *)bufptr;
+
+	/* is this the first page of this search? */
+	if (si->s_parms.s_chars.started_flag == 0) {
+		for (j = 0; j < si->vcnt; j++) {
+			cross[j].cnt = 0;   /* no hits */
+		}
+		cross_match_next_addr_p = (ulonglong)-1; /* no page match for first page */
+		si->s_parms.s_chars.started_flag++;
+	}
+
+	if (cross_match_next_addr_p == addr_p) {
+		for (j = 0; j < si->vcnt; j++) {
+			if (cross[j].cnt) {
+				target = si->s_parms.s_chars.value[j];
+				len = si->s_parms.s_chars.len[j];
+				for (i = 0; i < len - 1; i++) {
+					if (cross[j].hit[i] &&
+						!strncmp(&target[len - 1 - i], ptr, i + 1)) 
+							report_match_p(cross[j].addr_p + i, 
+									target, len,
+									&ptr[i+1], 
+									CHARS_CTX - len);
+				}
+			}
+		}
+	}
+
+	/* set up for possible cross matches on this page */
+	cross_match_next_addr_p = addr_p + charcnt;
+	for (j = 0; j < si->vcnt; j++) {
+		len = si->s_parms.s_chars.len[j];
+		cross[j].cnt = 0;
+		cross[j].addr_p = addr_p + longcnt * sizeof(long) - (len - 1);
+		for (i = 0; i < len - 1; i++) 
+			cross[j].hit[i] = 0;
+	}
+	
+	for (i = 0; i < charcnt; i++, ptr++, addr_p++) {
+		for (j = 0; j < si->vcnt; j++) {
+			target = si->s_parms.s_chars.value[j];
+			len = si->s_parms.s_chars.len[j];
+			if ((i + len) > charcnt) {
+				/* check for cross match */
+				if (!strncmp(target, ptr, charcnt - i)) {
+					cross[j].hit[len + i - charcnt - 1] = 1;
+					cross[j].cnt++;
+				} 
+			} else {
+				if (!strncmp(target, ptr, len)) {
+					int slen = CHARS_CTX;
+					if ((i + CHARS_CTX) > charcnt) 
+						slen = charcnt - i;
+					report_match_p(addr_p, ptr, slen, (char *)0, 0);
+				}
+			}
+		}
+	}
+	return addr_p;
+}
+
+static void
+search_virtual(ulong start, ulong end, int memtype, struct searchinfo *si)
+{
 	ulong pp, next, *ubp;
 	int wordcnt, lastpage;
 	ulong page;
-	physaddr_t paddr;
+	physaddr_t paddr; 
 	char *pagebuf;
+	ulong pct, pages_read, pages_checked;
+	time_t begin, finish;
+
+	pages_read = pages_checked = 0;
+	begin = finish = 0;
+
+	pagebuf = GETBUF(PAGESIZE());
 
 	if (start & (sizeof(long)-1)) {
 		start &= ~(sizeof(long)-1);
 		error(INFO, "rounding down start address to: %lx\n", start);
 	}
 
-	pagebuf = GETBUF(PAGESIZE());
+	if (CRASHDEBUG(1)) {
+		begin = time(NULL);
+		fprintf(fp, "search_virtual: start: %lx end: %lx\n", 
+			start, end);
+	}
+
 	next = start;
 
 	for (pp = VIRTPAGEBASE(start); next < end; next = pp) {
+		pages_checked++;
 		lastpage = (VIRTPAGEBASE(next) == VIRTPAGEBASE(end));
 		if (LKCD_DUMPFILE())
 			set_lkcd_nohash();
@@ -11493,7 +12110,7 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
 				if (CRASHDEBUG(1))
 					fprintf(fp, 
 					    "search suspended at: %lx\n", pp);
-				return;
+				goto done;
 			}
 			goto virtual;
 		}
@@ -11504,7 +12121,7 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
                         if (!uvtop(CURRENT_CONTEXT(), pp, &paddr, 0) ||
                             !phys_to_page(paddr, &page)) { 
 				if (!next_upage(CURRENT_CONTEXT(), pp, &pp)) 
-					return;
+					goto done;
                                 continue;
 			}
                         break;
@@ -11513,7 +12130,7 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
                         if (!kvtop(CURRENT_CONTEXT(), pp, &paddr, 0) ||
                             !phys_to_page(paddr, &page)) {
 				if (!next_kpage(pp, &pp))
-					return;
+					goto done;
                                 continue;
 			}
                         break;
@@ -11525,6 +12142,8 @@ search(ulong start, ulong end, ulong mask, int memtype, ulong *value, int vcnt)
 			continue;
 		}
 virtual:
+		pages_read++;
+
 		ubp = (ulong *)&pagebuf[next - pp];
 		if (lastpage) {
 			if (end == (ulong)(-1))
@@ -11534,11 +12153,24 @@ virtual:
 		} else
 			wordcnt = (PAGESIZE() - (next - pp))/sizeof(long);
 
-		for (i = 0; i < wordcnt; i++, ubp++, next += sizeof(long)) {
-			for (j = 0; j < vcnt; j++) {
-				if (SEARCHMASK(*ubp) == SEARCHMASK(value[j])) 
-					fprintf(fp, "%lx: %lx\n", next, *ubp);
-			}
+		switch (si->mode)
+		{
+		case SEARCH_ULONG:
+			next = search_ulong(ubp, next, wordcnt, si);
+			break;
+		case SEARCH_UINT:
+			next = search_uint(ubp, next, wordcnt, si);
+			break;
+		case SEARCH_USHORT:
+			next = search_ushort(ubp, next, wordcnt, si);
+			break;
+		case SEARCH_CHARS:
+			next = search_chars(ubp, next, wordcnt, si);
+			break;
+		default:
+			/* unimplemented search type */
+			next += wordcnt * (sizeof(long));
+			break;
 		}
 
 		if (CRASHDEBUG(1))
@@ -11546,6 +12178,101 @@ virtual:
 				console("%lx\n", pp);
 
 		pp += PAGESIZE();
+	}
+
+done:
+	if (CRASHDEBUG(1)) {
+		finish = time(NULL);
+		pct = (pages_read * 100)/pages_checked;
+		fprintf(fp, 
+		    "search_virtual: read %ld (%ld%%) of %ld pages checked in %ld seconds\n", 
+			pages_read, pct, pages_checked, finish - begin);
+	}
+}
+
+
+static void
+search_physical(ulonglong start_in, ulonglong end_in, struct searchinfo *si)
+{
+	ulong *ubp;
+	int wordcnt, lastpage;
+	ulonglong pnext, ppp;
+	char *pagebuf;
+	ulong pct, pages_read, pages_checked;
+	time_t begin, finish;
+	ulong page;
+
+	pages_read = pages_checked = 0;
+	begin = finish = 0;
+
+	pagebuf = GETBUF(PAGESIZE());
+
+        if (start_in & (sizeof(ulonglong)-1)) {
+                start_in &= ~(sizeof(ulonglong)-1);
+                error(INFO, "rounding down start address to: %llx\n", 
+			(ulonglong)start_in);
+        }
+
+	if (CRASHDEBUG(1)) {
+		begin = time(NULL);
+		fprintf(fp, "search_physical: start: %llx end: %llx\n", 
+			start_in, end_in);
+	}
+
+        pnext = start_in;
+        for (ppp = PHYSPAGEBASE(start_in); pnext < end_in; pnext = ppp) {
+		pages_checked++;
+                lastpage = (PHYSPAGEBASE(pnext) == PHYSPAGEBASE(end_in));
+                if (LKCD_DUMPFILE())
+                        set_lkcd_nohash();
+
+                if (!phys_to_page(ppp, &page) || 
+		    !readmem(ppp, PHYSADDR, pagebuf, PAGESIZE(),
+                   	"search page", RETURN_ON_ERROR|QUIET)) {
+			if (!next_physpage(ppp, &ppp))
+				break;
+			continue;
+		}
+
+		pages_read++;
+                ubp = (ulong *)&pagebuf[pnext - ppp];
+                if (lastpage) {
+                        if (end_in == (ulonglong)(-1))
+                                wordcnt = PAGESIZE()/sizeof(long);
+                        else
+                                wordcnt = (end_in - pnext)/sizeof(long);
+                } else
+                        wordcnt = (PAGESIZE() - (pnext - ppp))/sizeof(long);
+
+		switch (si->mode)
+		{
+		case SEARCH_ULONG:
+			pnext = search_ulong_p(ubp, pnext, wordcnt, si);
+			break;
+		case SEARCH_UINT:
+			pnext = search_uint_p(ubp, pnext, wordcnt, si);
+			break;
+		case SEARCH_USHORT:
+			pnext = search_ushort_p(ubp, pnext, wordcnt, si);
+			break;
+		case SEARCH_CHARS:
+			pnext = search_chars_p(ubp, pnext, wordcnt, si);
+			break;
+		default:
+			/* unimplemented search type */
+			pnext += wordcnt * (sizeof(long));
+			break;
+		}
+
+		ppp += PAGESIZE();
+	}
+
+	if (CRASHDEBUG(1)) {
+		finish = time(NULL);
+		pct = (pages_read * 100)/pages_checked;
+		fprintf(fp, 
+		    "search_physical: read %ld (%ld%%) of %ld pages checked in %ld seconds\n", 
+			pages_read, pct, pages_checked, finish - begin);
 	}
 }
 
@@ -11558,10 +12285,9 @@ static int
 next_upage(struct task_context *tc, ulong vaddr, ulong *nextvaddr)
 {
 	ulong vma, total_vm;
-	int found;
 	char *vma_buf;
         ulong vm_start, vm_end;
-	void *vm_next;
+	ulong vm_next;
 
         if (!tc->mm_struct)
                 return FALSE;
@@ -11575,12 +12301,12 @@ next_upage(struct task_context *tc, ulong vaddr, ulong *nextvaddr)
 
 	vaddr = VIRTPAGEBASE(vaddr) + PAGESIZE();  /* first possible page */
 
-        for (found = FALSE; vma; vma = (ulong)vm_next) {
+        for ( ; vma; vma = vm_next) {
                 vma_buf = fill_vma_cache(vma);
 
                 vm_start = ULONG(vma_buf + OFFSET(vm_area_struct_vm_start));
                 vm_end = ULONG(vma_buf + OFFSET(vm_area_struct_vm_end));
-                vm_next = VOID_PTR(vma_buf + OFFSET(vm_area_struct_vm_next));
+                vm_next = ULONG(vma_buf + OFFSET(vm_area_struct_vm_next));
 
 		if (vaddr <= vm_start) {
 			*nextvaddr = vm_start;
@@ -11599,45 +12325,137 @@ next_upage(struct task_context *tc, ulong vaddr, ulong *nextvaddr)
 /*
  *  Return the next mapped kernel virtual address in the vmlist
  *  that is equal to or comes after the passed-in address.
+ *  Prevent repeated calls to dump_vmlist() by only doing it
+ *  one time for dumpfiles, or one time per (active) command.
  */
-static ulong
-next_vmlist_vaddr(ulong vaddr)
+static int
+next_vmlist_vaddr(ulong vaddr, ulong *nextvaddr)
 {
-	ulong i, count;
+	int i, retval;
+	ulong cnt;
 	struct meminfo meminfo, *mi;
+	static int count = 0;
+	static struct vmlist *vmlist = NULL;
+	static ulong cmdgencur = BADVAL;
+
+	/*
+	 *  Search the stashed vmlist if possible.
+	 */
+	if (vmlist && ACTIVE()) {
+		if (pc->cmdgencur != cmdgencur) {
+			free(vmlist);
+			vmlist = NULL;
+		}
+	}
+
+	if (vmlist) {
+		for (i = 0, retval = FALSE; i < count; i++) {
+			if (vaddr <= vmlist[i].addr) {
+				*nextvaddr = vmlist[i].addr;
+				retval = TRUE;
+				break;
+			}
+			if (vaddr < (vmlist[i].addr + vmlist[i].size)) {
+				*nextvaddr = vaddr;
+				retval = TRUE;
+				break;
+			}
+		}
+		return retval;
+	}
 
 	mi = &meminfo;
 	BZERO(mi, sizeof(struct meminfo));
-
         mi->flags = GET_VMLIST_COUNT;
         dump_vmlist(mi);
-	count = mi->retval;
+	cnt = mi->retval;
 
-	if (!count)
-		return vaddr;
+	if (!cnt)
+		return FALSE;
 
-	mi->vmlist = (struct vmlist *)GETBUF(sizeof(struct vmlist)*count);
+	mi->vmlist = (struct vmlist *)GETBUF(sizeof(struct vmlist)*cnt);
         mi->flags = GET_VMLIST;
         dump_vmlist(mi);
 
-	for (i = 0; i < count; i++) {
+	for (i = 0, retval = FALSE; i < cnt; i++) {
 		if (vaddr <= mi->vmlist[i].addr) {
-			vaddr = mi->vmlist[i].addr;
+			*nextvaddr = mi->vmlist[i].addr;
+			retval = TRUE;
 			break;
 		}
-		if (vaddr < (mi->vmlist[i].addr + mi->vmlist[i].size))
+		if (vaddr < (mi->vmlist[i].addr + mi->vmlist[i].size)) {
+			*nextvaddr = vaddr;
+			retval = TRUE;
 			break;
+		}
+	}
+
+	if (!vmlist) {
+		vmlist = (struct vmlist *)
+			malloc(sizeof(struct vmlist)*cnt);
+
+		if (vmlist) {
+			BCOPY(mi->vmlist, vmlist,
+				sizeof(struct vmlist)*cnt);
+			count = cnt;
+			cmdgencur = pc->cmdgencur;
+		}
 	}
 
 	FREEBUF(mi->vmlist);
 
-	return vaddr;
+	return retval;
 }
 
+/*
+ *  Determine whether a virtual address is inside a vmlist segment.
+ */
+int 
+in_vmlist_segment(ulong vaddr)
+{
+	ulong next;
+
+	if (next_vmlist_vaddr(vaddr, &next) &&
+	    (vaddr == next))
+		return TRUE;
+
+	return FALSE;
+}
 
 /*
- *  Return the next kernel virtual address page that comes after
- *  the passed-in, untranslatable, address.
+ *  Return the next kernel module virtual address that is
+ *  equal to or comes after the passed-in address.
+ */
+static int
+next_module_vaddr(ulong vaddr, ulong *nextvaddr)
+{
+	int i;
+	ulong start, end;
+	struct load_module *lm;
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		start = lm->mod_base;
+		end = lm->mod_base + lm->mod_size;
+		if (vaddr >= end)
+			continue;
+		/*
+	 	 *  Either below or in this module.
+		 */
+		if (vaddr < start)
+			*nextvaddr = start;
+		else
+			*nextvaddr = vaddr;
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+/*
+ *  Return the next kernel virtual address page in a designated
+ *  kernel virtual address range that comes after the passed-in, 
+ *  untranslatable, address.
  */
 static int
 next_kpage(ulong vaddr, ulong *nextvaddr)
@@ -11650,33 +12468,61 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
         if (vaddr < vaddr_orig)  /* wrapped back to zero? */
                 return FALSE;
 
-	if (IS_VMALLOC_ADDR(vaddr_orig) || 
-	    (machine_type("IA64") && IS_VMALLOC_ADDR(vaddr))) {
+	switch (pc->curcmd_private)
+	{
+	case KVADDR_UNITY_MAP:
+		return next_identity_mapping(vaddr, nextvaddr);
 
-		if (IS_VMALLOC_ADDR(vaddr) && 
-		    (vaddr < last_vmalloc_address())) {
-			if (machine_type("X86_64")) 
-				vaddr = next_vmlist_vaddr(vaddr);
-			*nextvaddr = vaddr;
-			return TRUE;
-		}
+	case KVADDR_VMALLOC: 
+		return next_vmlist_vaddr(vaddr, nextvaddr);
 
-		if (vt->vmalloc_start < machdep->identity_map_base) {   
-			*nextvaddr = machdep->identity_map_base;
-			return TRUE;
-		}
+	case KVADDR_VMEMMAP:  
+		*nextvaddr = vaddr;
+		return TRUE;
 
-		return FALSE;	
+	case KVADDR_START_MAP:
+		*nextvaddr = vaddr;
+		return TRUE;
+
+	case KVADDR_MODULES: 
+		return next_module_vaddr(vaddr, nextvaddr);
 	}
 
-	if (next_identity_mapping(vaddr, nextvaddr))
-                return TRUE;
+	return FALSE;
+}
 
-	if (vt->vmalloc_start > vaddr) {
-		*nextvaddr = vt->vmalloc_start;
-		return TRUE;
-	} else
-        	return FALSE;
+/*
+ *  Return the next physical address page that comes after
+ *  the passed-in, unreadable, address.
+ */
+static int
+next_physpage(ulonglong paddr, ulonglong *nextpaddr)
+{
+	int n;
+	ulonglong node_start;
+	ulonglong node_end;
+	struct node_table *nt;
+
+	for (n = 0; n < vt->numnodes; n++) {
+		nt = &vt->node_table[n];
+		node_start = nt->start_paddr;
+		node_end = nt->start_paddr + (nt->size * PAGESIZE());
+
+		if (paddr >= node_end)
+			continue;
+
+		if (paddr < node_start) {
+			*nextpaddr = node_start;
+			return TRUE;
+		}
+
+		if (paddr < node_end) {
+			*nextpaddr = paddr + PAGESIZE();
+			return TRUE;
+		}
+	}
+
+	return FALSE;
 }
 
 /*
@@ -12917,11 +13763,9 @@ first_vmalloc_address(void)
 }
 
 /*
- *  Return the current vmalloc address limit, storing it 
- *  if it's a dumpfile.
+ *  Return the highest vmalloc address in the vmlist.
  */
-
-static ulong
+ulong
 last_vmalloc_address(void)
 {
 	struct meminfo meminfo;
@@ -12938,7 +13782,6 @@ last_vmalloc_address(void)
 
 	return vmalloc_limit;
 }
-
 /*
  *  Determine whether an identity-mapped virtual address
  *  refers to an existant physical page, and if not bump
@@ -13189,6 +14032,7 @@ nr_to_section(ulong nr)
 	if (IS_SPARSEMEM_EX()) {
 		if (SECTION_NR_TO_ROOT(nr) >= NR_SECTION_ROOTS()) {
 			if (!STREQ(pc->curcmd, "rd") && 
+			    !STREQ(pc->curcmd, "search") &&
 			    !STREQ(pc->curcmd, "kmem"))
 				error(WARNING, 
 			   	    "sparsemem: invalid section number: %ld\n",
@@ -13559,7 +14403,8 @@ vm_stat_init(void)
 {
         char buf[BUFSIZE];
         char *arglist[MAXARGS];
-	int i, c, stringlen, total;
+	int i, stringlen, total;
+	int c ATTRIBUTE_UNUSED;
         struct gnu_request *req;
 	char *start;
 
@@ -13859,7 +14704,8 @@ dump_vm_event_state(void)
 static int
 vm_event_state_init(void)
 {
-	int i, c, stringlen, total;
+	int i, stringlen, total;
+	int c ATTRIBUTE_UNUSED;
 	long count;
 	struct gnu_request *req;
 	char *arglist[MAXARGS];

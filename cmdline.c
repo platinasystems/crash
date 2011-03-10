@@ -1,8 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -436,7 +436,7 @@ setup_redirect(int origin)
 	int append;
 	int expression;
 	int string;
-	int ret;
+	int ret ATTRIBUTE_UNUSED;
 	FILE *pipe;
 	FILE *ofile;
 
@@ -1100,6 +1100,9 @@ restore_sanity(void)
 	clear_inode_cache();
 	clear_vma_cache();
 	clear_active_set();
+
+	if (kt->ikconfig_flags & IKCONFIG_LOADED)
+		read_in_kernel_config(IKCFG_FREE);
 
 	/*
 	 *  Call the cleanup() function of any extension.

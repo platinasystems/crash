@@ -65,7 +65,7 @@
 #define DIRECTMAP_VIRT_START  (0xffff830000000000)
 #define DIRECTMAP_VIRT_END    (0xffff840000000000)
 #define PAGE_OFFSET_XEN_HYPER DIRECTMAP_VIRT_START
-#define XEN_VIRT_START        (0xffff828c80000000)
+#define XEN_VIRT_START        (xht->xen_virt_start)
 #define XEN_VIRT_ADDR(vaddr) \
     (((vaddr) >= XEN_VIRT_START) && ((vaddr) < DIRECTMAP_VIRT_START))
 #endif
@@ -408,6 +408,9 @@ struct xen_hyper_table {
 	int percpu_shift;
 	int idle_vcpu_size;
 	ulong *idle_vcpu_array;
+#ifdef X86_64
+	ulong xen_virt_start;
+#endif
 };
 
 struct xen_hyper_dumpinfo_context {
@@ -460,7 +463,7 @@ struct xen_hyper_domain_context {
 	ulong domain_flags;
 	ulong evtchn;
 	int vcpu_cnt;
-	ulong vcpu[XEN_HYPER_MAX_VIRT_CPUS];
+	ulong *vcpu;
 	struct xen_hyper_vcpu_context_array *vcpu_context_array;
 };
 
@@ -580,6 +583,7 @@ struct xen_hyper_size_table {
 	long crash_xen_core_t;			/* elf note v3,v4 */
 	long crash_xen_info_t;			/* elf note v3,v4 */
 	long domain;
+	long domain_vcpu;
 #ifdef IA64
 	long mm_struct;
 #endif
@@ -671,6 +675,7 @@ struct xen_hyper_offset_table {
 	long domain_is_shutting_down;
 	long domain_is_shut_down;
 	long domain_vcpu;
+	long domain_max_vcpus;
 	long domain_arch;
 #ifdef IA64
 	/* mm_struct */

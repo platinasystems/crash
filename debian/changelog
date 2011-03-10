@@ -1,3 +1,78 @@
+crash (5.1.3-1) unstable; urgency=low
+
+  * Implemented support for using vmlinux files that have been compressed with
+    either gzip or bzip2.  For examples:
+              # crash vmlinux.gz vmcore
+              # crash vmlinuz.bz2
+    The uncompressed file will be temporarily stored either in /var/tmp or in
+    the directory specified in a TMPDIR shell environment variable.  The
+    compressed filename must at least begin with "vmlinux" so as to avoid any
+    attempt to uncompress a vmcore file.  Gzip'd vmlinux files are preferable
+    since the uncompress operation is less time-consuming.
+  * Prevent an unnecessary warning message that was introduced in version
+    5.1.0 that indicates "WARNING: cannot read .debug_frame data from
+    <namelist>" when running against vmlinux executables that have a separate
+    ".debug" debuginfo file, such as RHEL3 vmlinux kernels.  With the patch,
+    the message is only printed if CRASHDEBUG(1).
+  * Fix for the x86_64 "bt" command if the shutdown NMI is issued to a 32-bit
+    task that has executed a "sysenter" instruction and the RSP still contains
+    the zero value loaded from the MSR_IA32_SYSENTER_ESP register.  Without
+    the patch, the backtrace issues a warning message indicating "WARNING:
+    possibly bogus exception frame", and is unable to make a transition from
+    the NMI exception stack.
+  * Fixes for the gdb-7.0 sources to address gcc-4.6 compile failures.
+    Without the patch, gcc-4.6 generates "error: variable ‘<variable>’ set but
+    not used [-Werror=unused-but-set-variable]" fatal errors when the
+    (default) -Werror flag is used.  Previous gcc versions considered local
+    variables were simply set to some value to be "used", but that is no
+    longer the case.
+  * Fixes for the top-level crash sources to address gcc-4.6 compiler warnings
+    or errors.  Without the patch, building with gcc-4.6 would generate
+    numerous "error: variable ‘<variable>’ set but not used
+    [-Werror=unused-but-set-variable]" errors or warnings, depending upon
+    whether "make warn" or "make Warn" was used.
+  * Removed -Wp,-D_FORTIFY_SOURCE=2 from the WARNING_OPTIONS string due to a
+    memmove() oddity seen when using it in conjunction with -O2 with gcc-4.6.
+  * Implemented three new options for the "search" command.  This patch adds
+    the -c option to search for character strings, the -w option to search for
+    unsigned hexadecimal integer values, and -h to search for unsigned
+    hexadecimal short values.   The integer and short values are searched on
+    integer and short alignments respectively.  The -w option is only
+    meaningful on 64-bit systems, to be used in order to search both the upper
+    and lower 32-bits of each 64-bit long for the 32-bit value.  Strings are
+    searched across contiguous page boundaries, where the page boundaries
+    being crossed are relevant to the memory type being searched, i.e., kernel
+    virtual, user virtual, or physical memory. 
+  * Restrict the new "search -p" option to physical memory pages that have an
+    mem_map page structure assigned to them. 
+  * Hardwire the declaration of the user_regs_struct in x86_64.c for kernels
+    whose debuginfo data does not contain it.
+  * Fix for compiler warnings when building makedumpfile.c and memory.c with
+    "make warn" on 32-bit systems.
+  * Fix to more correctly determine the KVM I/O hole size and location.  The
+    I/O hole size to this point in time is either 1GB or 512MB, but its
+    setting is hardwired into the Qemu code that was used to create the
+    dumpfile.  The dumpfile is a "savevm" file that is designed to be used for
+    guest migration, and since inter-version save/load is not supported, the
+    I/O hole information does not have to encoded into the dumpfile.  Without
+    the patch, the I/O hole for dumpfiles created by older Qemu version was
+    not being set to 1GB, so if the KVM guest was configured with more than
+    3GB of memory, the crash session would typically display numerous "read
+    error" messages during session initialization.
+  * Fix for the x86 "bt" command on RHEL6 kernels that contain a backport of
+    upstream commit a00e817f42663941ea0aa5f85a9d1c4f8b212839, which moved x86
+    irq-exit functions to a special .kprobes.text section.  Without this
+    patch, "bt" would show nonsensical backtraces that begin and end with the
+    "ia32_sysenter_target" function, and would dump an invalid kernel-entry
+    exception frame.
+  * Fix for the x86 "bt" command to fix a possible failure to backtrace a
+    non-active "swapper" task.  Without the patch, the backtrace would fail
+    with the error message "bt: cannot resolve stack trace".
+  * Fix for the x86 "bt" command to prevent the display of a stale interrupt
+    exception frame left on the stack of a non-active task.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 10 Mar 2011 11:13:07 -0700
+
 crash (5.1.1-1) unstable; urgency=low
 
   * New upstream version 5.1.1 (see

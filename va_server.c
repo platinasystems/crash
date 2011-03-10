@@ -1,8 +1,8 @@
 /* va_server.c - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -144,7 +144,6 @@ size_t vas_write(void *buf_in, size_t count)
 }
 void vas_free_data(u_long va)
 {
-	struct map_hdr *hdr;
 	struct crash_map_entry *m, *last_m;
 
 	if(vas_version < 2) {
@@ -152,7 +151,6 @@ void vas_free_data(u_long va)
 		return;
 	}
 
-	hdr = vas_map_base;
 	m = last_m = vas_map_base->map;
 	for(;m->start_va;) {
 		if(m->start_va > va)
@@ -168,11 +166,9 @@ void vas_free_data(u_long va)
 
 u_long vas_find_end(void)
 {
-	struct map_hdr *hdr;
 	struct crash_map_entry *m;
 	u_long *sub_m;
 
-	hdr = vas_map_base;
 	m = vas_map_base->map;
 	for(;m->start_va;m++)
 		;
@@ -186,14 +182,12 @@ u_long vas_find_end(void)
 }
 int find_data(u_long va, u_long *buf, u_long *len, u_long *offset)
 {
-	struct map_hdr *hdr;
 	u_long off;
 	struct crash_map_entry *m, *last_m;
 	u_long *sub_m, va_saved;
 	char *data;
 	int saved;
 
-	hdr = vas_map_base;
 	m = last_m = vas_map_base->map;
 	for(;m->start_va;) {
 		if(m->start_va > va)

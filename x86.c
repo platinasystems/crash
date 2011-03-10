@@ -1,8 +1,8 @@
 /* x86.c - core analysis suite
  *
  * Portions Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1771,7 +1771,6 @@ x86_init(int when)
 		machdep->dis_filter = x86_dis_filter;
 		machdep->cmd_mach = x86_cmd_mach;
 		machdep->get_smp_cpus = x86_get_smp_cpus;
-		machdep->line_number_hooks = x86_line_number_hooks;
 		machdep->flags |= FRAMESIZE_DEBUG;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = x86_init_kernel_pgd;
@@ -1828,6 +1827,8 @@ x86_init(int when)
 		MEMBER_OFFSET_INIT(e820entry_addr, "e820entry", "addr");
 		MEMBER_OFFSET_INIT(e820entry_size, "e820entry", "size");
 		MEMBER_OFFSET_INIT(e820entry_type, "e820entry", "type");
+		if (KVMDUMP_DUMPFILE())
+			set_kvm_iohole(NULL);
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 				"irq_desc", NULL, 0);
@@ -1870,6 +1871,9 @@ x86_init(int when)
 			MEMBER_OFFSET_INIT(cpu_user_regs_eip,
 				"cpu_user_regs", "eip");
 		}
+
+		if (THIS_KERNEL_VERSION < LINUX(2,6,24))
+			machdep->line_number_hooks = x86_line_number_hooks;
 
 		eframe_init();
 		break;
@@ -3279,7 +3283,8 @@ x86_dump_machdep_table(ulong arg)
 		machdep->value_to_symbol == generic_machdep_value_to_symbol ?
 		"generic_machdep_value_to_symbol()" :
 		"x86_is_entry_tramp_address()");
-	fprintf(fp, "  line_number_hooks: x86_line_number_hooks\n");
+	fprintf(fp, "  line_number_hooks: %s\n", machdep->line_number_hooks ? 
+		"x86_line_number_hooks" : "(not used)");
 	fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
 	fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
 	fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
@@ -3785,6 +3790,9 @@ x86_is_task_addr(ulong task)
 static int
 x86_verify_symbol(const char *name, ulong value, char type)
 {
+	if (XEN_HYPER_MODE() && STREQ(name, "__per_cpu_shift"))
+		return TRUE;
+
 	if (CRASHDEBUG(8) && name && strlen(name))
 		fprintf(fp, "%08lx %s\n", value, name);
 

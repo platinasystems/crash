@@ -6,7 +6,7 @@
  *   Jan Karlsson <jan.karlsson@sonyericsson.com>
  *   Mika Westerberg <ext-mika.1.westerberg@nokia.com>
  *
- * Copyright (C) 2010 Nokia Corporation
+ * Copyright (C) 2010-2011 Nokia Corporation
  * Copyright (C) 2010 Sony Ericsson. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -88,8 +88,12 @@ pmd_page_addr(ulong pmd)
 {
 	ulong ptr;
 
-	ptr = pmd & ~(PTRS_PER_PTE * sizeof(void *) - 1);
-	ptr += PTRS_PER_PTE * sizeof(void *);
+	if (machdep->flags & PGTABLE_V2) {
+		ptr = PAGEBASE(pmd);
+	} else {
+		ptr = pmd & ~(PTRS_PER_PTE * sizeof(void *) - 1);
+		ptr += PTRS_PER_PTE * sizeof(void *);
+	}
 
 	return (ulong *)ptr;
 }
@@ -102,16 +106,21 @@ pmd_page_addr(ulong pmd)
 #define L_PTE_FILE		(1 << 2)
 #define L_PTE_DIRTY		(1 << 6)
 #define L_PTE_WRITE		(1 << 7)
+#define L_PTE_RDONLY		L_PTE_WRITE
 #define L_PTE_USER		(1 << 8)
 #define L_PTE_EXEC		(1 << 9)
+#define L_PTE_XN		L_PTE_EXEC
 #define L_PTE_SHARED		(1 << 10)
 
 #define pte_val(pte)		(pte)
 
 #define pte_present(pte)	(pte_val(pte) & L_PTE_PRESENT)
 #define pte_write(pte)		(pte_val(pte) & L_PTE_WRITE)
+#define pte_rdonly(pte)		(pte_val(pte) & L_PTE_RDONLY)
 #define pte_dirty(pte)		(pte_val(pte) & L_PTE_DIRTY)
 #define pte_young(pte)		(pte_val(pte) & L_PTE_YOUNG)
+#define pte_exec(pte)		(pte_val(pte) & L_PTE_EXEC)
+#define pte_xn(pte)		(pte_val(pte) & L_PTE_XN)
 
 /*
  * Following stuff is taken directly from the kernel sources. These are used in
@@ -241,6 +250,16 @@ arm_init(int when)
 		break;
 
 	case POST_GDB:
+		/*
+		 * Starting from 2.6.38 hardware and Linux page tables
+		 * were reordered. See also mainline kernel commit
+		 * d30e45eeabe (ARM: pgtable: switch order of Linux vs
+		 * hardware page tables).
+		 */
+		if (THIS_KERNEL_VERSION > LINUX(2,6,37) ||
+		    STRUCT_EXISTS("pteval_t"))
+			machdep->flags |= PGTABLE_V2;
+
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 					  "irq_desc", NULL, 0);
@@ -313,6 +332,8 @@ arm_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sKSYMS_START", others++ ? "|" : "");
 	if (machdep->flags & PHYS_BASE)
 		fprintf(fp, "%sPHYS_BASE", others++ ? "|" : "");
+	if (machdep->flags & PGTABLE_V2)
+		fprintf(fp, "%sPGTABLE_V2", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -823,12 +844,21 @@ arm_translate_pte(ulong pte, void *physaddr, ulonglong pae_pte)
 	if (pte) {
 		if (pte_present(pte))
 			fprintf(fp, "%sPRESENT", others++ ? "|" : "");
-		if (pte_write(pte))
-			fprintf(fp, "%sWRITE", others++ ? "|" : "");
 		if (pte_dirty(pte))
 			fprintf(fp, "%sDIRTY", others++ ? "|" : "");
 		if (pte_young(pte))
 			fprintf(fp, "%sYOUNG", others++ ? "|" : "");
+		if (machdep->flags & PGTABLE_V2) {
+			if (!pte_rdonly(pte))
+				fprintf(fp, "%sWRITE", others++ ? "|" : "");
+			if (!pte_xn(pte))
+				fprintf(fp, "%sEXEC", others++ ? "|" : "");
+		} else {
+			if (pte_write(pte))
+				fprintf(fp, "%sWRITE", others++ ? "|" : "");
+			if (pte_exec(pte))
+				fprintf(fp, "%sEXEC", others++ ? "|" : "");
+		}
 	} else {
 		fprintf(fp, "no mapping");
 	}
@@ -863,6 +893,8 @@ arm_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 	 * that in ARM Linux we have following setup (see also
 	 * arch/arm/include/asm/pgtable.h)
 	 *
+	 * Before 2.6.38
+	 *
 	 *     PGD                   PTE
 	 * +---------+
 	 * |         | 0  ---->  +------------+
@@ -875,15 +907,28 @@ arm_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 	 * |         | 4095      | Linux pt 1 |
 	 * +---------+           +------------+ +4096
 	 *
+	 * Starting from 2.6.38
+	 *
+	 *     PGD                   PTE
+	 * +---------+
+	 * |         | 0  ---->  +------------+
+	 * +- - - - -+           | Linux pt 0 |
+	 * |         | 4  ---->  +------------+ +1024
+	 * +- - - - -+           | Linux pt 1 |
+	 * .         .           +------------+ +2048
+	 * .         .           | h/w pt 0   |
+	 * .         .           +------------+ +3072
+	 * |         | 4095      | h/w pt 1   |
+	 * +---------+           +------------+ +4096
+	 *
 	 * So in Linux implementation we have two hardware pointers to second
-	 * level page tables. After these come "Linux" versions of the page
-	 * tables.
+	 * level page tables. Depending on the kernel version, the "Linux" page
+	 * tables either follow or precede the hardware tables.
 	 *
 	 * Linux PT entries contain bits that are not supported on hardware, for
 	 * example "young" and "dirty" flags.
 	 *
-	 * Our translation scheme only uses Linux PTEs here. Hardware entries
-	 * are 1024 bytes below Linux versions.
+	 * Our translation scheme only uses Linux PTEs here.
 	 */
 
 	if (verbose)
@@ -1048,9 +1093,6 @@ arm_get_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 
 /*
  * Get the starting point for the active cpu in a diskdump.
- *
- * Note that we currently support only UP machines. In future we might want to
- * support SMP machines as well.
  */
 static int
 arm_get_dumpfile_stack_frame(struct bt_info *bt, ulong *nip, ulong *ksp)

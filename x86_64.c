@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -102,6 +102,7 @@ static ulong x86_64_get_framepointer(struct bt_info *, ulong);
 static int x86_64_get_framesize(struct bt_info *, ulong, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
 static void x86_64_get_active_set(void);
+static int x86_64_get_kvaddr_ranges(struct vaddr_range *);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -152,6 +153,7 @@ x86_64_init(int when)
 		machdep->flags |= MACHDEP_BT_TEXT;
 		machdep->flags |= FRAMESIZE_DEBUG;
 		machdep->machspec->irq_eframe_link = UNINITIALIZED;
+		machdep->get_kvaddr_ranges = x86_64_get_kvaddr_ranges;
                 if (machdep->cmdline_args[0])
                         parse_cmdline_args();
 		break;
@@ -290,6 +292,8 @@ x86_64_init(int when)
                 MEMBER_OFFSET_INIT(e820entry_addr, "e820entry", "addr");
                 MEMBER_OFFSET_INIT(e820entry_size, "e820entry", "size");
                 MEMBER_OFFSET_INIT(e820entry_type, "e820entry", "type");
+		if (KVMDUMP_DUMPFILE())
+			set_kvm_iohole(NULL);
 		MEMBER_OFFSET_INIT(thread_struct_rip, "thread_struct", "rip");
 		MEMBER_OFFSET_INIT(thread_struct_rsp, "thread_struct", "rsp");
 		MEMBER_OFFSET_INIT(thread_struct_rsp0, "thread_struct", "rsp0");
@@ -330,6 +334,31 @@ x86_64_init(int when)
 		MEMBER_OFFSET_INIT(user_regs_struct_ss,
 			"user_regs_struct", "ss");
 		STRUCT_SIZE_INIT(user_regs_struct, "user_regs_struct");
+		if (!VALID_STRUCT(user_regs_struct)) {
+			/*  Use this hardwired version -- sometimes the
+			 *  debuginfo doesn't pick this up even though
+ 			 *  it exists in the kernel; it shouldn't change.
+ 			 */
+			struct x86_64_user_regs_struct {
+				unsigned long r15, r14, r13, r12, bp, bx;
+				unsigned long r11, r10, r9, r8, ax, cx, dx;
+				unsigned long si, di, orig_ax, ip, cs;
+				unsigned long flags, sp, ss, fs_base;
+				unsigned long gs_base, ds, es, fs, gs;
+			};
+			ASSIGN_SIZE(user_regs_struct) = 
+				sizeof(struct x86_64_user_regs_struct);
+			ASSIGN_OFFSET(user_regs_struct_rip) =
+				offsetof(struct x86_64_user_regs_struct, ip);
+			ASSIGN_OFFSET(user_regs_struct_rsp) =
+				offsetof(struct x86_64_user_regs_struct, sp);
+			ASSIGN_OFFSET(user_regs_struct_eflags) =
+				offsetof(struct x86_64_user_regs_struct, flags);
+			ASSIGN_OFFSET(user_regs_struct_cs) =
+				offsetof(struct x86_64_user_regs_struct, cs);
+			ASSIGN_OFFSET(user_regs_struct_ss) =
+				offsetof(struct x86_64_user_regs_struct, ss);
+		}
 		machdep->vmalloc_start = x86_64_vmalloc_start;
 		vt->vmalloc_start = machdep->vmalloc_start();
 		machdep->init_kernel_pgd();
@@ -517,6 +546,7 @@ x86_64_dump_machdep_table(ulong arg)
         fprintf(fp, "          is_kvaddr: x86_64_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: x86_64_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+        fprintf(fp, "  get_kvaddr_ranges: x86_64_get_kvaddr_ranges()\n");
         fprintf(fp, "    init_kernel_pgd: x86_64_init_kernel_pgd()\n");
         fprintf(fp, "clear_machdep_cache: x86_64_clear_machdep_cache()\n");
 	fprintf(fp, " xendump_p2m_create: %s\n", PVOPS_XEN() ?
@@ -1989,6 +2019,9 @@ x86_64_verify_symbol(const char *name, ulong value, char type)
 	if (!name || !strlen(name))
 		return FALSE;
 
+	if (XEN_HYPER_MODE() && STREQ(name, "__per_cpu_shift"))
+		return TRUE;
+
 	if (!(machdep->flags & KSYMS_START)) {
 		if (STREQ(name, "_text") || STREQ(name, "_stext")) {
 			machdep->flags |= KSYMS_START;
@@ -2963,6 +2996,16 @@ in_exception_stack:
 					done = TRUE;
 					break;
 				}
+				if (STREQ(closest_symbol(bt->instptr), 
+				    "ia32_sysenter_target")) {
+					/*
+					 * RSP 0 from MSR_IA32_SYSENTER_ESP?
+					 */
+					if (rsp == 0)
+						return;
+					done = TRUE;
+					break;
+				}
 				error(FATAL, STACK_TRANSITION_ERRMSG_E_P,
 					bt_in->stkptr, rsp, bt->stackbase);
 
@@ -3857,6 +3900,12 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 		if (is_kernel_text(rip) && 
 		    x86_64_in_exception_stack(bt, &estack) &&
 		    (estack <= 1))
+			return TRUE;
+		
+		/*
+		 * RSP may be 0 from MSR_IA32_SYSENTER_ESP.
+		 */
+		if (STREQ(closest_symbol(rip), "ia32_sysenter_target"))
 			return TRUE;
         }
 
@@ -4767,7 +4816,7 @@ void
 x86_64_compiler_warning_stub(void)
 {
         struct line_number_hook *lhp;
-        char **p;
+        char **p ATTRIBUTE_UNUSED;
 
         lhp = &x86_64_line_number_hooks[0]; lhp++;
         p = ENTRY_S;
@@ -6885,5 +6934,76 @@ x86_64_get_active_set(void)
                         CRASHDEBUG(1) ? "" : "\n");
 	}
 }
+
+static int
+compare_kvaddr(const void *v1, const void *v2)
+{
+	struct vaddr_range *r1, *r2;
+
+	r1 = (struct vaddr_range *)v1;
+	r2 = (struct vaddr_range *)v2;
+
+	return (r1->start < r2->start ? -1 :
+		r1->start == r2->start ? 0 : 1);
+}
+
+/*
+ *  Populate the vaddr_range array with a sorted list of
+ *  kernel virtual address ranges.  The caller is responsible
+ *  for ensuring that the array is large enough, so it should
+ *  first call this function with a NULL vaddr_range pointer,
+ *  which will return the count of kernel virtual address 
+ *  space ranges.  
+ */
+static int
+x86_64_get_kvaddr_ranges(struct vaddr_range *vrp)
+{
+	int cnt;
+	ulong start;
+
+	cnt = 0;
+
+	vrp[cnt].type = KVADDR_UNITY_MAP;
+	vrp[cnt].start = machdep->machspec->page_offset;
+	vrp[cnt++].end = vt->high_memory;
+
+	vrp[cnt].type = KVADDR_START_MAP;
+	vrp[cnt].start = __START_KERNEL_map;
+	vrp[cnt++].end = kt->end;
+
+	vrp[cnt].type = KVADDR_VMALLOC;
+	vrp[cnt].start = machdep->machspec->vmalloc_start_addr;
+	vrp[cnt++].end = last_vmalloc_address();
+
+	/*
+	 *  Verify that these two regions stand alone.
+	 */
+	if (st->mods_installed) {
+		start = lowest_module_address();
+
+		if (!in_vmlist_segment(start)) {
+			vrp[cnt].type = KVADDR_MODULES;
+			vrp[cnt].start = start;
+			vrp[cnt++].end = roundup(highest_module_address(), 
+				PAGESIZE());
+		}
+	}
+
+	if (machdep->flags & VMEMMAP) {
+		start = machdep->machspec->vmemmap_vaddr;
+
+		if (!in_vmlist_segment(start)) {
+			vrp[cnt].type = KVADDR_VMEMMAP;
+			vrp[cnt].start = start;
+			vrp[cnt++].end = vt->node_table[vt->numnodes-1].mem_map +
+				(vt->node_table[vt->numnodes-1].size * SIZE(page));
+		}
+	}
+
+	qsort(vrp, cnt, sizeof(struct vaddr_range), compare_kvaddr);
+
+	return cnt;
+}
+
 
 #endif  /* X86_64 */ 

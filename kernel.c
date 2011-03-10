@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -928,15 +928,27 @@ non_matching_kernel(void)
                 	fprintf(fp, "  SYSTEM MAP: %s\n", pc->system_map);
                 	fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist,
                 		debug_kernel_version(pc->namelist));
-        	} else
-                	fprintf(fp, "      KERNEL: %s\n", pc->namelist);
+				
+		} else
+			fprintf(fp, "      KERNEL: %s\n", pc->namelist);
+		if (pc->namelist_orig)
+			fprintf(fp, "              (uncompressed from %s)\n",
+				pc->namelist_orig);
 	}
 
-        if (pc->debuginfo_file)
-                fprintf(fp, "   DEBUGINFO: %s\n", pc->debuginfo_file);
-        else if (pc->namelist_debug)
-                fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug,
-                        debug_kernel_version(pc->namelist_debug));
+	if (pc->debuginfo_file) {
+		fprintf(fp, "   DEBUGINFO: %s\n", pc->debuginfo_file);
+		if (STREQ(pc->debuginfo_file, pc->namelist_debug) &&
+		    pc->namelist_debug_orig)
+			fprintf(fp, "              (uncompressed from %s)\n", 
+				pc->namelist_debug_orig);
+	} else if (pc->namelist_debug) {
+		fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug,
+			debug_kernel_version(pc->namelist_debug));
+		if (pc->namelist_debug_orig)
+			fprintf(fp, "              (uncompressed from %s)\n", 
+				pc->namelist_debug_orig);
+	}
 
 	if (dumpfile_is_split())
         	fprintf(fp, "   DUMPFILES: ");
@@ -960,7 +972,7 @@ non_matching_kernel(void)
                 }
         }
 
-	fprintf(fp, "\n");
+	fprintf(fp, "\n\n");
 
 	if ((pc->flags & FINDKERNEL) && !(pc->system_map)) {
 		fprintf(fp, 
@@ -970,7 +982,7 @@ non_matching_kernel(void)
          "Try a different kernel name, or use a System.map file argument.\n\n");
 	}
 
-	exit(1);
+	clean_exit(1);
 }
 
 /*
@@ -1140,7 +1152,8 @@ cmd_dis(void)
 	ulong offset;
 	struct syment *sp;
 	struct gnu_request *req;
-	char *savename, *ret;
+	char *savename; 
+	char *ret ATTRIBUTE_UNUSED;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -3439,6 +3452,7 @@ module_objfile_search(char *modref, char *filename, char *tree)
 	int initrd;
 	struct syment *sp;
 	char *p1, *p2;
+	char *env;
 
 	retbuf = NULL;
 	initrd = FALSE;
@@ -3553,6 +3567,18 @@ module_objfile_search(char *modref, char *filename, char *tree)
 		kt->utsname.release);
 	retbuf = search_directory_tree(dir, file, 0);
 
+	if (!retbuf && (env = getenv("CRASH_MODULE_PATH"))) {
+		sprintf(dir, "%s", env);
+		if (!(retbuf = search_directory_tree(dir, file, 0))) {
+			switch (kt->flags & (KMOD_V1|KMOD_V2))
+			{
+			case KMOD_V2:
+				sprintf(file, "%s.ko", modref);
+				retbuf = search_directory_tree(dir, file, 0);
+			}
+		}
+	}
+
 	if (!retbuf) {
 		sprintf(dir, "/lib/modules/%s/updates", kt->utsname.release);
 		if (!(retbuf = search_directory_tree(dir, file, 0))) {
@@ -3622,6 +3648,24 @@ find_module_objfile(char *modref, char *filename, char *tree)
 	}
 
 	return retbuf;
+}
+
+/*
+ * Try to load module symbols with name.
+ */
+int
+load_module_symbols_helper(char *name)
+{
+	char *objfile;
+	ulong address;
+
+	if (is_module_name(name, &address, NULL) &&
+		(objfile = find_module_objfile(name, NULL, NULL))) {
+		do_module_cmd(LOAD_SPECIFIED_MODULE_SYMBOLS, name, address,
+				objfile, NULL);
+		return TRUE;
+	}
+	return FALSE;
 }
 
 /*
@@ -3878,17 +3922,36 @@ display_sys_stats(void)
         	if (pc->system_map) {
                 	fprintf(fp, "  SYSTEM MAP: %s\n", pc->system_map);
 			fprintf(fp, "DEBUG KERNEL: %s %s\n", 
-					pc->namelist,
+					pc->namelist_orig ?
+					pc->namelist_orig : pc->namelist,
 					debug_kernel_version(pc->namelist));
 		} else
-			fprintf(fp, "      KERNEL: %s\n", pc->namelist);
+			fprintf(fp, "      KERNEL: %s\n", pc->namelist_orig ? 
+				pc->namelist_orig : pc->namelist);
 	}
 
-	if (pc->debuginfo_file)
-		fprintf(fp, "   DEBUGINFO: %s\n", pc->debuginfo_file);
-	else if (pc->namelist_debug)
-		fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug,
+	if (pc->debuginfo_file) { 
+		if (STREQ(pc->debuginfo_file, pc->namelist_debug) && 
+		     pc->namelist_debug_orig)
+			fprintf(fp, "   DEBUGINFO: %s\n", 
+				pc->namelist_debug_orig);
+		else
+			fprintf(fp, "   DEBUGINFO: %s\n", pc->debuginfo_file);
+	} else if (pc->namelist_debug)
+		fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug_orig ? 
+			pc->namelist_debug_orig : pc->namelist_debug,
 			debug_kernel_version(pc->namelist_debug));
+
+	/*
+	 *  After the initial banner display, we no longer need the 
+	 *  temporary namelist file(s).
+	 */
+	if (!(pc->flags & RUNTIME)) {
+		if (pc->namelist_orig)
+			unlink(pc->namelist);
+		if (pc->namelist_debug_orig)
+			unlink(pc->namelist_debug);
+	}
 
 	if (dumpfile_is_split())
 		fprintf(fp, "   DUMPFILES: ");
@@ -3975,8 +4038,8 @@ static char *
 debug_kernel_version(char *namelist)
 {
 	FILE *pipe;
-	int found, argc;
-	char buf[BUFSIZE], *ptr;
+	int argc;
+	char buf[BUFSIZE];
 	char command[BUFSIZE];
 	char *arglist[MAXARGS];
 
@@ -3991,8 +4054,6 @@ debug_kernel_version(char *namelist)
 	}
 
 	argc = 0;
-	ptr = NULL;
-        found = FALSE;
         while (fgets(buf, BUFSIZE-1, pipe)) {
                 if (!strstr(buf, "Linux version 2."))
                         continue;
@@ -4353,6 +4414,16 @@ dump_kernel_table(int verbose)
         fprintf(fp, "       NR_CPUS: %d (compiled-in to this version of %s)\n",
 		NR_CPUS, pc->program_name); 
 	fprintf(fp, "kernel_NR_CPUS: %d\n", kt->kernel_NR_CPUS);
+        others = 0;
+	fprintf(fp, "ikconfig_flags: %x (", kt->ikconfig_flags);
+	if (kt->ikconfig_flags & IKCONFIG_AVAIL)
+		fprintf(fp, "%sIKCONFIG_AVAIL", others++ ? "|" : "");
+	if (kt->ikconfig_flags & IKCONFIG_LOADED)
+		fprintf(fp, "%sIKCONFIG_LOADED", others++ ? "|" : "");
+	if (!kt->ikconfig_flags)
+		fprintf(fp, "unavailable");
+	fprintf(fp, ")\n");
+	fprintf(fp, " ikconfig_ents: %d\n", kt->ikconfig_ents);
 	if (kt->display_bh == display_bh_1)
         	fprintf(fp, "    display_bh: display_bh_1()\n");
 	else if (kt->display_bh == display_bh_2)
@@ -4685,7 +4756,6 @@ get_irq_desc_addr(int irq)
 void
 generic_dump_irq(int irq)
 {
-	struct datatype_member datatype_member, *dm;
 	ulong irq_desc_addr;
 	ulong irq_desc_ptr;
 	long len;
@@ -4697,7 +4767,6 @@ generic_dump_irq(int irq)
 	ulong handler, action, value;
 	ulong tmp1, tmp2;
 
-	dm = &datatype_member;
 	handler = UNINITIALIZED;
 	
 	if (!VALID_STRUCT(irq_desc_t))
@@ -6550,7 +6619,7 @@ xen_m2p(ulonglong machine)
 	pfn = __xen_m2p(machine, mfn);
 
 	if (pfn == XEN_MFN_NOT_FOUND) {
-		if (CRASHDEBUG(1))
+		if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search"))
 			error(INFO, 
 			    "xen_m2p: machine address %lx not found\n",
                            	 machine);
@@ -6818,7 +6887,112 @@ search_mapping_page(ulong mfn, ulong *index, ulong *startptr, ulong *endptr)
 	return found;
 }
 
+/*
+ * IKCONFIG management.
+ */
+#define IKCONFIG_MAX		5000
+static struct ikconfig_list {
+	char *name;
+	char *val;
+} *ikconfig_all;
 
+static void add_ikconfig_entry(char *line, struct ikconfig_list *ent)
+{
+	char *tokptr, *name, *val;
+
+	name = strtok_r(line, "=", &tokptr);
+	sscanf(name, "CONFIG_%s", name);
+	val = strtok_r(NULL, "", &tokptr);
+
+	ent->name = strdup(name);
+	ent->val = strdup(val);
+}
+
+static int setup_ikconfig(char *config)
+{
+	char *ent, *tokptr;
+
+	ikconfig_all = calloc(1, sizeof(struct ikconfig_list) * IKCONFIG_MAX);
+	if (!ikconfig_all) {
+		error(WARNING, "cannot calloc for ikconfig entries.\n");
+		return 0;
+	}
+
+	ent =  strtok_r(config, "\n", &tokptr);
+	while (ent) {
+		while (whitespace(*ent))
+			ent++;
+
+		if (ent[0] != '#') {
+			add_ikconfig_entry(ent,
+					 &ikconfig_all[kt->ikconfig_ents++]);
+			if (kt->ikconfig_ents == IKCONFIG_MAX) {
+				error(WARNING, "ikconfig overflow.\n");
+				return 1;
+			}
+		}
+		ent = strtok_r(NULL, "\n", &tokptr);
+	}
+	if (kt->ikconfig_ents == 0) {
+		free(ikconfig_all);
+		return 0;
+	}
+	ikconfig_all = realloc(ikconfig_all,
+			   sizeof(struct ikconfig_list) * kt->ikconfig_ents);
+
+	return 1;
+}
+
+static void free_ikconfig(void)
+{
+	int i;
+
+	for (i = 0; i < kt->ikconfig_ents; i++) {
+		free(ikconfig_all[i].name);
+		free(ikconfig_all[i].val);
+	}
+	free(ikconfig_all);
+}
+
+int get_kernel_config(char *conf_name, char **str)
+{
+	int i;
+	int ret = IKCONFIG_N;
+	char *name;
+
+	if (!(kt->ikconfig_flags & IKCONFIG_AVAIL)) {
+		error(WARNING, "CONFIG_IKCONFIG is not set\n");
+		return ret;
+	} else if (!(kt->ikconfig_flags & IKCONFIG_LOADED)) {
+		read_in_kernel_config(IKCFG_SETUP);
+		if (!(kt->ikconfig_flags & IKCONFIG_LOADED)) {
+			error(WARNING, "IKCFG_SETUP failed\n");
+			return ret;
+		}
+	}
+
+	name = strdup(conf_name);
+	if (!strncmp(name, "CONFIG_", strlen("CONFIG_")))
+		sscanf(name, "CONFIG_%s", name);
+
+	for (i = 0; i < kt->ikconfig_ents; i++) {
+		if (STREQ(name, ikconfig_all[i].name)) {
+			if (str)
+				*str = ikconfig_all[i].val;
+			if (STREQ(ikconfig_all[i].val, "y"))
+				ret = IKCONFIG_Y;
+			else if (STREQ(ikconfig_all[i].val, "m"))
+				ret = IKCONFIG_M;
+			else
+				ret = IKCONFIG_STR;
+
+			break;
+		}
+	}
+	free(name);
+
+	return ret;
+}
 
 /*
  *  Read the relevant IKCONFIG (In Kernel Config) data if available.
@@ -6848,6 +7022,9 @@ read_in_kernel_config(int command)
 	if ((sp = symbol_search("kernel_config_data")) == NULL) {
 		if (command == IKCFG_READ)
 			error(FATAL, 
+			    "kernel_config_data does not exist in this kernel\n");
+		else if (command == IKCFG_SETUP || command == IKCFG_FREE)
+			error(WARNING, 
 			    "kernel_config_data does not exist in this kernel\n");
 		return;
 	}
@@ -6947,6 +7124,32 @@ again:
 	ret = inflateEnd(&stream);
 
 	pos = uncomp;
+
+	if (command == IKCFG_INIT)
+		kt->ikconfig_flags |= IKCONFIG_AVAIL;
+	else if (command == IKCFG_SETUP) {
+		if (!(kt->ikconfig_flags & IKCONFIG_LOADED)) {
+			if (setup_ikconfig(pos)) {
+				kt->ikconfig_flags |= IKCONFIG_LOADED;
+				if (CRASHDEBUG(1))
+					fprintf(fp,
+					"ikconfig: %d valid configs.\n",
+						kt->ikconfig_ents);
+			} else
+				error(WARNING, "IKCFG_SETUP failed\n\n");
+		} else
+			error(WARNING, 
+				"IKCFG_SETUP: ikconfig data already loaded\n");
+		goto out1;
+	} else if (command == IKCFG_FREE) {
+		if (kt->ikconfig_flags & IKCONFIG_LOADED) {
+			free_ikconfig();
+			kt->ikconfig_ents = 0;
+			kt->ikconfig_flags &= ~IKCONFIG_LOADED;
+		} else
+			error(WARNING, "IKCFG_FREE: ikconfig data not loaded\n");
+		goto out1;
+	}
 
 	do {
 		ret = sscanf(pos, "%511[^\n]\n%n", line, &ii);

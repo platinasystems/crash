@@ -1748,10 +1748,11 @@ find_trace(
 				} else {
 					return(trace->nframes);
 				}
-			} else if (strstr(func_name, "call_do_IRQ") ||
+			} else if (is_task_active(bt->task) && 
+				(strstr(func_name, "call_do_IRQ") ||
 				strstr(func_name, "common_interrupt") ||
 				strstr(func_name, "reboot_interrupt") ||
-				strstr(func_name, "call_function_interrupt")) {
+				strstr(func_name, "call_function_interrupt"))) {
 				/* Interrupt frame */
 				sp = curframe->fp + 4;
 				asp = (uaddr_t*)((uaddr_t)sbp + (STACK_SIZE - 
@@ -2464,9 +2465,12 @@ recoverable(struct bt_info *bt, FILE *ofp)
 		}
 	}
 
-	if (!gather_text_list(bt) || !(bt->flags & BT_ERROR_MASK) ||
-            !STREQ(kl_funcname(bt->instptr), "schedule"))
-		return FALSE;
+	if (!gather_text_list(bt) || 
+	    !STREQ(kl_funcname(bt->instptr), "schedule"))
+		return FALSE; 
+
+	if (!is_idle_thread(bt->task) && !(bt->flags & BT_ERROR_MASK))
+		return FALSE; 
 
         esp = eip = 0;
 	calls_schedule = FALSE;
@@ -2702,7 +2706,7 @@ eframe_label(char *funcname, ulong eip)
 		    (efp->sysenter = symbol_search("ia32_sysenter_target"))) {
                 	if ((sp = symbol_search("sysexit_ret_end_marker")))
                         	efp->sysenter_end = sp;
-			else if (THIS_KERNEL_VERSION >= LINUX(2,6,33)) {
+			else if (THIS_KERNEL_VERSION >= LINUX(2,6,32)) {
 				if ((sp = symbol_search("sysexit_audit")) ||
 				    (sp = symbol_search("sysenter_exit")))
                         		efp->sysenter_end = 

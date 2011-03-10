@@ -1,8 +1,8 @@
 /* s390.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005, 2006, 2010 Michael Holzheu, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -111,6 +111,7 @@ static void s390x_display_machine_stats(void);
 static void s390x_dump_line_number(ulong);
 static struct line_number_hook s390x_line_number_hooks[];
 static int s390x_is_uvaddr(ulong, struct task_context *);
+static int s390x_get_kvaddr_ranges(struct vaddr_range *);
 
  
 /*
@@ -289,6 +290,7 @@ s390x_init(int when)
 		machdep->last_pmd_read = 0;
 		machdep->last_ptbl_read = 0;
 		machdep->verify_paddr = generic_verify_paddr;
+		machdep->get_kvaddr_ranges = s390x_get_kvaddr_ranges;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		break;
 
@@ -383,6 +385,7 @@ s390x_dump_machdep_table(ulong arg)
 	fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
 	fprintf(fp, "          is_uvaddr: s390x_is_uvaddr()\n");
 	fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+	fprintf(fp, "  get_kvaddr_ranges: s390x_get_kvaddr_ranges()\n");
 	fprintf(fp, "    init_kernel_pgd: NULL\n");
 	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
 	fprintf(fp, "      dumpfile_init: s390x_elf_note_add()\n");
@@ -1370,4 +1373,33 @@ try_closest:
 	}
 }
 
+static int 
+s390x_get_kvaddr_ranges(struct vaddr_range *vrp)
+{
+	int cnt;
+	physaddr_t phys1, phys2;
+	ulong pp1, pp2;
+
+	cnt = 0;
+
+	vrp[cnt].type = KVADDR_UNITY_MAP;
+	vrp[cnt].start = machdep->kvbase;
+	vrp[cnt++].end = vt->high_memory;
+
+	vrp[cnt].type = KVADDR_VMALLOC;
+	vrp[cnt].start = first_vmalloc_address();
+	vrp[cnt++].end = last_vmalloc_address();
+
+	phys1 = (physaddr_t)(0);
+	phys2 = (physaddr_t)VTOP(vt->high_memory - PAGESIZE());
+	if (phys_to_page(phys1, &pp1) && 
+	    phys_to_page(phys2, &pp2) &&
+	    (pp1 >= vrp[cnt-1].end)) {
+		vrp[cnt].type = KVADDR_VMEMMAP;
+		vrp[cnt].start = pp1;
+		vrp[cnt++].end = pp2;
+	}
+
+	return cnt;
+}
 #endif 

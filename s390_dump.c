@@ -26,7 +26,7 @@ is_s390_dump(char *file)
 {
 	FILE* fh;
 	long long int magic;
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 	int rc;
 
 	fh = fopen(file,"r");

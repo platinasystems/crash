@@ -58,7 +58,9 @@ extern int unwind(struct unwind_frame_info *, int);
 extern void init_unwind_table(void);
 extern void free_unwind_table(void);
 
+#ifndef offsetof
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+#endif
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 #define BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:-!!(e); }))

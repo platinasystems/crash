@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -52,6 +52,7 @@ static void parse_cmdline_args(void);
 static void ppc64_paca_init(void);
 static void ppc64_clear_machdep_cache(void);
 static void ppc64_vmemmap_init(void);
+static int ppc64_get_kvaddr_ranges(struct vaddr_range *);
 
 struct machine_specific ppc64_machine_specific = { { 0 }, 0, 0 };
 
@@ -137,6 +138,7 @@ ppc64_init(int when)
 		machdep->get_smp_cpus = ppc64_get_smp_cpus;
 		machdep->line_number_hooks = ppc64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+		machdep->get_kvaddr_ranges = ppc64_get_kvaddr_ranges;
 		machdep->init_kernel_pgd = NULL;
 		if (symbol_exists("vmemmap_populate")) {
 			machdep->flags |= VMEMMAP;
@@ -373,6 +375,7 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+        fprintf(fp, "  get_kvaddr_ranges: ppc64_get_kvaddr_ranges()\n");
 	fprintf(fp, " xendump_p2m_create: NULL\n");
 	fprintf(fp, "xen_kdump_p2m_create: NULL\n");
         fprintf(fp, "  line_number_hooks: ppc64_line_number_hooks\n");
@@ -2654,5 +2657,36 @@ ppc64_clear_machdep_cache(void)
 {
 	if (machdep->machspec->last_level4_read != vt->kernel_pgd[0])
         	machdep->machspec->last_level4_read = 0;
+}
+
+static int 
+ppc64_get_kvaddr_ranges(struct vaddr_range *vrp)
+{
+	int cnt;
+	physaddr_t phys1, phys2;
+	ulong pp1, pp2;
+
+	cnt = 0;
+
+	vrp[cnt].type = KVADDR_UNITY_MAP;
+	vrp[cnt].start = machdep->kvbase;
+	vrp[cnt++].end = vt->high_memory;
+
+	vrp[cnt].type = KVADDR_VMALLOC;
+	vrp[cnt].start = first_vmalloc_address();
+	vrp[cnt++].end = last_vmalloc_address();
+
+	if (machdep->flags & VMEMMAP) {
+ 		phys1 = (physaddr_t)(0);
+		phys2 = (physaddr_t)VTOP((vt->high_memory - PAGESIZE()));
+		if (phys_to_page(phys1, &pp1) && 
+	    	    phys_to_page(phys2, &pp2)) {
+			vrp[cnt].type = KVADDR_VMEMMAP;
+			vrp[cnt].start = pp1;
+			vrp[cnt++].end = pp2;
+		}
+	}
+
+	return cnt;
 }
 #endif /* PPC64 */ 

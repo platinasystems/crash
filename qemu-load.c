@@ -1,7 +1,7 @@
 /*
  * Qemu save VM loader
  *
- * Copyright (C) 2009, 2010 Red Hat, Inc.
+ * Copyright (C) 2009, 2010, 2011 Red Hat, Inc.
  * Written by Paolo Bonzini.
  *
  * Portions Copyright (C) 2009 David Anderson
@@ -193,10 +193,14 @@ ram_alloc (struct qemu_device_ram *dram, uint64_t size)
 	dram->last_ram_offset = size;
 }
 
+#ifndef ATTRIBUTE_UNUSED
+#define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
+#endif
+
 static int
 get_string (FILE *fp, char *name)
 {
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 	int sz = (uint8_t) getc (fp);
 	if (sz == EOF)
 		return -1;
@@ -284,7 +288,7 @@ int
 ram_read_phys_page (struct qemu_device_ram *dram, void *buf, uint64_t addr)
 {
 	off_t ofs;
-	ssize_t bytes;
+	ssize_t bytes ATTRIBUTE_UNUSED;
 
         if (addr >= dram->last_ram_offset)
                 return false;
@@ -885,7 +889,7 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 {
 	struct qemu_device_list *result = NULL;
 	struct qemu_device *last = NULL;;
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 
 	switch (get_be32 (fp)) {
 	case QEMU_VM_FILE_MAGIC:
@@ -965,7 +969,7 @@ is_qemu_vm_file(char *filename)
 	struct libvirt_header header;
 	FILE *vmp;
 	int retval;
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 	char *xml;
 
 	if ((vmp = fopen(filename, "r")) == NULL) {
@@ -1027,7 +1031,7 @@ dump_qemu_header(FILE *out)
 	struct libvirt_header header;
 	char magic[4];
 	uint8_t c;
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 
 	rewind(kvm->vmp);
 	if (get_be32(kvm->vmp) == QEMU_VM_FILE_MAGIC) {

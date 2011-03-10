@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3500,7 +3500,7 @@ show_task_times(struct task_context *tcp, ulong flags)
 static int
 start_time_timespec(void)
 {
-        char buf[BUFSIZE], *p1;
+        char buf[BUFSIZE];
 
 	switch(tt->flags & (TIMESPEC | NO_TIMESPEC))
 	{
@@ -3523,7 +3523,6 @@ start_time_timespec(void)
 
         rewind(pc->tmpfile);
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-                p1 = buf;
                 if (strstr(buf, "start_time;")) {
 			if (strstr(buf, "struct timespec")) {
 				tt->flags &= ~NO_TIMESPEC;
@@ -6777,7 +6776,8 @@ dump_runqueues(void)
 static void
 dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 {
-	int i, c, cnt, tot, qheads, nr_active;
+	int i, c, cnt, tot, nr_active;
+	int qheads ATTRIBUTE_UNUSED;
 	ulong offset, kvaddr, uvaddr;
 	ulong list_head[2];
         struct list_data list_data, *ld;
@@ -6942,7 +6942,8 @@ dump_CFS_runqueues(void)
 	int tot, prio, cpu;
 	ulong runq, cfs_rq;
 	char *runqbuf, *cfs_rq_buf;
-	ulong leftmost, tasks_timeline;
+	ulong leftmost; 
+	ulong tasks_timeline ATTRIBUTE_UNUSED;
 	struct task_context *tc;
 	long nr_running, cfs_rq_nr_running;
 	struct rb_root *root;

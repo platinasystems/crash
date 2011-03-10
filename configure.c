@@ -1,8 +1,8 @@
 /* configure.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,14 +18,14 @@
 /*
  *  define, clear and undef dynamically update the top-level Makefile: 
  *
- *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS and GPL_FILES
+ *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and GPL_FILES
  *       create: build_data.c
  *
- *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, and
+ *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and
  *               PROGRAM (for daemon)
  *       create: build_data.c
  *
- *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION, GDB_PATCH_FILES, TARGET_CFLAGS and GPL_FILES 
+ *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and GPL_FILES
  *        undef: WARNING_ERROR, WARNING_OPTIONS
  *
  *   -r  define: GDB_FILES, VERSION, GDB_PATCH_FILES GPL_FILES
@@ -130,6 +130,11 @@ int name_to_target(char *);
 #define TARGET_CFLAGS_ARM_ON_X86     "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_ARM_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_X86_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
+
+#define GDB_TARGET_DEFAULT        "GDB_CONF_FLAGS="
+#define GDB_TARGET_ARM_ON_X86     "GDB_CONF_FLAGS=--target=arm-elf-linux"
+#define GDB_TARGET_ARM_ON_X86_64  "GDB_CONF_FLAGS=--target=arm-elf-linux CFLAGS=-m32"
+#define GDB_TARGET_X86_ON_X86_64  "GDB_CONF_FLAGS=--target=i686-pc-linux-gnu CFLAGS=-m32"
 
 /*
  *  The original plan was to allow the use of a particular version
@@ -512,18 +517,21 @@ build_configure(struct supported_gdb_version *sp)
 	char buf[512];
 	char *target;
 	char *target_CFLAGS;
+	char *gdb_conf_flags;
 
 	get_current_configuration(sp);
 
 	target = target_CFLAGS = NULL;
 
+	gdb_conf_flags = GDB_TARGET_DEFAULT;
 	switch (target_data.target)
 	{
 	case X86:
 		target = TARGET_X86;
-		if (target_data.host == X86_64)
+		if (target_data.host == X86_64) {
                         target_CFLAGS = TARGET_CFLAGS_X86_ON_X86_64;
-                else
+			gdb_conf_flags = GDB_TARGET_X86_ON_X86_64;
+		} else
 			target_CFLAGS = TARGET_CFLAGS_X86;
 		break;
 	case ALPHA:
@@ -556,11 +564,13 @@ build_configure(struct supported_gdb_version *sp)
                 break;
 	case ARM:
                 target = TARGET_ARM;
-                if (target_data.host == X86)
+                if (target_data.host == X86) {
                         target_CFLAGS = TARGET_CFLAGS_ARM_ON_X86;
-                else if (target_data.host == X86_64)
+			gdb_conf_flags = GDB_TARGET_ARM_ON_X86;
+                } else if (target_data.host == X86_64) {
                         target_CFLAGS = TARGET_CFLAGS_ARM_ON_X86_64;
-		else
+			gdb_conf_flags = GDB_TARGET_ARM_ON_X86_64;
+		} else
                         target_CFLAGS = TARGET_CFLAGS_ARM;
                 break;
 	}
@@ -573,6 +583,9 @@ build_configure(struct supported_gdb_version *sp)
                 else if (strncmp(buf, "TARGET_CFLAGS=",
 			strlen("TARGET_CFLAGS=")) == 0)
                         fprintf(fp2, "%s\n", target_CFLAGS);
+		else if (strncmp(buf, "GDB_CONF_FLAGS=",
+			strlen("GDB_CONF_FLAGS=")) == 0)
+			fprintf(fp2, "%s\n", gdb_conf_flags);
 		else if (strncmp(buf, "GDB_FILES=",strlen("GDB_FILES=")) == 0)
 			fprintf(fp2, "%s\n", sp->GDB_FILES);
 		else if (strncmp(buf, "GDB_OFILES=",strlen("GDB_OFILES=")) == 0)
@@ -745,6 +758,9 @@ unconfigure(void)
                 else if (strncmp(buf, "TARGET_CFLAGS=",
 			strlen("TARGET_CFLAGS=")) == 0)
                         fprintf(fp2, "TARGET_CFLAGS=\n");
+		else if (strncmp(buf, "GDB_CONF_FLAGS=",
+			strlen("GDB_CONF_FLAGS=")) == 0)
+			fprintf(fp2, "GDB_CONF_FLAGS=\n");
                 else if (strncmp(buf, "GDB_FILES=",strlen("GDB_FILES=")) == 0)
                         fprintf(fp2, "GDB_FILES=\n");
                 else if (strncmp(buf, "GDB_OFILES=",strlen("GDB_OFILES=")) == 0)

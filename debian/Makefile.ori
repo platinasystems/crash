@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,35 +16,19 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
-# BitKeeper ID: @(#)Makefile 1.13
-#
 
 PROGRAM=crash
 
 #
 # Supported targets: X86 ALPHA PPC IA64 PPC64
-# TARGET will be configured automatically by configure
+# TARGET and GDB_CONF_FLAGS will be configured automatically by configure
 #
 TARGET=
+GDB_CONF_FLAGS=
 
 ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
 ifeq ($(ARCH), ppc64)
 CONF_FLAGS = -m64
-endif
-
-ifeq ($(TARGET), ARM)
-ifeq ($(ARCH), i386)
-GDB_CONF_FLAGS = --target=arm-elf-linux
-endif
-ifeq ($(ARCH), x86_64)
-GDB_CONF_FLAGS = --target=arm-elf-linux CFLAGS=-m32
-endif
-endif
-
-ifeq ($(TARGET), X86)
-ifeq ($(ARCH), x86_64)
-GDB_CONF_FLAGS = --target=i686-pc-linux-gnu CFLAGS=-m32
-endif
 endif
 
 #
@@ -78,7 +62,7 @@ INSTALLDIR=${DESTDIR}/usr/bin
 
 GENERIC_HFILES=defs.h xen_hyper_defs.h
 MCORE_HFILES=va_server.h vas_crash.h
-REDHAT_HFILES=netdump.h diskdump.h xendump.h kvmdump.h qemu-load.h
+REDHAT_HFILES=netdump.h diskdump.h makedumpfile.h xendump.h kvmdump.h qemu-load.h
 LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
         lkcd_dump_v7.h lkcd_dump_v8.h
 LKCD_OBSOLETE_HFILES=lkcd_fix_mem.h
@@ -93,7 +77,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
-	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c \
+	netdump.c diskdump.c makedumpfile.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c unwind_arm.c \
 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
 	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c
@@ -109,11 +93,13 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	arm.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
-	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
+	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o makedumpfile.o xendump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o unwind_arm.o \
 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
 	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o
+
+MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/README
 
 # These are the current set of crash extensions sources.  They are not built
 # by default unless the third command line of the "all:" stanza is uncommented.
@@ -238,7 +224,7 @@ GDB_FLAGS=
 # usefulness is also dependent upon the processor's compiler -- your mileage
 # may vary.
 #
-#WARNING_OPTIONS=-Wall -O2 -Wstrict-prototypes -Wmissing-prototypes -fstack-protector -Wp,-D_FORTIFY_SOURCE=2
+#WARNING_OPTIONS=-Wall -O2 -Wstrict-prototypes -Wmissing-prototypes -fstack-protector
 #WARNING_ERROR=-Werror
 
 # TARGET_CFLAGS will be configured automatically by configure
@@ -248,7 +234,7 @@ CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
 
 GPL_FILES=COPYING3
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
-	${EXTENSION_SOURCE_FILES}
+	${EXTENSION_SOURCE_FILES} ${MEMORY_DRIVER_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
 
 READLINE_DIRECTORY=./${GDB}/readline
@@ -317,6 +303,7 @@ clean: make_configure
 do_clean:
 	rm -f ${OBJECT_FILES} ${DAEMON_OBJECT_FILES} ${PROGRAM} ${PROGRAM}lib.a ${GDB_OFILES}
 	@(cd extensions; make --no-print-directory -i clean)
+	@(cd memory_driver; make --no-print-directory -i clean)
 
 make_build_data: force
 	cc -c ${CRASH_CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -453,6 +440,9 @@ netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
 diskdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} diskdump.c
 	cc -c ${CRASH_CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+makedumpfile.o: ${GENERIC_HFILES} ${REDHAT_HFILES} makedumpfile.c
+	cc -c ${CRASH_CFLAGS} makedumpfile.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 xendump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} xendump.c
 	cc -c ${CRASH_CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -529,7 +519,7 @@ show_files:
 	@if [ -f ${PROGRAM}  ]; then \
 		./${PROGRAM} --no_scroll --no_crashrc -h README > README; fi
 	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} ${GPL_FILES} README \
-	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES}
+	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} ${MEMORY_DRIVER_FILES}
 
 ctags:
 	ctags ${SOURCE_FILES}
@@ -544,7 +534,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=5.1.1
+VERSION=5.1.3
 RELEASE=0
 
 release: make_configure
@@ -571,7 +561,8 @@ do_release:
 	@rm -f ${PROGRAM}-${VERSION}-${RELEASE}.src.rpm
 	@chown root ./RELDIR/${PROGRAM}-${VERSION}
 	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} ${GPL_FILES} \
-	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${VERSION}; tar xf -)
+	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} ${MEMORY_DRIVER_FILES} | \
+	(cd ./RELDIR/${PROGRAM}-${VERSION}; tar xf -)
 	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${VERSION}
 	@./${PROGRAM} --no_scroll --no_crashrc -h README > ./RELDIR/${PROGRAM}-${VERSION}/README
 	@(cd ./RELDIR; find . -exec chown root {} ";")
@@ -625,3 +616,6 @@ extensions: make_configure
 
 do_extensions:
 	@(cd extensions; make -i TARGET=$(TARGET) TARGET_CFLAGS="$(TARGET_CFLAGS)" GDB=$(GDB) GDB_FLAGS=$(GDB_FLAGS))
+
+memory_driver: make_configure 
+	@(cd memory_driver; make --no-print-directory -i)

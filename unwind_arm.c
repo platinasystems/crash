@@ -250,9 +250,8 @@ read_module_unwind_table(struct unwind_table *tbl, ulong addr)
 	idx_size = idx_stop - idx_start;
 
 	/*
-	 * We know the size of the index table. Allocate memory for the table
-	 * (including the EH table) and read the contents from the kernel
-	 * memory.
+	 * We know the size of the index table. Allocate memory for
+	 * the table and read the contents from the kernel memory.
 	 */
 	tbl->idx = calloc(idx_size, 1);
 	if (!tbl->idx)

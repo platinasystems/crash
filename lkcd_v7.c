@@ -36,13 +36,14 @@ lkcd_dump_init_v7(FILE *fp, int fd, char *dumpfile)
 	uint32_t pgcnt;
 	dump_header_t *dh;
 	dump_page_t *dp;
-	int dump_index_size;
-	int dump_index_created = 0;
+	int dump_index_size ATTRIBUTE_UNUSED;
+	int dump_index_created ATTRIBUTE_UNUSED;
 	static char dumpfile_index_name[128];
-	int ifd;
+	int ifd ATTRIBUTE_UNUSED;
 
 	lkcd->fd = fd;
 	lkcd->fp = fp;
+	dump_index_created = 0;
 
 	lseek(lkcd->fd, 0, SEEK_SET);
 

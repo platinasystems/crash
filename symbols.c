@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -245,7 +245,6 @@ check_gnu_debuglink(bfd *bfd)
 	int crc_offset;	
 	unsigned long crc32;
 	char *dirname;
-	char *filename;
 	char *namelist_debug;
         char **matching;
 
@@ -278,7 +277,6 @@ check_gnu_debuglink(bfd *bfd)
 		error(FATAL, "debuginfo file name malloc: %s\n", 
 			strerror(errno));
 
-	filename = basename(pc->namelist);
 	dirname = GETBUF(strlen(pc->namelist)+1);
 	strcpy(dirname, pc->namelist);
 
@@ -665,6 +663,9 @@ store_sysmap_symbols(void)
 static ulong
 relocate(ulong symval, char *symname, int first_symbol)
 {
+	if (XEN_HYPER_MODE())
+		return symval;
+
 	switch (kt->flags & (RELOC_SET|RELOC_FORCE))
 	{
 	case RELOC_SET: 
@@ -1698,7 +1699,6 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
 	char *module_buf;
 	char *header_buf;
 	uint symbols;
-	uint sections;
 	ulong name_off;
 	ulong sec_name_off;
 	ulong section_off;
@@ -1739,7 +1739,7 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
 
 	header_buf = module_buf + (kallsyms_header - lm->mod_base);
         symbols = UINT(header_buf + OFFSET(kallsyms_header_symbols));
-        sections = UINT(header_buf + OFFSET(kallsyms_header_sections));
+//      sections = UINT(header_buf + OFFSET(kallsyms_header_sections));
 
 	if (CRASHDEBUG(7))
 		fprintf(fp, "kallsyms: module: %s\n", lm->mod_name);
@@ -1862,8 +1862,6 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
                          char *modbuf)
 {
 	int i, j, found;
-	Elf32_Sym *elf32_sym;
-	Elf64_Sym *elf64_sym;
 	struct elf_common elf_common, *ec;
 	ulong nksyms, ksymtab, kstrtab;
 	char *module_buf, *ptr, *locsymtab, *locstrtab, *nameptr;
@@ -1881,9 +1879,6 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 	mcnt_idx = curr;
         ns = &st->ext_module_namespace;
 	ec = &elf_common;
-
-	elf32_sym = NULL;
-	elf64_sym = NULL;
 
         module_buf = GETBUF(lm->mod_size);
 
@@ -2044,6 +2039,50 @@ strip_module_symbol_end(char *buf)
 
 	*p1 = NULLCHAR;
 }
+
+
+/* 
+ * Return the lowest or highest module virtual address.
+ */
+ulong
+lowest_module_address(void)
+{
+	int i;
+	struct load_module *lm;
+	ulong low, lowest;
+
+	if (!st->mods_installed)
+		return 0;
+
+	lowest = (ulong)(-1);
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		low = lm->mod_base;
+		if (low < lowest)
+			lowest = low;
+	}
+
+	return lowest;
+}
+
+ulong
+highest_module_address(void)
+{
+	int i;
+	struct load_module *lm;
+	ulong high, highest;
+
+	highest = 0;
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		high = lm->mod_base + lm->mod_size;
+		if (high > highest)
+			highest = high;
+	}
+
+	return highest;
+}
+
 
 /*
  *  Look through a string for bogus kernel clutter of an exported 
@@ -2906,6 +2945,106 @@ is_kernel(char *file)
 
 bailout:
 	return(is_bfd_format(file));
+}
+
+int 
+is_compressed_kernel(char *file, char **tmp)
+{
+	int len, type, fd;
+	char *tmpdir, *tempname;
+        unsigned char header[BUFSIZE];
+	char command[BUFSIZE];
+	char message[BUFSIZE];
+
+#define GZIP  (1)
+#define BZIP2 (2)
+
+	if ((fd = open(file, O_RDONLY)) < 0)
+		return FALSE;
+
+	if (read(fd, header, BUFSIZE) != BUFSIZE) {
+		close(fd);
+		return FALSE;
+	}
+	close(fd);
+
+	type = 0;
+
+	if ((header[0] == 0x1f) && (header[1] == 0x8b) && (header[2] == 8)) {
+		if (!STRNEQ((char *)&header[10], "vmlinux") && 
+		    !(st->flags & FORCE_DEBUGINFO)) {
+			error(INFO, "%s: compressed file name does not "
+			    "start with \"vmlinux\"\n", &header[10]);
+			error(CONT, 
+			    "Use \"-f %s\" on command line to override.\n\n",
+				file);
+			return FALSE;
+		}
+		type = GZIP;
+	}
+
+	if ((header[0] == 'B') && (header[1] == 'Z') && (header[2] == 'h')) {
+		if (!STRNEQ(file, "vmlinux") && 
+		    !(st->flags & FORCE_DEBUGINFO)) {
+			error(INFO, "%s: compressed file name does not start "
+			    "with \"vmlinux\"\n", file);
+			error(CONT, 
+			    "Use \"-f %s\" on command line to override.\n\n",
+				file);
+			return FALSE;
+		}
+		type = BZIP2;
+	}
+
+	if (!type)
+		return FALSE;
+
+	if (!(tmpdir = getenv("TMPDIR")))
+		tmpdir = "/var/tmp";
+	len = strlen(tmpdir) + strlen(basename(file)) +
+		strlen("_XXXXXX") + 2;
+	if (!(tempname = (char *)malloc(len)))
+		return FALSE;
+	sprintf(tempname, "%s/%s_XXXXXX", tmpdir, basename(file));
+
+	fd = mkstemp(tempname);
+	if (fd < 0) {
+		perror("mkstemp");
+		free(tempname);
+		return FALSE;
+	} 
+	pc->cleanup = tempname;
+
+	sprintf(message, "uncompressing %s", file);
+	please_wait(message);
+	switch (type)
+	{
+	case GZIP:
+		sprintf(command, "/usr/bin/gunzip -c %s > %s", file, tempname);
+		break;
+	case BZIP2:
+		sprintf(command, "/usr/bin/bunzip2 -c %s > %s", file, tempname);
+		break;
+	}
+	if (system(command) < 0) {
+		please_wait_done();
+		error(INFO, "gunzip of %s failed\n", file);
+		free(tempname);
+		return FALSE;
+	}
+	please_wait_done();
+
+	if (is_bfd_format(tempname)) {
+		*tmp = tempname;
+		return TRUE;
+	}
+
+	unlink(tempname);
+	close(fd);
+	free(tempname);
+	pc->cleanup = NULL;
+
+	return FALSE;
 }
 
 int
@@ -3802,7 +3941,6 @@ module_symbol(ulong value,
         int i;
 	struct load_module *lm;
 	struct syment *sp;
-	long mcnt;
 	char buf[BUFSIZE];
 	ulong offs, offset;
 	ulong base, end;
@@ -3815,7 +3953,6 @@ module_symbol(ulong value,
         if ((radix != 10) && (radix != 16))
                 radix = 16;
 
-        mcnt = 0;
 	for (i = 0; i < st->mods_installed; i++) {
 		lm = &st->load_modules[i];
 
@@ -4030,7 +4167,7 @@ highest_bss_symbol(void)
 struct syment *
 value_search_base_kernel(ulong value, ulong *offset)
 {
-        struct syment *sp, *splast;
+        struct syment *sp;
 
         if (value < st->symtable[0].value)
         	return((struct syment *)NULL);
@@ -4049,7 +4186,6 @@ value_search_base_kernel(ulong value, ulong *offset)
                         	*offset = value - ((sp-1)->value);
                         return((struct syment *)(sp-1));
                 }
-		splast = sp;
         }
 
 	/* 
@@ -8634,7 +8770,7 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 	void *minisyms, long symcount, unsigned int size)
 {
 	struct syment *s1, *s2;
-	ulong sec_start, sec_end;
+	ulong sec_start;
 	bfd_byte *from, *fromend;
 	asymbol *store;
 	asymbol *sym;
@@ -8721,7 +8857,7 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 
             /* Update the offset information for the section */
 	    sec_start = s1->value - syminfo.value;
-	    sec_end = sec_start + lm->mod_section_data[i].size;
+//	    sec_end = sec_start + lm->mod_section_data[i].size;
 	    lm->mod_section_data[i].offset = sec_start - lm->mod_base;
             lm->mod_section_data[i].flags |= SEC_FOUND;
 

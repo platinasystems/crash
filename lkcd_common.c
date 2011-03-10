@@ -3,8 +3,8 @@
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
  * Copyright (C) 2002 Silicon Graphics, Inc. 
  * Copyright (C) 2002 Free Software Foundation, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2007, 2009, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2007, 2009, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -261,9 +261,6 @@ void
 dump_lkcd_environment(ulong arg)
 {
 	int others;
-	FILE *fp;
-
-	fp = lkcd->fp;
 
 	if (arg == LKCD_DUMP_HEADER_ONLY)
 		goto dump_header_only;
@@ -709,7 +706,7 @@ retry:
 		if (lkcd->zones[ii].start == zone) {
 			if (lkcd->zones[ii].pages[page].offset != 0) {
 			   if (lkcd->zones[ii].pages[page].offset != off) {
-				if (CRASHDEBUG(1))
+				if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search"))
 				    error(INFO, "LKCD: conflicting page: zone %lld, "
 					"page %lld: %lld, %lld != %lld\n",
 					(unsigned long long)zone, 
@@ -1064,7 +1061,7 @@ cache_page(void)
 	ulong type;
 	int found, newsz;
 	uint32_t rawsz;
-	ssize_t bytes;
+	ssize_t bytes ATTRIBUTE_UNUSED;
 
 
         for (i = found = 0; i < LKCD_CACHED_PAGES; i++) {

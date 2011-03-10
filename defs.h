@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -47,6 +47,10 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <execinfo.h> /* backtrace() */
+
+#ifndef ATTRIBUTE_UNUSED
+#define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
+#endif
 
 #define BASELEVEL_REVISION  "4.0"
 
@@ -422,6 +426,12 @@ struct program_context {
 	off_t ifile_offset;             /* current offset into input file */
 	char *runtime_ifile_cmd;        /* runtime command using input file */
 	char *kvmdump_mapfile;          /* storage of physical to file offsets */
+	ulonglong flags2;               /* flags overrun */  
+#define FLAT          (0x1ULL)
+#define FLAT_FORMAT() (pc->flags2 & FLAT)
+	char *cleanup;
+	char *namelist_orig;
+	char *namelist_debug_orig;
 };
 
 #define READMEM  pc->readmem
@@ -577,6 +587,10 @@ struct kernel_table {                   /* kernel data */
 		ulong p2m_missing;
 	} pvops_xen;
 	int highest_irq;
+#define IKCONFIG_AVAIL	0x1	/* kernel contains ikconfig data */
+#define IKCONFIG_LOADED	0x2	/* ikconfig data is currently loaded */
+	int ikconfig_flags;
+	int ikconfig_ents;
 };
 
 /*
@@ -751,6 +765,18 @@ struct machine_specific;  /* uniquely defined below each machine's area */
 struct xendump_data;
 struct xen_kdump_data;
 
+struct vaddr_range {
+	ulong start;
+	ulong end;
+	ulong type;
+#define KVADDR_UNITY_MAP  (1) 
+#define KVADDR_VMALLOC    (2)
+#define KVADDR_VMEMMAP    (3)
+#define KVADDR_START_MAP  (4)
+#define KVADDR_MODULES    (5)
+#define MAX_KVADDR_RANGES KVADDR_MODULES
+};
+
 #define MAX_MACHDEP_ARGS 5  /* for --machdep/-m machine-specific args */
 
 struct machdep_table {
@@ -816,6 +842,7 @@ struct machdep_table {
 	int (*in_alternate_stack)(int, ulong);
 	void (*dumpfile_init)(int, void *);
 	void (*process_elf_notes)(void *, unsigned long);
+	int (*get_kvaddr_ranges)(struct vaddr_range *);
 };
 
 /*
@@ -3634,6 +3661,7 @@ int is_kernel(char *);
 int is_shared_object(char *);
 int file_elf_version(char *);
 int is_system_map(char *);
+int is_compressed_kernel(char *, char **);
 int select_namelist(char *);
 int get_array_length(char *, int *, long);
 int get_array_length_alt(char *, char *, int *, long);
@@ -3644,6 +3672,8 @@ int datatype_exists(char *);
 int get_function_numargs(ulong);
 int is_module_name(char *, ulong *, struct load_module **);
 int is_module_address(ulong, char *);
+ulong lowest_module_address(void);
+ulong highest_module_address(void);
 int load_module_symbols(char *, char *, ulong);
 void delete_load_module(ulong);
 ulong gdb_load_module_callback(ulong, char *);
@@ -3708,6 +3738,10 @@ void clear_swap_info_cache(void);
 uint memory_page_size(void);
 void force_page_size(char *);
 ulong first_vmalloc_address(void);
+ulong last_vmalloc_address(void);
+int in_vmlist_segment(ulong);
+int phys_to_page(physaddr_t, ulong *);
+int generic_get_kvaddr_ranges(struct vaddr_range *);
 int l1_cache_size(void);
 int dumpfile_memory(int);
 #define DUMPFILE_MEM_USED    (1)
@@ -3937,6 +3971,7 @@ void verify_version(void);
 void verify_spinlock(void);
 void non_matching_kernel(void);
 struct load_module *modref_to_load_module(char *);
+int load_module_symbols_helper(char *);
 void unlink_module(struct load_module *);
 int check_specified_module_tree(char *, char *);
 int is_system_call(char *, ulong);
@@ -4052,6 +4087,16 @@ void read_in_kernel_config(int);
 
 #define IKCFG_INIT   (0)
 #define IKCFG_READ   (1)
+#define IKCFG_SETUP  (2)
+#define IKCFG_FREE   (3)
+
+int get_kernel_config(char *, char **);
+enum {
+	IKCONFIG_N,
+	IKCONFIG_Y,
+	IKCONFIG_M,
+	IKCONFIG_STR,
+};
 
 #define MAGIC_START  "IKCFG_ST"
 #define MAGIC_END    "IKCFG_ED"
@@ -4097,6 +4142,7 @@ struct arm_pt_regs {
 
 #define KSYMS_START	(0x1)
 #define PHYS_BASE	(0x2)
+#define PGTABLE_V2	(0x4)
 
 struct machine_specific {
 	ulong phys_base;
@@ -4559,6 +4605,14 @@ int dumpfile_is_split(void);
 void show_split_dumpfiles(void);
 
 /*
+ * makedumpfile.c
+ */
+void check_flattened_format(char *file);
+int is_flattened_format(char *file);
+int read_flattened_format(int fd, off_t offset, void *buf, size_t size);
+void dump_flat_header(FILE *);
+
+/*
  * xendump.c
  */
 int is_xendump(char *);
@@ -4593,6 +4647,7 @@ ulong get_kvmdump_panic_task(void);
 int kvmdump_phys_base(unsigned long *);
 void kvmdump_display_regs(int, FILE *);
 void set_kvmhost_type(char *);
+void set_kvm_iohole(char *);
 
 /*
  * qemu.c

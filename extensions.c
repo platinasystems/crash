@@ -1,8 +1,8 @@
 /* extensions.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -466,7 +466,7 @@ unload_extension(char *lib)
 				help_init();
 			}
 		}
-		if (STREQ(basename(lib), basename(ext->filename))) {
+		else if (STREQ(basename(lib), basename(ext->filename))) {
 			error(INFO, "%s and %s are different object files\n",
 				lib, ext->filename);
 			found = TRUE;
