@@ -17,7 +17,9 @@ endif
 
 all:
 	@if [ -f /usr/bin/flex ] && [ -f /usr/bin/bison ]; then \
-	  make -f sial.mk sial.so; \
+	  if [ -f ../$(GDB)/crash.target ]; then \
+	    make -f sial.mk sial.so; else \
+	  echo "sial.so: build failed: requires the crash $(GDB) module"; fi \
 	else \
 	  echo "sial.so: build failed: requires /usr/bin/flex and /usr/bin/bison"; fi
 

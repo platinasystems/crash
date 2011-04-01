@@ -36,8 +36,8 @@ $(CONTRIB_SO): %.so: %.c defs.h
 	@if [ -f $*.mk ]; then \
 		make -f $*.mk; \
 	else \
-		echo "gcc -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS)"; \
-		gcc -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS); \
+		echo "gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS)"; \
+		gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS); \
 	fi
 
 clean:

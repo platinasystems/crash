@@ -3645,6 +3645,7 @@ ulong symbol_value_module(char *, char *);
 struct syment *per_cpu_symbol_search(char *);
 int symbol_exists(char *s);
 int kernel_symbol_exists(char *s);
+struct syment *kernel_symbol_search(char *);
 int get_syment_array(char *, struct syment **, int);
 void dump_struct(char *, ulong, unsigned);
 void dump_struct_member(char *, ulong, unsigned);

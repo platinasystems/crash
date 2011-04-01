@@ -1,3 +1,92 @@
+crash (5.1.4-1) unstable; urgency=low
+
+  * New upstream version 5.1.4 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix for RT kernels in which the schedule() function has become a wrapper
+    function that calls the  __schedule() function, and where other functions
+    may call __schedule() directly.  Without the patch, a warning message
+    indicating "crash: cannot determing thread return address" is displayed
+    during invocation on x86_64 machines, and backtraces of blocked tasks may
+    have missing or invalid frames.
+  * Fix for running against live x86 kernels that were configured with
+    CONFIG_PHYSICAL_START containing a value that is greater than its
+    CONFIG_PHYSICAL_ALIGN value, and where the first symbol listed by
+    /proc/kallsyms is not "_text".  Without the patch, the crash session fails
+    during invocation with the error message "crash: vmlinux and /dev/mem do
+    not match!" (or "/dev/crash" if applicable).  As a work- around,
+    "/proc/kallsyms" can be entered on the command line, or the
+    "--reloc=<size>" option could be used, but the fix obviates that
+    requirement for live systems.  It should be noted that dumpfiles of
+    kernels configured that way still do require that "/proc/kallsyms", or a
+    copy of it, or alternatively the "--reloc=<size>" option, to be entered on
+    the command line, as detailed in this changelog entry:
+    http://people.redhat.com/anderson/crash.changelog.html#4_0_4_5
+  * Unlike other extension modules, the "sial.so" module must be built within
+    a pre-built crash source tree because it uses header files from the
+    embedded gdb module.  Therefore if a crash source tree is laid down,
+    entered, and "make extensions" is entered without first building the crash
+    utility, the build of sial.so build spews numerous error messages.  To
+    avoid that, the sial.mk file has been modified to check whether the
+    embedded gdb build has been completed, and if it has not, just displays
+    "sial.so: build failed: requires the crash gdb-7.0 module".
+  * If an extension module does not have its own <module>.mk file, and is
+    built using the extensions/Makefile, then it will be compiled with the
+    -Wall flag.
+  * The "trace.so" extension module has been improved to use "trace.cmd" to
+    implement the "trace show" option, instead of maintaining a redundant code
+    base within the module itself.  The trace-cmd command is better, mature,
+    and continually maintained.  The new "trace show" option works like so:
+    (1) builds trace.dat from the core file and dumps it to /tmp.  (2) execs
+    "trace-cmd report" upon the trace.dat file.  (3) splices the output of
+    trace-cmd to the user and unlinks the temporary file.
+  * Updates to the "trace.so" extension module to extract trace_bprintk()
+    formats from a kernel core dump.  It handles both the current format and a
+    new format that will be pushed out after the merge window has closed for
+    Linux 2.6.40.  The new format is required for the kernel debugfs to export
+    the same bprintk data as well.  This means that the trace.so extension
+    module will be able to extract more information than trace-cmd itself can
+    on a running kernel.
+  * Fix for the "gdb" command, or any command that resolves to a gdb command,
+    to not strip quotation marks from the input line.  Without the patch, any
+    gdb command whose arguments contain quotation marks, (e.g. "printf") would
+    fail because they get incorrectly stripped from the input line. 
+  * Fix for the "p" command if its symbolic argument is a "char *" that points
+    to a static data string containing an "%" character.  Without the patch,
+    the command results in a segmentation violation.
+  * Fix for the "sys -c" option to display an error message if a known
+    sys_call_table entry is not a valid system call address.  Without the
+    patch, the compromised system call entry is not displayed unless the crash
+    debug mode is set to 1 or greater.  With the patch, the system call number
+    will be followed by an error message indicating "invalid sys_call_table
+    entry: <address> (<symbol-name>)".  This change is only applicable on
+    architectures/kernels where the index of the sys_call_table array can be
+    confirmed by debuginfo data, i.e., is not a loose calculation based upon
+    the next kernel symbol.
+  * Print a warning message if there is any inconsistency between the kernel
+    version strings found in the vmlinux file vs. the dumpfile or live memory.
+    If a System.map file is used to correct the virtual addresses found in the
+    vmlinux file, the message is not displayed.
+  * Fix for "kmem -v", and all other commands that search through the kernel's
+    mapped virtual address list, in x86_64 kernel versions from 2.6.0 to
+    2.6.11.  Those kernels contained a "vmlist" and a separate "mod_vmlist"
+    list header, both of which point to list of vm_structs that described each
+    contiguous block of mapped kernel memory.  2.6.12 and later x86_64 kernels
+    consolidated both lists onto the "vmlist".  Without the patch, the list
+    headed by "mod_vmlist" was not searched.
+  * Clarify the "struct -l offset" option so that it does not imply that the
+    address argument is necessarily an embedded list_head pointer.  The "-l
+    offset" option essentially provides the capability of the kernel's
+    container_of() macro, such that the address of an embedded data structure
+    can be used to display its containing data structure.
+  * Clarify the help page documentation for the "struct -l offset" option so
+    that it does not imply that the address argument is necessarily an
+    embedded list_head pointer.  The "-l offset" option essentially provides
+    the capability of the kernel's container_of() macro, such that the address
+    of an embedded data structure can be used to display its containing data
+    structure.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 01 Apr 2011 09:58:11 -0600
+
 crash (5.1.3-1) unstable; urgency=low
 
   * Implemented support for using vmlinux files that have been compressed with

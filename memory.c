@@ -6988,10 +6988,12 @@ dump_vmlist(struct meminfo *vi)
 	ulong vmlist;
 	ulong addr, size, next, pcheck, count, verified; 
 	physaddr_t paddr;
+	int mod_vmlist;
 
 	get_symbol_data("vmlist", sizeof(void *), &vmlist);
 	next = vmlist;
 	count = verified = 0;
+	mod_vmlist = kernel_symbol_exists("mod_vmlist");
 
 	while (next) {
 		if (!(pc->curcmd_flags & HEADER_PRINTED) && (next == vmlist) && 
@@ -7076,6 +7078,11 @@ next_entry:
                 readmem(next+OFFSET(vm_struct_next), 
 			KVADDR, &next, sizeof(void *),
                         "vmlist next", FAULT_ON_ERROR);
+		
+		if (!next && mod_vmlist) {
+			get_symbol_data("mod_vmlist", sizeof(void *), &next);
+			mod_vmlist = FALSE;
+		}
 	}
 
 	if (vi->flags & GET_HIGHEST)
