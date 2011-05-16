@@ -498,6 +498,17 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(slab_s_mem, "slab", "s_mem");
 		MEMBER_OFFSET_INIT(slab_inuse, "slab", "inuse");
 		MEMBER_OFFSET_INIT(slab_free, "slab", "free");
+		/*
+		 *  slab members were moved to an anonymous union in 2.6.39.
+		 */
+		if (INVALID_MEMBER(slab_list))
+			ANON_MEMBER_OFFSET_INIT(slab_list, "slab", "list");
+		if (INVALID_MEMBER(slab_s_mem))
+			ANON_MEMBER_OFFSET_INIT(slab_s_mem, "slab", "s_mem");
+		if (INVALID_MEMBER(slab_inuse))
+			ANON_MEMBER_OFFSET_INIT(slab_inuse, "slab", "inuse");
+		if (INVALID_MEMBER(slab_free))
+			ANON_MEMBER_OFFSET_INIT(slab_free, "slab", "free");
 
 		MEMBER_OFFSET_INIT(array_cache_avail, "array_cache", "avail");
 		MEMBER_OFFSET_INIT(array_cache_limit, "array_cache", "limit");

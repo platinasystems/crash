@@ -1704,6 +1704,9 @@ x86_init(int when)
 
 	switch (when)
 	{
+	case SETUP_ENV:
+		machdep->process_elf_notes = x86_process_elf_notes;
+		break;
 	case PRE_SYMTAB:
 		machdep->verify_symbol = x86_verify_symbol;
                 if (pc->flags & KERNEL_DEBUG_QUERY)
@@ -1797,6 +1800,12 @@ x86_init(int when)
 		else
 			MEMBER_OFFSET_INIT(user_regs_struct_esp,
 				"user_regs_struct", "sp");
+		if (MEMBER_EXISTS("user_regs_struct", "eip"))
+			MEMBER_OFFSET_INIT(user_regs_struct_eip,
+				"user_regs_struct", "eip");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_eip,
+				"user_regs_struct", "ip");
 		if (!VALID_STRUCT(user_regs_struct)) {
 			/*  Use this hardwired version -- sometimes the 
 			 *  debuginfo doesn't pick this up even though
@@ -1817,6 +1826,8 @@ x86_init(int when)
 				offsetof(struct x86_user_regs_struct, ebp);
 			ASSIGN_OFFSET(user_regs_struct_esp) =
 				offsetof(struct x86_user_regs_struct, esp);
+			ASSIGN_OFFSET(user_regs_struct_eip) =
+				offsetof(struct x86_user_regs_struct, eip);
 		}
 		MEMBER_OFFSET_INIT(thread_struct_cr3, "thread_struct", "cr3");
 		STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
@@ -1876,6 +1887,12 @@ x86_init(int when)
 			machdep->line_number_hooks = x86_line_number_hooks;
 
 		eframe_init();
+
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,28))
+			machdep->machspec->page_protnone = _PAGE_GLOBAL;
+		else
+			machdep->machspec->page_protnone = _PAGE_PSE;
+
 		break;
 
 	case POST_INIT:
@@ -2028,7 +2045,7 @@ x86_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 			MKSTR((ulong)page_dir)),
 			pgd_pte);
 
-	if (!pgd_pte)
+	if (!(pgd_pte & (_PAGE_PRESENT | _PAGE_PROTNONE)))
 		goto no_upage;
 
         if (pgd_pte & _PAGE_4M) {
@@ -2350,7 +2367,7 @@ x86_uvtop_PAE(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbo
 			page_middle_entry);
 	}
 
-        if (!(page_middle_entry & _PAGE_PRESENT)) {
+        if (!(page_middle_entry & (_PAGE_PRESENT | _PAGE_PROTNONE))) {
                 goto no_upage;
         }
 
@@ -3349,7 +3366,8 @@ x86_dump_machdep_table(ulong arg)
 		machdep->machspec->last_pmd_read_PAE);
 	fprintf(fp, "            last_ptbl_read_PAE: %llx\n",
 		machdep->machspec->last_ptbl_read_PAE);
-
+	fprintf(fp, "                 page_protnone: %lx\n",
+		machdep->machspec->page_protnone);
 }
 
 /*

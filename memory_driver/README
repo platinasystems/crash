@@ -12,7 +12,7 @@ If the live system kernel was configured without CONFIG_PROC_KCORE,
 or if /proc/kcore is non-functional, then /proc/kcore cannot be used.  
 
 The third alternative is this /dev/crash driver.  Presuming that 
-/lib/modules/`uname -r`/build points to a kernel built tree or
+/lib/modules/`uname -r`/build points to a kernel build tree or
 kernel "devel" package tree, the module can simply be built and
 installed like so:
 

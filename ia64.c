@@ -893,7 +893,7 @@ ia64_vtop_4l(ulong vaddr, physaddr_t *paddr, ulong *pgd, int verbose, int usr)
         if (verbose)
                 fprintf(fp, "   PTE: %lx => %lx\n", (ulong)page_table, pte);
 
-        if (!(pte & (_PAGE_P))) {
+        if (!(pte & (_PAGE_P | _PAGE_PROTNONE))) {
 		if (usr)
 		  	*paddr = pte;
 		if (pte && verbose) {
@@ -971,7 +971,7 @@ ia64_vtop(ulong vaddr, physaddr_t *paddr, ulong *pgd, int verbose, int usr)
         if (verbose)
                 fprintf(fp, "   PTE: %lx => %lx\n", (ulong)page_table, pte);
 
-        if (!(pte & (_PAGE_P))) {
+        if (!(pte & (_PAGE_P | _PAGE_PROTNONE))) {
 		if (usr)
 		  	*paddr = pte;
 		if (pte && verbose) {
@@ -1237,7 +1237,7 @@ ia64_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 	ulong paddr;
 
         paddr = pte & _PFN_MASK;
-	page_present = pte & _PAGE_P;
+	page_present = !!(pte & (_PAGE_P | _PAGE_PROTNONE));
 
 	if (physaddr) {
 		*((ulong *)physaddr) = paddr;
@@ -2893,7 +2893,8 @@ ia64_post_init(void)
 				&ms->cpu_data_address);
 		else if (symbol_exists("cpu_data"))
 			ms->cpu_data_address = symbol_value("cpu_data");
-		else if ((sp = per_cpu_symbol_search("per_cpu__cpu_info"))) {
+		else if ((sp = per_cpu_symbol_search("per_cpu__cpu_info")) ||
+		         (sp = per_cpu_symbol_search("per_cpu__ia64_cpu_info"))) {
 			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
 				ms->cpu_data_address = sp->value +
 					kt->__per_cpu_offset[0];

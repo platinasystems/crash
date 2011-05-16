@@ -242,6 +242,7 @@ struct number_option {
 #define ERROR_EXCLUDED      (0x4)
 #define ZERO_EXCLUDED       (0x8)
 #define DUMPFILE_SPLIT      (0x10)
+#define NO_ELF_NOTES        (0x20)
 #define DISKDUMP_VALID()    (dd->flags & DISKDUMP_LOCAL)
 #define KDUMP_CMPRS_VALID() (dd->flags & KDUMP_CMPRS_LOCAL)
 #define KDUMP_SPLIT()       (dd->flags & DUMPFILE_SPLIT)
@@ -428,7 +429,10 @@ struct program_context {
 	char *kvmdump_mapfile;          /* storage of physical to file offsets */
 	ulonglong flags2;               /* flags overrun */  
 #define FLAT          (0x1ULL)
+#define ELF_NOTES     (0x2ULL)
+#define GET_OSRELEASE (0x4ULL)
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
+#define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -1570,6 +1574,9 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long module_init_size;
 	long module_percpu;
 	long radix_tree_node_slots;
+	long s390_stack_frame_back_chain;
+	long s390_stack_frame_r14;
+	long user_regs_struct_eip;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1688,6 +1695,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long unwind_idx;
 	long softirq_action;
 	long irq_data;
+	long s390_stack_frame;
 };
 
 struct array_table {
@@ -2254,7 +2262,7 @@ struct load_module {
 #define _PAGE_4M        0x080   /* 4 MB page, Pentium+, if present.. */
 #define _PAGE_PSE       0x080   /* 4 MB (or 2MB) page, Pentium+, if present.. */
 #define _PAGE_GLOBAL    0x100   /* Global TLB entry PPro+ */
-#define _PAGE_PROTNONE  0x080   /* If not present */
+#define _PAGE_PROTNONE  (machdep->machspec->page_protnone)
 #define _PAGE_NX        (0x8000000000000000ULL)
 
 #define NONPAE_PAGEBASE(X)   (((unsigned long)(X)) & (unsigned long)machdep->pagemask)
@@ -2432,7 +2440,7 @@ struct load_module {
 #define _PAGE_PSE       0x080   /* 2MB page */
 #define _PAGE_FILE      0x040   /* set:pagecache, unset:swap */
 #define _PAGE_GLOBAL    0x100   /* Global TLB entry */
-#define _PAGE_PROTNONE  0x080   /* If not present */
+#define _PAGE_PROTNONE  (machdep->machspec->page_protnone)
 #define _PAGE_NX        (1UL<<_PAGE_BIT_NX)
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x3f)
@@ -4195,6 +4203,7 @@ struct machine_specific {
 	physaddr_t entry_tramp_start_phys;
 	ulonglong last_pmd_read_PAE;
 	ulonglong last_ptbl_read_PAE;
+	ulong page_protnone;
 };
 
 struct syment *x86_is_entry_tramp_address(ulong, ulong *); 
@@ -4211,6 +4220,8 @@ ulong x86_64_VTOP(ulong);
 int x86_64_IS_VMALLOC_ADDR(ulong);
 void x86_64_display_idt_table(void);
 #define display_idt_table() x86_64_display_idt_table()
+long x86_64_exception_frame(ulong, ulong, char *, struct bt_info *, FILE *);
+#define EFRAME_INIT (0)
 
 struct x86_64_pt_regs_offsets {
         long r15;
@@ -4272,6 +4283,7 @@ struct machine_specific {
 	ulong *crash_nmi_rsp;
 	ulong vsyscall_page;
 	ulong thread_return;
+	ulong page_protnone;
 };
 
 #define KSYMS_START    (0x1)
@@ -4575,6 +4587,7 @@ ulong xen_phys_start(void);
 int xen_major_version(void);
 int xen_minor_version(void);
 int get_netdump_arch(void);
+int exist_regs_in_elf_notes(struct task_context *);
 void *get_regs_from_elf_notes(struct task_context *);
 void map_cpus_to_prstatus(void);
 int arm_kdump_phys_base(ulong *);
@@ -4604,6 +4617,9 @@ ulong *diskdump_flags;
 int is_partial_diskdump(void);
 int dumpfile_is_split(void);
 void show_split_dumpfiles(void);
+void x86_process_elf_notes(void *, unsigned long);
+void *diskdump_get_prstatus_percpu(int);
+void map_cpus_to_prstatus_kdump_cmprs(void);
 
 /*
  * makedumpfile.c
@@ -4649,6 +4665,20 @@ int kvmdump_phys_base(unsigned long *);
 void kvmdump_display_regs(int, FILE *);
 void set_kvmhost_type(char *);
 void set_kvm_iohole(char *);
+struct kvm_register_set {
+	union {
+		uint32_t cs;
+		uint32_t ss;
+		uint32_t ds;
+		uint32_t es;
+		uint32_t fs;
+		uint32_t gs;
+		uint64_t ip;
+		uint64_t flags;
+		uint64_t regs[16];
+	} x86;
+};
+int get_kvm_register_set(int, struct kvm_register_set *);
 
 /*
  * qemu.c

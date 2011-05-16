@@ -2997,7 +2997,7 @@ is_compressed_kernel(char *file, char **tmp)
 	}
 
 	if ((header[0] == 'B') && (header[1] == 'Z') && (header[2] == 'h')) {
-		if (!STRNEQ(file, "vmlinux") && 
+		if (!STRNEQ(basename(file), "vmlinux") &&
 		    !(st->flags & FORCE_DEBUGINFO)) {
 			error(INFO, "%s: compressed file name does not start "
 			    "with \"vmlinux\"\n", file);
@@ -3033,15 +3033,22 @@ is_compressed_kernel(char *file, char **tmp)
 	switch (type)
 	{
 	case GZIP:
-		sprintf(command, "/usr/bin/gunzip -c %s > %s", file, tempname);
+		sprintf(command, "%s -c %s > %s", 
+			file_exists("/bin/gunzip", NULL) ?
+			"/bin/gunzip" : "/usr/bin/gunzip",
+			file, tempname);
 		break;
 	case BZIP2:
-		sprintf(command, "/usr/bin/bunzip2 -c %s > %s", file, tempname);
+		sprintf(command, "%s -c %s > %s", 
+			file_exists("/bin/bunzip2", NULL) ?
+			"/bin/bunzip2" : "/usr/bin/bunzip2",
+			file, tempname);
 		break;
 	}
 	if (system(command) < 0) {
 		please_wait_done();
-		error(INFO, "gunzip of %s failed\n", file);
+		error(INFO, "%s of %s failed\n", 
+			type == GZIP ? "gunzip" : "bunzip2", file);
 		free(tempname);
 		return FALSE;
 	}
@@ -7940,6 +7947,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(prio_array_nr_active));
 	fprintf(fp, "          user_regs_struct_ebp: %ld\n",
 		OFFSET(user_regs_struct_ebp));
+	fprintf(fp, "          user_regs_struct_eip: %ld\n",
+		OFFSET(user_regs_struct_eip));
 	fprintf(fp, "          user_regs_struct_esp: %ld\n",
 		OFFSET(user_regs_struct_esp));
 	fprintf(fp, "          user_regs_struct_rip: %ld\n",
@@ -8071,6 +8080,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(vcpu_struct_rq));
 	fprintf(fp, "    s390_lowcore_psw_save_area: %ld\n",
 		OFFSET(s390_lowcore_psw_save_area));
+	fprintf(fp, "   s390_stack_frame_back_chain: %ld\n",
+		OFFSET(s390_stack_frame_back_chain));
+	fprintf(fp, "          s390_stack_frame_r14: %ld\n",
+		OFFSET(s390_stack_frame_r14));
 
 	fprintf(fp, "           cpu_context_save_fp: %ld\n",
 		OFFSET(cpu_context_save_fp));
@@ -8284,6 +8297,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(note_buf));
 	fprintf(fp, "                    unwind_idx: %ld\n", 
 		SIZE(unwind_idx));
+	fprintf(fp, "              s390_stack_frame: %ld\n",
+		SIZE(s390_stack_frame));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

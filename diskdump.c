@@ -49,6 +49,9 @@ struct diskdump_data {
 	int	byte, bit;
 	char	*compressed_page;	/* copy of compressed page data */
 	char	*curbufptr;		/* ptr to uncompressed page buffer */
+	unsigned char *notes_buf;	/* copy of elf notes */
+	void	**nt_prstatus_percpu;
+	uint	num_prstatus_notes;
 
 	/* page cache */
 	struct page_cache_hdr {		/* header for each cached page */
@@ -73,6 +76,9 @@ ulong *diskdump_flags = &diskdump_data.flags;
 
 static int __diskdump_memory_dump(FILE *);
 static void dump_vmcoreinfo(FILE *);
+static void dump_nt_prstatus_offset(FILE *);
+static char *vmcoreinfo_read_string(const char *);
+static void diskdump_get_osrelease(void);
 
 /* For split dumpfile */
 static struct diskdump_data **dd_list = NULL;
@@ -84,7 +90,42 @@ int dumpfile_is_split(void)
 	return KDUMP_SPLIT();
 }
 
-static void add_diskdump_data(char* name)
+void
+map_cpus_to_prstatus_kdump_cmprs(void)
+{
+	void **nt_ptr;
+	int online, i, j, nrcpus;
+	size_t size;
+
+	if (!(online = get_cpus_online()) || (online == kt->cpus))
+		return;
+
+	if (CRASHDEBUG(1))
+		error(INFO,
+		    "cpus: %d online: %d NT_PRSTATUS notes: %d (remapping)\n",
+			kt->cpus, online, dd->num_prstatus_notes);
+
+	size = NR_CPUS * sizeof(void *);
+
+	nt_ptr = (void **)GETBUF(size);
+	BCOPY(dd->nt_prstatus_percpu, nt_ptr, size);
+	BZERO(dd->nt_prstatus_percpu, size);
+
+	/*
+	 *  Re-populate the array with the notes mapping to online cpus
+	 */
+	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
+
+	for (i = 0, j = 0; i < nrcpus; i++) {
+		if (in_cpu_map(ONLINE, i))
+			dd->nt_prstatus_percpu[i] = nt_ptr[j++];
+	}
+
+	FREEBUF(nt_ptr);
+}
+
+static void 
+add_diskdump_data(char* name)
 {
 #define DDL_SIZE 16
 	int i;
@@ -131,7 +172,8 @@ static void add_diskdump_data(char* name)
 			dd->sub_header_kdump->end_pfn);
 }
 
-static void clean_diskdump_data(void)
+static void 
+clean_diskdump_data(void)
 {
 	int i;
 
@@ -147,28 +189,33 @@ static void clean_diskdump_data(void)
 	dd = &diskdump_data;
 }
 
-static inline int get_bit(char *map, int byte, int bit)
+static inline int 
+get_bit(char *map, int byte, int bit)
 {
 	return map[byte] & (1<<bit);
 }
 
-static inline int page_is_ram(unsigned int nr)
+static inline int 
+page_is_ram(unsigned int nr)
 {
 	return get_bit(dd->bitmap, nr >> 3, nr & 7);
 }
 
-static inline int page_is_dumpable(unsigned int nr)
+static inline int 
+page_is_dumpable(unsigned int nr)
 {
 	return dd->dumpable_bitmap[nr>>3] & (1 << (nr & 7));
 }
 
-static inline int dump_is_partial(const struct disk_dump_header *header)
+static inline int 
+dump_is_partial(const struct disk_dump_header *header)
 {
 	return header->bitmap_blocks >=
 	    divideup(divideup(header->max_mapnr, 8), dd->block_size) * 2;
 }
 
-static int open_dump_file(char *file)
+static int 
+open_dump_file(char *file)
 {
 	int fd;
 
@@ -185,12 +232,52 @@ static int open_dump_file(char *file)
 	return TRUE;
 }
 
-static int read_dump_header(char *file)
+void 
+x86_process_elf_notes(void *note_ptr, unsigned long size_note)
+{
+	Elf32_Nhdr *note32 = NULL;
+	Elf64_Nhdr *note64 = NULL;
+	size_t tot, len = 0;
+	int num = 0;
+
+	for (tot = 0; tot < size_note; tot += len) {
+		if (machine_type("X86_64")) {
+			note64 = note_ptr + tot;
+
+			if (note64->n_type == NT_PRSTATUS) {
+				dd->nt_prstatus_percpu[num] = note64;
+				num++;
+			}
+
+			len = sizeof(Elf64_Nhdr);
+			len = roundup(len + note64->n_namesz, 4);
+			len = roundup(len + note64->n_descsz, 4);
+		} else if (machine_type("X86")) {
+			note32 = note_ptr + tot;
+
+			if (note32->n_type == NT_PRSTATUS) {
+				dd->nt_prstatus_percpu[num] = note32;
+				num++;
+			}
+
+			len = sizeof(Elf32_Nhdr);
+			len = roundup(len + note32->n_namesz, 4);
+			len = roundup(len + note32->n_descsz, 4);
+		}
+	}
+
+	if (num > 0) {
+		pc->flags2 |= ELF_NOTES;
+		dd->num_prstatus_notes = num;
+	}
+}
+
+static int 
+read_dump_header(char *file)
 {
 	struct disk_dump_header *header = NULL;
 	struct disk_dump_sub_header *sub_header = NULL;
 	struct kdump_sub_header *sub_header_kdump = NULL;
-	unsigned char *notes_buf = NULL;
 	size_t size;
 	int bitmap_len;
 	int block_size = (int)sysconf(_SC_PAGESIZE);
@@ -276,13 +363,14 @@ restart:
 	dd->block_size  = header->block_size;
 	dd->block_shift = ffs(header->block_size) - 1;
 
-	if (sizeof(*header) + sizeof(void *) * header->nr_cpus > block_size ||
-	    header->nr_cpus <= 0) {
-		error(INFO, "%s: invalid nr_cpus value: %d\n", 
-			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
-			header->nr_cpus);
-		goto err;
-	}
+	if ((DISKDUMP_VALID() &&
+             (sizeof(*header) + sizeof(void *) * header->nr_cpus > block_size)) ||
+             header->nr_cpus <= 0) {
+                error(INFO, "%s: invalid nr_cpus value: %d\n",
+                        DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+                        header->nr_cpus);
+                        goto err;
+        }
 
 	/* read sub header */
 	offset = (off_t)block_size;
@@ -392,18 +480,23 @@ restart:
 	}
 
 	/* process elf notes data */
-	if (KDUMP_CMPRS_VALID() && (dd->header->header_version >= 4) &&
+	if (KDUMP_CMPRS_VALID() && !(dd->flags & NO_ELF_NOTES) &&
+		(dd->header->header_version >= 4) &&
 		(sub_header_kdump->offset_note) &&
 		(sub_header_kdump->size_note) && (machdep->process_elf_notes)) {
 		size = sub_header_kdump->size_note;
 		offset = sub_header_kdump->offset_note;
 
-		if ((notes_buf = malloc(size)) == NULL)
+		if ((dd->notes_buf = malloc(size)) == NULL)
 			error(FATAL, "compressed kdump: cannot malloc notes"
 				" buffer\n");
 
+		if ((dd->nt_prstatus_percpu = malloc(NR_CPUS * sizeof(void*))) == NULL)
+			error(FATAL, "compressed kdump: cannot malloc pointer"
+				" to NT_PRSTATUS notes\n");
+
 		if (FLAT_FORMAT()) {
-			if (!read_flattened_format(dd->dfd, offset, notes_buf, size)) {
+			if (!read_flattened_format(dd->dfd, offset, dd->notes_buf, size)) {
 				error(INFO, "compressed kdump: cannot read notes data"
 					"\n");
 				goto err;
@@ -413,14 +506,14 @@ restart:
 				error(INFO, "compressed kdump: cannot lseek notes data\n");
 				goto err;
 			}
-			if (read(dd->dfd, notes_buf, size) < size) {
+			if (read(dd->dfd, dd->notes_buf, size) < size) {
 				error(INFO, "compressed kdump: cannot read notes data"
 					"\n");
 				goto err;
 			}
 		}
 
-		machdep->process_elf_notes(notes_buf, size);
+		machdep->process_elf_notes(dd->notes_buf, size);
 	}
 
 	/* For split dumpfile */
@@ -468,13 +561,17 @@ err:
 		free(sub_header);
 	if (sub_header_kdump)
 		free(sub_header_kdump);
-	if (notes_buf)
-		free(notes_buf);
 	if (dd->bitmap)
 		free(dd->bitmap);
 	if (dd->dumpable_bitmap)
 		free(dd->dumpable_bitmap);
+	if (dd->notes_buf)
+		free(dd->notes_buf);
+	if (dd->nt_prstatus_percpu)
+		free(dd->nt_prstatus_percpu);
+
 	dd->flags &= ~(DISKDUMP_LOCAL|KDUMP_CMPRS_LOCAL);
+	pc->flags2 &= ~ELF_NOTES;
 	return FALSE;
 }
 
@@ -531,6 +628,9 @@ is_diskdump(char *file)
 
 	if (CRASHDEBUG(1))
 		__diskdump_memory_dump(fp);
+
+	if (pc->flags2 & GET_OSRELEASE) 
+		diskdump_get_osrelease();
 
 	return TRUE;
 }
@@ -780,7 +880,7 @@ get_diskdump_panic_task(void)
 	return (ulong)dd->header->tasks[dd->header->current_cpu];
 }
 
-extern  void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
+extern void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
 extern void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
 
 static void
@@ -865,12 +965,14 @@ diskdump_free_memory(void)
         return 0;
 }
 
-int diskdump_memory_used(void)
+int 
+diskdump_memory_used(void)
 {
         return 0;
 }
 
-static void dump_vmcoreinfo(FILE *fp)
+static void 
+dump_vmcoreinfo(FILE *fp)
 {
 	char *buf = NULL;
 	unsigned long i = 0;
@@ -891,7 +993,7 @@ static void dump_vmcoreinfo(FILE *fp)
 	} else {
 		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
 			error(INFO, "compressed kdump: cannot lseek dump vmcoreinfo\n");
-			return;
+			goto err;
 		}
 		if (read(dd->dfd, buf, size_vmcoreinfo) < size_vmcoreinfo) {
 			error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
@@ -911,6 +1013,51 @@ err:
 	if (buf)
 		free(buf);
 	return;
+}
+
+static void 
+dump_nt_prstatus_offset(FILE *fp)
+{
+	struct kdump_sub_header *sub_header_kdump = dd->sub_header_kdump;
+	size_t size;
+	off_t offset;
+	Elf32_Nhdr *note32 = NULL;
+	Elf64_Nhdr *note64 = NULL;
+	size_t tot, len = 0;
+
+	if (KDUMP_CMPRS_VALID() && !(dd->flags & NO_ELF_NOTES) &&
+	    (dd->header->header_version >= 4) &&
+	    (sub_header_kdump->offset_note) &&
+	    (sub_header_kdump->size_note) && (machdep->process_elf_notes)) {
+		size = sub_header_kdump->size_note;
+		offset = sub_header_kdump->offset_note;
+
+		fprintf(fp, "  NT_PRSTATUS_offset: ");
+		for (tot = 0; tot < size; tot += len) {
+			if (machine_type("X86_64") || machine_type("S390X")) {
+				note64 = (void *)dd->notes_buf + tot;
+				len = sizeof(Elf64_Nhdr);
+				len = roundup(len + note64->n_namesz, 4);
+				len = roundup(len + note64->n_descsz, 4);
+
+				if (note64->n_type == NT_PRSTATUS)
+					fprintf(fp, "%s%lx\n",
+						(tot == 0) ? "" : "                      ",
+						(ulong)(offset + tot));
+
+			} else if (machine_type("X86")) {
+				note32 = (void *)dd->notes_buf + tot;
+				len = sizeof(Elf32_Nhdr);
+				len = roundup(len + note32->n_namesz, 4);
+				len = roundup(len + note32->n_descsz, 4);
+
+				if (note32->n_type == NT_PRSTATUS)
+					fprintf(fp, "%s%lx\n",
+						(tot == 0) ? "" : "                      ",
+						(ulong)(offset + tot));
+			}
+		}
+	}
 }
 
 /*
@@ -942,6 +1089,8 @@ __diskdump_memory_dump(FILE *fp)
                 fprintf(fp, "%sERROR_EXCLUDED", others++ ? "|" : "");
         if (dd->flags & ZERO_EXCLUDED)
                 fprintf(fp, "%sZERO_EXCLUDED", others++ ? "|" : "");
+	if (dd->flags & NO_ELF_NOTES)
+		fprintf(fp, "%sNO_ELF_NOTES", others++ ? "|" : "");
         fprintf(fp, ") %s\n", FLAT_FORMAT() ? "[FLAT]" : "");
         fprintf(fp, "               dfd: %d\n", dd->dfd);
         fprintf(fp, "               ofp: %lx\n", (ulong)dd->ofp);
@@ -1101,6 +1250,15 @@ __diskdump_memory_dump(FILE *fp)
 				(ulong)dd->sub_header_kdump->offset_note);
 			fprintf(fp, "           size_note: %lu\n",
 				dd->sub_header_kdump->size_note);
+			fprintf(fp, "  num_prstatus_notes: %d\n",
+				dd->num_prstatus_notes);
+			fprintf(fp, "           notes_buf: %lx\n",
+				(ulong)dd->notes_buf);
+			for (i = 0; i < dd->num_prstatus_notes; i++) {
+				fprintf(fp, "            notes[%d]: %lx\n",
+					i, (ulong)dd->nt_prstatus_percpu[i]);
+			}
+			dump_nt_prstatus_offset(fp);
 		}
 		fprintf(fp, "\n");
 	} else
@@ -1225,4 +1383,83 @@ show_split_dumpfiles(void)
 		if ((i+1) < num_dumpfiles)
 			fprintf(fp, "\n");
 	}
+}
+
+void *
+diskdump_get_prstatus_percpu(int cpu)
+{
+	return dd->nt_prstatus_percpu[cpu];
+}
+
+/*
+ * Reads a string value from VMCOREINFO.
+ *
+ * Returns a string (that has to be freed by the caller) that contains the
+ * value for key or NULL if the key has not been found.
+ */
+static char *
+vmcoreinfo_read_string(const char *key)
+{
+	char *buf, *value_string, *p1, *p2;
+	size_t value_length;
+	ulong size_vmcoreinfo;
+	off_t offset;
+	char keybuf[BUFSIZE];
+	const off_t failed = (off_t)-1;
+
+	buf = value_string = NULL;
+	size_vmcoreinfo = dd->sub_header_kdump->size_vmcoreinfo;
+	offset = dd->sub_header_kdump->offset_vmcoreinfo;
+	sprintf(keybuf, "%s=", key);
+
+	if ((buf = malloc(size_vmcoreinfo+1)) == NULL) {
+		error(INFO, "compressed kdump: cannot malloc vmcoreinfo"
+			    " buffer\n");
+		goto err;
+	}
+
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, offset, buf, size_vmcoreinfo)) {
+			error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
+			goto err;
+		}
+	} else {
+		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+			error(INFO, "compressed kdump: cannot lseek dump vmcoreinfo\n");
+			goto err;
+		}
+		if (read(dd->dfd, buf, size_vmcoreinfo) < size_vmcoreinfo) {
+			error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
+			goto err;
+		}
+	}
+
+	buf[size_vmcoreinfo] = '\n';
+
+	if ((p1 = strstr(buf, keybuf))) {
+		p2 = p1 + strlen(keybuf);
+		p1 = strstr(p2, "\n");
+		value_length = p1-p2;
+		value_string = calloc(value_length+1, sizeof(char));
+		strncpy(value_string, p2, value_length);
+		value_string[value_length] = NULLCHAR;
+	}
+err:
+	if (buf)
+		free(buf);
+
+	return value_string;
+}
+
+static void
+diskdump_get_osrelease(void)
+{
+	char *string;
+
+	if ((string = vmcoreinfo_read_string("OSRELEASE"))) {
+		fprintf(fp, "%s\n", string);
+		free(string);
+	}
+	else
+		pc->flags2 &= ~GET_OSRELEASE;
 }

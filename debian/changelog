@@ -1,3 +1,80 @@
+crash (5.1.5-1) unstable; urgency=low
+
+  * New upstream version 5.1.5 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fix to allow a vmlinux.bz2 file to be accepted when it is part of a
+    relative or absolute pathname.  Without the patch, the file is rejected
+    with the message "crash: <path-to>/vmlinux.bz2: not a supported file
+    format", although it is still possible to use it with the "-f" flag.
+  * Fix for the usage of a vmlinux.gz or vmlinux.bz2 file if the relevant
+    gunzip or bunzip2 file is not located in /usr/bin.  Without the patch on
+    an Ubunutu system, the uncompression fails because those binaries are only
+    located in the /bin directory.  Also fixed the uncompression error message
+    to differentiate between gunzip and bunzip2.
+  * Created a new exist_regs_in_elf_notes() function for extension modules to
+    pre-determine whether an ELF note containing registers exists for a
+    specified task.  The function is also used by the currently-existing
+    get_regs_from_elf_notes() function to clean up redundant code in the
+    various get_<arch>_regs_from_elf_notes() functions that it calls.
+  * Exported the formerly static x86_64_exception_frame() function to
+    extension modules, and created a new EFRAME_INIT flags argument that
+    directs the function to fill in the x86_64 pt_regs offset table and return
+    any errors encountered in doing so.
+  * Created and exported a new get_kvm_register_set() interface for extension
+    modules to get a copy of the per-cpu registers stored in the kvmdump
+    header.
+  * Fix for the handling of x86_64 compressed kdump dumpfiles where the
+    crashing system contained more than 454 cpus.  Without the patch, the
+    crash session fails during initialization with the error message "crash:
+    compressed kdump: invalid nr_cpus value: <cpus>" followed by "crash:
+    vmcore: not a supported file format".
+  * Fix for the "uvtop" and "vm -p" commands when run on tasks that have
+    performed an mprotect(PROT_NONE) on a user-space page.  Because the
+    PAGE_PRESENT bit is not set in that case, the page was presumed to be
+    swapped out.  Without the patch the "vtop <address>" command fails with
+    the error message "vtop: cannot determine swap location", and "vm -p"
+    indicates "SWAP: (unknown swap location)" when iterating over the page.
+  * Fix for the use of the "-g vmlinux" command line option by non-root users
+    if the /dev/crash module has been preloaded.  Without the patch, after the
+    vmlinux file's debugging information has been shown, the error messages
+    "ERROR: Removing 'crash': Operation not permitted" and "NOTE:
+    cleanup_memory_driver failed" are displayed.
+  * Fix for the s390x "bt" command to handle a program check interrupt while
+    operating on the process stack.  Without the patch, the backtrace stops
+    prematurely upon reaching the pgm_check_handler() interrupt handler.
+  * Long overdue rewrite of the crash.8 man page and the associated "crash -h"
+    built-in usage display.  The crash.8 man page clarifies the required
+    invocation options, adds all of the rarely-used command line options that
+    have proliferated over the years, and updates the ENVIRONMENT variables
+    section.  The "crash -h" output closely mimics the relevant parts of the
+    crash.8 man page.
+  * Fix for the embedded gdb module to determine member offsets of the
+    pglist_data structure when the kernel was compiled with gcc 4.6.0.
+    Without the patch, the system MEMORY size shown by the initial system data
+    and by the "sys" command is nonsensical, the "kmem -n" command shows
+    faulty memory node data, and if the kernel is configure with CONFIG_SLUB,
+    "kmem -[sS]" will fail with numerous "kmem: page_to_nid: cannot determine
+    node for pages: <page-address>" errors.  There may be other ramifications
+    given that the pglist_data structure is crucial to the functionality of
+    the crash utility.  
+  * Implemented the capability of using the NT_PRSTATUS ELF note data that is
+    saved in version 4 compressed kdump headers to determine the starting
+    stack and instruction pointer hooks for x86 and x86_64 backtraces when
+    they cannot be determined in the traditional manners.
+  * Added a new "--osrelease <dumpfile>" command line option that displays the
+    OSRELEASE vmcoreinfo string from a kdump dumpfile.
+  * Fix to recognize the per-cpu symbol name change from "cpu_info" to
+    "ia64_cpu_info" in 2.6.33 and later ia64 kernels.  Without the patch, the
+    message "WARNING: cannot find cpuinfo_ia64 location" would appear during
+    invocation, and the "mach -c" command would fail in a similar manner,
+    indicating "mach: cannot find cpuinfo_ia64 location". 
+  * Fix for "kmem -[sS]" command on 2.6.39 kernels where the original slab
+    structure members have been moved into an anonymous union.  Without the
+    patch, either command fails immediately with the error message "kmem:
+    invalid structure member offset: slab_list".
+
+ -- Troy Heber <troyh@debian.org>  Mon, 16 May 2011 12:56:58 -0600
+
 crash (5.1.4-1) unstable; urgency=low
 
   * New upstream version 5.1.4 (see

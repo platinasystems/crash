@@ -26,6 +26,7 @@ static int is_builtin_command(void);
 static int is_input_file(void);
 static void check_xen_hyper(void);
 static void show_untrusted_files(void);
+static void get_osrelease(char *);
 
 static struct option long_options[] = {
         {"memory_module", required_argument, 0, 0},
@@ -62,6 +63,8 @@ static struct option long_options[] = {
 	{"mod", required_argument, 0, 0},
 	{"kvmhost", required_argument, 0, 0},
 	{"kvmio", required_argument, 0, 0},
+	{"no_elf_notes", 0, 0, 0},
+	{"osrelease", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -177,6 +180,15 @@ main(int argc, char **argv)
 		        else if (STREQ(long_options[option_index].name, "zero_excluded")) 
 				*diskdump_flags |= ZERO_EXCLUDED;
 
+			else if (STREQ(long_options[option_index].name, "no_elf_notes")) {
+				if (machine_type("X86") || machine_type("X86_64"))
+					*diskdump_flags |= NO_ELF_NOTES;
+				else
+					error(INFO,
+					      "--no_elf_notes is only applicable to "
+					      "the X86 and X86_64 architectures.\n");
+			}
+
 		        else if (STREQ(long_options[option_index].name, "no_panic")) 
 				tt->flags |= PANIC_TASK_NOT_FOUND;
 
@@ -227,6 +239,11 @@ main(int argc, char **argv)
 
 		        else if (STREQ(long_options[option_index].name, "kvmio"))
 				set_kvm_iohole(optarg);
+
+		        else if (STREQ(long_options[option_index].name, "osrelease")) {
+				pc->flags2 |= GET_OSRELEASE;
+				get_osrelease(optarg);
+			}
 
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
@@ -1230,6 +1247,10 @@ dump_program_context(void)
 	fprintf(fp, "           flags2: %llx (", pc->flags2);
 	if (pc->flags2 & FLAT)
 		fprintf(fp, "%sFLAT", others++ ? "|" : "");
+	if (pc->flags2 & ELF_NOTES)
+		fprintf(fp, "%sELF_NOTES", others++ ? "|" : "");
+	if (pc->flags2 & GET_OSRELEASE)
+		fprintf(fp, "%sGET_OSRELEASE", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
@@ -1588,4 +1609,30 @@ show_untrusted_files(void)
 	}
 	if (cnt)
 		fprintf(fp, "\n");
+}
+
+/*
+ *  If GET_OSRELEASE is still set, the OS release has been
+ *  found and displayed.
+ */
+static void
+get_osrelease(char *dumpfile)
+{
+	int retval = 1;
+
+	if (is_flattened_format(dumpfile))
+		pc->flags2 |= FLAT;
+	
+	if (is_diskdump(dumpfile)) {
+		if (pc->flags2 & GET_OSRELEASE)
+			retval = 0;
+	} else if (is_kdump(dumpfile, KDUMP_LOCAL)) {
+		if (pc->flags2 & GET_OSRELEASE)
+			retval = 0;
+	}
+	
+	if (retval)
+		fprintf(fp, "unknown\n");
+
+	clean_exit(retval);
 }
