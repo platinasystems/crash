@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.10 2010/03/02 13:53:43 anderson Exp $
+ * $Id: sial.c,v 1.11 2011/06/07 12:43:07 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -512,6 +512,7 @@ static struct linuxdefs_s {
 	{"LINUX_2_2_X",		"(((LINUX_RELEASE) & 0xffff00) == 0x020200)"},
 	{"LINUX_2_4_X",		"(((LINUX_RELEASE) & 0xffff00) == 0x020400)"},
 	{"LINUX_2_6_X",		"(((LINUX_RELEASE) & 0xffff00) == 0x020600)"},
+	{"LINUX_3_X_X",         "(((LINUX_RELEASE) & 0xff0000) == 0x030000)"},
 #ifdef i386
 	{"i386",         "1"},
 	{"__i386",       "1"},
@@ -621,12 +622,17 @@ How to extract basic set of -D flags from the kernel image
                     if(tok) tok=strtok(NULL, " \t");
                     if(tok) tok=strtok(NULL, " \t");
                     if(tok) {
-                        int two, major, minor, ret;
-                        ret = sscanf(tok, "%d.%d.%d-", &two, &major, &minor);
-                        if( ret == 3) {
-                            sprintf(banner, "0x%02x%02x%02x", two, major, minor);
+                        int version, patchlevel, sublevel, ret;
+                        ret = sscanf(tok, "%d.%d.%d-", &version, &patchlevel, &sublevel);
+			switch (ret) {
+			case 2:
+			    sublevel = 0;
+			case 3:
+			    sprintf(banner, "0x%02x%02x%02x", version, patchlevel, sublevel);
 		            dt=sial_add_def(dt, sial_strdup("LINUX_RELEASE"), sial_strdup(banner));
                             sial_msg("Core LINUX_RELEASE == '%s'\n", tok);
+			default:
+			    break;
                         }
                     }
                 }

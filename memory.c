@@ -19,6 +19,7 @@
 #include "defs.h"
 #include <sys/mman.h>
 #include <ctype.h>
+#include <netinet/in.h>
 
 struct meminfo {           /* general purpose memory information structure */
         ulong cache;       /* used by the various memory searching/dumping */
@@ -242,6 +243,8 @@ static void do_node_lists_slub(struct meminfo *, ulong, int);
 static int devmem_is_restricted(void);
 static int switch_to_proc_kcore(void);
 static int verify_pfn(ulong);
+static void dump_per_cpu_offsets(void);
+static void dump_page_flags(ulonglong);
 
 /*
  *  Memory display modes specific to this file.
@@ -250,7 +253,6 @@ static int verify_pfn(ulong);
 #define DISPLAY_16     (0x4)
 #define DISPLAY_32     (0x8)
 #define DISPLAY_64     (0x10)
-#define DISPLAY_TYPES  (DISPLAY_8|DISPLAY_16|DISPLAY_32|DISPLAY_64)
 #define SHOW_OFFSET    (0x20)
 #define SYMBOLIC       (0x40)
 #define HEXADECIMAL    (0x80)
@@ -259,6 +261,11 @@ static int verify_pfn(ulong);
 #define ASCII_ENDLINE  (0x400)
 #define NO_ASCII       (0x800)
 #define SLAB_CACHE    (0x1000)
+#define DISPLAY_ASCII (0x2000)
+#define NET_ENDIAN    (0x4000)
+#define DISPLAY_TYPES (DISPLAY_ASCII|DISPLAY_8|DISPLAY_16|DISPLAY_32|DISPLAY_64)
+
+#define ASCII_UNLIMITED ((ulong)(-1) >> 1)
 
 static ulong DISPLAY_DEFAULT;
 
@@ -965,9 +972,14 @@ cmd_rd(void)
 	memtype = KVADDR;
 	count = -1;
 
-        while ((c = getopt(argcnt, args, "xme:pfudDusSo:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "axme:pfudDusSNo:81:3:6:")) != EOF) {
                 switch(c)
 		{
+		case 'a':
+			flag &= ~DISPLAY_TYPES;
+                        flag |= DISPLAY_ASCII;
+			break;
+
 		case '8':
 			flag &= ~DISPLAY_TYPES;
                         flag |= DISPLAY_8;
@@ -1069,6 +1081,10 @@ cmd_rd(void)
                         flag |= NO_ASCII;
 			break;
 
+		case 'N':
+			flag |= NET_ENDIAN;
+			break;
+
 		default:
 			argerrs++;
 			break;
@@ -1120,6 +1136,7 @@ cmd_rd(void)
 				count = bcnt/2;
 				break;
         		case DISPLAY_8:
+        		case DISPLAY_ASCII:
 				count = bcnt;
 				break;
 			}
@@ -1127,12 +1144,13 @@ cmd_rd(void)
 			if (bcnt == 0)
 				count = 1;
 		} else
-			count = 1;
+			count = (flag & DISPLAY_ASCII) ? ASCII_UNLIMITED : 1;
 	} else if (endaddr)
 		error(WARNING, 
 		    "ending address ignored when count is specified\n");
 
-	if ((flag & HEXADECIMAL) && !(flag & SYMBOLIC) && !(flag & NO_ASCII))
+	if ((flag & HEXADECIMAL) && !(flag & SYMBOLIC) && !(flag & NO_ASCII) &&
+	    !(flag & DISPLAY_ASCII))
 		flag |= ASCII_ENDLINE;
 
 	if (memtype == KVADDR) {
@@ -1173,13 +1191,13 @@ struct memloc {                  /* common holder of read memory */
 static void
 display_memory(ulonglong addr, long count, ulong flag, int memtype)
 {
-	int i, j;
+	int i, a, j;
 	size_t typesz;
 	void *location;
 	char readtype[20];
 	char *addrtype;
 	struct memloc mem;
-	int per_line;
+	int displayed, per_line;
 	int hx;
 	char hexchars[MAX_HEXCHARS_PER_LINE+1];
 	char ch;
@@ -1259,13 +1277,21 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 		sprintf(readtype, "8-bit %s", addrtype);
 		per_line = ENTRIES_8;
 		break;
+
+	case DISPLAY_ASCII:
+		typesz = SIZEOF_8BIT;
+		location = &mem.u8;
+		sprintf(readtype, "ascii");
+		per_line = 60;
+		displayed = 0;
+		break;
 	}
 
-	for (i = 0; i < count; i++) {
+	for (i = a = 0; i < count; i++) {
 		readmem(addr, memtype, location, typesz, 
 			readtype, FAULT_ON_ERROR);
 
-                if ((i % per_line) == 0) {
+                if (!(flag & DISPLAY_ASCII) && ((i % per_line) == 0)) {
                         if (i) {
 				if (flag & ASCII_ENDLINE) {
 					fprintf(fp, "  %s", hexchars);
@@ -1343,6 +1369,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 					break;
 				}
                         }
+			if (flag & NET_ENDIAN)
+				mem.u32 = htonl(mem.u32);
 			if (flag & HEXADECIMAL) {
 				fprintf(fp, "%.*x ", INT_PRLEN, mem.u32 );
 				linelen += (INT_PRLEN + 1);
@@ -1354,6 +1382,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	                break;
 
 	        case DISPLAY_16:
+			if (flag & NET_ENDIAN)
+				mem.u16 = htons(mem.u16);
 			if (flag & HEXADECIMAL) {
 				fprintf(fp, "%.*x ", SHORT_PRLEN, mem.u16);
 				linelen += (SHORT_PRLEN + 1);
@@ -1374,6 +1404,26 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 			else if (flag & UDECIMAL)
                                 fprintf(fp, "%3u ", mem.u8);
 	                break;
+
+		case DISPLAY_ASCII:
+			if (isprint(mem.u8)) {
+				if ((a % per_line) == 0) {
+					if (displayed && i)
+						fprintf(fp, "\n");
+					fprintf(fp, "%s:  ",
+						mkstring(buf, VADDR_PRLEN, 
+						RJUST|LONGLONG_HEX, 
+						MKSTR(&addr)));
+				}
+				fprintf(fp, "%c", mem.u8);
+				displayed++;
+				a++;
+			} else {
+				if (count == ASCII_UNLIMITED)
+					return;
+				a = 0;
+			}
+			break;
 	        }
 
 		if (flag & HEXADECIMAL) {
@@ -3731,7 +3781,7 @@ cmd_kmem(void)
 {
 	int i;
 	int c;
-	int sflag, Sflag, pflag, fflag, Fflag, vflag, zflag; 
+	int sflag, Sflag, pflag, fflag, Fflag, vflag, zflag, oflag, gflag; 
 	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag, Vflag;
 	struct meminfo meminfo;
 	ulonglong value[MAXARGS];
@@ -3740,12 +3790,13 @@ cmd_kmem(void)
 	int spec_addr;
 
 	spec_addr = 0;
-        sflag =	Sflag = pflag = fflag = Fflag = Pflag = zflag = 0;
+        sflag =	Sflag = pflag = fflag = Fflag = Pflag = zflag = oflag = 0;
 	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = Vflag = 0;
+	gflag = 0;
 	BZERO(&meminfo, sizeof(struct meminfo));
 	BZERO(&value[0], sizeof(ulonglong)*MAXARGS);
 
-        while ((c = getopt(argcnt, args, "I:sSFfpvczCinl:L:PV")) != EOF) {
+        while ((c = getopt(argcnt, args, "gI:sSFfpvczCinl:L:PVo")) != EOF) {
                 switch(c)
 		{
 		case 'V':
@@ -3838,6 +3889,14 @@ cmd_kmem(void)
 			Pflag = 1;
 			break;
 
+		case 'o':
+			oflag = 1;
+			break;
+
+		case 'g':
+			gflag = 1;
+			break;
+
 		default:
 			argerrs++;
 			break;
@@ -3847,8 +3906,8 @@ cmd_kmem(void)
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
-        if ((sflag + Sflag + pflag + fflag + Fflag + Vflag +
-            vflag + Cflag + cflag + iflag + lflag + Lflag) > 1) {
+        if ((sflag + Sflag + pflag + fflag + Fflag + Vflag + oflag +
+            vflag + Cflag + cflag + iflag + lflag + Lflag + gflag) > 1) {
 		error(INFO, "only one flag allowed!\n");
 		cmd_usage(pc->curcmd, SYNOPSIS);
 	} 
@@ -3964,17 +4023,25 @@ cmd_kmem(void)
                         lflag++;
                 }
 
+		if (gflag) {
+			if (i)
+                                fprintf(fp, "\n");
+			dump_page_flags(value[i]);
+			gflag++;
+		}
+
                 /* 
                  * no value arguments allowed! 
                  */
-                if (zflag || nflag || iflag || Fflag || Cflag || Lflag || Vflag) {
+                if (zflag || nflag || iflag || Fflag || Cflag || Lflag || 
+		    Vflag || oflag) {
 			error(INFO, 
 			    "no address arguments allowed with this option\n");
                         cmd_usage(pc->curcmd, SYNOPSIS);
 		}
 
         	if (!(sflag + Sflag + pflag + fflag + vflag + cflag + 
-		      lflag + Lflag)) {
+		      lflag + Lflag + gflag)) {
 			meminfo.spec_addr = value[i];
                         meminfo.flags = ADDRESS_SPECIFIED;
                         if (meminfo.calls++)
@@ -4054,8 +4121,15 @@ cmd_kmem(void)
 		dump_vm_event_state();
 	}
 
-	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + Vflag + zflag +
-              cflag + Cflag + iflag + nflag + lflag + Lflag + meminfo.calls))
+	if (oflag == 1)
+		dump_per_cpu_offsets();
+
+	if (gflag == 1)
+		dump_page_flags(0);
+
+	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + 
+	      Vflag + zflag + oflag + cflag + Cflag + iflag + 
+	      nflag + lflag + Lflag + gflag + meminfo.calls))
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
 }
@@ -4112,7 +4186,7 @@ PG_slab_flag_init(void)
 {
 	int bit;
         ulong pageptr;
-        ulong vaddr, flags;
+        ulong vaddr, flags, flags2;
         char buf[BUFSIZE];  /* safe for a page struct */
 
 	/*
@@ -4129,13 +4203,21 @@ PG_slab_flag_init(void)
 	if (vt->flags & KMALLOC_SLUB) {
 		/* 
 		 *  PG_slab and the following are hardwired for 
-		 *  now -- at least until I can come up with
-		 *  better way.  (PG_slab test below fails because
-		 *  slub.c uses lower-bit PG_active and PG_error)
+		 *  kernels prior to the pageflags enumerator.
 		 */
 #define PG_compound             14      /* Part of a compound page */
 #define PG_reclaim              17      /* To be reclaimed asap */
 		vt->PG_head_tail_mask = ((1L << PG_compound) | (1L << PG_reclaim));
+
+		if (enumerator_value("PG_tail", (long *)&flags))
+			vt->PG_head_tail_mask = (1L << flags);
+		else if (enumerator_value("PG_compound", (long *)&flags) &&
+		    	 enumerator_value("PG_reclaim", (long *)&flags2)) {
+			vt->PG_head_tail_mask = ((1L << flags) | (1L << flags2));
+	       		if (CRASHDEBUG(2))
+				fprintf(fp, "PG_head_tail_mask: %lx\n", 
+					vt->PG_head_tail_mask);
+		}
 
 		return;
 	}
@@ -10668,6 +10750,7 @@ kmem_search(struct meminfo *mi)
 	physaddr_t paddr;
 	ulong offset;
 	ulong task;
+	ulong show_flags;
 	struct task_context *tc;
 
 	vaddr = 0;
@@ -10696,7 +10779,10 @@ kmem_search(struct meminfo *mi)
 	if (((vaddr >= kt->stext) && (vaddr <= kt->end)) ||
 	    IS_MODULE_VADDR(mi->spec_addr)) {
 		if ((sp = value_search(vaddr, &offset))) {
-			show_symbol(sp, offset, SHOW_LINENUM | SHOW_RADIX());
+			show_flags = SHOW_LINENUM | SHOW_RADIX();
+			if (module_symbol(sp->value, NULL, NULL, NULL, 0))
+				show_flags |= SHOW_MODULE;
+			show_symbol(sp, offset, show_flags);
 			fprintf(fp, "\n");
 		}
 	}
@@ -11343,7 +11429,7 @@ address_space_start(struct task_context *tc, ulong *addr)
 int
 generic_get_kvaddr_ranges(struct vaddr_range *rp)
 {
-	int i, cnt;
+	int cnt;
 
 	if (XEN_HYPER_MODE())
 		return 0;
@@ -11357,23 +11443,6 @@ generic_get_kvaddr_ranges(struct vaddr_range *rp)
 	rp[cnt].type = KVADDR_VMALLOC;
 	rp[cnt].start = vt->vmalloc_start;
 	rp[cnt++].end = (ulong)(-1);
-
-	if (CRASHDEBUG(1)) {
-		fprintf(fp, "kvaddr ranges:\n");
-		for (i = 0; i < cnt; i++) {
-			fprintf(fp, "  [%d] %lx %lx ", i,
-				rp[i].start, rp[i].end);
-			switch (rp[i].type)
-			{
-			case KVADDR_UNITY_MAP:
-				fprintf(fp, "KVADDR_UNITY_MAP\n");
-				break;
-			case KVADDR_VMALLOC:
-				fprintf(fp, "KVADDR_VMALLOC\n");
-				break;
-			}
-		}
-	}
 
 	return cnt;
 }
@@ -13808,12 +13877,14 @@ last_vmalloc_address(void)
 static int
 next_identity_mapping(ulong vaddr, ulong *nextvaddr)
 {
-	int n;
+	int n, retval;
         struct node_table *nt;
-        ulonglong paddr, pstart, pend;
+        ulonglong paddr, pstart, psave, pend;
 	ulong node_size;
 
 	paddr = VTOP(vaddr);
+	psave = 0;
+	retval = FALSE;
 
         for (n = 0; n < vt->numnodes; n++) {
                 nt = &vt->node_table[n];
@@ -13831,20 +13902,26 @@ next_identity_mapping(ulong vaddr, ulong *nextvaddr)
                 if (paddr >= pend)
 			continue;
 		/*
-		 *  Bump up to the next node.
+		 *  Bump up to the next node, but keep looking in
+		 *  case of non-sequential nodes.
 		 */
                 if (paddr < pstart) {
-			*nextvaddr = PTOV(paddr);
-                        continue;
+			if (psave && (psave < pstart))
+				continue;
+			*nextvaddr = PTOV(pstart);
+			psave = pstart;
+			retval = TRUE;
+			continue;
 		}
                 /*
                  *  We're in the physical range.
                  */
 		*nextvaddr = vaddr;
-                return TRUE;
+                retval = TRUE;
+		break;
         }
 
-	return FALSE;
+	return retval;
 }
 
 
@@ -14793,6 +14870,90 @@ vm_event_state_init(void)
 bailout:
 	vt->nr_vm_event_items = -1;
 	return FALSE;
+}
+
+/*
+ *  Dump the per-cpu offset values that are used to 
+ *  resolve per-cpu symbol values.
+ */
+static void
+dump_per_cpu_offsets(void)
+{
+	int c;
+	char buf[BUFSIZE];
+
+	fprintf(fp, "PER-CPU OFFSET VALUES:\n");
+
+	for (c = 0; c < kt->cpus; c++) {
+		sprintf(buf, "CPU %d", c);
+		fprintf(fp, "%7s: %lx\n", buf, kt->__per_cpu_offset[c]);
+	}
+}
+
+/*
+ *  Dump the value(s) of a page->flags bitmap.
+ */
+void
+dump_page_flags(ulonglong flags)
+{
+	int c, sz, val, found, largest, longest, header_printed;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char header[BUFSIZE];
+	char *arglist[MAXARGS];
+	ulonglong tmpflag;
+
+	found = longest = largest = header_printed = 0;
+
+        open_tmpfile();
+	if (dump_enumerator_list("pageflags")) {
+		rewind(pc->tmpfile);
+		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+			if (strstr(buf1, " = ")) {
+				c = parse_line(buf1, arglist);
+				if ((sz = strlen(arglist[0])) > longest)
+					longest = sz;
+				if (strstr(arglist[0], "PG_") &&
+				    ((val = atoi(arglist[2])) > largest))
+					largest = val;
+			}
+        	}
+	} else
+		error(FATAL, "enum pageflags does not exist in this kernel\n");
+
+	largest = (largest+1)/4 + 1;
+	sprintf(header, "%s BIT  VALUE\n",
+		mkstring(buf1, longest, LJUST, "PAGE-FLAG"));
+
+	rewind(pc->tmpfile);
+
+	if (flags)
+		fprintf(pc->saved_fp, "FLAGS: %llx\n", flags);
+
+	fprintf(pc->saved_fp, "%s%s", flags ? "  " : "", header);
+
+	while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf1, " = ") && strstr(buf1, "PG_")) {
+			c = parse_line(buf1, arglist);
+			val = atoi(arglist[2]);
+			tmpflag = 1ULL << val;
+			if (!flags || (flags & tmpflag)) {
+				fprintf(pc->saved_fp, "%s%s  %2d  %.*lx\n", 
+					flags ? "  " : "",
+					mkstring(buf2, longest, LJUST, 
+					arglist[0]), val,
+					largest, (ulong)(1ULL << val));
+				if (flags & tmpflag)
+					found++;
+			}
+
+		}
+	}
+
+	if (flags && !found)
+		fprintf(pc->saved_fp, "  (none found)\n");
+
+        close_tmpfile();
 }
 
 

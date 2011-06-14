@@ -7,10 +7,10 @@
 crash \- Analyze Linux crash dump data or a live system
 .SH SYNOPSIS
 .B crash
-[\fIOPTION\fR]... \fINAMELIST MEMORY-IMAGE     (dumpfile form)\fR
+[\fIOPTION\fR]... \fINAMELIST MEMORY-IMAGE    (dumpfile form)\fR
 .br
 .B crash
-[\fIOPTION\fR]... \fI[NAMELIST]     (live system form)\fR
+[\fIOPTION\fR]... \fI[NAMELIST]               (live system form)\fR
 .SH DESCRIPTION
 .B Crash
 is a tool for interactively analyzing the state of the Linux system
@@ -73,7 +73,7 @@ file and/or in a
 file in the current directory.
 During initialization, the commands in 
 .I $HOME/.crashrc
-are exectuted first, followed by those in the 
+are executed first, followed by those in the 
 .I ./.crashrc
 file.
 
@@ -140,8 +140,11 @@ running (live system form), or the kernel that was running
 when the system crashed (dumpfile form), then the
 .I System.map
 file of the original kernel should be entered on the command line.
-.TP
-.BI \-h \ [option]
+.P
+.BI -h \ [option]
+.br
+.BI \--help \ [option]
+.RS
 Without an 
 .I option
 argument, display a 
@@ -158,6 +161,7 @@ page describing command line output options is displayed.  After the help
 message is displayed, 
 .B crash
 exits.
+.RE
 .TP
 .B \-s
 Proceed directly to the "crash>" prompt without displaying
@@ -436,6 +440,7 @@ override the automatically-calculated KVM guest I/O hole size.
 Each 
 .B crash
 command generally falls into one of the following categories:
+.TP
 .I Symbolic display
 Displays of kernel text/data, which take full advantage of the power of 
 .B gdb
@@ -444,7 +449,7 @@ to format and display data structures symbolically.
 .I System state
 The majority of 
 .B crash
-commands come consist of a set of "kernel-aware" 
+commands consist of a set of "kernel-aware" 
 commands, which delve into various kernel subsystems on a system-wide 
 or per-task basis. 
 .TP
@@ -491,7 +496,7 @@ It is often used with the
 command to display the backtraces of all tasks with one command.
 .TP
 .I btop
-translates a byte value (physical offset) to it's page number.
+translates a byte value (physical offset) to its page number.
 .TP
 .I dev
 displays data concerning the character and block device
@@ -503,7 +508,7 @@ location for a specified number of instructions, or from the start of a
 function up to a specified memory location.
 .TP
 .I eval
-evalues an expression or numeric type and displays the result
+evaluates an expression or numeric type and displays the result
 in hexadecimal, decimal, octal and binary.
 .TP
 .I exit
@@ -658,8 +663,6 @@ modifies the contents of memory on a live system.
 It can only be used if
 .I /dev/mem
 is the device file being used to access system RAM, and should obviously be used with great care.
-.I /dev/mem
-is the live 
 .PP
 When 
 .B crash
@@ -679,6 +682,7 @@ displays the contents of the domain structure for selected, or all, domains.
 .TP
 .I doms
 displays domain status for selected, or all, domains.
+.TP
 .I dumpinfo
 displays Xen dump information for selected, or all, cpus.
 .TP

@@ -4654,30 +4654,56 @@ x86_64_cmd_mach(void)
 static void
 x86_64_display_machine_stats(void)
 {
-        struct new_utsname *uts;
-        char buf[BUFSIZE];
-        ulong mhz;
+	int i, c;
+	struct new_utsname *uts;
+	char buf[BUFSIZE];
+	ulong mhz;
 
-        uts = &kt->utsname;
+	uts = &kt->utsname;
 
-        fprintf(fp, "       MACHINE TYPE: %s\n", uts->machine);
-        fprintf(fp, "        MEMORY SIZE: %s\n", get_memory_size(buf));
-        fprintf(fp, "               CPUS: %d\n", kt->cpus);
-        fprintf(fp, "    PROCESSOR SPEED: ");
-        if ((mhz = machdep->processor_speed()))
-                fprintf(fp, "%ld Mhz\n", mhz);
-        else
-                fprintf(fp, "(unknown)\n");
-        fprintf(fp, "                 HZ: %d\n", machdep->hz);
-        fprintf(fp, "          PAGE SIZE: %d\n", PAGESIZE());
-//      fprintf(fp, "      L1 CACHE SIZE: %d\n", l1_cache_size());
-        fprintf(fp, "KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
-        fprintf(fp, "KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
+	fprintf(fp, "          MACHINE TYPE: %s\n", uts->machine);
+	fprintf(fp, "           MEMORY SIZE: %s\n", get_memory_size(buf));
+	fprintf(fp, "                  CPUS: %d\n", kt->cpus);
+	fprintf(fp, "       PROCESSOR SPEED: ");
+	if ((mhz = machdep->processor_speed()))
+		fprintf(fp, "%ld Mhz\n", mhz);
+	else
+		fprintf(fp, "(unknown)\n");
+	fprintf(fp, "                    HZ: %d\n", machdep->hz);
+	fprintf(fp, "             PAGE SIZE: %d\n", PAGESIZE());
+//	fprintf(fp, "         L1 CACHE SIZE: %d\n", l1_cache_size());
+	fprintf(fp, "   KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
+	fprintf(fp, "   KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
 	if (machdep->flags & VMEMMAP)
-        	fprintf(fp, "KERNEL VMEMMAP BASE: %lx\n", machdep->machspec->vmemmap_vaddr);
-	fprintf(fp, "   KERNEL START MAP: %lx\n", __START_KERNEL_map);
-        fprintf(fp, "KERNEL MODULES BASE: %lx\n", MODULES_VADDR);
-        fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
+	fprintf(fp, "   KERNEL VMEMMAP BASE: %lx\n", machdep->machspec->vmemmap_vaddr);
+	fprintf(fp, "      KERNEL START MAP: %lx\n", __START_KERNEL_map);
+	fprintf(fp, "   KERNEL MODULES BASE: %lx\n", MODULES_VADDR);
+	fprintf(fp, "     KERNEL STACK SIZE: %ld\n", STACKSIZE());
+
+	fprintf(fp, "        IRQ STACK SIZE: %d\n", machdep->machspec->stkinfo.isize);
+	fprintf(fp, "            IRQ STACKS:\n");
+	for (c = 0; c < kt->cpus; c++) {
+		sprintf(buf, "CPU %d", c);
+		fprintf(fp, "%22s: %016lx\n", 
+			buf, machdep->machspec->stkinfo.ibase[c]);
+	}
+
+	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
+		if (machdep->machspec->stkinfo.ebase[0][i] == 0)
+			break;
+		fprintf(fp, "%11s STACK SIZE: %d\n",
+			x86_64_exception_stacks[i],
+			machdep->machspec->stkinfo.esize[i]);
+		sprintf(buf, "%s STACKS:\n", x86_64_exception_stacks[i]);
+		fprintf(fp, "%24s", buf);
+		for (c = 0; c < kt->cpus; c++) {
+			if (machdep->machspec->stkinfo.ebase[c][i] == 0)
+				break;
+			sprintf(buf, "CPU %d", c);
+			fprintf(fp, "%22s: %016lx\n", 
+				buf, machdep->machspec->stkinfo.ebase[c][i]);
+		}
+	}
 }
 
 /*

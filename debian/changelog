@@ -1,3 +1,72 @@
+crash (5.1.6-1) unstable; urgency=low
+
+  * New upstream version 5.1.5 (see
+    http://people.redhat.com/anderson/crash.changelog)
+  * Fixed several typos in the updated crash.8 man page.
+  * Created a new "rd -a" option that displays printable ASCII data only,
+    starting from the specified location.  If a "count" argument is not
+    entered, the display stops upon encountering the first non-printable
+    character.
+  * Fix for the "search -k" option on X86 kernels whose first memmap page
+    structure does not map to physical address 0.  Without the patch, the
+    identity-mapped region of the first memory node would not be searched.
+  * Fix for the "search -k" option in the highly unlikely case of kernels that
+    have multiple NUMA nodes that are not sequential with respect to their
+    node IDs and the physical memory they reference, have physical memory
+    holes between any of the nodes, and do not have memmap page structures
+    referencing the non-existent inter-node physical memory.  In that event,
+    it is conceivable that a NUMA node would be skipped.
+  * If the "kmem <address>" argument is a virtual address inside a kernel
+    module, the first item displayed is the address, followed by its symbol
+    type, and its symbol-name-plus-offset string.  This patch appends the
+    module name in brackets, similar to what is displayed if "sym <address>"
+    is entered.
+  * Fix for "kmem -s <address>" in kernels configured with CONFIG_SLUB and
+    CONFIG_PAGEFLAGS_EXTENDED if the address is contained in a page other than
+    the first page in a compound, multi-page, slab.  Without the patch, the
+    command would fail with the message "kmem: address is not allocated in
+    slab subsystem: <address>".
+  * Created a new "rd -N" option that displays 16- and 32-bit data in network
+    byte order, performing byte-swapping if appropriate.
+  * Fix for a compiler warning when building with "make warn".  Without the
+    patch, memory.c generates a message indicating "kernel.c: In function
+    ‘back_trace’:" followed by 17 messages indicating "kernel.c: 2187:
+    warning: ‘btsave.<member>’ may be used uninitialized in this function",
+    where there is one message for each <member> of the bt_info structure.
+  * Updated the #define of NR_SECTION_ROOTS to match its change upstream that
+    prevents its value from being calculated to be zero.
+  * Fix for a double-free() in the unlikely event of a readmem() failure in
+    the ARM architecture's read_module_unwind_table() function.
+  * Updates to support CONFIG_SPARSEMEM for the ARM architecture.
+  * Extended the "mach" command to display the size and address of each
+    per-cpu IRQ stack and per-cpu exception stack, if they exist.  This
+    extension is applicable to the x86_64 and ppc64 architectures, and the x86
+    architecture if applicable.  Prior to this patch, the values were only
+    accessible via "help -t" or "help -m".
+  * Created a new "kmem -o" option that dumps each cpu's offset value that is
+    added to per-cpu symbol values to translate them into kernel virtual
+    addresses.  Prior to this patch, the values were only accessible via "help
+    -k".
+  * Removed the "kmem [-[l|L][a|i]]" options from being advertised by the
+    "kmem" help page; the options have been obsolete since the Linux version
+    2.2 timeframe.
+  * Fix to support Linux 3.x version number change.  Without the patch, the
+    crash session fails with kernel version 3.0 and later, displaying the
+    message "WARNING: kernel version inconsistency between vmlinux and [live
+    memory or dumpfile]", followed by the fatal error message "crash:
+    incompatible arguments: vmlinux is not SMP -- [live system or dumpfile] is
+    SMP".
+  * Updates to the sial.c extension module to support the Linux 3.x version
+    number change.
+  * Created a new "kmem -g [flags]" option that displays the enumerator value
+    of bits in the page structure's "flags" field.  With no "flags" argument,
+    the enumerator value of all bits are displayed; when a hexadecimal "flags"
+    option is added, just the bits in the value are translated.  This option
+    only works with 2.6.26 and later kernels, which contain the "enum
+    pageflags".
+
+ -- Troy Heber <troyh@debian.org>  Tue, 14 Jun 2011 14:16:18 -0600
+
 crash (5.1.5-1) unstable; urgency=low
 
   * New upstream version 5.1.5 (see
