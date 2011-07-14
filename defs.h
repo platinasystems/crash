@@ -1577,6 +1577,31 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long s390_stack_frame_back_chain;
 	long s390_stack_frame_r14;
 	long user_regs_struct_eip;
+	long user_regs_struct_rax;
+	long user_regs_struct_eax;
+	long user_regs_struct_rbx;
+	long user_regs_struct_ebx;
+	long user_regs_struct_rcx;
+	long user_regs_struct_ecx;
+	long user_regs_struct_rdx;
+	long user_regs_struct_edx;
+	long user_regs_struct_rsi;
+	long user_regs_struct_esi;
+	long user_regs_struct_rdi;
+	long user_regs_struct_edi;
+	long user_regs_struct_ds;
+	long user_regs_struct_es;
+	long user_regs_struct_fs;
+	long user_regs_struct_gs;
+	long user_regs_struct_rbp;
+	long user_regs_struct_r8;
+	long user_regs_struct_r9;
+	long user_regs_struct_r10;
+	long user_regs_struct_r11;
+	long user_regs_struct_r12;
+	long user_regs_struct_r13;
+	long user_regs_struct_r14;
+	long user_regs_struct_r15;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -4622,6 +4647,7 @@ void show_split_dumpfiles(void);
 void x86_process_elf_notes(void *, unsigned long);
 void *diskdump_get_prstatus_percpu(int);
 void map_cpus_to_prstatus_kdump_cmprs(void);
+void diskdump_display_regs(int, FILE *);
 
 /*
  * makedumpfile.c

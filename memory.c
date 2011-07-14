@@ -206,7 +206,8 @@ static void dump_zone_stats(void);
 #define MEMORY_NODES_INITIALIZE (1)
 static void node_table_init(void);
 static int compare_node_data(const void *, const void *);
-static void do_vm_flags(ulong);
+static void do_vm_flags(ulonglong);
+static ulonglong get_vm_flags(char *);
 static void PG_reserved_flag_init(void);
 static void PG_slab_flag_init(void);
 static ulong nr_blockdev_pages(void);
@@ -2973,6 +2974,7 @@ cmd_vm(void)
 	int c;
 	ulong flag;
 	ulong value;
+	ulonglong llvalue;
 	struct task_context *tc;
 	struct reference reference, *ref;
 	int subsequent;
@@ -2988,8 +2990,8 @@ cmd_vm(void)
 			if (flag) 
 				argerrs++;
 			else {
-				value = htol(optarg, FAULT_ON_ERROR, NULL);
-				do_vm_flags(value);
+				llvalue = htoll(optarg, FAULT_ON_ERROR, NULL);
+				do_vm_flags(llvalue);
 				return;
 			}
 			break;
@@ -3075,43 +3077,59 @@ cmd_vm(void)
  *  Translate a vm_flags value.
  */
 
-#define VM_READ		0x00000001	/* currently active flags */
-#define VM_WRITE	0x00000002
-#define VM_EXEC		0x00000004
-#define VM_SHARED	0x00000008
-#define VM_MAYREAD	0x00000010	/* limits for mprotect() etc */
-#define VM_MAYWRITE	0x00000020
-#define VM_MAYEXEC	0x00000040
-#define VM_MAYSHARE	0x00000080
-#define VM_GROWSDOWN	0x00000100	/* general info on the segment */
-#define VM_GROWSUP	0x00000200
-#define VM_SHM		0x00000400	/* shared memory area, don't swap out */
-#define VM_DENYWRITE	0x00000800	/* ETXTBSY on write attempts.. */
-#define VM_EXECUTABLE	0x00001000
-#define VM_LOCKED	0x00002000
-#define VM_IO           0x00004000	/* Memory mapped I/O or similar */
-#define VM_SEQ_READ	0x00008000	/* App will access data sequentially */
-#define VM_RAND_READ	0x00010000	/* App will not benefit from clustered reads */
-#define VM_DONTCOPY	0x00020000      /* Do not copy this vma on fork */
-#define VM_DONTEXPAND   0x00040000      /* Cannot expand with mremap() */
-#define VM_RESERVED     0x00080000      /* Don't unmap it from swap_out */
+#define VM_READ		0x00000001ULL	/* currently active flags */
+#define VM_WRITE	0x00000002ULL
+#define VM_EXEC		0x00000004ULL
+#define VM_SHARED	0x00000008ULL
+#define VM_MAYREAD	0x00000010ULL	/* limits for mprotect() etc */
+#define VM_MAYWRITE	0x00000020ULL
+#define VM_MAYEXEC	0x00000040ULL
+#define VM_MAYSHARE	0x00000080ULL
+#define VM_GROWSDOWN	0x00000100ULL	/* general info on the segment */
+#define VM_GROWSUP	0x00000200ULL
+#define VM_NOHUGEPAGE   0x00000200ULL   /* MADV_NOHUGEPAGE marked this vma */
+#define VM_SHM		0x00000400ULL	/* shared memory area, don't swap out */
+#define VM_PFNMAP       0x00000400ULL
+#define VM_DENYWRITE	0x00000800ULL	/* ETXTBSY on write attempts.. */
+#define VM_EXECUTABLE	0x00001000ULL
+#define VM_LOCKED	0x00002000ULL
+#define VM_IO           0x00004000ULL	/* Memory mapped I/O or similar */
+#define VM_SEQ_READ	0x00008000ULL	/* App will access data sequentially */
+#define VM_RAND_READ	0x00010000ULL	/* App will not benefit from clustered reads */
+#define VM_DONTCOPY	0x00020000ULL   /* Do not copy this vma on fork */
+#define VM_DONTEXPAND   0x00040000ULL   /* Cannot expand with mremap() */
+#define VM_RESERVED     0x00080000ULL   /* Don't unmap it from swap_out */
 
-#define VM_BIGPAGE      0x00100000      /* bigpage mappings, no pte's */
-#define VM_BIGMAP       0x00200000      /* user wants bigpage mapping */
+#define VM_BIGPAGE      0x00100000ULL   /* bigpage mappings, no pte's */
+#define VM_BIGMAP       0x00200000ULL   /* user wants bigpage mapping */
 
-#define VM_WRITECOMBINED 0x00100000      /* Write-combined */
-#define VM_NONCACHED     0x00200000      /* Noncached access */
-#define VM_HUGETLB       0x00400000      /* Huge tlb Page*/
-#define VM_ACCOUNT       0x00100000      /* Memory is a vm accounted object */
+#define VM_WRITECOMBINED 0x00100000ULL   /* Write-combined */
+#define VM_NONCACHED     0x00200000ULL   /* Noncached access */
+#define VM_HUGETLB       0x00400000ULL   /* Huge tlb Page*/
+#define VM_ACCOUNT       0x00100000ULL   /* Memory is a vm accounted object */
+
+#define VM_NONLINEAR     0x00800000ULL   /* Is non-linear (remap_file_pages) */
+
+#define VM_MAPPED_COPY  0x01000000ULL    /* T if mapped copy of data (nommu mmap) */
+#define VM_HUGEPAGE     0x01000000ULL    /* MADV_HUGEPAGE marked this vma */
+
+#define VM_INSERTPAGE   0x02000000ULL    /* The vma has had "vm_insert_page()" done on it */
+#define VM_ALWAYSDUMP   0x04000000ULL    /* Always include in core dumps */
+
+#define VM_CAN_NONLINEAR 0x08000000ULL   /* Has ->fault & does nonlinear pages */
+#define VM_MIXEDMAP     0x10000000ULL    /* Can contain "struct page" and pure PFN pages */
+#define VM_SAO          0x20000000ULL    /* Strong Access Ordering (powerpc) */
+#define VM_PFN_AT_MMAP  0x40000000ULL    /* PFNMAP vma that is fully mapped at mmap time */
+#define VM_MERGEABLE    0x80000000ULL    /* KSM may merge identical pages */
 
 static void
-do_vm_flags(ulong flags)
+do_vm_flags(ulonglong flags)
 {
 	int others;
 
 	others = 0;
 
-	fprintf(fp, "%lx: (", flags);
+	fprintf(fp, "%llx: (", flags);
 
 	if (flags & VM_READ) {
 		fprintf(fp, "READ");
@@ -3133,10 +3151,17 @@ do_vm_flags(ulong flags)
 		fprintf(fp, "%sMAYSHARE", others++ ? "|" : "");
 	if (flags & VM_GROWSDOWN)
 		fprintf(fp, "%sGROWSDOWN", others++ ? "|" : "");
-	if (flags & VM_GROWSUP)
-		fprintf(fp, "%sGROWSUP", others++ ? "|" : "");
-	if (flags & VM_SHM)
-		fprintf(fp, "%sSHM", others++ ? "|" : "");
+	if (kernel_symbol_exists("expand_upwards")) {
+	    	if (flags & VM_GROWSUP)
+			fprintf(fp, "%sGROWSUP", others++ ? "|" : "");
+	} else if (flags & VM_NOHUGEPAGE)
+		fprintf(fp, "%sNOHUGEPAGE", others++ ? "|" : "");
+	if (flags & VM_SHM) {
+		if (THIS_KERNEL_VERSION > LINUX(2,6,17))
+			fprintf(fp, "%sPFNMAP", others++ ? "|" : "");
+		else
+			fprintf(fp, "%sSHM", others++ ? "|" : "");
+	}
 	if (flags & VM_DENYWRITE)
 		fprintf(fp, "%sDENYWRITE", others++ ? "|" : "");
 	if (flags & VM_EXECUTABLE)
@@ -3161,20 +3186,66 @@ do_vm_flags(ulong flags)
         	if (flags & VM_BIGMAP)
                 	fprintf(fp, "%sBIGMAP", others++ ? "|" : "");
 	} else {
-        	if (flags & VM_WRITECOMBINED)
+		if ((THIS_KERNEL_VERSION < LINUX(2,4,21)) &&
+        	    (flags & VM_WRITECOMBINED))
                 	fprintf(fp, "%sWRITECOMBINED", others++ ? "|" : "");
-        	if (flags & VM_NONCACHED)
+		if ((THIS_KERNEL_VERSION < LINUX(2,4,21)) &&
+        	    (flags & VM_NONCACHED))
                 	fprintf(fp, "%sNONCACHED", others++ ? "|" : "");
         	if (flags & VM_HUGETLB)
                 	fprintf(fp, "%sHUGETLB", others++ ? "|" : "");
         	if (flags & VM_ACCOUNT)
                 	fprintf(fp, "%sACCOUNT", others++ ? "|" : "");
 	}
+        if (flags & VM_NONLINEAR)
+                fprintf(fp, "%sNONLINEAR", others++ ? "|" : "");
+
+	if (flags & VM_HUGEPAGE) {
+		if (MEMBER_EXISTS("mm_struct", "pmd_huge_pte"))
+                	fprintf(fp, "%sHUGEPAGE", others++ ? "|" : "");
+		else
+                	fprintf(fp, "%sMAPPED_COPY", others++ ? "|" : "");
+	}
+
+        if (flags & VM_INSERTPAGE)
+                fprintf(fp, "%sINSERTPAGE", others++ ? "|" : "");
+        if (flags & VM_ALWAYSDUMP)
+                fprintf(fp, "%sALWAYSDUMP", others++ ? "|" : "");
+        if (flags & VM_CAN_NONLINEAR)
+                fprintf(fp, "%sCAN_NONLINEAR", others++ ? "|" : "");
+        if (flags & VM_MIXEDMAP)
+                fprintf(fp, "%sMIXEDMAP", others++ ? "|" : "");
+        if (flags & VM_SAO)
+                fprintf(fp, "%sSAO", others++ ? "|" : "");
+        if (flags & VM_PFN_AT_MMAP)
+                fprintf(fp, "%sPFN_AT_MMAP", others++ ? "|" : "");
+        if (flags & VM_MERGEABLE)
+                fprintf(fp, "%sMERGEABLE", others++ ? "|" : "");
 
 	fprintf(fp, ")\n");
 
 }
 
+/*
+ * Read whatever size vm_area_struct.vm_flags happens to be into a ulonglong.
+ */
+static ulonglong
+get_vm_flags(char *vma_buf)
+{
+	ulonglong vm_flags = 0;
+
+	if (SIZE(vm_area_struct_vm_flags) == sizeof(short))
+		vm_flags = USHORT(vma_buf + OFFSET(vm_area_struct_vm_flags));
+	else if (SIZE(vm_area_struct_vm_flags) == sizeof(long))
+		vm_flags = ULONG(vma_buf+ OFFSET(vm_area_struct_vm_flags));
+	else if (SIZE(vm_area_struct_vm_flags) == sizeof(long long))
+		vm_flags = ULONGLONG(vma_buf+ OFFSET(vm_area_struct_vm_flags));
+	else
+		error(INFO, "questionable vm_area_struct.vm_flags size: %d\n",
+			SIZE(vm_area_struct_vm_flags));
+
+	return vm_flags;
+}
 
 /*
  *  vm_area_dump() primarily does the work for cmd_vm(), but is also called
@@ -3215,7 +3286,7 @@ do_vm_flags(ulong flags)
 	        }
 
 #define PRINT_VMA_DATA()                                                       \
-	fprintf(fp, "%s%s%s%s%s %6lx%s%s\n",                                   \
+	fprintf(fp, "%s%s%s%s%s %6llx%s%s\n",                                  \
                 mkstring(buf4, VADDR_PRLEN, CENTER|LJUST|LONG_HEX, MKSTR(vma)),       \
 	        space(MINSPACE),                                               \
                 mkstring(buf2, UVADDR_PRLEN, RJUST|LONG_HEX, MKSTR(vm_start)), \
@@ -3252,7 +3323,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 	ulong vm_end;
 	ulong vm_next, vm_mm;
 	char *dentry_buf, *vma_buf, *file_buf;
-	ulong vm_flags;
+	ulonglong vm_flags;
 	ulong vm_file, inode;
 	ulong dentry, vfsmnt;
 	int found;
@@ -3327,9 +3398,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		vm_end = ULONG(vma_buf + OFFSET(vm_area_struct_vm_end));
 		vm_next = ULONG(vma_buf + OFFSET(vm_area_struct_vm_next));
 		vm_start = ULONG(vma_buf + OFFSET(vm_area_struct_vm_start));
-		vm_flags = SIZE(vm_area_struct_vm_flags) == sizeof(short) ?
-			USHORT(vma_buf+ OFFSET(vm_area_struct_vm_flags)) :
-			ULONG(vma_buf+ OFFSET(vm_area_struct_vm_flags));
+		vm_flags = get_vm_flags(vma_buf);
 		vm_file = ULONG(vma_buf + OFFSET(vm_area_struct_vm_file));
 
 		if (flag & PRINT_VMA_STRUCTS) {
@@ -3410,7 +3479,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 			}
 
 			if (inode) {
-                                fprintf(fp, "%lx%s%s%s%s%s%6lx%s%lx %s\n",
+                                fprintf(fp, "%lx%s%s%s%s%s%6llx%s%lx %s\n",
                                     vma, space(MINSPACE),               
                                     mkstring(buf2, UVADDR_PRLEN, RJUST|LONG_HEX,
                                         MKSTR(vm_start)), space(MINSPACE),      
@@ -3632,16 +3701,18 @@ clear_vma_cache(void)
 int
 in_user_stack(ulong task, ulong vaddr) 
 {
-	ulong vma, vm_flags;
+	ulong vma; 
+	ulonglong vm_flags;
 	char *vma_buf;
 
 	if ((vma = vm_area_dump(task, UVADDR|VERIFY_ADDR, vaddr, 0))) {
 		vma_buf = fill_vma_cache(vma);
-		vm_flags = SIZE(vm_area_struct_vm_flags) == sizeof(short) ?
-			USHORT(vma_buf+ OFFSET(vm_area_struct_vm_flags)) :
-			ULONG(vma_buf+ OFFSET(vm_area_struct_vm_flags));
+		vm_flags = get_vm_flags(vma_buf);
 
-		if (vm_flags & (VM_GROWSUP|VM_GROWSDOWN))
+		if (vm_flags & VM_GROWSDOWN)
+			return TRUE;
+		else if (kernel_symbol_exists("expand_upwards") &&
+			(vm_flags & VM_GROWSUP))
 			return TRUE;
 		/*
 		 *  per-thread stack
@@ -3772,6 +3843,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 #define GET_SLUB_SLABS         (ADDRESS_SPECIFIED << 19)
 #define GET_SLUB_OBJECTS       (ADDRESS_SPECIFIED << 20)
 #define VMLIST_VERIFY          (ADDRESS_SPECIFIED << 21)
+#define SLAB_FIRST_NODE        (ADDRESS_SPECIFIED << 22)
 
 #define GET_ALL \
 	(GET_SHARED_PAGES|GET_TOTALRAM_PAGES|GET_BUFFERS_PAGES|GET_SLAB_PAGES)
@@ -8010,7 +8082,9 @@ kmem_cache_s_array_nodes:
 	    readmem(cache+OFFSET(kmem_cache_s_lists), KVADDR, &start_address[0], 
 	    sizeof(ulong) * vt->kmem_cache_len_nodes, "array nodelist array", 
 	    RETURN_ON_ERROR)) {  
-		for (i = 0; i < vt->kmem_cache_len_nodes && start_address[i]; i++) {
+		for (i = 0; i < vt->kmem_cache_len_nodes; i++) {
+			if (start_address[i] == 0)
+				continue;
 			if (readmem(start_address[i] + OFFSET(kmem_list3_shared), 
 			    KVADDR, &shared, sizeof(void *),
 			    "kmem_list3 shared", RETURN_ON_ERROR|QUIET)) {
@@ -8139,9 +8213,10 @@ dump_kmem_cache_info_v2(struct meminfo *si)
         fprintf(fp, b1, vt->flags & (PERCPU_KMALLOC_V2) ?
                 si->inuse - si->cpucached_cache : si->inuse); 
 
-        fprintf(fp, "%8ld  %5ld   %3ldk\n",  
+	fprintf(fp, "%8ld %s%5ld  %s%3ldk\n",
 		si->num_slabs * si->c_num, 
-                si->num_slabs, si->slabsize/1024); 
+		si->num_slabs < 100000 ? " " : "", si->num_slabs, 
+		(si->slabsize/1024) < 1000 ? " " : "", si->slabsize/1024); 
 }
 
 #define DUMP_SLAB_INFO() \
@@ -9446,12 +9521,12 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 	switch (cmd)
 	{
 	case SLAB_GET_COUNTS:
-		si->flags |= SLAB_GET_COUNTS;
+		si->flags |= (SLAB_GET_COUNTS|SLAB_FIRST_NODE);
 		si->flags &= ~SLAB_WALKTHROUGH;
 		si->cpucached_cache = 0;
         	si->num_slabs = si->inuse = 0;
 		slab_buf = GETBUF(SIZE(slab));
-		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
+		for (index = 0; (index < vt->kmem_cache_len_nodes); index++)
 		{ 
 			if (vt->flags & NODES_ONLINE) {
 				node = next_online_node(index);
@@ -9460,12 +9535,16 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 				if (node != index)
 					continue;
 			}
+			if (start_address[index] == 0)
+				continue;
 
 			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
 			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
 		        slab_chains[2] = start_address[index] + OFFSET(kmem_list3_slabs_free);
 			
 			gather_cpudata_list_v2_nodes(si, index); 
+
+			si->flags &= ~SLAB_FIRST_NODE;
 	
 		        if (CRASHDEBUG(1)) {
                 		fprintf(fp, "[ %s: %lx ", si->curname, si->cache);
@@ -9554,10 +9633,10 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 
 	case SLAB_WALKTHROUGH:
 		specified_slab = si->slab;     
-		si->flags |= SLAB_WALKTHROUGH;
+		si->flags |= (SLAB_WALKTHROUGH|SLAB_FIRST_NODE);
 		si->flags &= ~SLAB_GET_COUNTS;
 		slab_buf = GETBUF(SIZE(slab));
-		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
+		for (index = 0; (index < vt->kmem_cache_len_nodes); index++)
 		{ 
 			if (vt->flags & NODES_ONLINE) {
 				node = next_online_node(index);
@@ -9566,6 +9645,8 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 				if (node != index)
 					continue;
 			}
+			if (start_address[index] == 0)
+				continue;
 
 			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
 			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
@@ -9573,6 +9654,8 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 	
 			gather_cpudata_list_v2_nodes(si, index);
  
+			si->flags &= ~SLAB_FIRST_NODE;
+
 		        if (CRASHDEBUG(1)) {
                 		fprintf(fp, "[ %s: %lx ", si->curname, si->cache);
 	                	fprintf(fp, "partial: %lx full: %lx free: %lx ]\n",
@@ -10638,7 +10721,7 @@ gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
         /*
          *  If the shared list contains anything, gather them as well.
          */
-	if (!index) {
+	if (si->flags & SLAB_FIRST_NODE) {
 		BZERO(si->shared_array_cache, sizeof(ulong) * 
 			vt->kmem_max_limit * vt->kmem_cache_len_nodes);
 		si->current_cache_index = 0;

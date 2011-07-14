@@ -1381,6 +1381,35 @@ xen_funcname(struct bt_info *bt, ulong pc)
 	return funcname;
 }
 
+static int
+userspace_return(kaddr_t frame, struct bt_info *bt)
+{
+	ulong esp0, eframe_addr; 
+	uint32_t *stkptr, *eframeptr;
+	
+	if (INVALID_MEMBER(task_struct_thread) ||
+	    (((esp0 = MEMBER_OFFSET("thread_struct", "esp0")) < 0) &&
+             ((esp0 = MEMBER_OFFSET("thread_struct", "sp0")) < 0)))
+		eframe_addr = bt->stacktop - SIZE(pt_regs);
+	else
+		eframe_addr = ULONG(tt->task_struct + 
+			OFFSET(task_struct_thread) + esp0) - SIZE(pt_regs);
+
+	if (!INSTACK(eframe_addr, bt))
+		return FALSE;
+
+	stkptr = (uint32_t *)(bt->stackbuf + ((ulong)frame - bt->stackbase));
+	eframeptr = (uint32_t *)(bt->stackbuf + (eframe_addr - bt->stackbase));
+
+	while (stkptr < eframeptr) {
+		if (is_kernel_text_offset(*stkptr))
+			return FALSE;
+		stkptr++;
+	}
+
+	return TRUE;
+}
+
 /*
  * find_trace()
  *
@@ -1606,6 +1635,8 @@ find_trace(
 							flag = EX_FRAME|SET_EX_FRAME_ADDR;
 						else if (STREQ(closest_symbol(pc), "ret_from_fork"))
 							flag = EX_FRAME|SET_EX_FRAME_ADDR;
+						else if (userspace_return(bp, bt))
+							flag = EX_FRAME|SET_EX_FRAME_ADDR;
 						else {
 							curframe->error = KLE_BAD_RA;
 							flag = 0;
@@ -1677,6 +1708,14 @@ find_trace(
 				curframe = alloc_sframe(trace, flags);
 				UPDATE_FRAME(func_name, pc, 
 					ra, sp, bp, asp, 0, 0, 0, 0);
+				return(trace->nframes);
+			} else if (STREQ(func_name, "ret_from_fork")) {
+				ra = 0;
+				bp = sp = saddr - 4;
+				asp = curframe->asp;
+				curframe = alloc_sframe(trace, flags);
+				UPDATE_FRAME(func_name, pc, 
+					ra, sp, bp, asp, 0, 0, 0, EX_FRAME|SET_EX_FRAME_ADDR);
 				return(trace->nframes);
 #ifdef REDHAT
                         } else if (STREQ(func_name, "cpu_idle")) {
@@ -1845,8 +1884,13 @@ find_trace(
 static int 
 kernel_entry_from_user_space(sframe_t *curframe, struct bt_info *bt)
 {
+	if (is_kernel_thread(bt->tc->task))
+		return FALSE;
+
 	if (((curframe->fp + 4 + SIZE(pt_regs)) == GET_STACKTOP(bt->task)) &&
 	    !is_kernel_thread(bt->tc->task))
+		return TRUE;
+	else if (userspace_return(curframe->fp+4, bt))
 		return TRUE;
 	else
 		return FALSE;

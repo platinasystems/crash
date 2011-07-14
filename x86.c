@@ -677,8 +677,11 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 	struct eframe eframe, *ep;
 	char dbuf[BUFSIZE];
 
-	if ((bt->flags & BT_USER_SPACE) && KVMDUMP_DUMPFILE()) {
-		kvmdump_display_regs(bt->tc->processor, fp);
+	if (bt->flags & BT_USER_SPACE) {
+		if (KVMDUMP_DUMPFILE())
+			kvmdump_display_regs(bt->tc->processor, fp);
+		if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			diskdump_display_regs(bt->tc->processor, fp);
 		fprintf(fp, " #0 [user space]\n");
 		return;
 	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE())
@@ -1143,6 +1146,9 @@ dump_eframe(struct eframe *ep, int frame_number, struct bt_info *bt)
 void
 x86_dump_eframe_common(struct bt_info *bt, ulong *int_eframe, int kernel)
 {
+	struct syment *sp;
+	ulong offset;
+
 	if (bt && BT_REFERENCE_CHECK(bt)) {  
 		if (!(bt->ref->cmdflags & BT_REF_HEXVAL)) 
 			return;
@@ -1175,7 +1181,22 @@ x86_dump_eframe_common(struct bt_info *bt, ulong *int_eframe, int kernel)
 		return;
 	}
 
-	if (kernel)
+	if (kernel) {
+		if (bt && (bt->flags & BT_EFRAME_SEARCH)) {
+			fprintf(fp, "    [exception EIP: ");
+			if ((sp = value_search(int_eframe[INT_EFRAME_EIP], 
+			    &offset))) {
+				fprintf(fp, "%s", sp->name);
+				if (offset)
+					fprintf(fp, 
+					    (*gdb_output_radix == 16) ? 
+					    "+0x%lx" : "+%ld", 
+					    offset);
+			} else 
+				fprintf(fp, 
+					"unknown or invalid address");
+			fprintf(fp, "]\n");
+		}
 	    	fprintf(fp, 
   	    "    EAX: %08lx  EBX: %08lx  ECX: %08lx  EDX: %08lx  EBP: %08lx \n",
 			int_eframe[INT_EFRAME_EAX],
@@ -1183,7 +1204,7 @@ x86_dump_eframe_common(struct bt_info *bt, ulong *int_eframe, int kernel)
 			int_eframe[INT_EFRAME_ECX],
 			int_eframe[INT_EFRAME_EDX],
 			int_eframe[INT_EFRAME_EBP]);
-	else
+	} else
                 fprintf(fp, 
 		    "    EAX: %08lx  EBX: %08lx  ECX: %08lx  EDX: %08lx \n",
                         int_eframe[INT_EFRAME_EAX],
@@ -1806,6 +1827,60 @@ x86_init(int when)
 		else
 			MEMBER_OFFSET_INIT(user_regs_struct_eip,
 				"user_regs_struct", "ip");
+		if (MEMBER_EXISTS("user_regs_struct", "eax"))
+			MEMBER_OFFSET_INIT(user_regs_struct_eax,
+				"user_regs_struct", "eax");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_eax,
+				"user_regs_struct", "ax");
+		if (MEMBER_EXISTS("user_regs_struct", "ebx"))
+			MEMBER_OFFSET_INIT(user_regs_struct_ebx,
+				"user_regs_struct", "ebx");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_ebx,
+				"user_regs_struct", "bx");
+		if (MEMBER_EXISTS("user_regs_struct", "ecx"))
+			MEMBER_OFFSET_INIT(user_regs_struct_ecx,
+				"user_regs_struct", "ecx");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_ecx,
+				"user_regs_struct", "cx");
+		if (MEMBER_EXISTS("user_regs_struct", "edx"))
+			MEMBER_OFFSET_INIT(user_regs_struct_edx,
+				"user_regs_struct", "edx");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_edx,
+				"user_regs_struct", "dx");
+		if (MEMBER_EXISTS("user_regs_struct", "esi"))
+			MEMBER_OFFSET_INIT(user_regs_struct_esi,
+				"user_regs_struct", "esi");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_esi,
+				"user_regs_struct", "si");
+		if (MEMBER_EXISTS("user_regs_struct", "edi"))
+			MEMBER_OFFSET_INIT(user_regs_struct_edi,
+				"user_regs_struct", "edi");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_edi,
+				"user_regs_struct", "di");
+		if (MEMBER_EXISTS("user_regs_struct", "eflags"))
+			MEMBER_OFFSET_INIT(user_regs_struct_eflags,
+				"user_regs_struct", "eflags");
+		else
+			MEMBER_OFFSET_INIT(user_regs_struct_eflags,
+				"user_regs_struct", "flags");
+		MEMBER_OFFSET_INIT(user_regs_struct_cs,
+			"user_regs_struct", "cs");
+		MEMBER_OFFSET_INIT(user_regs_struct_ds,
+			"user_regs_struct", "ds");
+		MEMBER_OFFSET_INIT(user_regs_struct_es,
+			"user_regs_struct", "es");
+		MEMBER_OFFSET_INIT(user_regs_struct_fs,
+			"user_regs_struct", "fs");
+		MEMBER_OFFSET_INIT(user_regs_struct_gs,
+			"user_regs_struct", "gs");
+		MEMBER_OFFSET_INIT(user_regs_struct_ss,
+			"user_regs_struct", "ss");
 		if (!VALID_STRUCT(user_regs_struct)) {
 			/*  Use this hardwired version -- sometimes the 
 			 *  debuginfo doesn't pick this up even though
@@ -1828,6 +1903,32 @@ x86_init(int when)
 				offsetof(struct x86_user_regs_struct, esp);
 			ASSIGN_OFFSET(user_regs_struct_eip) =
 				offsetof(struct x86_user_regs_struct, eip);
+			ASSIGN_OFFSET(user_regs_struct_eax) =
+				offsetof(struct x86_user_regs_struct, eax);
+			ASSIGN_OFFSET(user_regs_struct_ebx) =
+				offsetof(struct x86_user_regs_struct, ebx);
+			ASSIGN_OFFSET(user_regs_struct_ecx) =
+				offsetof(struct x86_user_regs_struct, ecx);
+			ASSIGN_OFFSET(user_regs_struct_edx) =
+				offsetof(struct x86_user_regs_struct, edx);
+			ASSIGN_OFFSET(user_regs_struct_esi) =
+				offsetof(struct x86_user_regs_struct, esi);
+			ASSIGN_OFFSET(user_regs_struct_edi) =
+				offsetof(struct x86_user_regs_struct, edi);
+			ASSIGN_OFFSET(user_regs_struct_eflags) =
+				offsetof(struct x86_user_regs_struct, eflags);
+			ASSIGN_OFFSET(user_regs_struct_cs) =
+				offsetof(struct x86_user_regs_struct, cs);
+			ASSIGN_OFFSET(user_regs_struct_ds) =
+				offsetof(struct x86_user_regs_struct, ds);
+			ASSIGN_OFFSET(user_regs_struct_es) =
+				offsetof(struct x86_user_regs_struct, es);
+			ASSIGN_OFFSET(user_regs_struct_fs) =
+				offsetof(struct x86_user_regs_struct, fs);
+			ASSIGN_OFFSET(user_regs_struct_gs) =
+				offsetof(struct x86_user_regs_struct, gs);
+			ASSIGN_OFFSET(user_regs_struct_ss) =
+				offsetof(struct x86_user_regs_struct, ss);
 		}
 		MEMBER_OFFSET_INIT(thread_struct_cr3, "thread_struct", "cr3");
 		STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");

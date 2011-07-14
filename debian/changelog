@@ -1,3 +1,69 @@
+crash (5.1.7-1) unstable; urgency=low
+
+  * New upstream version 5.1.7
+  * Fix for the x86_64 "bt" command in the highly-unlikely event that a
+    non-crashing CPU receives a NMI immediately after receiving an interrupt
+    from another source in a 2.6.29 and later kernel.  In those kernels, the
+    IRQ entry-point symbols "IRQ0x00_interrupt" through "IRQ0x##_interrupt" no
+    longer exist, but the entry points exist as memory locations starting at
+    the symbol "irq_entries_start".  Without the patch, if a shutdown NMI
+    interrupt gets received while in one of the entry point stubs, "bt" will
+    fail with the error message "bt: cannot transition from exception stack to
+    current process stack".
+  * The x86 and x86_64 "bt -e" and "bt -E" commands will display symbolic
+    translations of kernel-mode exception RIP values.
+  * Clarified two initialization-time CRASHDEBUG(1) messages to make it
+    obvious that the two linux_banner strings being compared originate from
+    the memory source or the kernel namelist file.
+  * Fix for the x86 "bt" command to handle cases where the shutdown NMI was
+    received when a task had just completed an exception, interrupt, or signal
+    handler, and was about to return to user-space.  Without the patch, the
+    backtrace would be proceeded with the error message "bt: cannot resolve
+    stack trace", display the trace without the kernel-entry exception frame,
+    and then dump the text symbols found on the stack and all possible
+    exception frames.
+  * Fix for 2.6.33 and later kernels that are not configured CONFIG_SMP.
+    Without the patch, they fail during initialization with the error message
+    "crash: invalid structure member offset: module_percpu".
+  * Prepare for the imminent change in size of the vm_flags member of the
+    vm_area_struct to be 64-bits in size for all architectures now that 32
+    bits have been consumed.  The crash utility code had been handling the
+    older change of the vm_flags member from a short to a long, but that would
+    not account for the future change to a 64-bit member on 32-bit
+    architectures. 
+  * Update of the "vm -f <flags>" option to the current upstream state.
+    Without the patch, only 23 of the currently-existing 32 bit flags were
+    being translated.  (anderson@redhat.com)
+  * Fix for the "kmem -s", "kmem -S", "kmem -s <address>" and "kmem <address>"
+    command options if none of the NUMA nodes in in a multi-node CONFIG_SLAB
+    system have a node ID of 0.  Without the patch, "kmem -s" and "kmem -S"
+    show all slab caches as if they contain no slabs; if an <address> is
+    specified, the correct slab cache is found, but the command indicates
+    "kmem: <slab-cache-name>: address not found in cache: <address>".
+  * Cosmetic fix for the "kmem -[sS]" options if a CONFIG_SLAB kernel slab
+    cache contains 100000 or more slabs, or uses a slab size of 1 or more
+    megabytes.  Without the patch, the output utilizes more than 80 columns. 
+  * If a task was in user-space when a crash occurred, the user-space
+    registers are saved in per-cpu NT_PRSTATUS ELF notes in either version 4
+    compressed kdump headers, or in dumpfile headers created by the Fujitsu
+    "sadump" facility.  In that case, the "bt" command will dump the x86 or
+    x86_64 user-space register set.
+  * Fix for the x86 "bt" command to handle cases where the shutdown NMI was
+    received when a task had just received an interrupt, but before it had
+    created a full exception frame on the kernel stack and called the
+    interrupt handler.  Without the patch, the backtrace would be proceeded
+    with the error message "bt: cannot resolve stack trace", display the trace
+    without the kernel-entry exception frame, and then dump the text symbols
+    found on the stack and all possible exception frames.
+  * Fix for the x86 "bt" command to handle cases where the shutdown NMI was
+    received when a task was in the act of being switched to.  Without the
+    patch, the backtrace would be proceeded with the error message "bt: cannot
+    resolve stack trace", display the trace without the kernel-entry exception
+    frame, and then dump the text symbols found on the stack and all possible
+    exception frames.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 14 Jul 2011 15:15:13 -0600
+
 crash (5.1.6-1) unstable; urgency=low
 
   * New upstream version 5.1.5 (see

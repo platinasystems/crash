@@ -1463,3 +1463,85 @@ diskdump_get_osrelease(void)
 	else
 		pc->flags2 &= ~GET_OSRELEASE;
 }
+
+void
+diskdump_display_regs(int cpu, FILE *ofp)
+{
+	Elf32_Nhdr *note32;
+	Elf64_Nhdr *note64;
+	char *user_regs;
+	size_t len;
+
+	if (cpu >= NR_CPUS || dd->nt_prstatus_percpu[cpu] == NULL) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	if (machine_type("X86_64")) {
+		note64 = dd->nt_prstatus_percpu[cpu];
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note64->n_namesz, 4);
+		len = roundup(len + note64->n_descsz, 4);
+		user_regs = (char *)note64 + len - SIZE(user_regs_struct) - sizeof(long);
+		fprintf(ofp,
+		    "    RIP: %016llx  RSP: %016llx  RFLAGS: %08llx\n"
+		    "    RAX: %016llx  RBX: %016llx  RCX: %016llx\n"
+		    "    RDX: %016llx  RSI: %016llx  RDI: %016llx\n"
+		    "    RBP: %016llx   R8: %016llx   R9: %016llx\n"
+		    "    R10: %016llx  R11: %016llx  R12: %016llx\n"
+		    "    R13: %016llx  R14: %016llx  R15: %016llx\n"
+		    "    CS: %04x  SS: %04x\n",
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rip)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rsp)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_eflags)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rax)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rbx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rcx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rdx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rsi)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rdi)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rbp)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r8)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r9)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r10)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r11)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r12)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r13)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r14)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r15)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_cs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ss))
+		);
+	}
+
+	if (machine_type("X86")) {
+		note32 = dd->nt_prstatus_percpu[cpu];
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note32->n_namesz, 4);
+		len = roundup(len + note32->n_descsz, 4);
+		user_regs = (char *)note32 + len - SIZE(user_regs_struct) - sizeof(int);
+		fprintf(ofp,
+		    "    EAX: %08x  EBX: %08x  ECX: %08x  EDX: %08x\n"
+		    "    ESP: %08x  EIP: %08x  ESI: %08x  EDI: %08x\n"
+		    "    CS: %04x       DS: %04x       ES: %04x       FS: %04x\n"
+		    "    GS: %04x       SS: %04x\n"
+		    "    EBP: %08x  EFLAGS: %08x\n",
+		    UINT(user_regs + OFFSET(user_regs_struct_eax)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ebx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ecx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_edx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_esp)),
+		    UINT(user_regs + OFFSET(user_regs_struct_eip)),
+		    UINT(user_regs + OFFSET(user_regs_struct_esi)),
+		    UINT(user_regs + OFFSET(user_regs_struct_edi)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_cs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ds)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_es)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_fs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_gs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ss)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ebp)),
+		    UINT(user_regs + OFFSET(user_regs_struct_eflags))
+		);
+	}
+}
