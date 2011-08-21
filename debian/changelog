@@ -1,3 +1,9 @@
+crash (5.1.7-2) unstable; urgency=low
+
+  * Fixed "set but unused" errors on PPC causing a FTBS. 
+
+ -- Troy Heber <troyh@debian.org>  Sun, 21 Aug 2011 15:26:45 -0600
+
 crash (5.1.7-1) unstable; urgency=low
 
   * New upstream version 5.1.7

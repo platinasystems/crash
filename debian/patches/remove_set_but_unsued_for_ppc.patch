@@ -1,0 +1,91 @@
+--- a/gdb-7.0.patch	2011-08-12 17:07:04.000000000 +0000
++++ b/gdb-7.0.patch	2011-08-12 20:23:31.000000000 +0000
+@@ -1685,3 +1685,88 @@
+  	      add_symbol_to_list (sym, &global_symbols);
+  	    }
+  	  child_die = sibling_die (child_die);
++diff -urpN gdb-7.0/bfd/coff-rs6000.c b/bfd/coff-rs6000.c
++--- gdb-7.0/bfd/coff-rs6000.c	2009-09-05 07:56:21.000000000 +0000
+++++ b/bfd/coff-rs6000.c	2011-08-12 15:59:38.000000000 +0000
++@@ -3068,7 +3068,7 @@ xcoff_complain_overflow_bitfield_func (i
++      bfd_vma relocation;
++      struct reloc_howto_struct *howto;
++ {
++-  bfd_vma addrmask, fieldmask, signmask, ss;
+++  bfd_vma fieldmask, signmask, ss;
++   bfd_vma a, b, sum;
++ 
++   /* Get the values to be added together.  For signed and unsigned
++@@ -3076,7 +3076,6 @@ xcoff_complain_overflow_bitfield_func (i
++      the size of an address.  For bitfields, all the bits matter.
++      See also bfd_check_overflow.  */
++   fieldmask = N_ONES (howto->bitsize);
++-  addrmask = N_ONES (bfd_arch_bits_per_address (input_bfd)) | fieldmask;
++   a = relocation;
++   b = val & howto->src_mask;
++ 
++diff -urpN gdb-7.0/bfd/coffcode.h b/bfd/coffcode.h
++--- gdb-7.0/bfd/coffcode.h	2009-09-09 21:38:57.000000000 +0000
+++++ b/bfd/coffcode.h	2011-08-12 20:05:55.000000000 +0000
++@@ -3527,7 +3527,6 @@ coff_write_object_contents (bfd * abfd)
++   asection *current;
++   bfd_boolean hasrelocs = FALSE;
++   bfd_boolean haslinno = FALSE;
++-  bfd_boolean hasdebug = FALSE;
++   file_ptr scn_base;
++   file_ptr reloc_base;
++   file_ptr lineno_base;
++@@ -3630,7 +3629,6 @@ coff_write_object_contents (bfd * abfd)
++        current = current->next)
++     {
++       struct internal_scnhdr section;
++-      bfd_boolean is_reloc_section = FALSE;
++ 
++ #ifdef COFF_IMAGE_WITH_PE
++       if (strcmp (current->name, DOT_RELOC) == 0)
++@@ -3731,9 +3729,6 @@ coff_write_object_contents (bfd * abfd)
++ #endif
++       if (current->lineno_count != 0)
++ 	haslinno = TRUE;
++-      if ((current->flags & SEC_DEBUGGING) != 0
++-	  && ! is_reloc_section)
++-	hasdebug = TRUE;
++ 
++ #ifdef RS6000COFF_C
++ #ifndef XCOFF64
++diff -urpN gdb-7.0/bfd/elf32-ppc.c b/bfd/elf32-ppc.c
++--- gdb-7.0/bfd/elf32-ppc.c	2011-08-12 16:10:52.000000000 +0000
+++++ b/bfd/elf32-ppc.c	2011-08-12 14:58:17.000000000 +0000
++@@ -4735,7 +4735,6 @@ ppc_elf_tls_optimize (bfd *obfd ATTRIBUT
++ 		    }
++ 		  else
++ 		    {
++-		      Elf_Internal_Sym *sym;
++ 		      bfd_signed_vma *lgot_refs;
++ 		      struct plt_entry **local_plt;
++ 		      char *lgot_masks;
++@@ -4754,7 +4753,6 @@ ppc_elf_tls_optimize (bfd *obfd ATTRIBUT
++ 			      return FALSE;
++ 			    }
++ 			}
++-		      sym = locsyms + r_symndx;
++ 		      lgot_refs = elf_local_got_refcounts (ibfd);
++ 		      if (lgot_refs == NULL)
++ 			abort ();
++@@ -5941,7 +5939,7 @@ ppc_elf_relax_section (bfd *abfd,
++   for (irel = internal_relocs; irel < irelend; irel++)
++     {
++       unsigned long r_type = ELF32_R_TYPE (irel->r_info);
++-      bfd_vma reladdr, toff, roff;
+++      bfd_vma toff, roff;
++       asection *tsec;
++       struct one_fixup *f;
++       size_t insn_offset = 0;
++@@ -6125,7 +6123,6 @@ ppc_elf_relax_section (bfd *abfd,
++ 	continue;
++ 
++       roff = irel->r_offset;
++-      reladdr = isec->output_section->vma + isec->output_offset + roff;
++ 
++       /* If the branch is in range, no need to do anything.  */
++       if (tsec != bfd_und_section_ptr
