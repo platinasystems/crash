@@ -1,3 +1,9 @@
+crash (5.1.7-3) unstable; urgency=low
+
+  * Fix the fix for the "set but unused" patch for ppc (closes: #639067) 
+
+ -- Troy Heber <troyh@debian.org>  Wed, 24 Aug 2011 12:09:56 -0600
+
 crash (5.1.7-2) unstable; urgency=low
 
   * Fixed "set but unused" errors on PPC causing a FTBS. 

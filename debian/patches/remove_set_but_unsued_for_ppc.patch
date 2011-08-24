@@ -1,12 +1,12 @@
---- a/gdb-7.0.patch	2011-08-12 17:07:04.000000000 +0000
-+++ b/gdb-7.0.patch	2011-08-12 20:23:31.000000000 +0000
-@@ -1685,3 +1685,88 @@
+diff -urpN a/gdb-7.0.patch b/gdb-7.0.patch
+--- a/gdb-7.0.patch	2011-08-24 11:17:50.000000000 -0600
++++ b/gdb-7.0.patch	2011-08-24 11:19:50.000000000 -0600
+@@ -1685,3 +1685,70 @@
   	      add_symbol_to_list (sym, &global_symbols);
   	    }
   	  child_die = sibling_die (child_die);
-+diff -urpN gdb-7.0/bfd/coff-rs6000.c b/bfd/coff-rs6000.c
-+--- gdb-7.0/bfd/coff-rs6000.c	2009-09-05 07:56:21.000000000 +0000
-++++ b/bfd/coff-rs6000.c	2011-08-12 15:59:38.000000000 +0000
++--- gdb-7.0/bfd/coff-rs6000.c.orig
+++++ gdb-7.0/bfd/coff-rs6000.c
 +@@ -3068,7 +3068,7 @@ xcoff_complain_overflow_bitfield_func (i
 +      bfd_vma relocation;
 +      struct reloc_howto_struct *howto;
@@ -24,38 +24,21 @@
 +   a = relocation;
 +   b = val & howto->src_mask;
 + 
-+diff -urpN gdb-7.0/bfd/coffcode.h b/bfd/coffcode.h
-+--- gdb-7.0/bfd/coffcode.h	2009-09-09 21:38:57.000000000 +0000
-++++ b/bfd/coffcode.h	2011-08-12 20:05:55.000000000 +0000
-+@@ -3527,7 +3527,6 @@ coff_write_object_contents (bfd * abfd)
-+   asection *current;
-+   bfd_boolean hasrelocs = FALSE;
-+   bfd_boolean haslinno = FALSE;
-+-  bfd_boolean hasdebug = FALSE;
-+   file_ptr scn_base;
-+   file_ptr reloc_base;
-+   file_ptr lineno_base;
-+@@ -3630,7 +3629,6 @@ coff_write_object_contents (bfd * abfd)
-+        current = current->next)
-+     {
-+       struct internal_scnhdr section;
-+-      bfd_boolean is_reloc_section = FALSE;
-+ 
++--- gdb-7.0/bfd/coffcode.h.orig
+++++ gdb-7.0/bfd/coffcode.h
++@@ -3946,6 +3946,10 @@ coff_write_object_contents (bfd * abfd)
++     internal_f.f_flags |= F_LNNO;
++   if (abfd->flags & EXEC_P)
++     internal_f.f_flags |= F_EXEC;
+++  // noop to shutup gcc's Werror=unused-but-set-variable 
+++  // the optimizer should nuke this code
+++  if (! hasdebug)
+++	hasdebug = hasdebug;
 + #ifdef COFF_IMAGE_WITH_PE
-+       if (strcmp (current->name, DOT_RELOC) == 0)
-+@@ -3731,9 +3729,6 @@ coff_write_object_contents (bfd * abfd)
-+ #endif
-+       if (current->lineno_count != 0)
-+ 	haslinno = TRUE;
-+-      if ((current->flags & SEC_DEBUGGING) != 0
-+-	  && ! is_reloc_section)
-+-	hasdebug = TRUE;
-+ 
-+ #ifdef RS6000COFF_C
-+ #ifndef XCOFF64
-+diff -urpN gdb-7.0/bfd/elf32-ppc.c b/bfd/elf32-ppc.c
-+--- gdb-7.0/bfd/elf32-ppc.c	2011-08-12 16:10:52.000000000 +0000
-++++ b/bfd/elf32-ppc.c	2011-08-12 14:58:17.000000000 +0000
++   if (! hasdebug)
++     internal_f.f_flags |= IMAGE_FILE_DEBUG_STRIPPED;
++--- gdb-7.0/bfd/elf32-ppc.c.orig
+++++ gdb-7.0/bfd/elf32-ppc.c
 +@@ -4735,7 +4735,6 @@ ppc_elf_tls_optimize (bfd *obfd ATTRIBUT
 + 		    }
 + 		  else
