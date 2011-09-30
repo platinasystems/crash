@@ -2,10 +2,10 @@
 
 # Uncomment this to turn on verbose mode.
 export DH_VERBOSE=1
-
+export DEB_CFLAGS_MAINT_SET=$(dpkg-buildflags --get CFLAGS) -Wno-error=unused-but-set-parameter -Wno-error=unused-but-set-variable
 
 %:
-	dh --with quilt $@
+	dh $@ --with quilt
 
 override_dh_auto_clean:
 	cp $(CURDIR)/Makefile $(CURDIR)/debian/Makefile.ori

@@ -1,3 +1,9 @@
+crash (5.1.7-4) unstable; urgency=low
+
+  * Stop erroring on the set-but-unused messages (close: #643719) 
+
+ -- Troy Heber <troyh@debian.org>  Fri, 30 Sep 2011 12:11:55 -0600
+
 crash (5.1.7-3) unstable; urgency=low
 
   * Fix the fix for the "set but unused" patch for ppc (closes: #639067) 
