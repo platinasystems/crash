@@ -2217,24 +2217,30 @@ cmd_set(void)
                                 optind++;
 				if (from_rc_file)
 					already_done();
-                                else if (STREQ(args[optind], "on"))
+                                else if (STREQ(args[optind], "on")) {
                                         *diskdump_flags |= ZERO_EXCLUDED;
-                                else if (STREQ(args[optind], "off"))
+					sadump_set_zero_excluded();
+                                } else if (STREQ(args[optind], "off")) {
                                         *diskdump_flags &= ~ZERO_EXCLUDED;
-				else if (IS_A_NUMBER(args[optind])) {
+					sadump_unset_zero_excluded();
+				} else if (IS_A_NUMBER(args[optind])) {
 					value = stol(args[optind],
                                     		FAULT_ON_ERROR, NULL);
-					if (value)
+					if (value) {
                                         	*diskdump_flags |= ZERO_EXCLUDED;
-					else
+						sadump_set_zero_excluded();
+					} else {
                                         	*diskdump_flags &= ~ZERO_EXCLUDED;
+						sadump_unset_zero_excluded();
+					}
 				} else
 					goto invalid_set_command;
                         }
 
 			if (runtime)
                         	fprintf(fp, "zero_excluded: %s\n",
-                               	    *diskdump_flags & ZERO_EXCLUDED ? 
+					(*diskdump_flags & ZERO_EXCLUDED) ||
+					sadump_is_zero_excluded() ?
 					"on" : "off");
 			return;
 

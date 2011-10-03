@@ -950,7 +950,7 @@ non_matching_kernel(void)
 				pc->namelist_debug_orig);
 	}
 
-	if (dumpfile_is_split())
+	if (dumpfile_is_split() || sadump_is_diskset())
         	fprintf(fp, "   DUMPFILES: ");
 	else
         	fprintf(fp, "    DUMPFILE: ");
@@ -967,6 +967,8 @@ non_matching_kernel(void)
                 else {
                         if (dumpfile_is_split())
                                 show_split_dumpfiles();
+			else if (sadump_is_diskset())
+				sadump_show_diskset();
                         else
                                 fprintf(fp, "%s", pc->dumpfile);
                 }
@@ -2284,6 +2286,8 @@ back_trace(struct bt_info *bt)
                 get_lkcd_regs(bt, &eip, &esp);
 	else if (XENDUMP_DUMPFILE())
 		get_xendump_regs(bt, &eip, &esp);
+	else if (SADUMP_DUMPFILE())
+		get_sadump_regs(bt, &eip, &esp);
         else
                 machdep->get_stack_frame(bt, &eip, &esp);
 
@@ -3960,7 +3964,7 @@ display_sys_stats(void)
 			unlink(pc->namelist_debug);
 	}
 
-	if (dumpfile_is_split())
+	if (dumpfile_is_split() || sadump_is_diskset())
 		fprintf(fp, "   DUMPFILES: ");
 	else
 		fprintf(fp, "    DUMPFILE: ");
@@ -3977,6 +3981,8 @@ display_sys_stats(void)
 		else {
 			if (dumpfile_is_split())
 				show_split_dumpfiles();
+			else if (sadump_is_diskset())
+				sadump_show_diskset();
 			else
                 		fprintf(fp, "%s", pc->dumpfile);
 		}

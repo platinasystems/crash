@@ -68,6 +68,7 @@ LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
 LKCD_OBSOLETE_HFILES=lkcd_fix_mem.h
 LKCD_TRACE_HFILES=lkcd_x86_trace.h
 IBM_HFILES=ibm_common.h
+SADUMP_HFILES=sadump.h
 UNWIND_HFILES=unwind.h unwind_i.h rse.h unwind_x86.h unwind_x86_64.h
 
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
@@ -80,12 +81,12 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	netdump.c diskdump.c makedumpfile.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c unwind_arm.c \
 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
-	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c
+	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
 	${LKCD_DUMP_HFILES} ${LKCD_TRACE_HFILES} ${LKCD_OBSOLETE_HFILES}\
-	${IBM_HFILES} 
+	${IBM_HFILES} ${SADUMP_HFILES}
 
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
@@ -97,7 +98,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o unwind_arm.o \
 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
-	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o
+	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o
 
 MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/README
 
@@ -455,6 +456,9 @@ qemu.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu.c
 qemu-load.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu-load.c
 	cc -c ${CRASH_CFLAGS} qemu-load.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+sadump.o: ${GENERIC_HFILES} ${SADUMP_HFILES} sadump.c
+	cc -c ${CRASH_CFLAGS} sadump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 extensions.o: ${GENERIC_HFILES} extensions.c
 	cc -c ${CRASH_CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -534,7 +538,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=5.1.7
+VERSION=5.1.8
 RELEASE=0
 
 release: make_configure

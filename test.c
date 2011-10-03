@@ -1,8 +1,8 @@
 /* test.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,6 +16,13 @@
  */
 
 #include "defs.h"
+#include <getopt.h>
+
+static struct option test_long_options[] = {
+	{"no", no_argument, 0, 0},
+        {"req", required_argument, 0, 0},
+	{0, 0, 0, 0}
+};
 
 /*
  *  Test your stuff here first if you'd like.  If anything's being done
@@ -25,10 +32,19 @@ void
 cmd_test(void)
 {
 	int c;
+	int option_index;
 
-        while ((c = getopt(argcnt, args, "")) != EOF) {
+        while ((c = getopt_long(argcnt, args, "", 
+		test_long_options, &option_index)) != EOF) {
                 switch(c)
                 {
+                case 0:
+                        if (STREQ(test_long_options[option_index].name, "no"))
+                                fprintf(fp, "no argument\n");
+                        if (STREQ(test_long_options[option_index].name, "req"))
+                                fprintf(fp, "required argument: %s\n", optarg);
+			break;
+
                 default:
                         argerrs++;
                         break;

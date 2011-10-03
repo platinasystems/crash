@@ -525,6 +525,12 @@ x86_64_init(int when)
 		else
 			machdep->machspec->page_protnone = _PAGE_PSE;
 
+		STRUCT_SIZE_INIT(note_buf, "note_buf_t");
+		STRUCT_SIZE_INIT(elf_prstatus, "elf_prstatus");
+		MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus",
+				   "pr_reg");
+		STRUCT_SIZE_INIT(percpu_data, "percpu_data");
+
 		break;
 
 	case POST_VM:
@@ -2866,7 +2872,12 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			diskdump_display_regs(bt->tc->processor, ofp);
 			return;
 		}
-	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE()) {
+		if (SADUMP_DUMPFILE()) {
+			sadump_display_regs(bt->tc->processor, ofp);
+			return;
+		}
+	} else if ((bt->flags & BT_KERNEL_SPACE) &&
+		   (KVMDUMP_DUMPFILE() || SADUMP_DUMPFILE())) {
 		fprintf(ofp, "    [exception RIP: ");
 		if ((sp = value_search(bt->instptr, &offset))) {
 			fprintf(ofp, "%s", sp->name);
@@ -2876,7 +2887,10 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 		} else
 			fprintf(ofp, "unknown or invalid address");
 		fprintf(ofp, "]\n");
-		kvmdump_display_regs(bt->tc->processor, ofp);
+		if (KVMDUMP_DUMPFILE())
+			kvmdump_display_regs(bt->tc->processor, ofp);
+		if (SADUMP_DUMPFILE())
+			sadump_display_regs(bt->tc->processor, ofp);
         } else if (bt->flags & BT_START) {
                 x86_64_print_stack_entry(bt, ofp, level,
                         0, bt->instptr);
@@ -4374,7 +4388,7 @@ skip_stage:
 	if (halt_rip && halt_rsp) {
         	*rip = halt_rip;
 		*rsp = halt_rsp;
-		if (KVMDUMP_DUMPFILE())
+		if (KVMDUMP_DUMPFILE() || SADUMP_DUMPFILE())
 			bt_in->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 		return;
 	}
@@ -4401,7 +4415,7 @@ skip_stage:
 
         machdep->get_stack_frame(bt, rip, rsp);
 
-	if (KVMDUMP_DUMPFILE())
+	if (KVMDUMP_DUMPFILE() || SADUMP_DUMPFILE())
 		bt_in->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 }
 
@@ -5673,6 +5687,23 @@ x86_64_calc_phys_base(void)
 				    "cannot determine physical base address:"
 				    " defaulting to %lx\n\n", 
 					phys_base);
+		}
+		return;
+	}
+
+	if (SADUMP_DUMPFILE()) {
+		if (sadump_phys_base(&phys_base)) {
+			machdep->machspec->phys_base = phys_base;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "sadump: phys_base: %lx\n",
+					phys_base);
+		} else {
+			machdep->machspec->phys_base = phys_base;
+			if (!x86_64_virt_phys_base())
+				error(WARNING,
+				      "cannot determine physical base address:"
+				      " defaulting to %lx\n\n",
+				      phys_base);
 		}
 		return;
 	}

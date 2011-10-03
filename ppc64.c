@@ -49,7 +49,9 @@ static char * ppc64_check_eframe(struct ppc64_pt_regs *);
 static void ppc64_print_eframe(char *, struct ppc64_pt_regs *, 
 		struct bt_info *);
 static void parse_cmdline_args(void);
-static void ppc64_paca_init(void);
+static int ppc64_paca_init(int);
+static void ppc64_init_cpu_info(void);
+static int ppc64_get_cpu_map(void);
 static void ppc64_clear_machdep_cache(void);
 static void ppc64_vmemmap_init(void);
 static int ppc64_get_kvaddr_ranges(struct vaddr_range *);
@@ -201,7 +203,7 @@ ppc64_init(int when)
 
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
-		ppc64_paca_init();
+		ppc64_init_cpu_info();
 		machdep->vmalloc_start = ppc64_vmalloc_start;
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables,
 			"thread_struct", "pg_tables");
@@ -2596,35 +2598,35 @@ parse_cmdline_args(void)
 }
 
 /*
- *  Updating any smp-related items that were possibly bypassed
- *  or improperly initialized in kernel_init().
+ * Initialize the per cpu data_offset values from paca structure.
  */
-static void
-ppc64_paca_init(void)
+static int
+ppc64_paca_init(int map)
 {
 	int i, cpus, nr_paca;
 	char *cpu_paca_buf;
 	ulong data_offset;
-	int map;
+	ulong paca;
 
 	if (!symbol_exists("paca"))
 		error(FATAL, "PPC64: Could not find 'paca' symbol\n");
 
-	if (cpu_map_addr("possible"))
-		map = POSSIBLE;
-	else if (cpu_map_addr("present"))
-		map = PRESENT;
-	else if (cpu_map_addr("online"))
-		map = ONLINE;
-	else {
-		map = 0;
-		error(FATAL,
-			"PPC64: cannot find 'cpu_possible_map' or\
-			'cpu_present_map' or 'cpu_online_map' symbols\n");
-	}
+	/*
+	 * In v2.6.34 ppc64, the upstream commit 1426d5a3 (powerpc: Dynamically
+	 * allocate pacas) now dynamically allocates the paca and have
+	 * changed data type of 'paca' symbol from array to pointer. With this
+	 * change in place crash utility fails to read vmcore generated for
+	 * upstream kernel.
+	 * Add a check for paca variable data type before accessing.
+	 */
+	if (get_symbol_type("paca", NULL, NULL) == TYPE_CODE_PTR)
+		readmem(symbol_value("paca"), KVADDR, &paca, sizeof(ulong),
+				"paca", FAULT_ON_ERROR);
+	else
+		paca = symbol_value("paca");
 
 	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
-		return;
+		return kt->cpus;
 	
 	STRUCT_SIZE_INIT(ppc64_paca, "paca_struct");
 	data_offset = MEMBER_OFFSET("paca_struct", "data_offset");
@@ -2648,13 +2650,70 @@ ppc64_paca_init(void)
 		if (!in_cpu_map(map, i))
 			continue;
 
-        	readmem(symbol_value("paca") + (i * SIZE(ppc64_paca)),
+		readmem(paca + (i * SIZE(ppc64_paca)),
              		KVADDR, cpu_paca_buf, SIZE(ppc64_paca),
 			"paca entry", FAULT_ON_ERROR);
 
 		kt->__per_cpu_offset[i] = ULONG(cpu_paca_buf + data_offset);
 		kt->flags |= PER_CPU_OFF;
 		cpus++;
+	}
+	return cpus;
+}
+
+static int
+ppc64_get_cpu_map(void)
+{
+	int map;
+
+	if (cpu_map_addr("possible"))
+		map = POSSIBLE;
+	else if (cpu_map_addr("present"))
+		map = PRESENT;
+	else if (cpu_map_addr("online"))
+		map = ONLINE;
+	else {
+		map = 0;
+		error(FATAL,
+			"PPC64: cannot find 'cpu_possible_map' or\
+			'cpu_present_map' or 'cpu_online_map' symbols\n");
+	}
+	return map;
+}
+
+/*
+ *  Updating any smp-related items that were possibly bypassed
+ *  or improperly initialized in kernel_init().
+ */
+static void
+ppc64_init_cpu_info(void)
+{
+	int i, map, cpus, nr_cpus;
+
+	map = ppc64_get_cpu_map();
+	/*
+	 * starting from v2.6.36 we can not rely on paca structure to get
+	 * per cpu data_offset. The upstream commit fc53b420 overwrites
+	 * the paca pointer variable to point to static paca that contains
+	 * valid data_offset only for crashing cpu.
+	 *
+	 * But the kernel v2.6.36 ppc64 introduces __per_cpu_offset symbol
+	 * which was removed post v2.6.15 ppc64 and now we get the per cpu
+	 * data_offset from __per_cpu_offset symbol during kernel_init()
+	 * call. Hence for backward (pre-2.6.36) compatibility, call
+	 * ppc64_paca_init() only if symbol __per_cpu_offset does not exist.
+	 */
+	if (!symbol_exists("__per_cpu_offset"))
+		cpus = ppc64_paca_init(map);
+	else {
+		if (!(nr_cpus = get_array_length("__per_cpu_offset", NULL, 0)))
+			nr_cpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS :
+							NR_CPUS);
+		for (i = cpus = 0; i < nr_cpus; i++) {
+			if (!in_cpu_map(map, i))
+				continue;
+			cpus++;
+		}
 	}
 	switch (map)
 	{

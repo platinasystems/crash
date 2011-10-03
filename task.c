@@ -2727,6 +2727,9 @@ task_struct_member(struct task_context *tc, ulong flags, struct reference *ref)
 	close_tmpfile();
 }
 
+static char *ps_exclusive = 
+    "-a, -t, -c, -p, -g, -l and -r flags are all mutually-exclusive\n";
+
 /*
  *  Display ps-like data for all tasks, or as specified by pid, task, or
  *  command-name arguments.
@@ -2748,43 +2751,52 @@ cmd_ps(void)
                 switch(c)
 		{
 		case 'k':
+			if (flag & PS_USER)
+                               error(FATAL,
+                                   "-u and -k are mutually exclusive\n");
 			flag |= PS_KERNEL;
-			flag &= ~PS_USER;
 			break;
 
 		case 'u':
+			if (flag & PS_KERNEL)
+                               error(FATAL,
+                                   "-u and -k are mutually exclusive\n");
 			flag |= PS_USER;
-			flag &= ~PS_KERNEL;
 			break;
 
 		case 'G':
 			flag |= PS_GROUP;
 			break;
 		/*
-		 *  The a, t, c, p, g and l flags are all mutually-exclusive.
+		 *  The a, t, c, p, g, l and r flags are all mutually-exclusive.
 		 */
 		case 'g':
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_TGID_LIST;
 			break;
 
 		case 'a':
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_ARGV_ENVP;
 			break;
 
 		case 't':
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_TIMES;
 			break;
 
 		case 'c': 
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_CHILD_LIST;
 			break;
 
 		case 'p':
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_PPID_LIST;
 			break;
 			
@@ -2797,7 +2809,8 @@ cmd_ps(void)
 				argerrs++;
 				break;
 			}
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_LAST_RUN;
 			break;
 
@@ -2806,7 +2819,8 @@ cmd_ps(void)
 			break;
 
 		case 'r':
-			flag &= ~(PS_EXCLUSIVE);
+			if (flag & PS_EXCLUSIVE)
+				error(FATAL, ps_exclusive);
 			flag |= PS_RLIMIT;
 			break;
 
@@ -5158,15 +5172,6 @@ foreach(struct foreach_data *fd)
         for (k = 0; k < fd->keys; k++) {
         	switch(fd->keyword_array[k])
                 {
-		case FOREACH_FILES:
-			if ((fd->flags & (FOREACH_CMD|FOREACH_l_FLAG)) ==
-			    (FOREACH_CMD|FOREACH_l_FLAG)) {
-				error(WARNING, 
-				    "files: -l option is not applicable\n\n");
-				fd->flags &= ~FOREACH_l_FLAG;
-			}
-			break;
-
                 case FOREACH_NET:
 			switch (fd->flags & (FOREACH_s_FLAG|FOREACH_S_FLAG))
 			{
@@ -5452,14 +5457,6 @@ foreach(struct foreach_data *fd)
         for (k = 0; k < fd->keys; k++) {
                 switch(fd->keyword_array[k])
                 {
-                case FOREACH_FILES:
-                        if (fd->flags & FOREACH_l_FLAG) {
-				pc->curcmd = "files";
-				fprintf(fp, "\n");
-				nlm_files_dump();
-			}
-			break;
-
 		case FOREACH_SIG:
                         if (fd->flags & FOREACH_g_FLAG)
 				hq_close();

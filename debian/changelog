@@ -1,3 +1,101 @@
+crash (5.1.8-1) unstable; urgency=low
+
+  * Added explicit build-dep for dpkg-dev (>= 1.16.1) to resolve the "set but
+    unused" errors. 
+  * New upstream version 5.1.8
+  * Fixes for gdb-7.0 ppc64/ppc-specific files to handle gcc-4.6 compiler
+    failures.  Without the patch, gcc-4.6 generates "error: variable
+    ‘<variable>’ set but not used [-Werror=unused-but-set-variable]" fatal
+    errors when the (default) -Werror flag is used.  Previous gcc versions
+    considered local variables were simply set to some value to
+  * Add support for the "bt" command to recognize the new s390x
+    "restart_stack" used by the PSW restart interrupt in 3.0.1 and later
+    kernels. 
+  * Enhancement to the s390x "bt" command to display the register contents of
+    the pt_regs strucutre for interrupts, instead of just printing the string
+    "- Interrupt -".  The pt_regs structure contains all of the current
+    registers and PSW of the interrupted CPU.
+  * Removed the "files -l" option, which does not support 2.6 or later
+    kernels, and because it requires structure offset data that can only be
+    determined if the "lockd" and "nfsd" modules have been built into the
+    kernel.  Given the kernel module dependencies, the command is more
+    suitable as an extension module, if anyone cares to carry on its legacy.
+  * Fix for the "ps" command to disallow the mutually-exclusive "-u" and "-k"
+    options from being entered together.  Without the patch, whichever of the
+    two options was entered last was acted upon.  Also, the help page was
+    clarified by separating the three process identifier formats from the
+    "-u", "-k" and "-G" qualifiers.
+  * Fix for the "ps" command to disallow the mutually-exclusive "-a", "-t",
+    "-c", "-p", "-g", "-l" and "-r" options from being entered together.
+    Without the patch, whichever of the seven options that was entered last
+    was acted upon.
+  * Added new "struct -[xd]" and "union -[xd]" options, which override the
+    current default output format with hexadecimal or decimal format for just
+    the command instance.  The "-o" member offset values and the structure
+    size value are also controlled by the new options.  Without the patch, it
+    would require changing the default output format with "hex" or "dec" prior
+    to executing the "struct" or "union" command.
+  * Fix for the "fuser" command, which may occasionally precede its output
+    with the message "WARNING: FILE_NRHASH has changed from 32" on 2.6.19 and
+    later kernels.  The message is harmless.
+  * Exported new set_temporary_radix() and restore_current_radix() functions,
+    which are used to temporarily override the current output radix setting.
+  * Fixes for ARM gdb-7.0/bfd/elf32-arm.c file to handle gcc-4.6 compiler
+    failures.  Without the patch, gcc-4.6 generates "error: variable
+    ‘<variable>’ set but not used [-Werror=unused-but-set-variable]" fatal
+    errors when the (default) -Werror flag is used.  Previous gcc versions
+    considered local variables were simply set to some value to be "used", but
+    that is no longer the case.
+  * Cosmetic fix for command-failure "Usage" messages to prevent the output
+    from exceeding 80 columns.
+  * Implemented a new "struct -p" option which can be used to dereference
+    pointer members and display the target data.  The option can be used with
+    the struct_name.member[,member] format, or if not, all pointers in the
+    structure will be dereferenced.  If the member is a pointer, the member's
+    data type will be prepended to the member name when displaying the target
+    address; on the subsequent line(s) the target's symbol name will be
+    displayed in brackets if appropriate, and if possible, the target data
+    will be displayed.  
+  * Implemented support for "SADUMP" dumpfiles, which are created by the
+    Fujitsu Stand Alone Dump facility.  The dump-creation mechanism is based
+    in hardware-specific firmware, generating a dumpfile in three different
+    formats: sadump dump device (single partition), sadump dump device (disk
+    set), and archive file formats.  The crash utility recognizes all three
+    formats.
+  * Fix for the "bt" command to display Control registers 8-15 (s390x and
+    s390) and floating point registers 8-15 (s390x only) correctly.  Without
+    the patch, the register content was copied from the wrong location of the
+    save area, and the wrong register values were displayed for the active
+    tasks.
+  * Fix for 2.6.34 ppc64 kernels, which were changed to dynamically allocate
+    the paca structure, and changed the data type of "paca" symbol from array
+    to a paca_struct pointer. 
+  * Fix for 2.6.36 and later ppc64 kernels, which overwrite the paca pointer
+    variable to point to a static paca during a crash sequence just prior to
+    the kexec of the secondary kernel, which contains a
+    paca_struct.data_offset value that is valid only for crashing cpu.
+    However, the kernel change also re-introduced the  __per_cpu_offset array,
+    which had been removed in 2.6.15, which will be used as an alternative to
+    the per-cpu paca_struct.
+  * The new version of makedumpfile, 1.4.0, contains a facility that allows a
+    user to filter out kernel data (e.g., security keys, confidential/secret
+    information, etc.) from a vmcore.  The data that is filtered out is
+    poisoned with character 'X' (0x58).  A filtered ELF kdump vmcore now
+    contains a new "ERASEINFO" ELF note section that contains the filter data
+    strings used by makedumpfile.  A filtered compressed kdump has a header
+    version number 5, and contains new offset_eraseinfo and size_eraseinfo
+    members in its sub-header that point to a copy of the filter data strings.
+    In most cases, the erased kernel data will be inconsequential to the crash
+    session, but it is certainly possible that the removal of crucial kernel
+    data that the crash utility needs may cause the crash session to fail,
+    cause individual commands to fail, or result in other unpredictable
+    runtime behaviour.  This patch detects whether kernel data has been erased
+    from the dumpfile, and if so, displays an early warning message alerting
+    the user.  The "help -n" command displays the filter data strings that
+    were used by makedumpfile. 
+
+ -- Troy Heber <troyh@debian.org>  Mon, 03 Oct 2011 09:56:05 -0600
+
 crash (5.1.7-4) unstable; urgency=low
 
   * Stop erroring on the set-but-unused messages (close: #643719) 

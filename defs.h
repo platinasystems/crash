@@ -142,7 +142,7 @@ struct number_option {
 #define MFD_RDWR                   (0x40ULL)
 #define KVMDUMP                    (0x80ULL)
 #define SILENT                    (0x100ULL)
-#define REMOTE_DAEMON             (0x200ULL)
+#define SADUMP                    (0x200ULL)
 #define HASH                      (0x400ULL)
 #define SCROLL                    (0x800ULL)
 #define NO_CONSOLE               (0x1000ULL)
@@ -201,9 +201,9 @@ struct number_option {
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP)
-#define REMOTE()            (pc->flags & REMOTE_DAEMON)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP)
+#define REMOTE()            (pc->flags2 & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
 	   (pc->flags & (REM_NETDUMP|REM_MCLXCD|REM_LKCD|REM_S390D))
@@ -218,6 +218,7 @@ struct number_option {
 #define XEN_CORE_DUMPFILE() (pc->flags & XEN_CORE)
 #define LKCD_KERNTYPES()    (pc->flags & KERNTYPES)
 #define KVMDUMP_DUMPFILE()  (pc->flags & KVMDUMP)
+#define SADUMP_DUMPFILE()  (pc->flags & SADUMP)
 
 #define NETDUMP_LOCAL    (0x1)  /* netdump_data flags */
 #define NETDUMP_REMOTE   (0x2)  
@@ -249,6 +250,12 @@ struct number_option {
 
 #define XENDUMP_LOCAL    (0x1)
 #define XENDUMP_VALID()  (xd->flags & XENDUMP_LOCAL)
+
+#define SADUMP_LOCAL   (0x1)
+#define SADUMP_DISKSET (0x2)
+#define SADUMP_MEDIA   (0x4)
+#define SADUMP_ZERO_EXCLUDED (0x8)
+#define SADUMP_VALID() (sd->flags & SADUMP_LOCAL)
 
 #define CRASHDEBUG(x) (pc->debug >= (x))
 
@@ -428,9 +435,11 @@ struct program_context {
 	char *runtime_ifile_cmd;        /* runtime command using input file */
 	char *kvmdump_mapfile;          /* storage of physical to file offsets */
 	ulonglong flags2;               /* flags overrun */  
-#define FLAT          (0x1ULL)
-#define ELF_NOTES     (0x2ULL)
-#define GET_OSRELEASE (0x4ULL)
+#define FLAT           (0x1ULL)
+#define ELF_NOTES      (0x2ULL)
+#define GET_OSRELEASE  (0x4ULL)
+#define REMOTE_DAEMON  (0x8ULL)
+#define ERASEINFO_DATA (0x10ULL)
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 	char *cleanup;
@@ -1721,6 +1730,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long softirq_action;
 	long irq_data;
 	long s390_stack_frame;
+	long percpu_data;
 };
 
 struct array_table {
@@ -3681,6 +3691,8 @@ int symbol_exists(char *s);
 int kernel_symbol_exists(char *s);
 struct syment *kernel_symbol_search(char *);
 int get_syment_array(char *, struct syment **, int);
+void set_temporary_radix(unsigned int, unsigned int *);
+void restore_current_radix(unsigned int);
 void dump_struct(char *, ulong, unsigned);
 void dump_struct_member(char *, ulong, unsigned);
 void dump_union(char *, ulong, unsigned);
@@ -3811,7 +3823,6 @@ void open_files_dump(ulong, int, struct reference *);
 void get_pathname(ulong, char *, int, int, ulong);
 ulong file_to_dentry(ulong);
 ulong file_to_vfsmnt(ulong);
-void nlm_files_dump(void);
 int get_proc_version(void);
 int file_checksum(char *, long *);
 void dump_filesys_table(int);
@@ -3832,6 +3843,11 @@ struct radix_tree_pair {
 	void *value;
 };
 ulong do_radix_tree(ulong, int, struct radix_tree_pair *);
+int file_dump(ulong, ulong, ulong, int, int);
+#define DUMP_FULL_NAME   1
+#define DUMP_INODE_ONLY  2
+#define DUMP_DENTRY_ONLY 4
+#define DUMP_EMPTY_FILE  8
 #endif  /* !GDB_COMMON */
 int same_file(char *, char *);
 #ifndef GDB_COMMON
@@ -4707,6 +4723,29 @@ struct kvm_register_set {
 	} x86;
 };
 int get_kvm_register_set(int, struct kvm_register_set *);
+
+/*
+ * sadump.c
+ */
+int is_sadump(char *);
+uint sadump_page_size(void);
+int read_sadump(int, void *, int, ulong, physaddr_t);
+int write_sadump(int, void *, int, ulong, physaddr_t);
+int sadump_init(char *, FILE *);
+int sadump_is_diskset(void);
+ulong get_sadump_panic_task(void);
+ulong get_sadump_switch_stack(ulong);
+int sadump_memory_used(void);
+int sadump_free_memory(void);
+int sadump_memory_dump(FILE *);
+FILE *set_sadump_fp(FILE *);
+void get_sadump_regs(struct bt_info *bt, ulong *ipp, ulong *spp);
+void sadump_display_regs(int, FILE *);
+int sadump_phys_base(ulong *);
+void sadump_show_diskset(void);
+int sadump_is_zero_excluded(void);
+void sadump_set_zero_excluded(void);
+void sadump_unset_zero_excluded(void);
 
 /*
  * qemu.c

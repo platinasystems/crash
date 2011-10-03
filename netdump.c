@@ -1636,13 +1636,13 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	char buf[BUFSIZE];
 	char *ptr;
 	ulong *uptr;
-	int xen_core, vmcoreinfo;
+	int xen_core, vmcoreinfo, eraseinfo;
 	uint64_t remaining, notesize;
 
 	note = (Elf32_Nhdr *)((char *)nd->elf32 + offset);
 
         BZERO(buf, BUFSIZE);
-	xen_core = vmcoreinfo = FALSE;
+	xen_core = vmcoreinfo = eraseinfo = FALSE;
         ptr = (char *)note + sizeof(Elf32_Nhdr);
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
@@ -1730,6 +1730,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	default:
 		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
 		vmcoreinfo = STRNEQ(buf, "VMCOREINFO");
+		eraseinfo = STRNEQ(buf, "ERASEINFO");
 		if (xen_core) {
 			netdump_print("(unknown Xen n_type)\n"); 
 			if (store)
@@ -1739,6 +1740,10 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 			netdump_print("(unused)\n");
 			nd->vmcoreinfo = (char *)(ptr + note->n_namesz + 1);
 			nd->size_vmcoreinfo = note->n_descsz;
+		} else if (eraseinfo) {
+			netdump_print("(unused)\n");
+			if (note->n_descsz)
+				pc->flags2 |= ERASEINFO_DATA;
 		} else
 			netdump_print("(?)\n");
 		break;
@@ -1813,7 +1818,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	if (xen_core)
 		uptr = (ulong *)roundup((ulong)uptr, 4);
 
-	if (vmcoreinfo) {
+	if (vmcoreinfo || eraseinfo) {
                 netdump_print("                         ");
                 ptr += note->n_namesz + 1;
                 for (i = 0; i < note->n_descsz; i++, ptr++) {
@@ -1856,14 +1861,14 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	ulonglong *uptr;
 	int *iptr;
 	ulong *up;
-	int xen_core, vmcoreinfo;
+	int xen_core, vmcoreinfo, eraseinfo;
 	uint64_t remaining, notesize;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
         BZERO(buf, BUFSIZE);
         ptr = (char *)note + sizeof(Elf64_Nhdr);
-	xen_core = vmcoreinfo = FALSE;
+	xen_core = vmcoreinfo = eraseinfo = FALSE;
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
 		error(WARNING, 
@@ -1981,6 +1986,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	default:
 		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
 		vmcoreinfo = STRNEQ(buf, "VMCOREINFO");
+		eraseinfo = STRNEQ(buf, "ERASEINFO");
                 if (xen_core) {
                         netdump_print("(unknown Xen n_type)\n");
 			if (store)
@@ -1997,6 +2003,10 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 			if (READ_PAGESIZE_FROM_VMCOREINFO() && store)
 				nd->page_size = (uint)
 					vmcoreinfo_read_integer("PAGESIZE", 0);
+		} else if (eraseinfo) {
+			netdump_print("(unused)\n");
+			if (note->n_descsz)
+				pc->flags2 |= ERASEINFO_DATA;
                 } else
                         netdump_print("(?)\n");
                 break;
@@ -2090,7 +2100,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 				lf = 0;
 			netdump_print("%08lx ", *iptr++);
 		}
-	} else if (vmcoreinfo) {
+	} else if (vmcoreinfo || eraseinfo) {
 		netdump_print("                         ");
 		ptr += note->n_namesz + 1;
 		for (i = 0; i < note->n_descsz; i++, ptr++) {
@@ -2527,7 +2537,7 @@ next_sysrq:
 		    "starting backtrace locations of the active (non-crashing) "
 		    "xen tasks\n    cannot be determined: try -t or -T options\n");
  
-	if (KVMDUMP_DUMPFILE())
+	if (KVMDUMP_DUMPFILE() || SADUMP_DUMPFILE())
 		bt->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 
 	machdep->get_stack_frame(bt, eip, esp);

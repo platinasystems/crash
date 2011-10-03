@@ -861,16 +861,16 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
-	tmp[0]=ULONG(ptr);
-	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 2 * S390_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 3 * S390_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 8 * S390_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 9 * S390_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 10 * S390_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 11 * S390_WORD_SIZE);
 	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
-	tmp[0]=ULONG(ptr + 4 * S390_WORD_SIZE);
-	tmp[1]=ULONG(ptr + 5 * S390_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 6 * S390_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 7 * S390_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 12 * S390_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 13 * S390_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 14 * S390_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 15 * S390_WORD_SIZE);
 	fprintf(fp,"     %#010lx %#010lx %#010lx %#010lx\n", 
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 

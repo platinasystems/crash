@@ -13855,6 +13855,10 @@ memory_page_size(void)
 		psz = s390_page_size();
 		break;
 
+	case SADUMP:
+		psz = sadump_page_size();
+		break;
+
 	default:
 		psz = 0;
 		error(FATAL, "memory_page_size: invalid pc->flags: %lx\n", 
@@ -14071,6 +14075,8 @@ dumpfile_memory(int cmd)
                         retval = vas_memory_used();
 		else if (pc->flags & S390D)
 			retval = s390_memory_used();
+		else if (pc->flags & SADUMP)
+			retval = sadump_memory_used();
 		break;
 
 	case DUMPFILE_FREE_MEM:
@@ -14092,6 +14098,8 @@ dumpfile_memory(int cmd)
                         retval = vas_free_memory(NULL);
                 else if (pc->flags & S390D)
                         retval = s390_free_memory();
+		else if (pc->flags & SADUMP)
+			retval = sadump_free_memory();
 		break;
 
 	case DUMPFILE_MEM_DUMP:
@@ -14115,6 +14123,8 @@ dumpfile_memory(int cmd)
                         retval = s390_memory_dump(fp);
                 else if (pc->flags & PROC_KCORE)
                         retval = kcore_memory_dump(fp);
+		else if (pc->flags & SADUMP)
+			retval = sadump_memory_dump(fp);
 		break;
 	
 	case DUMPFILE_ENVIRONMENT:
