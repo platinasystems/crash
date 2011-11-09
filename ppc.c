@@ -1,8 +1,8 @@
 /* ppc.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,7 +37,7 @@ static void ppc_dump_irq(int);
 static ulong ppc_get_pc(struct bt_info *);
 static ulong ppc_get_sp(struct bt_info *);
 static void ppc_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static int ppc_dis_filter(ulong, char *);
+static int ppc_dis_filter(ulong, char *, unsigned int);
 static void ppc_cmd_mach(void);
 static int ppc_get_smp_cpus(void);
 static void ppc_display_machine_stats(void);
@@ -64,7 +64,7 @@ ppc_init(int when)
                 machdep->pageshift = ffs(machdep->pagesize) - 1;
                 machdep->pageoffset = machdep->pagesize - 1;
                 machdep->pagemask = ~((ulonglong)machdep->pageoffset);
-		machdep->stacksize = machdep->pagesize * 2;
+		machdep->stacksize = PPC_STACK_SIZE;
                 if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
                         error(FATAL, "cannot malloc pgd space.");
                 machdep->pmd = machdep->pgd;
@@ -300,9 +300,10 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 
 	if (machdep->flags & CPU_BOOKE)
 		page_table = page_middle + (BTOP(vaddr) & (PTRS_PER_PTE - 1));
-	else
-		page_table = (ulong *)(((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase) +
-			((ulong)BTOP(vaddr) & (PTRS_PER_PTE-1)));
+	else {
+		page_table = (ulong *)((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase);
+		page_table += ((ulong)BTOP(vaddr) & (PTRS_PER_PTE-1));
+	}
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n",(ulong)page_middle, 
@@ -388,9 +389,10 @@ ppc_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 
 	if (machdep->flags & CPU_BOOKE)
 		page_table = page_middle + (BTOP(kvaddr) & (PTRS_PER_PTE - 1));
-	else
-		page_table = (ulong *)(((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase) +
-			((ulong)BTOP(kvaddr) & (PTRS_PER_PTE-1)));
+	else {
+		page_table = (ulong *)((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase);
+		page_table += ((ulong)BTOP(kvaddr) & (PTRS_PER_PTE-1));
+	}
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n", (ulong)page_middle, 
@@ -434,7 +436,8 @@ ppc_vmalloc_start(void)
 }
 
 /*
- *  PPC allows the idle_task to be non-page aligned, so we have to make
+ *  PPC tasks are all stacksize-aligned, except when split from the stack.
+ *  PPC also allows the idle_task to be non-page aligned, so we have to make
  *  an additional check through the idle_threads array.
  */
 static int
@@ -442,7 +445,9 @@ ppc_is_task_addr(ulong task)
 {
 	int i;
 
-        if (IS_KVADDR(task) && (ALIGNED_STACK_OFFSET(task) == 0))
+	if (tt->flags & THREAD_INFO)
+		return IS_KVADDR(task);
+	else if (IS_KVADDR(task) && (ALIGNED_STACK_OFFSET(task) == 0))
 		return TRUE;
 
 	for (i = 0; i < kt->cpus; i++)
@@ -1018,7 +1023,9 @@ get_ppc_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	ulong offset;
 	ulong *stack;
 	ulong task;
+	struct ppc_pt_regs regs;
 
+	ip = 0;
 	task = bt->task;
 	stack = (ulong *)bt->stackbuf;
 
@@ -1031,27 +1038,31 @@ get_ppc_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	else 
                 sp = stack[OFFSET(task_struct_thread_ksp)/sizeof(long)];
 
-	/* 
-	 *  get the offset to the first pointer in the stack frame
-	 *  linked list.  here is a small picture:
-	 *
-	 *    ksp            
-	 * >c73e9d30:  c73e9d50 c007efbc 00000000 00000008
-	 *             ^^^^^^^^ = Pointer to first stack frame.
-	 *  c73e9d40:  c0742000 00000000 c02071e0 c73e9d50
-	 * >c73e9d50:  c73e9d80 c0013928 c73e8000 c73e9d60
-	 *             ^^^^^^^^ ^^^^^^^^ Pointer to return function
-	 *                |              (LR save word)
-	 *                 \-----------> Pointer to next stack frame
-	 *  c73e9d60:  c73e9d80 c73e9e10 c01e0000 00000007
-	 *  c73e9d70:  00000000 00000000 7fffffff c73e9d80
-	 */
+	if (!INSTACK(sp, bt))
+		goto out;
 
-	offset = (stack[(sp-task)/sizeof(long)]-task)/sizeof(long);
-
-	sp = stack[offset];
-	ip = stack[(sp - task)/sizeof(long)+1]; 
-
+	readmem(sp + STACK_FRAME_OVERHEAD, KVADDR, &regs,
+		sizeof(struct ppc_pt_regs),
+		"PPC pt_regs", FAULT_ON_ERROR);
+	ip = regs.nip;
+	if (STREQ(closest_symbol(ip), "__switch_to")) {
+		/* NOTE: _switch_to() calls _switch() which
+		 * is asm.  _switch leaves pc == lr.
+		 * Working through this frame is tricky,
+		 * and this mess isn't going to help if we
+		 * actually dumped here.  Most likely the
+		 * analyzer is trying to backtrace a task.
+		 * Need to skip 2 frames.
+		 */
+		sp = stack[(sp - bt->stackbase)/sizeof(ulong)];
+		if (!INSTACK(sp, bt))
+			goto out;
+		sp = stack[(sp - bt->stackbase)/sizeof(ulong)];
+		if (!INSTACK(sp + 4, bt))
+			goto out;
+		ip = stack[(sp + 4 - bt->stackbase)/sizeof(ulong)];
+	}
+out:
 	if (DUMPFILE() && getsp && STREQ(closest_symbol(sp), "panic")) {
 		*getsp = sp;
 		return;
@@ -1243,7 +1254,7 @@ static void ppc_dump_irq(int irq)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int 
-ppc_dis_filter(ulong vaddr, char *inbuf)
+ppc_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
@@ -1265,7 +1276,7 @@ ppc_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -1287,7 +1298,7 @@ ppc_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,	
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	}

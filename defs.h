@@ -255,6 +255,7 @@ struct number_option {
 #define SADUMP_DISKSET (0x2)
 #define SADUMP_MEDIA   (0x4)
 #define SADUMP_ZERO_EXCLUDED (0x8)
+#define SADUMP_KDUMP_BACKUP  (0x10)
 #define SADUMP_VALID() (sd->flags & SADUMP_LOCAL)
 
 #define CRASHDEBUG(x) (pc->debug >= (x))
@@ -821,7 +822,7 @@ struct machdep_table {
 	ulong (*vmalloc_start)(void);
         int (*is_task_addr)(ulong);
 	int (*verify_symbol)(const char *, ulong, char);
-	int (*dis_filter)(ulong, char *);
+	int (*dis_filter)(ulong, char *, unsigned int);
 	int (*get_smp_cpus)(void);
         int (*is_kvaddr)(ulong);
         int (*is_uvaddr)(ulong, struct task_context *);
@@ -958,6 +959,8 @@ extern struct machdep_table *machdep;
 #define FOREACH_o_FLAG  (0x100000)
 #define FOREACH_T_FLAG  (0x200000)
 #define FOREACH_F_FLAG  (0x400000)
+#define FOREACH_x_FLAG  (0x800000)
+#define FOREACH_d_FLAG (0x1000000)
 
 struct foreach_data {
 	ulong flags;
@@ -2037,10 +2040,10 @@ struct namespace {
 
 struct symbol_table_data {
 	ulong flags;
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-	struct bfd *bfd;
-#else
+#ifdef GDB_5_3
 	struct _bfd *bfd;
+#else
+	struct bfd *bfd;
 #endif
 	struct sec *sections;
 	struct syment *symtable;
@@ -2110,10 +2113,10 @@ struct symbol_table_data {
 #define SEC_FOUND       (0x10000)
 
 struct mod_section_data {
-#if defined(GDB_6_1) || defined(GDB_7_0)
-        struct bfd_section *section;
-#else
+#if defined(GDB_5_3) || defined(GDB_6_0)
         struct sec *section;
+#else
+        struct bfd_section *section;
 #endif
         char name[MAX_MOD_SEC_NAME];
         ulong offset;
@@ -2607,6 +2610,9 @@ struct load_module {
 
 #define _SECTION_SIZE_BITS	24
 #define _MAX_PHYSMEM_BITS	44
+
+#define STACK_FRAME_OVERHEAD	16
+#define PPC_STACK_SIZE		8192
 
 #endif  /* PPC */
 
@@ -3312,7 +3318,8 @@ enum type_code {
   TYPE_CODE_STRUCT,             /* C struct or Pascal record */
   TYPE_CODE_UNION,              /* C union or Pascal variant part */
   TYPE_CODE_ENUM,               /* Enumeration type */
-#ifdef GDB_7_0
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0) || defined(GDB_7_3_1)
+#if defined(GDB_7_0) || defined(GDB_7_3_1)
   TYPE_CODE_FLAGS,              /* Bit flags type */
 #endif
   TYPE_CODE_FUNC,               /* Function type */
@@ -3335,6 +3342,7 @@ enum type_code {
   /* 
    *  NOTE: the remainder of the type codes are not list or used here...
    */
+#endif
 };
 
 #define PF_EXITING 0x00000004  /* getting shut down */
@@ -3563,6 +3571,7 @@ char *first_nonspace(char *);
 char *first_space(char *);
 char *replace_string(char *, char *, char);
 void string_insert(char *, char *);
+char *strstr_rightmost(char *, char *);
 char *null_first_space(char *);
 int parse_line(char *, char **);
 void print_verbatim(FILE *, char *);
@@ -3818,6 +3827,7 @@ char *search_directory_tree(char *, char *, int);
 void open_tmpfile(void);
 void close_tmpfile(void);
 void open_tmpfile2(void);
+void set_tmpfile2(FILE *);
 void close_tmpfile2(void);
 void open_files_dump(ulong, int, struct reference *);
 void get_pathname(ulong, char *, int, int, ulong);
@@ -3989,7 +3999,7 @@ char *fill_thread_info(ulong);
 #define IS_LAST_THREAD_INFO_READ(ti) ((ulong)(ti) == tt->last_thread_info_read)
 char *fill_mm_struct(ulong);
 #define IS_LAST_MM_READ(mm)     ((ulong)(mm) == tt->last_mm_read)
-void do_task(ulong, ulong, struct reference *);
+void do_task(ulong, ulong, struct reference *, unsigned int);
 void clear_task_cache(void);
 int get_active_set(void);
 void clear_active_set(void);
@@ -4028,7 +4038,7 @@ void unlink_module(struct load_module *);
 int check_specified_module_tree(char *, char *);
 int is_system_call(char *, ulong);
 void generic_dump_irq(int);
-int generic_dis_filter(ulong, char *);
+int generic_dis_filter(ulong, char *, unsigned int);
 int kernel_BUG_encoding_bytes(void);
 void display_sys_stats(void);
 char *get_uptime(char *, ulonglong *);
@@ -4746,6 +4756,7 @@ void sadump_show_diskset(void);
 int sadump_is_zero_excluded(void);
 void sadump_set_zero_excluded(void);
 void sadump_unset_zero_excluded(void);
+void sadump_kdump_backup_region_init(void);
 
 /*
  * qemu.c
@@ -5075,9 +5086,7 @@ char *gdb_command_string(int, char *, int);
 void dump_gnu_request(struct gnu_request *, int);
 int gdb_CRASHDEBUG(ulong);
 void dump_gdb_data(void);
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 void update_gdb_hooks(void);
-#endif
 void gdb_readnow_warning(void);
 extern int *gdb_output_format;
 extern unsigned int *gdb_print_max;
@@ -5090,18 +5099,16 @@ extern unsigned int *gdb_output_radix;
 /*
  *  gdb/top.c
  */
-#if defined(GDB_7_0)
-extern void (*deprecated_command_loop_hook)(void);
-#else
+extern void execute_command (char *, int);
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
 extern void (*command_loop_hook)(void);
 extern void (*error_hook)(void);
-#endif
-extern void execute_command (char *, int);
+#else
+extern void (*deprecated_command_loop_hook)(void);
 
 /*
  *  gdb/exceptions.c
  */
-#if defined(GDB_7_0)
 extern void (*error_hook)(void);
 #endif
 
@@ -5113,7 +5120,7 @@ extern void gdb_command_funnel(struct gnu_request *);
 /*
  *  gdb/symfile.c
  */
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
+#if defined(GDB_6_0) || defined(GDB_6_1)
 struct objfile;
 extern void (*target_new_objfile_hook)(struct objfile *);
 #endif
@@ -5122,9 +5129,7 @@ extern void (*target_new_objfile_hook)(struct objfile *);
  *  gdb/valprint.c
  */
 extern unsigned output_radix;
-#if defined(GDB_7_0)
-extern void *get_user_print_option_address(char *);
-#else
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
 extern int output_format;
 extern int prettyprint_structs;
 extern int prettyprint_arrays;
@@ -5146,17 +5151,17 @@ extern char *version;
 /*
  *  gdb/disasm.c
  */
-#if !defined(GDB_6_0) && !defined(GDB_6_1) && !defined(GDB_7_0)
+#ifdef GDB_5_3
 extern int gdb_disassemble_from_exec;
 #endif
 
 /*
  *  readline/readline.c
  */
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-extern char *readline(const char *);
-#else
+#ifdef GDB_5_3
 extern char *readline(char *);
+#else
+extern char *readline(const char *);
 #endif
 extern int rl_editing_mode;
 
@@ -5168,14 +5173,11 @@ extern int history_offset;
 /*
  *  external gdb routines
  */
-#if defined(GDB_5_3)
 extern int gdb_main_entry(int, char **);
+#ifdef GDB_5_3
 extern unsigned long calc_crc32(unsigned long, unsigned char *, size_t);
-#elif defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-extern int gdb_main_entry(int, char **);
-extern unsigned long gnu_debuglink_crc32 (unsigned long, unsigned char *, size_t);
 #else
-extern int gdb_main(int, char **);
+extern unsigned long gnu_debuglink_crc32 (unsigned long, unsigned char *, size_t);
 #endif
 extern int have_partial_symbols(void); 
 extern int have_full_symbols(void);

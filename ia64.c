@@ -39,7 +39,7 @@ static void ia64_get_stack_frame(struct bt_info *, ulong *, ulong *);
 static int ia64_translate_pte(ulong, void *, ulonglong);
 static ulong ia64_vmalloc_start(void);
 static int ia64_is_task_addr(ulong);
-static int ia64_dis_filter(ulong, char *);
+static int ia64_dis_filter(ulong, char *, unsigned int);
 static void ia64_dump_switch_stack(ulong, ulong);
 static void ia64_cmd_mach(void);
 static int ia64_get_smp_cpus(void);
@@ -1405,7 +1405,7 @@ ia64_is_task_addr(ulong task)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int
-ia64_dis_filter(ulong vaddr, char *inbuf)
+ia64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
@@ -1429,7 +1429,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
 
         if (colon) {
                 sprintf(buf1, "0x%lx <%s>", vaddr,
-                        value_to_symstr(vaddr, buf2, pc->output_radix));
+                        value_to_symstr(vaddr, buf2, output_radix));
                 sprintf(buf2, "%s%s", buf1, colon);
                 strcpy(inbuf, buf2);
         }
@@ -1460,7 +1460,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
                         return FALSE;
 
                 sprintf(buf1, "0x%lx <%s>%s\n", value,
-                        value_to_symstr(value, buf2, pc->output_radix),
+                        value_to_symstr(value, buf2, output_radix),
 			stop_bit ? ";;" : "");
 
                 sprintf(p1, "%s", buf1);
@@ -1484,7 +1484,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
                 	if (extract_hex(p1, &value, NULLCHAR, TRUE)) {
 				sprintf(buf1, " <%s>;;\n",
 					value_to_symstr(value, buf2, 
-					pc->output_radix));
+					output_radix));
 				if (IS_MODULE_VADDR(value) &&
 				    !strstr(buf2, "+"))
 					sprintf(p2, buf1);
@@ -1495,7 +1495,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
                 	if (extract_hex(p1, &value, '\n', TRUE)) {
 				sprintf(buf1, " <%s>\n",
 					value_to_symstr(value, buf2, 
-					pc->output_radix));
+					output_radix));
 				if (IS_MODULE_VADDR(value) &&
 				    !strstr(buf2, "+"))
 					sprintf(p2, buf1);

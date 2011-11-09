@@ -2325,7 +2325,7 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 	int check_hardirq, check_softirq;
 	ulong stackbase, stacktop;
 	Elf32_Nhdr *note;
-	char *user_regs;
+	char *user_regs ATTRIBUTE_UNUSED;
 	ulong ip, sp;
 
 	if (!is_task_active(bt->task)) {
@@ -2508,6 +2508,7 @@ next_sysrq:
 		    (((sp >= GET_STACKBASE(bt->task)) &&
 		      (sp < GET_STACKTOP(bt->task))) ||
 		    in_alternate_stack(bt->tc->processor, sp))) {
+			bt->flags |= BT_KERNEL_SPACE;
 			*eip = ip;
 			*esp = sp;
 			return;
@@ -2580,34 +2581,6 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 static void
 get_netdump_regs_arm(struct bt_info *bt, ulong *eip, ulong *esp)
 {
-	Elf64_Nhdr *note;
-	size_t len;
-
-	if ((bt->task == tt->panic_task) ||
-		(is_task_active(bt->task) && nd->num_prstatus_notes > 1)) {
-		/*
-		 * Registers are saved during the dump process for the
-		 * panic task. Whereas in kdump, regs are captured for all
-		 * CPUs if they responded to an IPI.
-		 */
-                if (nd->num_prstatus_notes > 1) {
-			if (!nd->nt_prstatus_percpu[bt->tc->processor])
-				error(FATAL,
-				      "cannot determine NT_PRSTATUS ELF note "
-				      "for %s task: %lx\n",
-				       (bt->task == tt->panic_task) ?
-				       "panic" : "active", bt->task);
-                        note = (Elf64_Nhdr *)
-                                nd->nt_prstatus_percpu[bt->tc->processor];
-		} else
-			note = (Elf64_Nhdr *)nd->nt_prstatus;
-
-		len = sizeof(Elf64_Nhdr);
-		len = roundup(len + note->n_namesz, 4);
-		bt->machdep = (void *)((char *)note + len +
-			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
-	}
-
 	machdep->get_stack_frame(bt, eip, esp);
 }
 

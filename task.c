@@ -63,7 +63,7 @@ static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
 static void dump_CFS_runqueues(void);
 static void dump_RT_prio_array(int, ulong, char *);
-static void task_struct_member(struct task_context *,ulong,struct reference *);
+static void task_struct_member(struct task_context *,unsigned int, struct reference *);
 static void signal_reference(struct task_context *, ulong, struct reference *);
 static void do_sig_thread_group(ulong);
 static void dump_signal_data(struct task_context *, ulong);
@@ -2546,6 +2546,7 @@ void
 cmd_task(void)
 {
 	int c, tcnt, bogus;
+	unsigned int radix;
 	ulong value;
 	struct reference *ref;
 	struct task_context *tc;
@@ -2556,10 +2557,26 @@ cmd_task(void)
 	ref = (struct reference *)GETBUF(sizeof(struct reference));
 	memberlist = GETBUF(BUFSIZE);
 	ref->str = memberlist;
+	radix = 0;
 
-        while ((c = getopt(argcnt, args, "R:")) != EOF) {
+        while ((c = getopt(argcnt, args, "xdhR:")) != EOF) {
                 switch(c)
 		{
+		case 'h':
+		case 'x':
+			if (radix == 10)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+
+		case 'd':
+			if (radix == 16)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
+
 		case 'R':
 			if (strlen(ref->str))
 				strcat(ref->str, ",");
@@ -2613,7 +2630,7 @@ cmd_task(void)
 		tasklist[tcnt++] = CURRENT_TASK();
 
 	for (c = 0; c < tcnt; c++) 
-		do_task(tasklist[c], 0, strlen(ref->str) ? ref : NULL);
+		do_task(tasklist[c], 0, strlen(ref->str) ? ref : NULL, radix);
 
 }
 
@@ -2621,18 +2638,18 @@ cmd_task(void)
  *  Do the work for the task command.
  */
 void
-do_task(ulong task, ulong flags, struct reference *ref)
+do_task(ulong task, ulong flags, struct reference *ref, unsigned int radix)
 {
 	struct task_context *tc;
 
 	tc = task_to_context(task);
 
 	if (ref) 
-		task_struct_member(tc, flags, ref);
+		task_struct_member(tc, radix, ref);
 	else { 
 		if (!(flags & FOREACH_TASK))
 			print_task_header(fp, tc, 0);
-		dump_struct("task_struct", task, 0);
+		dump_struct("task_struct", task, radix);
 	}
 
 	fprintf(fp, "\n");
@@ -2642,7 +2659,7 @@ do_task(ulong task, ulong flags, struct reference *ref)
  *  Search the task_struct for the referenced field.
  */
 static void
-task_struct_member(struct task_context *tc, ulong flags, struct reference *ref)
+task_struct_member(struct task_context *tc, unsigned int radix, struct reference *ref)
 {
 	int i;
 	int argcnt;
@@ -2673,7 +2690,7 @@ task_struct_member(struct task_context *tc, ulong flags, struct reference *ref)
 				arglist[i]);
 
         open_tmpfile();
-        dump_struct("task_struct", tc->task, 0);
+        dump_struct("task_struct", tc->task, radix);
         rewind(pc->tmpfile);
 
 	BZERO(lookfor1, BUFSIZE);
@@ -4876,11 +4893,20 @@ cmd_foreach(void)
 	BZERO(&foreach_data, sizeof(struct foreach_data));
 	fd = &foreach_data;
 
-        while ((c = getopt(argcnt, args, "R:vomlgersStTpukcfF")) != EOF) {
+        while ((c = getopt(argcnt, args, "R:vomlgersStTpukcfFxhd")) != EOF) {
                 switch(c)
 		{
 		case 'R':
 			fd->reference = optarg;
+			break;
+
+		case 'h':
+		case 'x':
+			fd->flags |= FOREACH_x_FLAG;
+			break;
+
+		case 'd':
+			fd->flags |= FOREACH_d_FLAG;
 			break;
 
 		case 'v':
@@ -5125,6 +5151,7 @@ foreach(struct foreach_data *fd)
 	int specified;
 	int doit;
 	int subsequent;
+	unsigned int radix;
 	ulong cmdflags; 
 	ulong tgid;
 	struct reference reference, *ref;
@@ -5227,7 +5254,7 @@ foreach(struct foreach_data *fd)
 				error(INFO, "line numbers are not available\n");
 				fd->flags &= ~FOREACH_l_FLAG;
 			}
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
+#ifndef GDB_5_3
                         if ((fd->flags & FOREACH_g_FLAG))
                                 error(FATAL,
                        "bt -g option is not supported when issued from foreach\n");
@@ -5236,6 +5263,14 @@ foreach(struct foreach_data *fd)
 			break;
 
 		case FOREACH_TASK:
+			if ((fd->flags & (FOREACH_x_FLAG|FOREACH_d_FLAG)) ==
+				(FOREACH_x_FLAG|FOREACH_d_FLAG))
+				error(FATAL, "task: -x and -d options are "
+					"mutually exclusive\n");
+                        if (count_bits_long(fd->flags & 
+			    (FOREACH_x_FLAG|FOREACH_d_FLAG)) > 1)
+                                error(FATAL, "%lx task command accepts -R member[,member],"
+					" and either -x or -d flags\n", fd->flags);
 			break;
 
 		case FOREACH_SET:
@@ -5347,11 +5382,8 @@ foreach(struct foreach_data *fd)
 					bt->flags |= BT_OLD_BACK_TRACE;
                                 if (fd->flags & FOREACH_e_FLAG)
                                         bt->flags |= BT_EFRAME_SEARCH;
+#ifdef GDB_5_3
                                 if (fd->flags & FOREACH_g_FLAG)
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-				error(FATAL, 
-		       "-g option is not supported with this version of gdb\n");
-#else
                                         bt->flags |= BT_USE_GDB;
 #endif
                                 if (fd->flags & FOREACH_l_FLAG) 
@@ -5387,8 +5419,15 @@ foreach(struct foreach_data *fd)
 
 			case FOREACH_TASK:
 				pc->curcmd = "task";
+				if (fd->flags & FOREACH_x_FLAG)
+					radix = 16;
+				else if (fd->flags & FOREACH_d_FLAG)
+					radix = 10;
+				else
+					radix = pc->output_radix;
 				do_task(tc->task, FOREACH_TASK, 
-					fd->reference ? ref : NULL);
+					fd->reference ? ref : NULL, 
+					radix);
 				break;
 
                         case FOREACH_SIG:
@@ -5587,7 +5626,8 @@ panic_search(void)
 				dietask = lasttask;
 				break;
 			default:
-				dietask = NO_TASK+1;
+				if (dietask != lasttask)
+					dietask = NO_TASK+1;
 				break;
 			}
                 }
@@ -6444,7 +6484,8 @@ clear_active_set(void)
                                 die_task = task;        \
                                 break;                  \
                         default:                        \
-                                die_task = NO_TASK+1;   \
+                                if (die_task != task)   \
+                                        die_task = NO_TASK+1; \
                                 break;                  \
                         }                               \
                 }                                       \
@@ -6457,7 +6498,8 @@ clear_active_set(void)
 					xendump_panic_hook(buf); \
                                 break;                  \
                         default:                        \
-                                panic_task = NO_TASK+1; \
+                                if (panic_task != task) \
+                                        panic_task = NO_TASK+1; \
                                 break;                  \
                         }                               \
                 }                                       \

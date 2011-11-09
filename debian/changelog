@@ -1,3 +1,160 @@
+crash (6.0.0-1) unstable; urgency=low
+
+  * New upstream version 6.0.0
+  * Depend on binutils  (close: #645124)
+  * Updated the embedded gdb version to FSF gdb-7.3.1.  This change is
+    required for kernels built with gcc-4.6.1, which now defaults to using
+    -gdwarf-4.  When using prior versions of crash on such a vmlinux file, it
+    fails immediately with the message "Dwarf Error: wrong version in
+    compilation unit header (is 4, should be 2) [in module vmlinux]" followed
+    by "crash: vmlinux: no debugging data available".  (anderson@redhat.com)
+  * Incremental patch for the SADUMP dumpfile support that was introduced in
+    crash-5.1.8.  The patchset fixes minor bugs, cleans up the sadump module,
+    addresses the issue of gathering the first 640KB backup from a
+    kdump-enabled kernel, prepares for makedumpfile's support of the SADUMP
+    format, and has "bt" display the stored register set when the compressed
+    kdump was generated from an SADUMP dumpfile.  (d.hatayama@jp.fujitsu.com)
+  * Fix for the "gdb" command, or any command that resolves to a gdb command,
+    to allow redirection to a pipe or file.  This addresses a regression that
+    was introduced by an unrelated "gdb" command fix in crash-5.1.4 that
+    prevented the stripping of quotation marks from the input line.  Without
+    the patch, redirection of a "gdb" command to a pipe or file fails with the
+    error message "gdb: gdb request failed:
+    <original-command-line-including-redirection>".  (anderson@redhat.com)
+  * Fix for live system analysis of 32-bit PPC kernels.  Without the patch,
+    the session would fail after displaying the error message: WARNING:
+    machine type mismatch: crash utility: PPC vmlinux: (unknown)
+    (nakayama.ts@ncos.nec.co.jp)
+  * Fix to allow vmalloc memory access on 32-bit PPC kernels.  Without the
+    patch, the warning message "WARNING: cannot access vmalloc'd module
+    memory" would be displayed during invocation, and kernel virtual memory
+    that was vmalloc'd could not be accessed.  (nakayama.ts@ncos.nec.co.jp)
+  * Fix to correctly gather task addresses from 32-bit PPC kernels.  Without
+    the patch, during invocation a stream of error messages indicating "crash:
+    invalid task address in pid_hash: <address>" would be displayed.
+    (nakayama.ts@ncos.nec.co.jp)
+  * Fix for the "bt" command in 32-bit PPC kernels.  Without the patch, the
+    "bt" command would generate a segmentation violation.
+    (nakayama.ts@ncos.nec.co.jp)
+
+ -- Troy Heber <troyh@debian.org>  Wed, 09 Nov 2011 08:51:24 -0700
+
+crash (5.1.9-1) unstable; urgency=low
+
+  * New upstream version 5.1.9
+  * Fixed the compressed kdump panic task determination function to use the
+    kernel's "crashing_cpu" symbol if it exists.  Without the patch, the
+    function returned 0 because it was using diskdump-specific header
+    variables that are always set to zero in compressed kdump dumpfiles; the
+    panic task was then found by searching the kernel stacks of all of the
+    active tasks.  (anderson@redhat.com)
+  * Fix for the potential of false-positive warning messages during the
+    initialization of s390x zdump dumpfiles that would indicate either
+    "WARNING: multiple active tasks have called die and/or panic" and/or
+    "WARNING: multiple active tasks have called die".
+    (holzheu@linux.vnet.ibm.com)
+  * Removal of superfluous code for gathering registers from the ELF header in
+    the ARM get_netdump_regs_arm() function.  (per.fransson.ml@gmail.com)
+  * Additional fixes for the ARM architecture gdb-7.0/bfd/elf32-arm.c and
+    gdb-7.0/bfd/cpu-arm.c files to handle gcc-4.6 compiler failures.  Without
+    the patch, gcc-4.6 generates "error: variable ‘<variable>’ set but not
+    used [-Werror=unused-but-set-variable]" fatal errors when the (default)
+    -Werror flag is used.  Previous gcc versions considered local variables
+    were simply set to some value to be "used", but that is no longer the
+    case.  (anderson@redhat.com)
+  * Added new "dis -[xd]" options, which override the current default output
+    format with hexadecimal or decimal format for just the command instance.
+    Without the patch, it would require changing the default output format
+    with "hex" or "dec" prior to executing "dis".  (anderson@redhat.com)
+  * Added new "task -[xd]" options, which override the current default output
+    format with hexadecimal or decimal format for just the command instance.
+    Without the patch, it would require changing the default output format
+    with "hex" or "dec" prior to executing "task".  The new flags may be used
+    with "foreach task" as well.  (anderson@redhat.com)
+  * Prevent the "struct -[xd]", "union -[xd]", and "p -[xd]" commands from
+    allowing both options being entered on the command line.
+    (anderson@redhat.com)
+  * Fixes to top-level crash source files filesys.c, memory.c, netdump.c,
+    sadump.c, symbols.c, x86.c and lkcd_x86_trace.c to allow them to be
+    compiled cleanly with gcc-4.6.  Without the patch, gcc-4.6 generates fatal
+    errors indicating "error: variable ‘<variable>’ set but not used
+    [-Werror=unused-but-set-variable]" when building crash with "make Warn",
+    or generates similar warning messages when building with "make warn".
+    This has been tested only on x86, x86_64 and ARM; the other architectures
+    may still generate errors/warnings when compiling their machine-specific
+    files with gcc-4.6.  (anderson@redhat.com)
+  * Fix for the "irq" command on 2.6.39 and later kernels.  Without the patch,
+    the command fails with the message "irq: invalid structure member offset:
+    irq_desc_t_status".  (anderson@redhat.com)
+  * Fix for the SIAL extension module that solves the problem of getting
+    access to integer variables.  (makc@gmx.co.uk)
+  * Fix for compiler warnings when building the extensions/sial.so extension
+    module with recent versions of /usr/bin/ld.  Without the patch, two
+    warning messages are displayed:  "/usr/bin/ld: Warning: alignment 4 of
+    symbol 'sialppdebug' in /tmp/ccYSzE2s.o is smaller than 16 in
+    libsial/libsial.a(sialpp.tab.o)" and "/usr/bin/ld: Warning: alignment 4 of
+    symbol 'sialdebug' in /tmp/ccYSzE2s.o is smaller than 16 in
+    libsial/libsial.a(sial.tab.o)".  (maxc@gmx.co.uk)
+  * If the stack pointer found in the register set stored in the ELF header of
+    a compressed kdump dumpfile, a KVM dumpfile, or an SADUMP dumpfile is
+    either NULL or cannot be accessed, the register set will be dumped after
+    the error message.  Without the patch, only the error message was
+    displayed.  (anderson@redhat.com)
+  * Preparation of the top-level crash sources for more efficient updates of
+    the embedded gdb version.  The changes should be invisible other than the
+    fact that all top-level source files will now be compiled with the
+    -DGDB_xxx flag, because the gdb-defined TYPE_CODE_xxx values that are
+    exported in defs.h changed in more recent gdb versions.
+    (anderson@redhat.com)
+  * Fixes for potential segmentation violations during the panic task search
+    phase of session initialization from a version 4 or later x86_64
+    compressed kdump, in which the number of ELF NT_PRSTATUS notes in the
+    dumpfile does not match the number of cpus running when the system
+    crashed.  (Joe.Lawrence@stratus.com, anderson@redhat.com)
+  * Created an exported set_tmpfile2() function that allows the caller to pass
+    in their own FILE pointer of an open file that only exists during the
+    execution of a command.  It will afford the recursive-use protection of
+    open_tmpfile2() plus the automatic closure of the file if the command
+    fails prior to completion or if the user forgets to close it with
+    close_tmpfile2().  (anderson@redhat.com)
+  * Created a new "rd -r <outputfile>" option that copies raw data from memory
+    to an output file.  It can be invoked either of two possible manners:
+     crash> rd -r <outputfile> <address> <count>
+     crash> rd -r <outputfile> <address> -e <ending-address
+    The <count> value is always a byte count with this option.
+    (adrian.wenl@gmail.com, anderson@redhat.com)
+  * Fix for the ARM "bt" command to store the correct value of the fp register
+    of active tasks.  Without the patch, in rare circumstances, the output may
+    show an empty backtrace.  (per.xx.fransson@stericsson.com)
+  * Fix to prevent a harmless warning message when /proc/kallsyms is used as a
+    mapfile argument.  Without the patch, during initialization, the message
+    "crash: /proc/kallsyms: lseek: Invalid argument" is       displayed.  If a
+    regular file copy of /proc/kallsyms is used, the message is not displayed.
+    (anderson@redhat.com)
+  * Fix for running against live x86 kernels that have been relocated by the
+    Intel Trusted Boot or "tboot" facility.  Without the patch, a live crash
+    session fails during invocation with the error message "crash: vmlinux and
+    /dev/mem do not match!" (or "/dev/crash" if applicable).  As a
+    work-around, "/proc/kallsyms" can be entered on the command line, or the
+    "--reloc=<size>" option can be used, but this fix obviates that
+    requirement for live systems.  (anderson@redhat.com)
+  * Fix for the unlikely event where makedumpfile-generated s390/s390x
+    compressed kdumps do not have a CPU count in the dumpfile header.  This
+    can happen when older s390 dump tools are used to create a dump that do
+    not write the CPU information into the s390 dump header.  Without the
+    patch, the warning message "crash: compressed kdump: invalid nr_cpus: 0"
+    is displayed, the dumpfile is not recognized as a compressed kdump, and
+    the session fails.  Since s390/s390x have a fallback function that gets
+    the CPU register information out of memory, the same warning message will
+    be displayed, but the dumpfile will still be recognized as a compressed
+    kdump.  (holzheu@linux.vnet.ibm.com)
+  * Fix for the "net -s" command on 2.6.38 and later kernels.  Without the
+    patch, the command fails with the error message "net: invalid structure
+    member offset: inet_opt_daddr".  (bob.montgomery@hp.com,
+    anderson@redhat.com)  
+
+ -- Troy Heber <troyh@debian.org>  Wed, 09 Nov 2011 08:46:06 -0700
+
 crash (5.1.8-1) unstable; urgency=low
 
   * Added explicit build-dep for dpkg-dev (>= 1.16.1) to resolve the "set but

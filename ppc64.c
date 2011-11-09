@@ -35,7 +35,7 @@ static void ppc64_print_stack_entry(int,struct gnu_request *,
 static void ppc64_dump_irq(int);
 static ulong ppc64_get_sp(ulong);
 static void ppc64_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static int ppc64_dis_filter(ulong, char *);
+static int ppc64_dis_filter(ulong, char *, unsigned int);
 static void ppc64_cmd_mach(void);
 static int ppc64_get_smp_cpus(void);
 static void ppc64_display_machine_stats(void);
@@ -2234,7 +2234,7 @@ ppc64_dump_irq(int irq)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int 
-ppc64_dis_filter(ulong vaddr, char *inbuf)
+ppc64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
@@ -2256,7 +2256,7 @@ ppc64_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -2278,7 +2278,7 @@ ppc64_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,	
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	}

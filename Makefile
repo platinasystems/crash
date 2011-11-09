@@ -34,10 +34,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=gdb-7.0
-GDB_FILES=${GDB_7.0_FILES}
+GDB=gdb-7.3.1
+GDB_FILES=${GDB_7.3.1_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-7.0.patch
+GDB_PATCH_FILES=gdb-7.3.1.patch
 
 #
 # Default installation directory
@@ -213,6 +213,9 @@ GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
 GDB_7.0_FILES=
 GDB_7.0_OFILES=${GDB}/gdb/symtab.o
 
+GDB_7.3.1_FILES=
+GDB_7.3.1_OFILES=${GDB}/gdb/symtab.o
+
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
 #
@@ -231,7 +234,7 @@ GDB_FLAGS=
 # TARGET_CFLAGS will be configured automatically by configure
 TARGET_CFLAGS=
 
-CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
+CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${GDB_FLAGS} ${CFLAGS}
 
 GPL_FILES=COPYING3
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
@@ -332,7 +335,7 @@ main.o: ${GENERIC_HFILES} main.c
 	cc -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
 cmdline.o: ${GENERIC_HFILES} cmdline.c
-	cc -c ${CRASH_CFLAGS} cmdline.c ${GDB_FLAGS} -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 tools.o: ${GENERIC_HFILES} tools.c
 	cc -c ${CRASH_CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -341,13 +344,13 @@ global_data.o: ${GENERIC_HFILES} global_data.c
 	cc -c ${CRASH_CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 symbols.o: ${GENERIC_HFILES} symbols.c
-	cc -c ${CRASH_CFLAGS} symbols.c ${GDB_FLAGS} -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 filesys.o: ${GENERIC_HFILES} filesys.c
 	cc -c ${CRASH_CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 help.o: ${GENERIC_HFILES} help.c
-	cc -c ${CRASH_CFLAGS} help.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 memory.o: ${GENERIC_HFILES} memory.c
 	cc -c ${CRASH_CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -356,13 +359,13 @@ test.o: ${GENERIC_HFILES} test.c
 	cc -c ${CRASH_CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 task.o: ${GENERIC_HFILES} task.c
-	cc -c ${CRASH_CFLAGS} task.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 kernel.o: ${GENERIC_HFILES} kernel.c
-	cc -c ${CRASH_CFLAGS} kernel.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 gdb_interface.o: ${GENERIC_HFILES} gdb_interface.c
-	cc -c ${CRASH_CFLAGS} gdb_interface.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server.o: ${MCORE_HFILES} va_server.c
 	cc -c ${CRASH_CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -404,7 +407,7 @@ x86.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86.c
 	cc -c ${CRASH_CFLAGS} x86.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 alpha.o: ${GENERIC_HFILES} alpha.c
-	cc -c ${CRASH_CFLAGS} alpha.c ${GDB_FLAGS} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CRASH_CFLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc.o: ${GENERIC_HFILES} ppc.c
 	cc -c ${CRASH_CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -538,7 +541,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=5.1.8
+VERSION=6.0.0
 RELEASE=0
 
 release: make_configure

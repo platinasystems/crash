@@ -106,7 +106,7 @@ static int s390x_eframe_search(struct bt_info *);
 static void s390x_back_trace_cmd(struct bt_info *);
 static void s390x_dump_irq(int);
 static void s390x_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static int s390x_dis_filter(ulong, char *);
+static int s390x_dis_filter(ulong, char *, unsigned int);
 static void s390x_cmd_mach(void);
 static int s390x_get_smp_cpus(void);
 static void s390x_display_machine_stats(void);
@@ -1285,7 +1285,7 @@ s390x_dump_irq(int irq)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int 
-s390x_dis_filter(ulong vaddr, char *inbuf)
+s390x_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
@@ -1307,7 +1307,7 @@ s390x_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -1329,7 +1329,7 @@ s390x_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	}

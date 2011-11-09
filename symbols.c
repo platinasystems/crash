@@ -45,9 +45,7 @@ static void check_insmod_builtin(struct load_module *, int, ulong *);
 static int is_insmod_builtin(struct load_module *, struct syment *);
 struct load_module;
 static int add_symbol_file(struct load_module *);
-#ifdef GDB_7_0
 static int add_symbol_file_kallsyms(struct load_module *, struct gnu_request *);
-#endif
 static void find_mod_etext(struct load_module *); 
 static long rodata_search(ulong *, ulong);
 static int ascii_long(ulong word);
@@ -417,13 +415,11 @@ separate_debug_file_exists(const char *name, unsigned long crc, int *exists)
 
 	*exists = TRUE;
   	while ((count = read(fd, buffer, sizeof(buffer))) > 0)
-#if defined(GDB_5_3)
+#ifdef GDB_5_3
     		file_crc = calc_crc32(file_crc, buffer, count);
-#elif defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
+#else
     		file_crc = gnu_debuglink_crc32(file_crc, 
 			(unsigned char *)buffer, count);
-#else
-		file_crc = 0xdeadbeef;  /* can't get here */
 #endif
 
   	close (fd);
@@ -749,7 +745,7 @@ relocate_force(ulong symval, char *symname)
 	 *  force the relocation.
 	 */
 	if (found) {
-		if (symval > kallsym) {
+		if (symval != kallsym) {
 			kt->relocate = symval - kallsym;
 			return TRUE;
 		}
@@ -2910,6 +2906,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_PPC:
+			if (machine_type_mismatch(file, "PPC", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -3255,10 +3256,10 @@ not_system_map:
 static int
 is_bfd_format(char *filename) 
 {
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-        struct bfd *bfd;
-#else
+#ifdef GDB_5_3
         struct _bfd *bfd;
+#else
+        struct bfd *bfd;
 #endif
         char **matching;
 
@@ -3277,10 +3278,10 @@ is_bfd_format(char *filename)
 static int
 is_binary_stripped(char *filename)
 {
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-        struct bfd *bfd;
-#else
+#ifdef GDB_5_3
         struct _bfd *bfd;
+#else
+        struct bfd *bfd;
 #endif
 	int number_of_symbols;
 
@@ -4142,7 +4143,7 @@ value_search(ulong value, ulong *offset)
  
         for ( ; sp < st->symend; sp++) {
                 if (value == sp->value) {
-#ifdef GDB_7_0
+#if !defined(GDB_5_3) && !defined(GDB_6_0) && !defined(GDB_6_1)
 			if (STRNEQ(sp->name, ".text.")) {
 				spnext = sp+1;
 				if (spnext->value == value)
@@ -5281,7 +5282,7 @@ dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char *typeptr, *member, *charptr, *voidptr, *p1, *sym;
-	int found, indent, ptrptr, funcptr, typedef_is_ptr, use_symbol;
+	int found, ptrptr, funcptr, typedef_is_ptr, use_symbol;
 	ulong target, value;
 
 	found = ptrptr = funcptr = typedef_is_ptr = use_symbol = FALSE;
@@ -5479,7 +5480,6 @@ dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
 	fprintf(pc->saved_fp, "  %s %s%s = 0x%lx\n  -> ", typeptr, 
 		typedef_is_ptr ? "" : "*", dm->member, target);
 
-	indent = 0;
 	rewind(pc->tmpfile2);
 	while (fgets(buf1, BUFSIZE, pc->tmpfile2)) {
 		if (buf1[0] == '$') {
@@ -5538,11 +5538,17 @@ cmd_datatype_common(ulong flags)
 			break;
 
 		case 'd':
+			if (radix == 16)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
 			radix = 10;
 			break;
 
 		case 'h':
 		case 'x':
+			if (radix == 10)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
 			radix = 16;
 			break;
 
@@ -6186,11 +6192,17 @@ cmd_p(void)
                 switch(c)
                 {
 		case 'd':
+			if (radix == 16)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
 			radix = 10;
 			break;
 
 		case 'h':
 		case 'x':
+			if (radix == 10)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
 			radix = 16;
                         break;
 
@@ -9493,11 +9505,10 @@ add_symbol_file(struct load_module *lm)
 	req = &request;
 	BZERO(req, sizeof(struct gnu_request));
 
-#ifdef GDB_7_0
 	if ((lm->mod_flags & MOD_KALLSYMS) &&
 	    add_symbol_file_kallsyms(lm, req))
 		return TRUE;
-#endif
+
 	for (i = len = 0; i < lm->mod_sections; i++)
 	{
 		secname = lm->mod_section_data[i].name;
@@ -9539,7 +9550,6 @@ add_symbol_file(struct load_module *lm)
 	return(!(req->flags & GNU_COMMAND_FAILED));
 }
 
-#ifdef GDB_7_0
 static int 
 add_symbol_file_percpu(struct load_module *lm, struct gnu_request *req, int buflen)
 {
@@ -9578,6 +9588,9 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 	char section_name[BUFSIZE];
 	ulong section_vaddr;
 
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
+	return FALSE;
+#endif
 	if (!(st->flags & (MODSECT_VMASK|MODSECT_UNKNOWN))) {
 		STRUCT_SIZE_INIT(module_sect_attr, "module_sect_attr");
 		MEMBER_OFFSET_INIT(module_sect_attrs, 
@@ -9805,7 +9818,6 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 	return(!(req->flags & GNU_COMMAND_FAILED));
 }
-#endif
 
 
 /*

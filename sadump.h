@@ -197,10 +197,16 @@ struct sadump_data {
 	int block_shift;
 
 	char *page_buf;
-	ulong *block_table;
+	uint64_t *block_table;
 
 	int sd_list_len;
-	struct sadump_diskset_data *sd_list[SADUMP_MAX_DISK_SET_NUM];
+	struct sadump_diskset_data **sd_list;
+
+/* Backup Region, First 640K of System RAM. */
+#define KEXEC_BACKUP_SRC_END	0x0009ffff
+	ulong backup_src_start;
+	ulong backup_src_size;
+	ulonglong backup_offset;
 };
 
 struct sadump_data *sadump_get_sadump_data(void);

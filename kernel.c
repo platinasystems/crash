@@ -1155,6 +1155,7 @@ cmd_dis(void)
 	int c;
 	int do_load_module_filter, do_machdep_filter, reverse; 
 	int unfiltered, user_mode, count_entered, bug_bytes_entered;
+	unsigned int radix;
 	ulong curaddr;
 	ulong revtarget;
 	ulong count;
@@ -1181,16 +1182,32 @@ cmd_dis(void)
 	reverse = count_entered = bug_bytes_entered = FALSE;
 	sp = NULL;
 	unfiltered = user_mode = do_machdep_filter = do_load_module_filter = 0;
+	radix = 0;
 
 	req = (struct gnu_request *)getbuf(sizeof(struct gnu_request));
 	req->buf = GETBUF(BUFSIZE);
 	req->flags |= GNU_FROM_TTY_OFF|GNU_RETURN_ON_ERROR;
 	req->count = 1;
 
-        while ((c = getopt(argcnt, args, "ulrxb:B:")) != EOF) {
+        while ((c = getopt(argcnt, args, "dxhulrUb:B:")) != EOF) {
                 switch(c)
 		{
+		case 'd':
+			if (radix == 16)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
+
 		case 'x':
+		case 'h':
+			if (radix == 10)
+				error(FATAL, 
+				    "-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+
+		case 'U':
 			unfiltered = TRUE;
 			break;
 
@@ -1224,6 +1241,9 @@ cmd_dis(void)
 
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (!radix)
+		radix = pc->output_radix;
 
         if (args[optind]) {
                 if (can_eval(args[optind])) 
@@ -1308,7 +1328,7 @@ cmd_dis(void)
 				}
                         }
 
-			do_machdep_filter = machdep->dis_filter(req->addr,NULL);
+			do_machdep_filter = machdep->dis_filter(req->addr, NULL, radix);
 			count = 0;
 			open_tmpfile();
 #ifdef OLDWAY
@@ -1334,6 +1354,8 @@ cmd_dis(void)
 				    STRNEQ(buf2, "End of"))
 					continue;
 
+				strip_beginning_whitespace(buf2);
+
 				if (do_load_module_filter)
 					load_module_filter(buf2, LM_DIS_FILTER);
 
@@ -1345,7 +1367,7 @@ cmd_dis(void)
 					break;
 
 				if (do_machdep_filter)
-					machdep->dis_filter(curaddr, buf2);
+					machdep->dis_filter(curaddr, buf2, radix);
 
 				if (req->flags & GNU_FUNCTION_ONLY) {
                                         if (req->flags & 
@@ -1423,7 +1445,7 @@ cmd_dis(void)
                 error(FATAL, "unable to determine symbol after %s\n", savename);
 	}
 
-	do_machdep_filter = machdep->dis_filter(req->addr, NULL);
+	do_machdep_filter = machdep->dis_filter(req->addr, NULL, radix);
 #ifdef OLDWAY
 	req->command = GNU_DISASSEMBLE;
 	req->fp = pc->tmpfile;
@@ -1444,6 +1466,8 @@ cmd_dis(void)
                 if (STRNEQ(buf2, "Dump of") || STRNEQ(buf2, "End of"))
                 	continue;
 
+		strip_beginning_whitespace(buf2);
+
                 if (do_load_module_filter)
                         load_module_filter(buf2, LM_DIS_FILTER);
 
@@ -1451,7 +1475,7 @@ cmd_dis(void)
                 	extract_hex(buf2, &curaddr, ':', TRUE);
 
 		if (do_machdep_filter)
-			machdep->dis_filter(curaddr, buf2);
+			machdep->dis_filter(curaddr, buf2, radix);
 
 		if (req->flags & GNU_PRINT_LINE_NUMBERS) {
 			get_line_number(curaddr, buf3, FALSE);
@@ -1473,7 +1497,7 @@ cmd_dis(void)
                         	load_module_filter(buf2, LM_DIS_FILTER);
 
 			if (do_machdep_filter) 
-				machdep->dis_filter(curaddr, buf2);
+				machdep->dis_filter(curaddr, buf2, radix);
 
                 	print_verbatim(pc->saved_fp, buf2);
 			break;
@@ -1701,7 +1725,7 @@ next_text_symbol(struct syment *sp_in)
  *  Nothing to do.
  */
 int
-generic_dis_filter(ulong value, char *buf)
+generic_dis_filter(ulong value, char *buf, unsigned int output_radix)
 {
 	return TRUE;
 }
@@ -1876,10 +1900,10 @@ cmd_bt(void)
 			break;
 
 		case 'g':
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
-			bt->flags |= BT_THREAD_GROUP;
-#else
+#ifdef GDB_5_3
 			bt->flags |= BT_USE_GDB;
+else
+			bt->flags |= BT_THREAD_GROUP;
 #endif
 			break;
 
@@ -4828,20 +4852,22 @@ generic_dump_irq(int irq)
 	}
 
 	if (irq_desc_addr) {
-	        readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, 
-			&status, sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+		if (VALID_MEMBER(irq_desc_t_status))
+			readmem(irq_desc_addr + OFFSET(irq_desc_t_status), 
+				KVADDR, &status, sizeof(int), "irq_desc status",
+				FAULT_ON_ERROR);
 		if (VALID_MEMBER(irq_desc_t_handler))
 		        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), 
-				KVADDR, &handler, sizeof(long), "irq_desc entry",
+				KVADDR, &handler, sizeof(long), "irq_desc handler",
 				FAULT_ON_ERROR);
 		else if (VALID_MEMBER(irq_desc_t_chip))
 		        readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
-	        	        &handler, sizeof(long), "irq_desc entry",
+	        	        &handler, sizeof(long), "irq_desc chip",
 				FAULT_ON_ERROR);
 	        readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR, 
-			&action, sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
+			&action, sizeof(long), "irq_desc action", FAULT_ON_ERROR);
 	        readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
-	                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+	                sizeof(int), "irq_desc depth", FAULT_ON_ERROR);
 	}
 
 	if (!action && (handler == (ulong)pc->curcmd_private))
@@ -5264,7 +5290,6 @@ do_linked_action:
 	return;
 
 irq_desc_format_v2:
-
 	if (!(pc->curcmd_flags & HEADER_PRINTED)) {
 		fprintf(fp, " IRQ  %s  %s  NAME\n",
 			mkstring(buf1, VADDR_PRLEN, CENTER,

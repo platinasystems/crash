@@ -35,10 +35,10 @@ static char *README[];
 #define GPLv2 2
 #define GPLv3 3
 
-#if defined(GDB_7_0)
-static int GPL_version = GPLv3;
-#else
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
 static int GPL_version = GPLv2;
+#else
+static int GPL_version = GPLv3;
 #endif
 
 static 
@@ -743,7 +743,7 @@ char *help_foreach[] = {
 "           selected, or on all tasks:\n",
 "             bt  run the \"bt\" command  (optional flags: -r -t -l -e -R -f -F -o)",
 "             vm  run the \"vm\" command  (optional flags: -p -v -m -R)",
-"           task  run the \"task\" command  (optional flag: -R)",
+"           task  run the \"task\" command  (optional flags: -R -d -x)",
 "          files  run the \"files\" command  (optional flag: -R)",
 "            net  run the \"net\" command  (optional flags: -s -S -R)",
 "            set  run the \"set\" command",
@@ -1396,7 +1396,8 @@ NULL
 char *help_rd[] = {
 "rd",
 "read memory",
-"[-adDsSupxmfN][-8|-16|-32|-64][-o offs][-e addr] [address|symbol] [count]",
+"[-adDsSupxmfN][-8|-16|-32|-64][-o offs][-e addr][-r file][address|symbol]\n"
+"     [count]",
 "  This command displays the contents of memory, with the output formatted",
 "  in several different manners.  The starting address may be entered either",
 "  symbolically or by address.  The default output size is the size of a long",
@@ -1428,14 +1429,19 @@ char *help_rd[] = {
 "           values)",
 "  -o offs  offset the starting address by offs.",
 "  -e addr  display memory until reaching specified ending hexadecimal address.",
+"  -r file  dumps raw data to the specified output file; the number of bytes that",
+"           are copied to the file must be specified either by a count argument",
+"           or by the -e option.",
 "  address  starting hexadecimal address:",
 "             1  the default presumes a kernel virtual address.",
 "             2. -p specifies a physical address.",
 "             3. -u specifies a user virtual address, but is only necessary on",
 "                processors with common user and kernel virtual address spaces.",
 "   symbol  symbol of starting address to read.",
-"    count  number of memory locations to display; if entered, must be the last",
-"           argument on the command line (default is 1; unlimited for -a).",
+"    count  number of memory locations to display; if entered, it must be the",
+"           last argument on the command line; if not entered, the count defaults",
+"           to 1, or unlimited for -a; when used with the -r option, it is the",
+"           number of bytes to be written to the file.",
 "\nEXAMPLES",
 "  Display the kernel's version string:\n",
 "    %s> rd -a linux_banner",
@@ -1531,16 +1537,16 @@ NULL
 char *help_bt[] = {
 "bt",
 "backtrace",
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 "[-a|-g|-r|-t|-T|-l|-e|-E|-f|-F|-o|-O] [-R ref] [-I ip] [-S sp] [pid | task]",
-#else
-"[-a|-r|-t|-l|-e|-f|-g] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
-#endif
 "  Display a kernel stack backtrace.  If no arguments are given, the stack",
 "  trace of the current context will be displayed.\n",
 "       -a  displays the stack traces of the active task on each CPU.",
 "           (only applicable to crash dumps)",
+#ifdef GDB_5_3
+"       -g  use gdb stack trace code. (alpha only)",
+#else
 "       -g  displays the stack traces of all threads in the thread group of",
+#endif
 "           the target task; the thread group leader will be displayed first.",
 "       -r  display raw stack data, consisting of a memory dump of the two",
 "           pages of memory containing the task_union structure.",
@@ -1570,9 +1576,6 @@ char *help_bt[] = {
 "           of this option toggles the backtrace method.",
 "           x86_64: use old backtrace method by default; subsequent usage of this",
 "           option toggles the backtrace method.",  
-#if !defined(GDB_6_0) && !defined(GDB_6_1) && !defined(GDB_7_0)
-"       -g  use gdb stack trace code. (alpha only)",
-#endif
 "   -R ref  display stack trace only if there is a reference to this symbol",
 "           or text address.",
 "    -I ip  use ip as the starting text location.",
@@ -3239,7 +3242,7 @@ NULL
 char *help_task[] = {
 "task",
 "task_struct contents",
-"[-R member[,member]] [pid | taskp] ...",
+"[-R member[,member]] [-dx] [pid | taskp] ...",
 "  This command dumps a formatted display of the contents of a task_struct.",
 "  Multiple task or PID numbers may be entered; if no arguments are entered,",
 "  the task_struct of the current context is displayed.  The -R option,",
@@ -3249,6 +3252,8 @@ char *help_task[] = {
 "        pid  a process PID.",
 "      taskp  a hexadecimal task_struct pointer.",
 "  -R member  a comma-separated list of one or more task_struct members.",  
+"         -x  override default output format with hexadecimal format.",
+"         -d  override default output format with decimal format.",
 "\nEXAMPLES",
 "  Dump the task_struct structure of the current context:\n",
 "    %s> task",
@@ -3511,8 +3516,8 @@ NULL
 char *help_struct[] = {
 "struct",
 "structure contents",
-"struct_name[.member[,member]][-o][-l offset][-rfuxdp] [address | symbol]\n"
-"                                      [count | -c count]",
+"struct_name[.member[,member]][-o][-l offset][-rfuxdp][address | symbol]\n"
+"         [count | -c count]",
 "  This command displays either a structure definition, or a formatted display",
 "  of the contents of a structure at a specified address.  When no address is",
 "  specified, the structure definition is shown along with the structure size.",
@@ -4793,7 +4798,7 @@ NULL
 char *help_dis[] = {
 "dis",
 "disassemble",
-"[-r][-l][-u][-b [num]] [address | symbol | (expression)] [count]",
+"[-rludx][-b [num]] [address | symbol | (expression)] [count]",
 "  This command disassembles source code instructions starting (or ending) at",
 "  a text address that may be expressed by value, symbol or expression:\n",
 "            -r  (reverse) displays all instructions from the start of the ",
@@ -4803,6 +4808,8 @@ char *help_dis[] = {
 "            -u  address is a user virtual address in the current context;",
 "                otherwise the address is assumed to be a kernel virtual address.",
 "                If this option is used, then -r and -l are ignored.",
+"            -x  override default output format with hexadecimal format.",
+"            -d  override default output format with decimal format.",
 "      -b [num]  modify the pre-calculated number of encoded bytes to skip after",
 "                a kernel BUG (\"ud2a\") instruction; with no argument, displays",  
 "                the current number of bytes being skipped. (x86 and x86_64 only)",
@@ -4905,6 +4912,18 @@ char *help_dis[] = {
 "    0x81ec642:      and    $0x0,\%ecx",
 "    0x81ec645:      mov    \%ecx,\%eax",
 " ",
+"  Override the current decimal output radix format:\n",
+"    %s> dis sys_read 10 -x",
+"    0xffffffff8001178f <sys_read>:  push   %r13",
+"    0xffffffff80011791 <sys_read+0x2>:      mov    %rsi,%r13",
+"    0xffffffff80011794 <sys_read+0x5>:      push   %r12",
+"    0xffffffff80011796 <sys_read+0x7>:      mov    $0xfffffffffffffff7,%r12",
+"    0xffffffff8001179d <sys_read+0xe>:      push   %rbp",
+"    0xffffffff8001179e <sys_read+0xf>:      mov    %rdx,%rbp",
+"    0xffffffff800117a1 <sys_read+0x12>:     push   %rbx",
+"    0xffffffff800117a2 <sys_read+0x13>:     sub    $0x18,%rsp",
+"    0xffffffff800117a6 <sys_read+0x17>:     lea    0x14(%rsp),%rsi",
+"    0xffffffff800117ab <sys_read+0x1c>:     callq  0xffffffff8000b5b4 <fget_light>",
 NULL               
 };
 

@@ -804,7 +804,9 @@ is_kvmdump_mapfile(char *filename)
                 return FALSE;
         }
 
-	eof = lseek(fd, 0, SEEK_END);
+	if ((eof = lseek(fd, 0, SEEK_END)) == -1)
+		goto bailout;
+
 	if (lseek(fd, eof - sizeof(trailer), SEEK_SET) < 0) {
                 error(INFO, "%s: lseek: %s\n", filename, strerror(errno));
 		goto bailout;

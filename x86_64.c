@@ -59,7 +59,7 @@ static char *x86_64_extract_idt_function(ulong *, char *, ulong *);
 static ulong x86_64_get_pc(struct bt_info *);
 static ulong x86_64_get_sp(struct bt_info *);
 static void x86_64_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static int x86_64_dis_filter(ulong, char *);
+static int x86_64_dis_filter(ulong, char *, unsigned int);
 static void x86_64_cmd_mach(void);
 static int x86_64_get_smp_cpus(void);
 static void x86_64_display_machine_stats(void);
@@ -2837,19 +2837,27 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	last_process_stack_eframe = 0;
 	bt->call_target = NULL;
 	rsp = bt->stkptr;
+	ms = machdep->machspec;
+
+	if (BT_REFERENCE_CHECK(bt))
+		ofp = pc->nullfp;
+	else
+		ofp = fp;
+
 	/* If rsp is in user stack, the memory may not be included in vmcore, and
 	 * we only output the register's value. So it's not necessary to check
 	 * whether it can be accessible.
 	 */
 	if (!(bt->flags & BT_USER_SPACE) && (!rsp || !accessible(rsp))) {
 		error(INFO, "cannot determine starting stack pointer\n");
+		if (KVMDUMP_DUMPFILE())
+			kvmdump_display_regs(bt->tc->processor, ofp);
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			diskdump_display_regs(bt->tc->processor, ofp);
+		else if (SADUMP_DUMPFILE())
+			sadump_display_regs(bt->tc->processor, ofp);
 		return;
 	}
-	ms = machdep->machspec;
-	if (BT_REFERENCE_CHECK(bt))
-		ofp = pc->nullfp;
-	else
-		ofp = fp;
 
         if (bt->flags & BT_TEXT_SYMBOLS) {
 		if ((bt->flags & BT_USER_SPACE) &&
@@ -2864,20 +2872,17 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			    bt->instptr);
 	} else if (bt->flags & BT_USER_SPACE) {
 		fprintf(ofp, "    [exception RIP: user space]\n");
-		if(KVMDUMP_DUMPFILE()) {
+		if (KVMDUMP_DUMPFILE())
 			kvmdump_display_regs(bt->tc->processor, ofp);
-			return;
-		}
-		if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE()) {
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
 			diskdump_display_regs(bt->tc->processor, ofp);
-			return;
-		}
-		if (SADUMP_DUMPFILE()) {
+		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, ofp);
-			return;
-		}
+		return;
 	} else if ((bt->flags & BT_KERNEL_SPACE) &&
-		   (KVMDUMP_DUMPFILE() || SADUMP_DUMPFILE())) {
+		   (KVMDUMP_DUMPFILE() ||
+		    (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE()) ||
+		    SADUMP_DUMPFILE())) {
 		fprintf(ofp, "    [exception RIP: ");
 		if ((sp = value_search(bt->instptr, &offset))) {
 			fprintf(ofp, "%s", sp->name);
@@ -2889,7 +2894,9 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 		fprintf(ofp, "]\n");
 		if (KVMDUMP_DUMPFILE())
 			kvmdump_display_regs(bt->tc->processor, ofp);
-		if (SADUMP_DUMPFILE())
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			diskdump_display_regs(bt->tc->processor, ofp);
+		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, ofp);
         } else if (bt->flags & BT_START) {
                 x86_64_print_stack_entry(bt, ofp, level,
@@ -4178,7 +4185,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 				goto skip_stage;
 			}
 		}
-	} else if (ELF_NOTES_VALID()) {
+	} else if (ELF_NOTES_VALID() && bt->machdep) {
 		user_regs = bt->machdep;
 		ur_rip = ULONG(user_regs +
 			OFFSET(user_regs_struct_rip));
@@ -4374,6 +4381,11 @@ skip_stage:
 	if (ur_rip && ur_rsp) {
         	*rip = ur_rip;
 		*rsp = ur_rsp;
+		if (is_kernel_text(ur_rip) &&
+		    (((ur_rsp >= GET_STACKBASE(bt->task)) &&
+		      (ur_rsp < GET_STACKTOP(bt->task))) ||
+		     in_alternate_stack(bt->tc->processor, ur_rsp)))
+			bt_in->flags |= BT_KERNEL_SPACE;
 		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
 			bt_in->flags |= BT_USER_SPACE;
 		return;
@@ -4397,8 +4409,19 @@ skip_stage:
 	 *  Use what was (already) saved in the panic task's 
 	 *  registers found in the ELF header.
 	 */ 
-	if (bt->flags & BT_KDUMP_ELF_REGS)
+	if (bt->flags & BT_KDUMP_ELF_REGS) {
+		user_regs = bt->machdep;
+		ur_rip = ULONG(user_regs + OFFSET(user_regs_struct_rip));
+		ur_rsp = ULONG(user_regs + OFFSET(user_regs_struct_rsp));
+		if (is_kernel_text(ur_rip) &&
+		    (((ur_rsp >= GET_STACKBASE(bt->task)) &&
+		      (ur_rsp < GET_STACKTOP(bt->task))) ||
+		     in_alternate_stack(bt->tc->processor, ur_rsp)))
+			bt_in->flags |= BT_KERNEL_SPACE;
+		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
+			bt_in->flags |= BT_USER_SPACE;
 		return;
+	}
 
 	if (CRASHDEBUG(1)) 
         	error(INFO, 
@@ -4577,7 +4600,7 @@ x86_64_extract_idt_function(ulong *ip, char *buf, ulong *retaddr)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int 
-x86_64_dis_filter(ulong vaddr, char *inbuf)
+x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
@@ -4599,7 +4622,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -4621,7 +4644,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,	
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	
@@ -4638,8 +4661,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 
                 if (extract_hex(argv[argc-1], &value, NULLCHAR, TRUE)) {
                         sprintf(buf1, " <%s>\n",
-                                value_to_symstr(value, buf2,
-                                pc->output_radix));
+                                value_to_symstr(value, buf2, output_radix));
                         if (IS_MODULE_VADDR(value) &&
                             !strstr(buf2, "+"))
                                 sprintf(p1, buf1);
