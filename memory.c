@@ -353,8 +353,11 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(page_inode, "page", "inode");
 	MEMBER_OFFSET_INIT(page_offset, "page", "offset");
 	MEMBER_OFFSET_INIT(page_count, "page", "count");
-	if (INVALID_MEMBER(page_count))
+	if (INVALID_MEMBER(page_count)) {
 		MEMBER_OFFSET_INIT(page_count, "page", "_count");
+		if (INVALID_MEMBER(page_count))
+			ANON_MEMBER_OFFSET_INIT(page_count, "page", "_count");
+	}
 	MEMBER_OFFSET_INIT(page_flags, "page", "flags");
 	MEMBER_SIZE_INIT(page_flags, "page", "flags");
         MEMBER_OFFSET_INIT(page_mapping, "page", "mapping");

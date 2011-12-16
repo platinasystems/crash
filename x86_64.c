@@ -27,6 +27,7 @@ static int x86_64_uvtop_level4_rhel4_xen_wpt(struct task_context *, ulong, physa
 static ulong x86_64_vmalloc_start(void);
 static int x86_64_is_task_addr(ulong);
 static int x86_64_verify_symbol(const char *, ulong, char);
+static int x86_64_verify_line_number(ulong, ulong, ulong);
 static ulong x86_64_get_task_pgd(ulong);
 static int x86_64_translate_pte(ulong, void *, ulonglong);
 static ulong x86_64_processor_speed(void);
@@ -128,6 +129,7 @@ x86_64_init(int when)
 		break;
 	case PRE_SYMTAB:
 		machdep->verify_symbol = x86_64_verify_symbol;
+		machdep->verify_line_number = x86_64_verify_line_number;
                 machdep->machspec = &x86_64_machine_specific;
                 if (pc->flags & KERNEL_DEBUG_QUERY)
                         return;
@@ -653,6 +655,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, " xendump_panic_task: x86_64_xendump_panic_task()\n");
 	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
         fprintf(fp, "  line_number_hooks: x86_64_line_number_hooks\n");
+	fprintf(fp, " verify_line_number: x86_64_verify_line_number()\n");
         fprintf(fp, "    value_to_symbol: x86_64_value_to_symbol()\n");
         fprintf(fp, " in_alternate_stack: x86_64_in_alternate_stack()\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
@@ -2143,6 +2146,21 @@ x86_64_verify_symbol(const char *name, ulong value, char type)
 	return TRUE;
 }
 
+
+/*
+ *  Prevent base kernel pc section ranges that end with a
+ *  vsyscall address from being accepted for kernel module
+ *  addresses.
+ */
+static int 
+x86_64_verify_line_number(ulong pc, ulong low, ulong high)
+{
+	if (IS_MODULE_VADDR(pc) && 
+	    !IS_MODULE_VADDR(low) && is_vsyscall_addr(high))
+		return FALSE;
+
+	return TRUE;
+}
 
 /*
  *  Get the relevant page directory pointer from a task structure.

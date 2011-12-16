@@ -660,8 +660,10 @@ store_sysmap_symbols(void)
 static ulong
 relocate(ulong symval, char *symname, int first_symbol)
 {
-	if (XEN_HYPER_MODE())
+	if (XEN_HYPER_MODE()) {
+		kt->flags &= ~(RELOC_SET|RELOC_FORCE);
 		return symval;
+	}
 
 	switch (kt->flags & (RELOC_SET|RELOC_FORCE))
 	{
@@ -918,8 +920,11 @@ symbol_dump(ulong flags, char *module)
 #define DISPLAYED 2
 
 	if (flags & KERNEL_SYMS) {
-        	for (sp = st->symtable; sp < st->symend; sp++) 
+		for (sp = st->symtable; sp < st->symend; sp++) {
 			show_symbol(sp, 0, SHOW_RADIX());
+			if (received_SIGINT() || output_closed())
+				return;
+		}
 	}
 
 	if (!(flags & MODULE_SYMS))
@@ -930,6 +935,9 @@ symbol_dump(ulong flags, char *module)
 		lm = &st->load_modules[i];
 		if (module && !STREQ(module, lm->mod_name))
 			continue;
+
+		if (received_SIGINT() || output_closed())
+			return;
 
 		sp = lm->mod_symtable;
 		sp_end = lm->mod_symend;
@@ -3528,6 +3536,7 @@ get_line_number(ulong addr, char *buf, int strip_usr_src)
 	char *p;
 	struct gnu_request request, *req;
 	struct line_number_hook *lnh;
+	struct syment *sp;
 	char bldbuf[BUFSIZE], *name;
 	struct load_module *lm;
 
@@ -3559,6 +3568,8 @@ get_line_number(ulong addr, char *buf, int strip_usr_src)
 		req->command = GNU_GET_LINE_NUMBER;
 		req->addr = addr;
 		req->buf = buf;
+		if ((sp = value_search(addr, NULL)))
+			req->name = sp->name;
 		gdb_interface(req);
 	}
 
@@ -8451,6 +8462,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(task_struct_se));
 	fprintf(fp, "         sched_entity_run_node: %ld\n",
 		OFFSET(sched_entity_run_node));
+	fprintf(fp, "           sched_entity_cfs_rq: %ld\n",
+		OFFSET(sched_entity_cfs_rq));
+	fprintf(fp, "             sched_entity_my_q: %ld\n",
+		OFFSET(sched_entity_my_q));
 	fprintf(fp, "             cfs_rq_nr_running: %ld\n",
 		OFFSET(cfs_rq_nr_running));
 	fprintf(fp, "            cfs_rq_rb_leftmost: %ld\n",

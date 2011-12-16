@@ -1244,3 +1244,67 @@
  	./pex-djgpp.$(objext) ./pex-msdos.$(objext)			\
  	 ./pex-unix.$(objext) ./pex-win32.$(objext)			\
  	 ./putenv.$(objext)						\
+--- gdb-7.3.1/gdb/symtab.c.orig
++++ gdb-7.3.1/gdb/symtab.c
+@@ -4951,10 +4951,17 @@ static void
+ gdb_get_line_number(struct gnu_request *req)
+ {
+         struct symtab_and_line sal;
++	struct symbol *sym;
+         CORE_ADDR pc;
+ 
+ #define LASTCHAR(s)      (s[strlen(s)-1])
+ 
++	/*
++	 * Prime the addrmap pump.
++	 */
++	if (req->name)
++		sym = lookup_symbol(req->name, 0, VAR_DOMAIN, 0);
++
+         pc = req->addr;
+ 
+         sal = find_pc_line(pc, 0);
+--- gdb-7.3.1/gdb/psymtab.c.orig
++++ gdb-7.3.1/gdb/psymtab.c
+@@ -288,6 +288,9 @@ find_pc_sect_psymtab (struct objfile *ob
+ 		      struct minimal_symbol *msymbol)
+ {
+   struct partial_symtab *pst;
++#ifdef CRASH_MERGE
++  extern int gdb_line_number_callback(unsigned long, unsigned long, unsigned long);
++#endif
+ 
+   /* Try just the PSYMTABS_ADDRMAP mapping first as it has better granularity
+      than the later used TEXTLOW/TEXTHIGH one.  */
+@@ -342,7 +345,12 @@ find_pc_sect_psymtab (struct objfile *ob
+ 	struct partial_symtab *best_pst;
+ 
+ 	best_pst = find_pc_sect_psymtab_closer (pc, section, pst, msymbol);
++#ifdef CRASH_MERGE
++	if ((best_pst != NULL) && 
++	  gdb_line_number_callback(pc, pst->textlow, pst->texthigh))
++#else
+ 	if (best_pst != NULL)
++#endif
+ 	  return best_pst;
+       }
+ 
+--- gdb-7.3.1/gdb/cli/cli-cmds.c.orig
++++ gdb-7.3.1/gdb/cli/cli-cmds.c
+@@ -534,14 +534,14 @@ find_and_open_script (const char *script
+       int fd = fileno (stream);
+       if (fstat (fd, &statbuf) < 0)
+         {
+-          perror_with_name (file);
++          perror_with_name (*full_pathp);
+           fclose (stream);
+           return 0;
+         }
+       if (statbuf.st_uid != getuid () || (statbuf.st_mode & S_IWOTH))
+         {
+           extern void untrusted_file(FILE *, char *); 
+-	  untrusted_file(NULL, file);
++	  untrusted_file(NULL, *full_pathp);
+           fclose (stream);
+           return 0;
+         }

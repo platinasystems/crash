@@ -1,3 +1,96 @@
+crash (6.0.1-1) unstable; urgency=low
+
+  * New upstream version 6.0.1
+  * Several fixes/updates for the 32-bit PPC architecture: (1) Delete
+    "__func__.<number>" symbols from the symbol list.  (2) Update manner of
+    determining the processor speed displayed by the initial system banner and
+    the "sys" command.  (3) Use the kernel's online cpus mask for determining
+    the cpu count.  (4) Enable the "bt" command to follow traces that start in
+    a per-cpu IRQ stack.  (5) Fix for the "bt" command to better prevent
+    runaway stack traces.  (6) Fix for the "bt" command to recognize/display
+    2.6 kernel exception frames.  (7) Update "bt" command's exception frame
+    register display.  (8) Implement "bt -f" option.
+  * Fix for the X86 kernel module line-number capability on some kernels.  It
+    is unclear why only some kernel versions exhibit this problem, but the
+    newly-embedded gdb version 7.3.1 has changed behaviour such that the
+    addrmap arrays of module text address blocks may contain the module text
+    offset values instead of their loaded vmalloc addresses, and so without
+    the patch, there is no "match" for the vmalloc address when searching for
+    its line number information.  It is fixed by doing a preliminary symbol
+    search before accessing the line-number access routine.
+  * Fix for the X86_64 kernel module line-number capability on kernels that
+    have functions preceded by the __vsyscall_fn macro, which puts the kernel
+    text function in the vsyscall page that starts at virtual address
+    0xffffffffff600000.  This results in a text address block that starts at a
+    normal kernel text address but ends with a vsyscall address, which
+    inadvertently contains the whole vmalloc address range.  Without the
+    patch, line number requests for module vmalloc text addresses would be
+    mistakenly issued the first text section that ended with a vsyscall
+    address, but then cannot find line number information in that section.
+  * Fix for the inadvertent patching of the symbols of the 32-bit Xen
+    hypervisor binary.  Without the patch, during initialization the
+    minimal_symbols are "patched" with their original values, so they remain
+    unchanged, and the message "WARNING: kernel relocated [0MB]: patching 3434
+    gdb minimal_symbol values" is displayed.
+  * If the "--mod <directory-tree>" command line option, or the setting of the
+    CRASH_MODULE_PATH environment variable, or the "mod -S <directory-tree>"
+    point to a tree that contains only the separate debuginfo
+    "<module>.ko.debug" files, then those debuginfo files will be used as the
+    internal "add-symbol-file" arguments to the embedded gdb module.  Without
+    the patch, it was only acceptable to point to a directory tree that
+    contained the base "<module>.ko" files, and the separate debuginfo files
+    were found automatically based upon the directory path to the base module
+    file.  This will allow an alternate module-debuginfo directory tree to be
+    set up like so: # cd <directory> # rpm2cpio kernel-debuginfo-<release>.rpm
+    | cpio -idv Having done that, the <directory> may be used with the
+    "--mod", command line argument, or as the CRASH_MODULE_PATH environment
+    variable, or as the "mod -S <directory> argument.
+  * Make the suspension of the verbose/time-consuming "sym -l" output
+    immediate upon the killing of the output pipe, or the entry of the first
+    CTRL-c.  Without the patch, it would typically take several seconds, or
+    multiple CTRL-c entries, for the "crash>" prompt to be re-displayed.
+  * Fix for the handling of piped commands if the command receiving the crash
+    output is non-existent or invalid.  Without the patch, the crash command
+    would wait indefinitely unless multiple CTRL-c entries were entered. 
+  * Fix for the s390x "bt" command's floating point register display header.
+    Without the patch, the header indicates that only registers 0, 2, 4 and 6
+    are printed, a relic of the s390 architecture, whereas on the s390x all
+    floating point registers are displayed.          
+  * Fix for the error message displayed when an untrusted .gdbinit file exists
+    in the current directory.  Without the patch, the error message "WARNING:
+    not using untrusted file: " would be followed by garbage ASCII data
+    instead of the full pathname of the .gdbinit file.
+  * Fix for the "kmem -p" and "kmem -i" commands in 3.1 and later kernels
+    where the page structure's "_count" member was moved into an embedded
+    anonymous structure.  Without the patch, the commands fail with the error
+    message "kmem: invalid structure member offset: page_count FILE: memory.c
+    LINE: 4610  FUNCTION: dump_mem_map_SPARSEMEM()".
+  * Allow the user to append data to the CFLAGS and LDFLAGS variables in the
+    top-level Makefile.  The extra data should be put in files named
+    "CFLAGS.extra" and "LDFLAGS.extra" in the top-level directory; if either
+    or both files exist, the extra data within them will be appended to the
+    relevant variable.  Typically the LDFLAGS.extra file will contain
+    "-l<library>" strings, and the CFLAGS.extra file will contain "-D<value>"
+    strings.  This will allow the crash utility to be built with optional
+    libraries, and the code that references them to be encapsulated with
+    associated "#ifdef <value>" sections.  The extra CFLAGS data will also be
+    passed to extension modules that are built within the local
+    "crash-<version>/extensions" subdirectory.
+  * The LDFLAGS setting in the Makefile can no longer be modified by hand.  It
+    will be automatically configured by the "configure -b" option, based upon
+    the contents of the optional "LDFLAGS.extra" file.
+  * Fix for the "runq" command to display the runnable tasks that are
+    contained within a cgroup's task-group scheduling entity.  Without the
+    patch, only scheduling entities that are individual tasks get displayed,
+    and runnable tasks in task-group scheduling entities get skipped.
+  * Fix for the SIAL extension module when repeatedly loading and unloading a
+    sial script when a full pathname is specified for the script.  Without the
+    patch, the 4th unload attempt generates a segmentation violation. 
+  * Fix for the SIAL extension module to register the help and usage functions
+    for a command only when loading a script.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 16 Dec 2011 09:49:04 -0700
+
 crash (6.0.0-1) unstable; urgency=low
 
   * New upstream version 6.0.0

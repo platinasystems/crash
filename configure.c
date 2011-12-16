@@ -18,14 +18,16 @@
 /*
  *  define, clear and undef dynamically update the top-level Makefile: 
  *
- *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and GPL_FILES
+ *   -b  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, 
+ *               TARGET_CFLAGS, LDFLAGS, GDB_CONF_FLAGS and GPL_FILES
  *       create: build_data.c
  *
- *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and
- *               PROGRAM (for daemon)
+ *   -d  define: TARGET, GDB, GDB_FILES, GDB_OFILES, GDB_PATCH_FILES, 
+ *               TARGET_CFLAGS, LDFLAGS, GDB_CONF_FLAGS and PROGRAM (for daemon)
  *       create: build_data.c
  *
- *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION, GDB_PATCH_FILES, TARGET_CFLAGS, GDB_CONF_FLAGS and GPL_FILES
+ *   -u   clear: TARGET, GDB, GDB_FILES, GDB_OFILES, VERSION, GDB_PATCH_FILES, 
+ *               TARGET_CFLAGS, LDFLAGS, GDB_CONF_FLAGS and GPL_FILES
  *        undef: WARNING_ERROR, WARNING_OPTIONS
  *
  *   -r  define: GDB_FILES, VERSION, GDB_PATCH_FILES GPL_FILES
@@ -71,6 +73,7 @@ char *lower_case(char *, char *);
 char *shift_string_left(char *, int);
 char *shift_string_right(char *, int);
 char *strip_beginning_whitespace(char *);
+char *strip_ending_whitespace(char *);
 char *strip_linefeeds(char *);
 int file_exists(char *);
 int count_chars(char *, char);
@@ -83,6 +86,7 @@ void make_spec_file(struct supported_gdb_version *);
 void set_initial_target(struct supported_gdb_version *);
 char *target_to_name(int);
 int name_to_target(char *);
+char *get_extra_flags(char *);
 
 #define TRUE 1
 #define FALSE 0
@@ -528,6 +532,8 @@ build_configure(struct supported_gdb_version *sp)
 	char *target;
 	char *target_CFLAGS;
 	char *gdb_conf_flags;
+	char *ldflags;
+	char *cflags;
 
 	get_current_configuration(sp);
 
@@ -585,6 +591,9 @@ build_configure(struct supported_gdb_version *sp)
                 break;
 	}
 
+	ldflags = get_extra_flags("LDFLAGS.extra");
+	cflags = get_extra_flags("CFLAGS.extra");
+
 	makefile_setup(&fp1, &fp2);
 
 	while (fgets(buf, 512, fp1)) {
@@ -592,7 +601,8 @@ build_configure(struct supported_gdb_version *sp)
 			fprintf(fp2, "%s\n", target);
                 else if (strncmp(buf, "TARGET_CFLAGS=",
 			strlen("TARGET_CFLAGS=")) == 0)
-                        fprintf(fp2, "%s\n", target_CFLAGS);
+                       	fprintf(fp2, "%s%s%s\n", target_CFLAGS,
+				cflags ? " " : "", cflags ? cflags : "");
 		else if (strncmp(buf, "GDB_CONF_FLAGS=",
 			strlen("GDB_CONF_FLAGS=")) == 0)
 			fprintf(fp2, "%s\n", gdb_conf_flags);
@@ -610,6 +620,8 @@ build_configure(struct supported_gdb_version *sp)
                 else if (strncmp(buf, "GDB=", strlen("GDB=")) == 0) {
                         fprintf(fp2, "%s\n", sp->GDB);
                         sprintf(target_data.gdb_version, "%s", &sp->GDB[4]);
+		} else if (strncmp(buf, "LDFLAGS=", strlen("LDFLAGS=")) == 0) {
+                       	fprintf(fp2, "LDFLAGS=%s\n", ldflags ? ldflags : "");
 		} else
 			fprintf(fp2, "%s", buf);
 
@@ -785,6 +797,8 @@ unconfigure(void)
                         fprintf(fp2, "VERSION=\n");
                 else if (strncmp(buf, "GPL_FILES=", strlen("GPL_FILES=")) == 0) 
                         fprintf(fp2, "GPL_FILES=\n");
+                else if (strncmp(buf, "LDFLAGS=", strlen("LDFLAGS=")) == 0) 
+                        fprintf(fp2, "LDFLAGS=\n");
                 else if (strncmp(buf, "WARNING_ERROR=", 
 			strlen("WARNING_ERROR=")) == 0) {
                         shift_string_right(buf, 1);
@@ -1021,6 +1035,26 @@ strip_beginning_whitespace(char *line)
         while (*p == ' ' || *p == '\t')
                 p++;
         strcpy(line, p);
+
+        return(line);
+}
+
+char *
+strip_ending_whitespace(char *line)
+{
+        char *p;
+
+        if (line == NULL || strlen(line) == 0)
+                return(line);
+
+	p = &line[strlen(line)-1];
+
+        while (*p == ' ' || *p == '\t') {
+                *p = '\0';
+                if (p == line)
+                        break;
+                p--;
+        }
 
         return(line);
 }
@@ -1431,4 +1465,42 @@ name_to_target(char *name)
                 return ARM;
 
 	return UNKNOWN;
+}
+
+char *
+get_extra_flags(char *filename)
+{
+	FILE *fp;
+	char inbuf[512];
+	char buf[512];
+
+	if (!file_exists(filename))
+		return NULL;
+
+	if ((fp = fopen(filename, "r")) == NULL) {
+		perror(filename);
+		return NULL;
+	}
+
+	buf[0] = '\0';
+
+	while (fgets(inbuf, 512, fp)) {
+		strip_linefeeds(inbuf);
+		strip_beginning_whitespace(inbuf);
+		strip_ending_whitespace(inbuf);
+		if (inbuf[0] == '#')
+			continue;
+		if (strlen(inbuf)) {
+			if (strlen(buf))
+				strcat(buf, " ");			
+			strcat(buf, inbuf);
+		}
+	}
+
+	fclose(fp);
+
+	if (strlen(buf))
+		return strdup(buf);
+	else 
+		return NULL;
 }

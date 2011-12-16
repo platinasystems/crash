@@ -859,6 +859,18 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 }
 
 /*
+ *  Machine-specific line-number pc section range verifier.
+ */
+int
+gdb_line_number_callback(ulong pc, ulong low, ulong high)
+{
+	if (machdep->verify_line_number)
+		return machdep->verify_line_number(pc, low, high);
+
+	return TRUE;
+}
+
+/*
  *  Used by gdb_interface() to catch gdb-related errors, if desired.
  */
 void

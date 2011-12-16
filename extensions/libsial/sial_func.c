@@ -280,8 +280,14 @@ sial_freefile(fdata *fd)
 		}
 
 		/* free the associated static and global variables */
-		if(fd->fsvs) sial_freesvs(fd->fsvs);
-		if(fd->fgvs) sial_freesvs(fd->fgvs);
+		if(fd->fsvs) {
+			sial_freesvs(fd->fsvs);
+			fd->fsvs = NULL;
+		}
+		if(fd->fgvs) {
+			sial_freesvs(fd->fgvs);
+			fd->fgvs = NULL;
+		}
 
 		/* free all function nodes */
                 // let debugger know ...

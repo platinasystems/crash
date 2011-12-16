@@ -1451,8 +1451,6 @@ dump_program_context(void)
 		fprintf(fp, "%sUD2A_INSTRUCTION", others ? "|" : "");
         if (pc->curcmd_flags & IRQ_IN_USE)
 		fprintf(fp, "%sIRQ_IN_USE", others ? "|" : "");
-        if (pc->curcmd_flags & MODULE_TREE)
-		fprintf(fp, "%sMODULE_TREE", others ? "|" : "");
         if (pc->curcmd_flags & IGNORE_ERRORS)
 		fprintf(fp, "%sIGNORE_ERRORS", others ? "|" : "");
         if (pc->curcmd_flags & FROM_RCFILE)

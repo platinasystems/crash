@@ -1196,7 +1196,7 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
 
 	ptr = lc + MEMBER_OFFSET("_lowcore","floating_pt_save_area");
-	fprintf(fp,"  -floating point registers 0,2,4,6:\n");
+	fprintf(fp,"  -floating point registers:\n");
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr +  S390X_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390X_WORD_SIZE);

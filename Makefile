@@ -44,21 +44,8 @@ GDB_PATCH_FILES=gdb-7.3.1.patch
 #
 INSTALLDIR=${DESTDIR}/usr/bin
 
-#
-# The executable is dynamically linked by default.  To build a statically 
-# linked version for X86, ALPHA or PPC, perform either of the following options:
-#
-# (1) Invoke make like so:  make LDFLAGS=-static
-# (2) Or uncomment the "LDFLAGS=-static" definition below:
-
-#LDFLAGS=-static
-
-# For IA64, perform either of the following options:
-#
-# (1) Uncomment "LDFLAGS=-static" above and then invoke make like so:
-#    make NAT_CLIBS="-lc -lresolv" GDBSERVER_LIBS="-lc -lresolv"
-# (2) Or invoke make like so:
-#    make LDFLAGS=-static NAT_CLIBS="-lc -lresolv" GDBSERVER_LIBS="-lc -lresolv"
+# LDFLAGS will be configured automatically by configure
+LDFLAGS=
 
 GENERIC_HFILES=defs.h xen_hyper_defs.h
 MCORE_HFILES=va_server.h vas_crash.h
@@ -541,7 +528,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.0.0
+VERSION=6.0.1
 RELEASE=0
 
 release: make_configure

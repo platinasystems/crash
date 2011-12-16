@@ -735,9 +735,10 @@ output_command_to_pids(void)
 	char *arglist[MAXARGS];
 	int argc;
 	FILE *pipe;
-	int retries;
+	int retries, shell_has_exited;
 
 	retries = 0;
+	shell_has_exited = FALSE;
 	pc->pipe_pid = pc->pipe_shell_pid = 0;
         sprintf(lookfor, "(%s)", pc->pipe_command);
 	stall(1000);
@@ -757,8 +758,11 @@ retry:
                                         p_pid = strtok(NULL, " ");
                                         pgrp = strtok(NULL, " ");
 				        if (STREQ(name, "(sh)") &&
-					    (atoi(p_pid) == getpid())) 
+					    (atoi(p_pid) == getpid())) { 
 						pc->pipe_shell_pid = atoi(pid);
+						if (STREQ(status, "Z"))
+							shell_has_exited = TRUE;
+					}
                                         if (STREQ(name, lookfor) &&
                                             ((atoi(p_pid) == getpid()) ||
 				             (atoi(p_pid) == pc->pipe_shell_pid)
@@ -778,11 +782,15 @@ retry:
 		closedir(dirp);
         }
 
-	if (!pc->pipe_pid && ((retries++ < 10) || pc->pipe_shell_pid)) {
+	if (!pc->pipe_pid && !shell_has_exited && 
+	    ((retries++ < 10) || pc->pipe_shell_pid)) {
 		stall(1000);
 		goto retry;
 	}
-		
+
+	console("getpid: %d pipe_shell_pid: %d pipe_pid: %d\n",
+		getpid(), pc->pipe_shell_pid, pc->pipe_pid);
+
 	if (pc->pipe_pid)	
 		return pc->pipe_pid;
 

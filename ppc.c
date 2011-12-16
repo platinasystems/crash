@@ -17,6 +17,27 @@
 #ifdef PPC
 #include "defs.h"
 
+/* 
+ *  This structure was copied from kernel source
+ *  in include/asm-ppc/ptrace.h
+ */
+struct ppc_pt_regs {
+        long gpr[32];
+        long nip;
+        long msr;
+        long orig_gpr3;      /* Used for restarting system calls */
+        long ctr;
+        long link;
+        long xer;
+        long ccr;
+        long mq;             /* 601 only (not used at present) */
+                                /* Used on APUS to hold IPL value. */
+        long trap;           /* Reason for being here */
+        long dar;            /* Fault registers */
+        long dsisr;
+        long result;         /* Result of a system call */
+};
+
 static int ppc_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static int ppc_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong ppc_vmalloc_start(void);
@@ -27,12 +48,16 @@ static int ppc_translate_pte(ulong, void *, ulonglong);
 
 static ulong ppc_processor_speed(void);
 static int ppc_eframe_search(struct bt_info *);
+static ulong ppc_in_irqstack(ulong);
 static void ppc_back_trace_cmd(struct bt_info *);
 static void ppc_back_trace(struct gnu_request *, struct bt_info *);
 static void get_ppc_frame(struct bt_info *, ulong *, ulong *);
 static void ppc_print_stack_entry(int,struct gnu_request *,
-	ulong, char *, struct bt_info *);
-static void ppc_exception_frame(ulong, struct bt_info *, struct gnu_request *);
+	ulong, ulong, struct bt_info *);
+static char *ppc_check_eframe(struct ppc_pt_regs *);
+static void ppc_print_eframe(char *, struct ppc_pt_regs *, struct bt_info *);
+static void ppc_print_regs(struct ppc_pt_regs *);
+static void ppc_display_full_frame(struct bt_info *, ulong, FILE *);
 static void ppc_dump_irq(int);
 static ulong ppc_get_pc(struct bt_info *);
 static ulong ppc_get_sp(struct bt_info *);
@@ -155,6 +180,12 @@ ppc_init(int when)
 			machdep->flags |= CPU_BOOKE;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		/*
+		 * IRQ stacks are introduced in 2.6 and also configurable.
+		 */
+		if ((THIS_KERNEL_VERSION >= LINUX(2,6,0)) &&
+			symbol_exists("hardirq_ctx"))
+			STRUCT_SIZE_INIT(irq_ctx, "hardirq_ctx");
 		break;
 
 	case POST_INIT:
@@ -523,15 +554,28 @@ ppc_processor_speed(void)
 					    "clock frequency value",
                                             FAULT_ON_ERROR);
 					mhz /= 1000000;
-					
+					break;
+				} else if(len && (strcasecmp(str_buf,
+					"ibm,extended-clock-frequency") == 0)){
+					/* found the right cpu property */
+
+					readmem(properties+
+						OFFSET(property_value),
+						KVADDR, &value, sizeof(ulong),
+						"clock freqency pointer",
+						FAULT_ON_ERROR);
+					readmem(value, KVADDR, &mhz,
+						sizeof(ulong),
+						"clock frequency value",
+						FAULT_ON_ERROR);
+					mhz /= 1000000;
 					break;
 				}
 				/* keep looking */
-				
 				readmem(properties+
-				    OFFSET(property_next),
-				    KVADDR, &properties, sizeof(ulong), 
-				    "property next", FAULT_ON_ERROR);
+					OFFSET(property_next),
+					KVADDR, &properties, sizeof(ulong), 
+					"property next", FAULT_ON_ERROR);
 			}
 			if(!properties) {
 				/* didn't find the cpu speed for some reason */
@@ -551,19 +595,19 @@ ppc_processor_speed(void)
 			get_symbol_data("ppc_md", sizeof(void *), 
 				&ppc_md);
 			readmem(ppc_md + 
-		 	    OFFSET(machdep_calls_setup_residual), 
-			    KVADDR, &md_setup_res, 
-			    sizeof(ulong), "ppc_md setup_residual",
-			    FAULT_ON_ERROR);
+		 		OFFSET(machdep_calls_setup_residual), 
+				KVADDR, &md_setup_res, 
+				sizeof(ulong), "ppc_md setup_residual",
+				FAULT_ON_ERROR);
 				
 			if(prep_setup_res == md_setup_res) {
-			/* PREP machine */
+				/* PREP machine */
 				readmem(res+
-				    OFFSET(RESIDUAL_VitalProductData)+
-				    OFFSET(VPD_ProcessorHz),
-				    KVADDR, &mhz, sizeof(ulong), 
-				    "res VitalProductData", 
-				    FAULT_ON_ERROR);
+					OFFSET(RESIDUAL_VitalProductData)+
+					OFFSET(VPD_ProcessorHz),
+					KVADDR, &mhz, sizeof(ulong), 
+					"res VitalProductData", 
+					FAULT_ON_ERROR);
 					
 				mhz = (mhz > 1024) ? mhz >> 20 : mhz;
 			}
@@ -599,7 +643,7 @@ ppc_verify_symbol(const char *name, ulong value, char type)
 		machdep->flags |= KSYMS_START;
 
 	return (name && strlen(name) && (machdep->flags & KSYMS_START) &&
-	        !STREQ(name, "Letext"));
+	        !STREQ(name, "Letext") && !STRNEQ(name, "__func__."));
 }
 
 
@@ -722,31 +766,34 @@ ppc_translate_pte(ulong pte, void *physaddr, ulonglong unused)
  *  Look for likely exception frames in a stack.
  */
 
-/* 
- *  This structure was copied from kernel source
- *  in include/asm-ppc/ptrace.h
- */
-struct ppc_pt_regs {
-        long gpr[32];
-        long nip;
-        long msr;
-        long orig_gpr3;      /* Used for restarting system calls */
-        long ctr;
-        long link;
-        long xer;
-        long ccr;
-        long mq;             /* 601 only (not used at present) */
-                                /* Used on APUS to hold IPL value. */
-        long trap;           /* Reason for being here */
-        long dar;            /* Fault registers */
-        long dsisr;
-        long result;         /* Result of a system call */
-};
-
 static int 
 ppc_eframe_search(struct bt_info *bt)
 {
 	return (error(FATAL, "ppc_eframe_search: function not written yet!\n"));
+}
+
+static ulong
+ppc_in_irqstack(ulong addr)
+{
+	int c;
+
+	if (!(tt->flags & IRQSTACKS))
+		return 0;
+
+	for (c = 0; c < kt->cpus; c++) {
+		if (tt->hardirq_ctx[c]) {
+			if ((addr >= tt->hardirq_ctx[c]) &&
+			    (addr < (tt->hardirq_ctx[c] + SIZE(irq_ctx))))
+				return tt->hardirq_ctx[c];
+		}
+		if (tt->softirq_ctx[c]) {
+			if ((addr >= tt->softirq_ctx[c]) &&
+			    (addr < (tt->softirq_ctx[c] + SIZE(irq_ctx))))
+				return tt->softirq_ctx[c];
+		}
+	}
+
+	return 0;
 }
 
 /*
@@ -792,50 +839,119 @@ ppc_back_trace_cmd(struct bt_info *bt)
 static void
 ppc_back_trace(struct gnu_request *req, struct bt_info *bt)
 {
-        int frame;
-	int done;
+	int frame = 0;
+	ulong lr = 0;
+	ulong newpc = 0, newsp, marker;
+	int eframe_found;
 
-        for (frame = 0, done = FALSE; !done && (frame < 100); frame++) {
+	if (!INSTACK(req->sp, bt)) {
+		ulong irqstack;
+
+		if ((irqstack = ppc_in_irqstack(req->sp))) {
+			bt->stackbase = irqstack;
+			bt->stacktop = bt->stackbase + SIZE(irq_ctx);
+			alter_stackbuf(bt);
+		} else {
+			if (CRASHDEBUG(1))
+				fprintf(fp, "cannot find the stack info.\n");
+			return;
+		}
+	}
+
+	while (INSTACK(req->sp, bt)) {
+		newsp = *(ulong *)&bt->stackbuf[req->sp - bt->stackbase];
+		if (IS_KVADDR(newsp) && INSTACK(newsp, bt))
+			newpc = *(ulong *)&bt->stackbuf[newsp +
+							STACK_FRAME_LR_SAVE -
+							bt->stackbase];
 		if ((req->name = closest_symbol(req->pc)) == NULL) {
 			error(FATAL, 
-			    "ppc_back_trace hit unknown symbol (%lx).\n",
+				"ppc_back_trace hit unknown symbol (%lx).\n",
 				req->pc);
-			req->ra = req->pc = 0;
 			break;
 		}
 
 		bt->flags |= BT_SAVE_LASTSP;
-		ppc_print_stack_entry(frame, req, req->pc, req->name, bt);
+		ppc_print_stack_entry(frame, req, newsp, lr, bt);
 		bt->flags &= ~(ulonglong)BT_SAVE_LASTSP;
-		
+		lr = 0;
+
 		if (BT_REFERENCE_FOUND(bt))
 			return;
 
-		/* get the next sp and ip values */
-		readmem(req->sp, KVADDR, &req->sp, sizeof(ulong),
-			"stack frame", FAULT_ON_ERROR);
-
-		/* an actual valid end of the back-chain! */
-		if(req->sp == 0)
-			break;
-
-		if((req->sp - req->lastsp) >= sizeof(struct ppc_pt_regs)) {
-			/* there might be an exception frame here... */
-			ppc_exception_frame(req->lastsp, bt, req);
-		} else if(!IS_KVADDR(req->sp) || (req->sp < req->lastsp)) {
-			/* also possible one here... */
-			ppc_exception_frame(req->lastsp, bt, req);
+		eframe_found = FALSE;
+		/*
+		 * Is this frame an execption one?
+		 * In 2.6, 0x72656773 is saved and used
+		 * to determine the execption frame.
+		 */
+		if (THIS_KERNEL_VERSION < LINUX(2,6,0)) {
+			if (frame && (newsp - req->sp - STACK_FRAME_OVERHEAD >=
+				sizeof(struct ppc_pt_regs)))
+				/* there might be an exception frame here... */
+				eframe_found = TRUE;
+			/* also possible ones here... */
+			else if(!IS_KVADDR(newsp) || (newsp < req->sp))
+				eframe_found = TRUE;
+			else if (STREQ(req->name, ".ret_from_except"))
+				eframe_found = TRUE;
+		} else if ((newsp - req->sp - STACK_FRAME_OVERHEAD) >=
+				sizeof(struct ppc_pt_regs)){
+			readmem(req->sp + STACK_FRAME_MARKER, KVADDR, &marker,
+				sizeof(ulong), "frame marker", FAULT_ON_ERROR);
+			if (marker == STACK_FRAME_REGS_MARKER)
+				eframe_found = TRUE;
 		}
-		
-		if (!INSTACK(req->sp, bt) || 
-		    STREQ(req->name, "start_kernel"))
+		if (eframe_found) {
+			char *efrm_str;
+			struct ppc_pt_regs regs;
+
+			readmem(req->sp + STACK_FRAME_OVERHEAD, KVADDR, &regs,
+				sizeof(struct ppc_pt_regs),
+				"exception frame", FAULT_ON_ERROR);
+			efrm_str = ppc_check_eframe(&regs);
+			if (efrm_str) {
+				ppc_print_eframe(efrm_str, &regs, bt);
+				lr = regs.link;
+				newpc = regs.nip;
+				newsp = regs.gpr[1];
+			}
+		}
+
+		if (STREQ(req->name, "start_kernel"))
 			break;
 
-		readmem(req->sp+sizeof(long), KVADDR, &req->pc, sizeof(ulong),
-			"instruction pointer", FAULT_ON_ERROR);
+		req->pc = newpc;
+		req->sp = newsp;
+		frame++;
 	}
 
 	return;
+}
+
+static void
+ppc_display_full_frame(struct bt_info *bt, ulong nextsp, FILE *ofp)
+{
+	int i, u_idx;
+	ulong *nip;
+	ulong words, addr;
+	char buf[BUFSIZE];
+
+	if (!INSTACK(nextsp, bt))
+		nextsp =  bt->stacktop;
+
+	words = (nextsp - bt->frameptr) / sizeof(ulong);
+	addr = bt->frameptr;
+	u_idx = (bt->frameptr - bt->stackbase)/sizeof(ulong);
+	for (i = 0; i < words; i++, u_idx++) {
+		if (!(i & 1))
+			fprintf(ofp, "%s    %lx: ", i ? "\n" : "", addr);
+
+		nip = (ulong *)(&bt->stackbuf[u_idx*sizeof(ulong)]);
+		fprintf(ofp, "%s ", format_stack_entry(bt, buf, *nip, 0));
+		addr += sizeof(ulong);
+	}
+	fprintf(ofp, "\n");
 }
 
 /*
@@ -844,101 +960,125 @@ ppc_back_trace(struct gnu_request *req, struct bt_info *bt)
 static void 
 ppc_print_stack_entry(int frame, 
 		      struct gnu_request *req, 
-		      ulong callpc, 	
-		      char *name, 
+		      ulong newsp, 	
+		      ulong lr, 
 		      struct bt_info *bt)
 {
 	struct load_module *lm;
+	char *lrname = NULL;
 
 	if (BT_REFERENCE_CHECK(bt)) {
                 switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
                 {
                 case BT_REF_SYMBOL:
-                        if (STREQ(name, bt->ref->str)) 
+                        if (STREQ(req->name, bt->ref->str)) 
                         	bt->ref->cmdflags |= BT_REF_FOUND;
                         break;
 
                 case BT_REF_HEXVAL:
-                        if (bt->ref->hexval == callpc) 
+                        if (bt->ref->hexval == req->pc) 
                                 bt->ref->cmdflags |= BT_REF_FOUND;
                         break;
                 }
 	} else {
 		fprintf(fp, "%s#%d [%lx] %s at %lx",
         		frame < 10 ? " " : "", frame,
-                	req->sp, name, callpc);
-		if (module_symbol(callpc, NULL, &lm, NULL, 0))
+                	req->sp, req->name, req->pc);
+		if (module_symbol(req->pc, NULL, &lm, NULL, 0))
 			fprintf(fp, " [%s]", lm->mod_name);
-                fprintf(fp, "\n");
+
+		if (req->ra) {
+			/*
+			 * Previous frame is an exception one. If the func
+			 * symbol for the current frame is same as with
+			 * the previous frame's LR value, print "(unreliable)".
+			 */
+			lrname = closest_symbol(req->ra);
+			req->ra = 0;
+			if (!lrname) {
+				if (CRASHDEBUG(1))
+					error(FATAL,
+					"ppc_back_trace hit unknown symbol (%lx).\n",
+						req->ra);
+				return;
+			}
+		}
+		if (lr) {
+			/*
+			 * Link register value for an expection frame.
+			 */
+			if ((lrname = closest_symbol(lr)) == NULL) {
+				if (CRASHDEBUG(1))
+					error(FATAL,
+					"ppc_back_trace hit unknown symbol (%lx).\n",
+						lr);
+				return;
+			}
+			if (req->pc != lr) {
+				fprintf(fp, "\n [Link Register ] ");
+				fprintf(fp, " [%lx] %s at %lx",
+					req->sp, lrname, lr);
+			}
+			req->ra = lr;
+		}
+		if (!req->name || STREQ(req->name,lrname))
+			fprintf(fp, "  (unreliable)");
+		fprintf(fp, "\n");
 	}
 
 	if (bt->flags & BT_SAVE_LASTSP)
 		req->lastsp = req->sp;
 
+	bt->frameptr = req->sp;
+	if (bt->flags & BT_FULL)
+		if (IS_KVADDR(newsp))
+			ppc_display_full_frame(bt, newsp, fp);
 	if (bt->flags & BT_LINE_NUMBERS)
-		ppc_dump_line_number(callpc);
+		ppc_dump_line_number(req->pc);
 }
 
 /*
- *  Print exception frame information for PowerPC
+ *  Check whether the frame is exception one!
  */
+static char *
+ppc_check_eframe(struct ppc_pt_regs *regs)
+{
+	switch(regs->trap & ~0xF) {
+	case 0x200:
+		return "machine check";
+	case 0x300:
+		return "address error (store)";
+	case 0x400:
+		return "instruction bus error";
+	case 0x500:
+		return "interrupt";
+	case 0x600:
+		return "alingment";
+	case 0x700:
+		return "breakpoint trap";
+	case 0x800:
+		return "fpu unavailable";
+	case 0x900:
+		return "decrementer";
+	case 0xa00:
+		return "reserved";
+	case 0xb00:
+		return "reserved";
+	case 0xc00:
+		return "syscall";
+	case 0xd00:
+		return "single-step/watch";
+	case 0xe00:
+		return "fp assist";
+	}
+	/* No exception frame exists */
+	return NULL;
+}
+
 static void
-ppc_exception_frame(ulong addr, struct bt_info *bt, struct gnu_request *req)
+ppc_print_regs(struct ppc_pt_regs *regs)
 {
 	int i;
-	struct ppc_pt_regs regs;
-	
-	if (BT_REFERENCE_CHECK(bt))
-		return;
-
-	readmem(addr+16, KVADDR, &regs, sizeof(regs),
-		"exception frame", FAULT_ON_ERROR);
-	
-	switch(regs.trap) {
-	case 0x200:
-		fprintf(fp, "machine check");
-		break;
-	case 0x300:
-		fprintf(fp, "address error (store)");
-		break;
-	case 0x400:
-		fprintf(fp, "instruction bus error");
-		break;
-	case 0x500:
-		fprintf(fp, "interrupt");
-		break;
-	case 0x600:
-		fprintf(fp, "alingment");
-		break;
-	case 0x700:
-		fprintf(fp, "breakpoint trap");
-		break;
-	case 0x800:
-		fprintf(fp, "fpu unavailable");
-		break;
-	case 0x900:
-		fprintf(fp, "decrementer");
-		break;
-	case 0xa00:
-		fprintf(fp, "reserved");
-		break;
-	case 0xb00:
-		fprintf(fp, "reserved");
-		break;
-	case 0xc00:
-		fprintf(fp, "syscall");
-		break;
-	case 0xd00:
-		fprintf(fp, "single-step/watch");
-		break;
-	case 0xe00:
-		fprintf(fp, "fp assist");
-		break;
-	default: /* back trace ended, but no exception frame exists */
-		return;
-	}
-
-	fprintf(fp, " [%lx] exception frame:", regs.trap);
 
 	/* print out the gprs... */
 	for(i=0; i<32; i++) {
@@ -946,24 +1086,45 @@ ppc_exception_frame(ulong addr, struct bt_info *bt, struct gnu_request *req)
 			fprintf(fp, "\n");
 
 		fprintf(fp, "R%d:%s %08lx   ", i,
-			((i < 10) ? " " : ""), regs.gpr[i]);
+			((i < 10) ? " " : ""), regs->gpr[i]);
+		/*
+		 * In 2.6, some stack frame contains only partial regs set.
+		 * For the partial set, only 14 regs will be saved and trap
+		 * field will contain 1 in the least significant bit.
+		 */
+		if ((i == 13) && (regs->trap & 1))
+			break;
 	}
 
 	fprintf(fp, "\n");
 
 	/* print out the rest of the registers */
-	fprintf(fp, "NIP: %08lx   ", regs.nip);
-	fprintf(fp, "MSR: %08lx   ", regs.msr);
-	fprintf(fp, "OR3: %08lx   ", regs.orig_gpr3);
-	fprintf(fp, "CTR: %08lx\n", regs.ctr);
+	fprintf(fp, "NIP: %08lx   ", regs->nip);
+	fprintf(fp, "MSR: %08lx   ", regs->msr);
+	fprintf(fp, "OR3: %08lx   ", regs->orig_gpr3);
+	fprintf(fp, "CTR: %08lx\n", regs->ctr);
 
-	fprintf(fp, "LR:  %08lx   ", regs.link);
-	fprintf(fp, "XER: %08lx   ", regs.xer);
-	fprintf(fp, "CCR: %08lx   ", regs.ccr);
-	fprintf(fp, "MQ:  %08lx\n", regs.mq);
-	fprintf(fp, "DAR: %08lx ", regs.dar);
-	fprintf(fp, "DSISR: %08lx ", regs.dsisr);
-	fprintf(fp, "       Syscall Result: %08lx\n", regs.result);
+	fprintf(fp, "LR:  %08lx   ", regs->link);
+	fprintf(fp, "XER: %08lx   ", regs->xer);
+	fprintf(fp, "CCR: %08lx   ", regs->ccr);
+	fprintf(fp, "MQ:  %08lx\n", regs->mq);
+	fprintf(fp, "DAR: %08lx ", regs->dar);
+	fprintf(fp, "DSISR: %08lx ", regs->dsisr);
+	fprintf(fp, "       Syscall Result: %08lx\n", regs->result);
+}
+
+/*
+ * Print the exception frame information
+ */
+static void
+ppc_print_eframe(char *efrm_str, struct ppc_pt_regs *regs, struct bt_info *bt)
+{
+	if (BT_REFERENCE_CHECK(bt))
+		return;
+
+	fprintf(fp, " %s  [%lx] exception frame:", efrm_str, regs->trap);
+	ppc_print_regs(regs);
+	fprintf(fp, "\n");
 }
 
 /*
@@ -1315,7 +1476,7 @@ ppc_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 int
 ppc_get_smp_cpus(void)
 {
-        return kt->cpus;
+	return (get_cpus_online() > 0) ? get_cpus_online() : kt->cpus;
 }
 
 /*
@@ -1347,6 +1508,7 @@ ppc_cmd_mach(void)
 static void
 ppc_display_machine_stats(void)
 {
+	int c;
         struct new_utsname *uts;
         char buf[BUFSIZE];
         ulong mhz;
@@ -1363,10 +1525,31 @@ ppc_display_machine_stats(void)
                 fprintf(fp, "(unknown)\n");
         fprintf(fp, "                 HZ: %d\n", machdep->hz);
         fprintf(fp, "          PAGE SIZE: %d\n", PAGESIZE());
-        fprintf(fp, "      L1 CACHE SIZE: %d\n", l1_cache_size());
+//      fprintf(fp, "      L1 CACHE SIZE: %d\n", l1_cache_size());
         fprintf(fp, "KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
         fprintf(fp, "KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
         fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
+
+	if (tt->flags & IRQSTACKS) {
+		fprintf(fp, "HARD IRQ STACK SIZE: %ld\n", SIZE(irq_ctx));
+		fprintf(fp, "    HARD IRQ STACKS:\n");
+
+		for (c = 0; c < kt->cpus; c++) {
+			if (!tt->hardirq_ctx[c])
+				break;
+			sprintf(buf, "CPU %d", c);
+			fprintf(fp, "%19s: %lx\n", buf, tt->hardirq_ctx[c]);
+		}
+
+		fprintf(fp, "SOFT IRQ STACK SIZE: %ld\n", SIZE(irq_ctx));
+		fprintf(fp, "    SOFT IRQ STACKS:\n");
+		for (c = 0; c < kt->cpus; c++) {
+			if (!tt->softirq_ctx[c])
+				break;
+			sprintf(buf, "CPU %d", c);
+			fprintf(fp, "%19s: %lx\n", buf, tt->softirq_ctx[c]);
+		}
+	}
 }
 
 

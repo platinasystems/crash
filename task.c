@@ -61,6 +61,7 @@ static struct rb_node *rb_next(struct rb_node *);
 static struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
+static int dump_tasks_in_cfs_rq(ulong);
 static void dump_CFS_runqueues(void);
 static void dump_RT_prio_array(int, ulong, char *);
 static void task_struct_member(struct task_context *,unsigned int, struct reference *);
@@ -6977,18 +6978,56 @@ rb_next(struct rb_node *node)
         return parent;
 }
 
+static int
+dump_tasks_in_cfs_rq(ulong cfs_rq)
+{
+	struct task_context *tc;
+	struct rb_root *root;
+	struct rb_node *node;
+	ulong my_q, leftmost;
+	int prio, total;
+
+	readmem(cfs_rq + OFFSET(cfs_rq_rb_leftmost), KVADDR, &leftmost,
+		sizeof(ulong), "rb_leftmost", FAULT_ON_ERROR);
+	root = (struct rb_root *)(cfs_rq + OFFSET(cfs_rq_tasks_timeline));
+	total = 0;
+
+	for (node = rb_first(root); leftmost && node; node = rb_next(node)) {
+		if (VALID_MEMBER(sched_entity_my_q)) {
+			readmem((ulong)node - OFFSET(sched_entity_run_node)
+				+ OFFSET(sched_entity_my_q), KVADDR, &my_q,
+				sizeof(ulong), "my_q", FAULT_ON_ERROR);
+			if (my_q) {
+				total += dump_tasks_in_cfs_rq(my_q);
+				continue;
+			}
+		}
+
+		tc = task_to_context((ulong)node - OFFSET(task_struct_se) -
+				     OFFSET(sched_entity_run_node));
+		if (!tc)
+			continue;
+		readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
+			&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
+		fprintf(fp, "     [%3d] ", prio);
+		fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+			tc->pid, tc->task, tc->comm);
+		total++;
+	}
+
+	return total;
+}
+
 static void
 dump_CFS_runqueues(void)
 {
-	int tot, prio, cpu;
-	ulong runq, cfs_rq;
+	int tot, cpu;
+	ulong runq, cfs_rq, curr_cfs_rq;
 	char *runqbuf, *cfs_rq_buf;
-	ulong leftmost; 
 	ulong tasks_timeline ATTRIBUTE_UNUSED;
 	struct task_context *tc;
 	long nr_running, cfs_rq_nr_running;
 	struct rb_root *root;
-	struct rb_node *node;
 	struct syment *rq_sp, *init_sp;
 
 	if (!VALID_STRUCT(cfs_rq)) {
@@ -6998,6 +7037,10 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
 		MEMBER_OFFSET_INIT(sched_entity_run_node, "sched_entity", 
 			"run_node");
+		MEMBER_OFFSET_INIT(sched_entity_cfs_rq, "sched_entity", 
+			"cfs_rq");
+		MEMBER_OFFSET_INIT(sched_entity_my_q, "sched_entity", 
+			"my_q");
 		MEMBER_OFFSET_INIT(cfs_rq_rb_leftmost, "cfs_rq", "rb_leftmost");
 		MEMBER_OFFSET_INIT(cfs_rq_nr_running, "cfs_rq", "nr_running");
 		MEMBER_OFFSET_INIT(cfs_rq_tasks_timeline, "cfs_rq", 
@@ -7050,19 +7093,13 @@ dump_CFS_runqueues(void)
 
 			readmem(cfs_rq, KVADDR, cfs_rq_buf, SIZE(cfs_rq),
 				"per-cpu cfs_rq", FAULT_ON_ERROR);
-	                leftmost = ULONG(cfs_rq_buf + OFFSET(cfs_rq_rb_leftmost));
-	                tasks_timeline = ULONG(cfs_rq_buf + 
-				OFFSET(cfs_rq_tasks_timeline));
 			nr_running = LONG(cfs_rq_buf + OFFSET(rq_nr_running));
 	                cfs_rq_nr_running = ULONG(cfs_rq_buf + 
 				OFFSET(cfs_rq_nr_running));
 			root = (struct rb_root *)(cfs_rq + 
 				OFFSET(cfs_rq_tasks_timeline));
 		} else {
-	                leftmost = ULONG(runqbuf + OFFSET(rq_cfs) + 
-				OFFSET(cfs_rq_rb_leftmost));
-	                tasks_timeline = ULONG(runqbuf + OFFSET(rq_cfs) + 
-				OFFSET(cfs_rq_tasks_timeline));
+			cfs_rq = runq + OFFSET(rq_cfs);
 			nr_running = LONG(runqbuf + OFFSET(rq_nr_running));
 	                cfs_rq_nr_running = ULONG(runqbuf + OFFSET(rq_cfs) + 
 				OFFSET(cfs_rq_nr_running));
@@ -7070,26 +7107,24 @@ dump_CFS_runqueues(void)
 				OFFSET(cfs_rq_tasks_timeline));
 		}
 
+		if (tt->active_set[cpu] && VALID_MEMBER(sched_entity_cfs_rq)) {
+			readmem(tt->active_set[cpu] + OFFSET(task_struct_se) +
+				OFFSET(sched_entity_cfs_rq), KVADDR, &curr_cfs_rq,
+				sizeof(ulong), "current cfs_rq", FAULT_ON_ERROR);
+		} else
+			curr_cfs_rq = 0;
+
 		dump_RT_prio_array(nr_running != cfs_rq_nr_running,
 			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
 			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
 
 		fprintf(fp, "  CFS RB_ROOT: %lx\n", (ulong)root);
 
-		for (node = rb_first(root), tot = 0; leftmost && node; 
-		     node = rb_next(node)) {
-			tc = task_to_context((ulong)node - OFFSET(task_struct_se) -
-			     OFFSET(sched_entity_run_node));
-			if (!tc)
-				continue;
-			readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
-				&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
-			fprintf(fp, "     [%3d] ", prio);
-			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
-				tc->pid, tc->task, tc->comm);
-			tot++;
-		}
-
+		tot = 0;
+		if (curr_cfs_rq)
+			tot += dump_tasks_in_cfs_rq(curr_cfs_rq);
+		if (cfs_rq != curr_cfs_rq)
+			tot += dump_tasks_in_cfs_rq(cfs_rq);
 		if (!tot) {
 			INDENT(5);
 			fprintf(fp, "[no tasks queued]\n");
