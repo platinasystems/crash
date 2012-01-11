@@ -901,12 +901,15 @@ symname_hash_search(char *name)
 
 #define MODULE_PSEUDO_SYMBOL(sp) \
     ((STRNEQ((sp)->name, "_MODULE_START_") || STRNEQ((sp)->name, "_MODULE_END_")) || \
-    (STRNEQ((sp)->name, "_MODULE_INIT_START_") || STRNEQ((sp)->name, "_MODULE_INIT_END_")))
+    (STRNEQ((sp)->name, "_MODULE_INIT_START_") || STRNEQ((sp)->name, "_MODULE_INIT_END_")) || \
+    (STRNEQ((sp)->name, "_MODULE_SECTION_")))
 
 #define MODULE_START(sp) (STRNEQ((sp)->name, "_MODULE_START_"))
 #define MODULE_END(sp)   (STRNEQ((sp)->name, "_MODULE_END_"))
 #define MODULE_INIT_START(sp) (STRNEQ((sp)->name, "_MODULE_INIT_START_"))
 #define MODULE_INIT_END(sp)   (STRNEQ((sp)->name, "_MODULE_INIT_END_"))
+#define MODULE_SECTION_START(sp) (STRNEQ((sp)->name, "_MODULE_SECTION_START"))
+#define MODULE_SECTION_END(sp)   (STRNEQ((sp)->name, "_MODULE_SECTION_END"))
 
 static void
 symbol_dump(ulong flags, char *module)
@@ -957,7 +960,15 @@ symbol_dump(ulong flags, char *module)
 			}
 
 			if (MODULE_PSEUDO_SYMBOL(sp)) {
-				if (MODULE_START(sp)) {
+				if (MODULE_SECTION_START(sp)) {
+					p1 = sp->name +
+					     strlen("_MODULE_SECTION_START ");
+					p2 = "section start";
+				} else if (MODULE_SECTION_END(sp)) {
+					p1 = sp->name +
+					     strlen("_MODULE_SECTION_END ");
+					p2 = "section end";
+				} else if (MODULE_START(sp)) {
 					p1 = "MODULE START";
 					p2 = sp->name+strlen("_MODULE_START_");
 					start = TRUE;
@@ -2337,6 +2348,7 @@ static int
 compare_syms(const void *v1, const void *v2)
 {
 	struct syment *s1, *s2;
+	char sn1[BUFSIZE], sn2[BUFSIZE];
 
 	s1 = (struct syment *)v1;
 	s2 = (struct syment *)v2;
@@ -2348,6 +2360,55 @@ compare_syms(const void *v1, const void *v2)
 			return 1;
 		if (STRNEQ(s2->name, "_MODULE_START_"))
 			return 1;
+		/* Get pseudo section name. */
+		if (MODULE_SECTION_START(s1))
+			sscanf(s1->name, "_MODULE_SECTION_START [%s]", sn1);
+		else if (MODULE_SECTION_END(s1))
+			sscanf(s1->name, "_MODULE_SECTION_END [%s]", sn1);
+
+		if (MODULE_SECTION_START(s2))
+			sscanf(s2->name, "_MODULE_SECTION_START [%s]", sn2);
+		else if (MODULE_SECTION_END(s2))
+			sscanf(s2->name, "_MODULE_SECTION_END [%s]", sn2);
+
+		/*
+		 * Sort pseudo symbols in mind section.
+		 * The same values must be sorted like examples.
+		 * - exp1
+		 *  c9046000 MODULE START: sctp
+		 *  c9046000 [.data]: section start
+		 *  c9046000 (D) sctp_timer_events
+		 *
+		 * - exp2
+		 *  c9046c68 [.bss]: section end
+		 *  c9046c68 MODULE END: sctp
+		 *
+		 * - exp3
+		 *   c90e9b44 [.text]: section end
+		 *   c90e9b44 [.exit.text]: section start
+		 *   c90e9b44 (T) cleanup_module
+		 *   c90e9b44 (t) sctp_exit
+		 *   c90e9c81 [.exit.text]: section end
+		 */
+		if (MODULE_SECTION_END(s1)) {
+			if (!MODULE_PSEUDO_SYMBOL(s2) || MODULE_END(s2))
+				return -1;
+			else if (MODULE_SECTION_START(s2) && !STREQ(sn1, sn2))
+				return -1;
+			return 1;
+		}
+		if (MODULE_SECTION_END(s2)) {
+			if (MODULE_END(s1) || !MODULE_PSEUDO_SYMBOL(s1))
+				return 1;
+			else if (MODULE_SECTION_START(s1) && STREQ(sn1, sn2))
+				return 1;
+			return -1;
+		}
+		if (MODULE_SECTION_START(s2)) {
+			if (MODULE_START(s1))
+				return -1;
+			return 1;
+		}
 	}
 
 	return (s1->value < s2->value ? -1 : 
@@ -2983,6 +3044,8 @@ is_compressed_kernel(char *file, char **tmp)
 #define GZIP  (1)
 #define BZIP2 (2)
 
+#define FNAME (1 << 3)
+
 	if ((fd = open(file, O_RDONLY)) < 0)
 		return FALSE;
 
@@ -2995,7 +3058,16 @@ is_compressed_kernel(char *file, char **tmp)
 	type = 0;
 
 	if ((header[0] == 0x1f) && (header[1] == 0x8b) && (header[2] == 8)) {
-		if (!STRNEQ((char *)&header[10], "vmlinux") && 
+		if (!(header[3] & FNAME)) {
+		    	if (!(st->flags & FORCE_DEBUGINFO)) {
+				error(INFO, "%s: "
+				    "original filename unknown\n",
+					file);
+				error(CONT, 
+			    	    "Use \"-f %s\" on command line to prevent this message.\n\n",
+					file);
+			}
+		} else if (!STRNEQ((char *)&header[10], "vmlinux") && 
 		    !(st->flags & FORCE_DEBUGINFO)) {
 			error(INFO, "%s: compressed file name does not "
 			    "start with \"vmlinux\"\n", &header[10]);
@@ -4081,8 +4153,10 @@ retry:
 				if (MODULE_END(sp) || MODULE_INIT_END(sp))
 					break;
 
-				if (MODULE_START(sp) || MODULE_INIT_START(sp)) {
-					spnext = sp+1;
+				if (MODULE_PSEUDO_SYMBOL(sp)) {
+					spnext = sp + 1;
+					if (MODULE_PSEUDO_SYMBOL(spnext))
+						continue;
 					if (spnext->value == value)
 						sp = spnext;
 				}
@@ -7280,6 +7354,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_rlim));
         fprintf(fp, "              task_struct_prio: %ld\n",
                 OFFSET(task_struct_prio));
+        fprintf(fp, "             task_struct_on_rq: %ld\n",
+                OFFSET(task_struct_on_rq));
 
 	fprintf(fp, "              thread_info_task: %ld\n",
                 OFFSET(thread_info_task));
@@ -8466,6 +8542,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(sched_entity_cfs_rq));
 	fprintf(fp, "             sched_entity_my_q: %ld\n",
 		OFFSET(sched_entity_my_q));
+	fprintf(fp, "            sched_entity_on_rq: %ld\n",
+		OFFSET(sched_entity_on_rq));
 	fprintf(fp, "             cfs_rq_nr_running: %ld\n",
 		OFFSET(cfs_rq_nr_running));
 	fprintf(fp, "            cfs_rq_rb_leftmost: %ld\n",
@@ -8703,6 +8781,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(s390_stack_frame));
 	fprintf(fp, "                   percpu_data: %ld\n",
 		SIZE(percpu_data));
+	fprintf(fp, "                  sched_entity: %ld\n",
+		SIZE(sched_entity));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -10176,6 +10256,40 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 			lm->mod_load_symend++;
 			lm->mod_load_symcnt++;
 		} 
+	}
+
+	/*
+	 * Append helpful pseudo symbols about found out sections.
+	 * Use 'S' as its type which is never seen in existing symbols.
+	 */
+	for (i = 0; (pc->curcmd_flags & MOD_SECTIONS) && 
+	     (i < lm->mod_sections); i++) {
+		if (!(lm->mod_section_data[i].flags & SEC_FOUND))
+			continue;
+		/* Section start */
+		lm->mod_load_symend->value = lm->mod_base +
+					     lm->mod_section_data[i].offset;
+		lm->mod_load_symend->type = 'S';
+		lm->mod_load_symend->flags |= MODULE_SYMBOL;
+		sprintf(name, "_MODULE_SECTION_START [%s]",
+			lm->mod_section_data[i].name);
+		namespace_ctl(NAMESPACE_INSTALL, &lm->mod_load_namespace,
+			      lm->mod_load_symend, name);
+		lm->mod_load_symend++;
+		lm->mod_load_symcnt++;
+
+		/* Section end */
+		lm->mod_load_symend->value = lm->mod_base +
+					     lm->mod_section_data[i].offset +
+					     lm->mod_section_data[i].size;
+		lm->mod_load_symend->type = 'S';
+		lm->mod_load_symend->flags |= MODULE_SYMBOL;
+		sprintf(name, "_MODULE_SECTION_END [%s]",
+			lm->mod_section_data[i].name);
+		namespace_ctl(NAMESPACE_INSTALL, &lm->mod_load_namespace,
+			      lm->mod_load_symend, name);
+		lm->mod_load_symend++;
+		lm->mod_load_symcnt++;
 	}
 
         namespace_ctl(NAMESPACE_COMPLETE, &lm->mod_load_namespace, 

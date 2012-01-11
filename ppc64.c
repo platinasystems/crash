@@ -1907,6 +1907,7 @@ retry:
 			STREQ(sym, ".netpoll_start_netdump") ||
 		 	STREQ(sym, ".start_disk_dump") ||
 		 	STREQ(sym, ".crash_kexec") ||
+			STREQ(sym, ".crash_fadump") ||
 			STREQ(sym, ".disk_dump")) {
                         *nip = *up;
                         *ksp = bt->stackbase + 

@@ -114,6 +114,7 @@ static void s390x_dump_line_number(ulong);
 static struct line_number_hook s390x_line_number_hooks[];
 static int s390x_is_uvaddr(ulong, struct task_context *);
 static int s390x_get_kvaddr_ranges(struct vaddr_range *);
+static int set_s390x_max_physmem_bits(void);
 
 /*
  * Read a unsigned long value from address
@@ -148,6 +149,51 @@ static void s390x_offsets_init(void)
 			MEMBER_OFFSET("stack_frame", "gprs") + 8 * 8;
 		ASSIGN_SIZE(s390_stack_frame) = STRUCT_SIZE("stack_frame");
 	}
+}
+
+/*
+ *  MAX_PHYSMEM_BITS is 42 on older kernels, and 46 on newer kernels.
+ */
+static int
+set_s390x_max_physmem_bits(void)
+{
+	int array_len, dimension;
+
+	machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_OLD;
+
+	if (!kernel_symbol_exists("mem_section"))
+		return TRUE;
+
+	if (!(array_len = get_array_length("mem_section", &dimension, 0)))
+		return FALSE;
+
+	/*
+	 * !CONFIG_SPARSEMEM_EXTREME
+	 */
+	if (dimension) {
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_OLD;
+		if (array_len == (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT()))
+			return TRUE;
+
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_NEW;
+		if (array_len == (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT()))
+			return TRUE;
+
+		return FALSE;
+	}
+
+	/*
+	 * CONFIG_SPARSEMEM_EXTREME
+	 */
+	machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_OLD;
+	if (array_len == (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME()))
+		return TRUE;
+
+	machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_NEW;
+	if (array_len == (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME()))
+		return TRUE;
+
+	return FALSE;
 }
 
 static struct s390x_cpu *s390x_cpu_vec;
@@ -350,7 +396,8 @@ s390x_init(int when)
 		if (!machdep->hz)
 			machdep->hz = HZ;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
-		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		if (!set_s390x_max_physmem_bits())
+			error(WARNING, "cannot determine MAX_PHYSMEM_BITS\n");
 		s390x_offsets_init();
 		break;
 

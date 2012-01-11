@@ -61,7 +61,9 @@ static struct rb_node *rb_next(struct rb_node *);
 static struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
-static int dump_tasks_in_cfs_rq(ulong);
+static void dump_task_runq_entry(struct task_context *);
+static int dump_tasks_in_cfs_rq(ulong, ulong);
+static void dump_on_rq_tasks(void);
 static void dump_CFS_runqueues(void);
 static void dump_RT_prio_array(int, ulong, char *);
 static void task_struct_member(struct task_context *,unsigned int, struct reference *);
@@ -4687,10 +4689,6 @@ get_panic_context(void)
 	ulong task;
 	char *tp;
 
-	tt->panic_processor = -1;
-	task = NO_TASK;
-        tc = FIRST_CONTEXT();
-
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]))
 			continue;
@@ -4713,6 +4711,10 @@ get_panic_context(void)
 	 */
 	if (tt->flags & PANIC_TASK_NOT_FOUND) 
 		goto use_task_0;
+
+	tt->panic_processor = -1;
+	task = NO_TASK;
+        tc = FIRST_CONTEXT();
 
 	if (symbol_exists("panic_threads") &&
 	    symbol_exists("panicmsg") &&
@@ -6443,6 +6445,13 @@ clear_active_set(void)
 				crash_kexec_task);	  	\
 		return crash_kexec_task;			\
 	}							\
+	if (crash_fadump_task) {					\
+		if (CRASHDEBUG(1))				\
+			error(INFO,				\
+	    "get_active_set_panic_task: %lx (crash_fadump)\n",   \
+				crash_fadump_task);		\
+		return crash_fadump_task;			\
+	}							\
         if ((panic_task > (NO_TASK+1)) && !die_task) {		\
 		if (CRASHDEBUG(1))				\
 			fprintf(fp, 				\
@@ -6508,6 +6517,8 @@ clear_active_set(void)
                     strstr(buf, " .crash_kexec+")) {    \
 			crash_kexec_task = task;	\
                 }                                       \
+                if (strstr(buf, " .crash_fadump+"))     \
+			crash_fadump_task = task;	\
                 if (strstr(buf, " machine_kexec+") ||     \
                     strstr(buf, " .machine_kexec+")) {    \
 			crash_kexec_task = task;	\
@@ -6531,12 +6542,13 @@ get_active_set_panic_task()
 	int i, j, found;
 	ulong task;
 	char buf[BUFSIZE];
-	ulong panic_task, die_task, crash_kexec_task;
+	ulong panic_task, die_task, crash_kexec_task, crash_fadump_task;
 	ulong xen_panic_task;
 	ulong xen_sysrq_task;
 
 	panic_task = die_task = crash_kexec_task = xen_panic_task = NO_TASK;
 	xen_sysrq_task = NO_TASK;
+	crash_fadump_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]) || !task_exists(task))
@@ -6616,6 +6628,13 @@ get_active_set_panic_task()
 				crash_kexec_task);
 		return crash_kexec_task;
 	}
+	if (crash_fadump_task) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+		    "get_active_set_panic_task: %lx (crash_fadump)\n",
+				crash_fadump_task);
+		return crash_fadump_task;
+	}
 
 	if (xen_sysrq_task) {
 		if (CRASHDEBUG(1))
@@ -6659,10 +6678,14 @@ void
 cmd_runq(void)
 {
         int c;
+	int sched_debug = 0;
 
-        while ((c = getopt(argcnt, args, "")) != EOF) {
+        while ((c = getopt(argcnt, args, "d")) != EOF) {
                 switch(c)
                 {
+		case 'd':
+			sched_debug = 1;
+			break;
                 default:
                         argerrs++;
                         break;
@@ -6672,6 +6695,11 @@ cmd_runq(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (sched_debug) {
+		dump_on_rq_tasks();
+		return;
+	}
 
 	dump_runq();
 }
@@ -6978,14 +7006,29 @@ rb_next(struct rb_node *node)
         return parent;
 }
 
+static void
+dump_task_runq_entry(struct task_context *tc)
+{
+	int prio;
+
+	readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
+		&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
+	fprintf(fp, "     [%3d] ", prio);
+	fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+		tc->pid, tc->task, tc->comm);
+}
+
 static int
-dump_tasks_in_cfs_rq(ulong cfs_rq)
+dump_tasks_in_cfs_rq(ulong cfs_rq, ulong skip)
 {
 	struct task_context *tc;
 	struct rb_root *root;
 	struct rb_node *node;
 	ulong my_q, leftmost;
-	int prio, total;
+	int total;
+
+	if (cfs_rq == skip)
+		return 0;
 
 	readmem(cfs_rq + OFFSET(cfs_rq_rb_leftmost), KVADDR, &leftmost,
 		sizeof(ulong), "rb_leftmost", FAULT_ON_ERROR);
@@ -6998,7 +7041,7 @@ dump_tasks_in_cfs_rq(ulong cfs_rq)
 				+ OFFSET(sched_entity_my_q), KVADDR, &my_q,
 				sizeof(ulong), "my_q", FAULT_ON_ERROR);
 			if (my_q) {
-				total += dump_tasks_in_cfs_rq(my_q);
+				total += dump_tasks_in_cfs_rq(my_q, skip);
 				continue;
 			}
 		}
@@ -7007,15 +7050,65 @@ dump_tasks_in_cfs_rq(ulong cfs_rq)
 				     OFFSET(sched_entity_run_node));
 		if (!tc)
 			continue;
-		readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
-			&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
-		fprintf(fp, "     [%3d] ", prio);
-		fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
-			tc->pid, tc->task, tc->comm);
+		dump_task_runq_entry(tc);
 		total++;
 	}
 
 	return total;
+}
+
+static void
+dump_on_rq_tasks(void)
+{
+	char buf[BUFSIZE];
+	struct task_context *tc;
+	int i, cpu, on_rq, tot;
+
+	if (!VALID_MEMBER(task_struct_on_rq)) {
+		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
+		STRUCT_SIZE_INIT(sched_entity, "sched_entity");
+		MEMBER_OFFSET_INIT(sched_entity_on_rq, "sched_entity", "on_rq");
+		MEMBER_OFFSET_INIT(task_struct_on_rq, "task_struct", "on_rq");
+                MEMBER_OFFSET_INIT(task_struct_prio, "task_struct", "prio");
+		if (INVALID_MEMBER(task_struct_on_rq)) {
+			if (INVALID_MEMBER(task_struct_se) ||
+			    INVALID_SIZE(sched_entity))
+				option_not_supported('d');
+		}
+	}
+
+	for (cpu = 0; cpu < kt->cpus; cpu++) {
+
+                fprintf(fp, "%sCPU %d\n", cpu ? "\n" : "", cpu);
+
+		tc = FIRST_CONTEXT();
+		tot = 0;
+
+		for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+
+			if (VALID_MEMBER(task_struct_on_rq)) {
+				readmem(tc->task + OFFSET(task_struct_on_rq),
+					KVADDR, &on_rq, sizeof(int),
+					"task on_rq", FAULT_ON_ERROR);
+			} else {
+				readmem(tc->task + OFFSET(task_struct_se), KVADDR,
+					buf, SIZE(sched_entity), "task se",
+					FAULT_ON_ERROR);
+				on_rq = INT(buf + OFFSET(sched_entity_on_rq));
+			}
+
+			if (!on_rq || tc->processor != cpu)
+				continue;
+
+			dump_task_runq_entry(tc);
+			tot++;
+		}
+
+		if (!tot) {
+			INDENT(5);
+			fprintf(fp, "[no tasks queued]\n");
+		}
+	}
 }
 
 static void
@@ -7035,12 +7128,14 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(rq_rt, "rq", "rt");
 		MEMBER_OFFSET_INIT(rq_nr_running, "rq", "nr_running");
 		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
+		STRUCT_SIZE_INIT(sched_entity, "sched_entity");
 		MEMBER_OFFSET_INIT(sched_entity_run_node, "sched_entity", 
 			"run_node");
 		MEMBER_OFFSET_INIT(sched_entity_cfs_rq, "sched_entity", 
 			"cfs_rq");
 		MEMBER_OFFSET_INIT(sched_entity_my_q, "sched_entity", 
 			"my_q");
+		MEMBER_OFFSET_INIT(sched_entity_on_rq, "sched_entity", "on_rq");
 		MEMBER_OFFSET_INIT(cfs_rq_rb_leftmost, "cfs_rq", "rb_leftmost");
 		MEMBER_OFFSET_INIT(cfs_rq_nr_running, "cfs_rq", "nr_running");
 		MEMBER_OFFSET_INIT(cfs_rq_tasks_timeline, "cfs_rq", 
@@ -7048,6 +7143,7 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(rt_rq_active, "rt_rq", "active");
                 MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
                         "run_list");
+		MEMBER_OFFSET_INIT(task_struct_on_rq, "task_struct", "on_rq");
                 MEMBER_OFFSET_INIT(task_struct_prio, "task_struct",
                         "prio");
 	}
@@ -7122,9 +7218,9 @@ dump_CFS_runqueues(void)
 
 		tot = 0;
 		if (curr_cfs_rq)
-			tot += dump_tasks_in_cfs_rq(curr_cfs_rq);
+			tot += dump_tasks_in_cfs_rq(curr_cfs_rq, 0);
 		if (cfs_rq != curr_cfs_rq)
-			tot += dump_tasks_in_cfs_rq(cfs_rq);
+			tot += dump_tasks_in_cfs_rq(cfs_rq, curr_cfs_rq);
 		if (!tot) {
 			INDENT(5);
 			fprintf(fp, "[no tasks queued]\n");

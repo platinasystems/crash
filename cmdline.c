@@ -35,6 +35,9 @@ static void wait_for_children(ulong);
 #define ZOMBIES_ONLY (1)
 #define ALL_CHILDREN (2)
 int shell_command(char *);
+static void modify_orig_line(char *, struct args_input_file *);
+static void modify_expression_arg(char *, char **, struct args_input_file *);
+static int verify_args_input_file(char *);
 
 #define READLINE_LIBRARY
 
@@ -1054,6 +1057,11 @@ restore_sanity(void)
 		fclose(pc->ifile);
 		pc->ifile = NULL;
 	}
+
+        if (pc->args_ifile) {
+                fclose(pc->args_ifile);
+                pc->args_ifile = NULL;
+        }
 
 	if (pc->tmpfile) {
 		close_tmpfile();
@@ -2175,4 +2183,305 @@ int minimal_functions(char *name)
 		STREQ("sym", name) || STREQ("exit", name) || \
 		STREQ("rd", name)  || STREQ("eval", name) || \
 		STREQ("set", name); 
+}
+
+static int 
+verify_args_input_file(char *fileptr)
+{
+	struct stat stat;
+
+	if (!file_exists(fileptr, &stat)) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: no such file\n", fileptr);
+	} else if (!S_ISREG(stat.st_mode)) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: not a regular file\n", fileptr);
+	} else if (!stat.st_size) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: file is empty\n", fileptr);
+	} else if (!file_readable(fileptr)) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: permission denied\n", fileptr);
+	} else
+		return TRUE;
+
+	return FALSE;
+}
+
+/*
+ * Verify a command line argument input file.
+ */
+
+#define NON_FILENAME_CHARS "*?!|\'\"{}<>;,^()$~"
+
+int 
+is_args_input_file(struct command_table_entry *ct, struct args_input_file *aif)
+{
+	int c, start, whites, args_used;
+	char *p1, *p2, *curptr, *fileptr;
+	char buf[BUFSIZE];
+	int retval;
+
+	if (pc->curcmd_flags & NO_MODIFY)
+		return FALSE;
+
+	BZERO(aif, sizeof(struct args_input_file));
+	retval = FALSE;
+
+	if (STREQ(ct->name, "gdb")) {
+		curptr = pc->orig_line;
+next_gdb:
+		if ((p1 = strstr(curptr, "<"))) {
+			while (STRNEQ(p1, "<<")) {
+				p2 = p1+2;
+			        if (!(p1 = strstr(p2, "<")))
+					return retval;
+			}
+		}
+
+		if (!p1)
+			return retval;
+
+		start = p1 - curptr;
+		p2 = p1+1;
+
+		for (whites = 0; whitespace(*p2); whites++)
+			p2++;
+
+		if (*p2 == NULLCHAR)
+			return retval;
+
+		strcpy(buf, p2);
+		p2 = buf;
+
+		if (*p2) {
+			fileptr = p2;
+			while (*p2 && !whitespace(*p2) && 
+				(strpbrk(p2, NON_FILENAME_CHARS) != p2))
+				p2++;
+			*p2 = NULLCHAR;
+			if (verify_args_input_file(fileptr)) {
+				if (retval == TRUE) {
+					error(INFO, 
+					    "ignoring multiple argument input files: "
+					    "%s and %s\n",
+						aif->fileptr, fileptr);
+					return FALSE;
+				}
+				aif->start = start;
+				aif->resume = start + (p2-buf) + whites + 1;
+				aif->fileptr = GETBUF(strlen(fileptr)+1);
+				strcpy(aif->fileptr, fileptr);
+				aif->is_gdb_cmd = TRUE;
+				retval = TRUE;
+			}
+		}
+
+		curptr = p1+1;
+		goto next_gdb;
+	}
+
+	for (c = 0; c < argcnt; c++) {
+		if (STRNEQ(args[c], "<") && !STRNEQ(args[c], "<<")) { 
+			if (strlen(args[c]) > 1) {
+				fileptr = &args[c][1];
+				args_used = 1;
+			} else {
+		    		if ((c+1) == argcnt)
+					error(FATAL, 
+					    "< requires a file argument\n");
+				fileptr = args[c+1];
+				args_used = 2;
+			}
+
+			if (!verify_args_input_file(fileptr))
+				continue;
+
+			if (retval == TRUE)
+				error(FATAL, 
+				    "multiple input files are not supported\n");
+
+			aif->index = c;
+			aif->fileptr = GETBUF(strlen(fileptr)+1);
+			strcpy(aif->fileptr, fileptr);
+			aif->args_used = args_used;
+			retval = TRUE;
+			continue;
+		} 
+
+		if (STRNEQ(args[c], "(")) {
+			curptr = args[c];
+next_expr:
+			if ((p1 = strstr(curptr, "<"))) {
+				while (STRNEQ(p1, "<<")) {
+					p2 = p1+2;
+					if (!(p1 = strstr(p2, "<")))
+						continue;
+				}
+			}
+
+			if (!p1)
+				continue;
+
+			start = p1 - curptr;
+			p2 = p1+1;
+
+			for (whites = 0; whitespace(*p2); whites++)
+				p2++;
+
+			if (*p2 == NULLCHAR)
+				continue;
+
+			strcpy(buf, p2);
+			p2 = buf;
+
+			if (*p2) {
+				fileptr = p2;
+				while (*p2 && !whitespace(*p2) && 
+					(strpbrk(p2, NON_FILENAME_CHARS) != p2))
+					p2++;
+				*p2 = NULLCHAR;
+
+				if (!verify_args_input_file(fileptr))
+					continue;
+
+				if (retval == TRUE) {
+					error(INFO, 
+					    "ignoring multiple argument input files: "
+					    "%s and %s\n",
+						aif->fileptr, fileptr);
+					return FALSE;
+				}
+		
+				retval = TRUE;
+
+				aif->in_expression = TRUE;
+				aif->args_used = 1;
+				aif->index = c;
+				aif->start = start;
+				aif->resume = start + (p2-buf) + whites + 1;
+				aif->fileptr = GETBUF(strlen(fileptr)+1);
+				strcpy(aif->fileptr, fileptr);
+			}
+
+			curptr = p1+1; 
+			goto next_expr;
+		}
+	}
+
+	return retval;
+}
+
+static void
+modify_orig_line(char *inbuf, struct args_input_file *aif)
+{
+	char buf[BUFSIZE];
+
+	strcpy(buf, pc->orig_line);
+	strcpy(&buf[aif->start], inbuf);
+	strcat(buf, &pc->orig_line[aif->resume]);
+	strcpy(pc->orig_line, buf);
+}
+
+static void
+modify_expression_arg(char *inbuf, char **aif_args, struct args_input_file *aif)
+{
+	char *old, *new;
+
+	old = aif_args[aif->index];
+	new = GETBUF(strlen(aif_args[aif->index]) + strlen(inbuf));
+
+	strcpy(new, old);
+	strcpy(&new[aif->start], inbuf);
+	strcat(new, &old[aif->resume]);
+
+	aif_args[aif->index] = new;
+}
+
+/*
+ *  Sequence through an args input file, and for each line,
+ *  reinitialize the global args[] and argcnt, and issue the command.
+ */
+void
+exec_args_input_file(struct command_table_entry *ct, struct args_input_file *aif)
+{
+	char buf[BUFSIZE];
+	int i, c, aif_cnt;
+	int orig_argcnt;
+	char *aif_args[MAXARGS];
+	char *new_args[MAXARGS];
+	char *orig_args[MAXARGS];
+	char orig_line[BUFSIZE];
+
+	if ((pc->args_ifile = fopen(aif->fileptr, "r")) == NULL)
+		error(FATAL, "%s: %s\n", aif->fileptr, strerror(errno));
+
+	if (aif->is_gdb_cmd)
+		strcpy(orig_line, pc->orig_line);
+
+	BCOPY(args, orig_args, sizeof(args));
+	orig_argcnt = argcnt;
+
+	while (fgets(buf, BUFSIZE-1, pc->args_ifile)) {
+		clean_line(buf);
+		if ((strlen(buf) == 0) || (buf[0] == '#'))
+			continue;		
+
+		if (aif->is_gdb_cmd) {
+			console("(gdb) before: [%s]\n", orig_line);
+			strcpy(pc->orig_line, orig_line);
+			modify_orig_line(buf, aif);
+			console("(gdb)  after: [%s]\n", pc->orig_line);
+		} else if (aif->in_expression) {
+			console("expr before: [%s]\n", orig_args[aif->index]);
+			BCOPY(orig_args, aif_args, sizeof(aif_args));
+			modify_expression_arg(buf, aif_args, aif);
+			BCOPY(aif_args, args, sizeof(aif_args));
+			console("expr  after: [%s]\n", args[aif->index]);
+		} else {
+			if (!(aif_cnt = parse_line(buf, aif_args)))
+				continue;
+
+			for (i = 0; i < orig_argcnt; i++)
+				console("%s[%d]:%s %s", 
+					(i == 0) ? "before: " : "", 
+					i, orig_args[i],
+					(i+1) == orig_argcnt ? "\n" : "");
+	
+			for (i = 0; i < aif->index; i++)
+				new_args[i] = orig_args[i];
+			for (i = aif->index, c = 0; c < aif_cnt; c++, i++)
+				new_args[i] = aif_args[c];
+			for (i = aif->index + aif_cnt, 
+			     c = aif->index + aif->args_used;
+			     c < orig_argcnt; c++, i++)
+				new_args[i] = orig_args[c];
+	
+			argcnt = orig_argcnt - aif->args_used + aif_cnt;
+			new_args[argcnt] = NULL;
+			BCOPY(new_args, args, sizeof(args));
+
+			for (i = 0; i < argcnt; i++)
+				console("%s[%d]:%s %s", 
+					(i == 0) ? " after: " : "", 
+					i, args[i],
+					(i+1) == argcnt ? "\n" : "");
+		}
+
+		optind = argerrs = 0;
+		pc->cmdgencur++;
+
+		if (setjmp(pc->foreach_loop_env))
+			pc->flags &= ~IN_FOREACH;
+		else {
+			pc->flags |= IN_FOREACH;
+			(*ct->func)();
+			pc->flags &= ~IN_FOREACH;
+		}
+
+		free_all_bufs();
+	}
+
+	fclose(pc->args_ifile);
+	pc->args_ifile = NULL;
 }

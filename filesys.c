@@ -871,7 +871,7 @@ file_exists(char *file, struct stat *sp)
 int 
 file_readable(char *file)
 {
-	long tmp;
+	char tmp;
 	int fd;
 
 	if (!file_exists(file, NULL))

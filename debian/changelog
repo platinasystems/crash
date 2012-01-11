@@ -1,3 +1,54 @@
+crash (6.0.2-1) unstable; urgency=low
+
+  * New upstream version 6.0.2
+  * Implemention of a new "arguments-input-file" feature, where an input file
+    containing crash command arguments may be iteratively fed to a crash
+    command.  For each line of arguments in an input file, the selected crash
+    command will be executed.  
+  * Many thanks to Josef Bacik for proposing this feature.
+  * Fix for the "runq" command for kernels configured with
+    CONFIG_FAIR_GROUP_SCHED.  Without the patch, it is possible that a task
+    may be listed twice in a cpu's CFS runqueue.
+  * Fix for the internal parse_line() function to properly handle the case
+    where the first argument in a line is a string argument that is
+    encapulated with quotation marks.
+  * Fix for the usage of gzip'd vmlinux file that was compressed with "gzip
+    -n" or "gzip --no-name" without using "-f" on the command line.  Without
+    the patch, the crash session fails with an error message that indicates
+    "crash: <string-containing-garbage>: compressed file name does not start
+    with vmlinux".  With the patch, if such a file is used without "-f", it
+    will be accepted with a message that indicates that the original filename
+    is unknown, and a suggestion that "-f" be used to prevent the message.
+  * Added a new "mod -g" option that enhances the symbol display for kernel
+    modules.  After loading a module's debuginfo data, the module object's
+    section addresses will be shown as pseudo-symbols.
+  * Fix for the "gdb" command to prevent the option handling of command lines.
+    Without the patch, a gdb command string that contained a "-<character>"
+    pair preceded by whitespace, would fail with the error message "gdb: gdb:
+    invalid option -- <character>".
+  * Fix for the panic-task determination if a dumpfile is taken on a system
+    that actually has a cpu count that is equal to its per-arch NR_CPUS value.
+    Without the patch, the task running on the cpu whose number is equal to
+    NR_CPUS-1 would be selected.
+  * Fix for the x86_64 "bt" command to handle a recursive entry into the NMI
+    exception stack.  While this should normally never happen, it is possible
+    if, for example, a kprope is entered into a function that gets executed
+    during NMI handling, and a second NMI is received after the initial one,
+    corrupting the original exception frame at the top of the NMI stack.
+    Without the patch, the NMI stack backtrace and exception frame would be
+    displayed repeatedly; with the patch, the backtrace and exception frame
+    are followed by the warning message "NMI exception stack recursion: prior
+    stack location overwritten".
+  * Support dumpfiles that are created by the PPC64 Firmware Assisted Dump
+    facility, also known as "fadump" or "FAD".  Without the patch, the panic
+    task cannot be determined from a fadump vmcore which was subsequently
+    compressed with makedumpfile, and therefore a proper backtrace of the
+    panic task cannot be generated.
+  * Preparation for new s390x kernels that will increase MAX_PHYSMEM_BITS from
+    42 to 46.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 11 Jan 2012 08:30:06 -0700
+
 crash (6.0.1-1) unstable; urgency=low
 
   * New upstream version 6.0.1
