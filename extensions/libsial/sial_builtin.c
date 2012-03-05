@@ -137,7 +137,6 @@ sial_atoi(value_t *vs, value_t* vbase)
 char *s=sial_getptr(vs, char);
 int base=vbase ? sial_getval(vbase) : 0;
 
-	strtoull(s, 0, (int) base);
 	return sial_defbtypesize(sial_newval(), strtoull(s, 0, base), B_ULL);
 }
 

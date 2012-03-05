@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -4865,4 +4865,52 @@ swap32(uint32_t val, int swap)
                 	((val & 0xff000000U) >> 24));
 	else
 		return val;
+}
+
+int
+make_cpumask(char *s, ulong *mask, int flags, int *errptr)
+{
+	char *p, *q;
+	int start, end;
+	int i;
+
+	if (s == NULL) {
+		if (!(flags & QUIET))
+			error(INFO, "received NULL string\n");
+		goto make_cpumask_error;
+	}
+
+	p = strtok(s, ",");
+	while (p) {
+		s = strtok(NULL, "");
+		start = end = -1;
+		q = strtok(p, "-");
+		start = dtoi(q, flags, errptr);
+		if ((q = strtok(NULL, "-")))
+			end = dtoi(q, flags, errptr);
+
+		if (end == -1)
+			end = start;
+
+		for (i = start; i <= end; i++)
+			SET_BIT(mask, i);
+
+		p = strtok(s, ",");
+	}
+
+	return TRUE;
+
+make_cpumask_error:
+	switch (flags & (FAULT_ON_ERROR|RETURN_ON_ERROR))
+	{
+	case FAULT_ON_ERROR:
+		RESTART();
+
+	case RETURN_ON_ERROR:
+		if (errptr)
+			*errptr = TRUE;
+		break;
+	}
+
+	return UNUSED;
 }

@@ -1,8 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -269,6 +269,7 @@ net_init(void)
 			MEMBER_OFFSET_INIT(ipv6_pinfo_rcv_saddr, "ipv6_pinfo", "rcv_saddr");
 			MEMBER_OFFSET_INIT(ipv6_pinfo_daddr, "ipv6_pinfo", "daddr");
 			STRUCT_SIZE_INIT(in6_addr, "in6_addr");
+			MEMBER_OFFSET_INIT(socket_alloc_vfs_inode, "socket_alloc", "vfs_inode");
 
 			net->flags |= SOCK_V2;
 		}
@@ -1448,7 +1449,7 @@ sym_socket_dump(ulong file,
 		if (!VALID_SIZE(inet_sock)) 
 			error(FATAL, 
               	           "cannot determine what an inet_sock structure is\n");
-    		struct_socket = inode - SIZE(socket);
+    		struct_socket = inode - OFFSET(socket_alloc_vfs_inode);
 		socket_buf = GETBUF(SIZE(socket));
                 readmem(struct_socket, KVADDR, socket_buf,
                         SIZE(socket), "socket buffer", FAULT_ON_ERROR);

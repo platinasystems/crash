@@ -1,3 +1,164 @@
+crash (6.0.4-1) unstable; urgency=low
+
+  * New upstream version 6.0.4
+  * Fix to allow the recently-added "mod -g" and "mod -r" options to be used
+    together.  Without the patch, if both options were used, the command would
+    fail with a "mod: invalid option" error complaining about one or the other
+    option letter.
+  * Additional update for 3.1.x and later kernels configured with CONFIG_SLAB,
+    which have replaced the kmem_cache.nodelists[] array with a pointer to an
+    outside array.  Without the patch, depending upon a system's cpu
+    configuration and actual cpu count, the crash session may display "crash:
+    unable to initialize kmem slab cache subsystem" during invocation, or if
+    it does succeed, "kmem -s" may generate a segmentation violation.
+  * Document the "crash [-h|--help] all" option in the crash.8 man page and in
+    the "crash [-h|--help]" output.
+  * Fix the S390/S390X-specific "s390dbf" command's "hex_ascii" debug data
+    printing routine to prevent the display of non-ASCII characters.
+  * Fix for ARM stack unwinding on 3.2 and later kernels due to commit:
+    http://git.kernel.org/linus/de66a979012dbc66b1ec0125795a3f79ee667b8a
+  * Implemented a new "search -x <count>" option that displays the memory
+    contents before and after any found search target.  The before and after
+    memory context will consist of "count" memory items of the same size as
+    the searched-for value.  This option is not applicable with the -c option.
+  * Fix for the x86_64 Xen hypervisor "bt" command.  Without the patch, the
+    contents of the RDX register in exception frames incorrectly shows the
+    contents of the RCX register.         
+  * Implementation of a platform-based vmalloc address translation scheme for
+    the 32-bit PPC architecture, introducing support for the PPC44X platform
+    while maintaining the current default platform.  Related to that, the PTE
+    translation function used by "vtop" properly handles platforms that use
+    64-bit PTEs, and the "mach" command displays the kernel's
+    "powerpc_base_platform" name string.
+  * Fix for the usage of native gdb commands where the command output is
+    redirected to a pipe and then redirected to a file.
+  * Fix to prevent a crash session that is run over a network connection that
+    is killed/removed from going into 100% cpu-time loop.  The fix that went
+    into crash-5.0.2 to handle the change in behavior of the built-in
+    readline() library call does not suffice in cases where readline() never
+    gets a chance to be called.  Accordingly, the crash session is now
+    initialized with a PR_SET_PDEATHSIG prctl setting, which will cleanly kill
+    itself upon its parent's death.
+  * Fix for the support of PPC64 compressed kdumps, a regression that was
+    introduced in crash-6.0.3 when support for 32-bit PPC compressed kdumps
+    was implemented.  Without the patch, the crash session fails to
+    initialize.
+  * Fix for the x86_64 "bt" command to prevent the possible skipping of the
+    stack frame just above an exception frame that indicates "[exception RIP:
+    unknown or invalid address]".  This highly-unlikely event could occur if
+    the kernel jumps to a bogus text location and attempts to execute it, or
+    if the exception occurs in vmalloc space that was allocated with
+    module_alloc() by a systemtap kprobe-handler, and therefore has no
+    symbolic reference.
+
+ -- Troy Heber <troyh@debian.org>  Mon, 05 Mar 2012 13:11:27 -0700
+
+crash (6.0.3-1) unstable; urgency=low
+
+  * New upstream version 6.0.4
+  * Fix to gdb-7.3.1/bfd/bfdio.c to properly zero out a complete struct stat
+    with a corrected memset argument; caught when compiling with the Clang
+    Static Analyzer.
+  * Fix for the SIAL extension module to remove a call to sial_free() for an
+    uninitialised variable that can result in a segmentation violation when
+    unloading a sial script.
+  * Fix for the "runq" command for kernels that are configured with
+    CONFIG_FAIR_GROUP_SCHED.  Without the patch, tasks contained within the
+    task-group of a cpu's currently-running task may not be displayed. 
+  * Implemented support for the analysis of 32-bit PPC ELF kdump vmcores.
+  * Implemented the capability of building a PPC crash binary on a PPC64 host,
+    which can be done by entering "make target=PPC".  After the initial build
+    is complete, subsequent builds can be done by entering "make" alone.
+  * Determine the PPC page size from the kdump PAGESIZE vmcoreinfo data.
+  * Fix for the "kmem -[sS]", "kmem -[fF]" and "kmem <address>" options in 3.2
+    kernels.  Without the patch, the commands fail with the error "kmem:
+    invalid structure member offset: page_lru".
+  * Addition of a set of dumpfile read diagnostic debug statements.  They are
+    primarily of use when dealing with kdump invocation or runtime read
+    failures (ELF kdumps or compressed kdumps), and can serve to help pinpoint
+    the problem as a faulty/corrupted dumpfile vs. a crash utility bug.  Some
+    statements are seen when invoking crash with "-d1", more with "-d4", and
+    all of them with "-d8".  During runtime, debug statements may be seen by
+    entering "set debug <level>".
+  * Fix for X86 kernels that have CONFIG_X86_32, CONFIG_DISCONTIGMEM,
+    CONFIG_DISCONTIGMEM_MANUAL and CONFIG_NUMA all configured.  Without the
+    patch, the VM subsystem fails to initialize properly because the pgdat
+    structures are allocated by the remap allocator.
+  * Fix for the "vtop" command on large NUMA X86 kernels where a node's
+    starting physical address is larger than 32-bits.  Without the patch, the
+    page struct contents of a virtual address  may not be displayed.
+    Associated with that fix, the "kmem -n" line that displays a node's
+    MEM_MAP, START_PADDR and START_MAPNR values has been adjusted to more
+    properly handle large physical addresses.
+  * Update for the ARM architecture to recognize a recent change of its
+    vmlinux section name from ".init" to ".init.text".  Without the patch, a
+    warning message indicating "crash: cannot determine text init space" is
+    displayed during initialization.
+  * Significant speed increase of the "kmem -p" command, especially on
+    large-memory systems.
+  * Implemented new "irq -a" and "irq -s" options.  The "irq -a" option
+    displays the cpu affinity for in-use IRQs.  The "irq -s" option displays
+    per-cpu IRQ stats in a similar manner to /proc/interrupts for all cpus.
+    To show a limited set of per-cpu IRQ stats, there is an associated "-c"
+    option that limits the cpus shown, which can be expressed as "-c 1,3,5",
+    "-c 1-3", or "-c 1,3,5-7,10".  The options are currently restricted to
+    X86, X86_64, ARM, PPC64 and IA64.
+  * Removal of a redundant read of the kernel's __per_cpu_offset pointers in
+    the ARM architecture's arm_get_crash_notes() function.
+  * Fix for an ARM architecture segmentation violation because of a stack
+    overflow due to recursion in the page table translation code.  This was
+    seen when analyzing a dumpfile where the page tables had been corrupted.
+  * Fix for the the "FREE HIGH" tally in the X86 "kmem -i" display.  Without
+    the patch, the PAGES, TOTAL and PERCENTAGE values would always show zero
+    values.
+  * Fix for the "kmem -n" output display for 32-bit architectures that are
+    configured with CONFIG_SPARSEMEM.  Without the patch, the values under the
+    CODED_MEM_MAP, MEM_MAP and PFN columns are all shifted to the left.
+  * Cleanup of several SIAL extension module files to address bison 2.5 and
+    gcc 4.4.3 compile-time warnings. 
+  * Fix for "net -[sS]" command options on the ARM architecture.  Without the
+    patch, invalid data would be displayed because the calculation of the
+    socket address was off by 4 bytes.
+  * Fix for the ARM "bt" command to allow the core kernel unwind tables to be
+    used in cases where the module unwind tables are inaccessible.
+  * Implementation of a new "dev -d" option that displays disk device I/O
+    statistics.  For each disk device, its major number, gendisk and
+    request_queue addresses are displayed along with the total number of
+    allocated I/O requests that are in-progress.  The total I/O requests are
+    then split out into synchronous vs. asynchronous counts (or reads vs.
+    writes in older kernels), and the number that are in-flight in the device
+    driver.
+  * Update for 3.1.x and later kernels configured with CONFIG_SLAB, which have
+    replaced the kmem_cache.nodelists[] array with a pointer to an outside
+    array.  Without the patch, the crash session fails during invocation with
+    the error "crash: zero-size memory allocation!".
+  * Implemented support for the analysis of 32-bit PPC compressed kdump
+    vmcores.
+  * Prevent the "runq" command from dumping an unending loop of tasks if the
+    CFS runqueue has been corrupted.  If the output of a cpu's runqueue would
+    display a duplicate task, the output will stop with the message "WARNING:
+    duplicate CFS runqueue node: task <address>".
+  * Repurposed/renamed the rarely-used and rarely-needed "mod -r" option to
+    "mod -R".  The option is used to reinitialize the module data; all
+    currently-loaded symbolic and debugging data is deleted, and the installed
+    module list will be updated (live systems only).
+  * Implemented a new "mod -r" option, which will pass the "-readnow" flag to
+    the embedded gdb module, which will override the two-stage strategy that
+    it uses for reading symbol tables from module object files.  If the crash
+    session was invoked with the "--readnow" flag, then the same override will
+    occur automatically.  It should be noted that doing will increase the
+    virtual and resident memory set size.
+  * Performance increase for the "kmem -s <address>" option on kernels
+    configured with CONFIG_SLAB, most notably on kernels whose
+    kmem_cache.array[NR_CPUS] array is several pages in size.
+  * Require that the "<slabname>" argument to "kmem -s <slabname>" be escaped
+    with a '\' character in two situations: 1, in the highly-unlikely case of
+    a kmem_cache slab named "list", to prevent the ambiguity with the "kmem -s
+    list" command option. 2, if the first character of the <slabname>
+    actually is a '\' character.
+
+ -- Troy Heber <troyh@debian.org>  Mon, 05 Mar 2012 10:49:10 -0700
+
 crash (6.0.2-1) unstable; urgency=low
 
   * New upstream version 6.0.2

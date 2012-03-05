@@ -1,8 +1,8 @@
 /* configure.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -134,11 +134,13 @@ char *get_extra_flags(char *);
 #define TARGET_CFLAGS_ARM_ON_X86     "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_ARM_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_X86_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_PPC_ON_PPC64   "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64 -fPIC"
 
 #define GDB_TARGET_DEFAULT        "GDB_CONF_FLAGS="
 #define GDB_TARGET_ARM_ON_X86     "GDB_CONF_FLAGS=--target=arm-elf-linux"
 #define GDB_TARGET_ARM_ON_X86_64  "GDB_CONF_FLAGS=--target=arm-elf-linux CFLAGS=-m32"
 #define GDB_TARGET_X86_ON_X86_64  "GDB_CONF_FLAGS=--target=i686-pc-linux-gnu CFLAGS=-m32"
+#define GDB_TARGET_PPC_ON_PPC64   "GDB_CONF_FLAGS=--target=ppc-elf-linux CFLAGS=-m32"
 
 /*
  *  The original plan was to allow the use of a particular version
@@ -361,6 +363,12 @@ get_current_configuration(struct supported_gdb_version *sp)
 			 *  Build an X86 crash binary on an X86_64 host.
 			 */
 			target_data.target = X86;
+		} else if ((target_data.target == PPC64) &&
+			(name_to_target((char *)target_data.target_as_param) == PPC)) {
+			/*
+			 *  Build an PPC crash binary on an PPC64 host.
+			 */
+			target_data.target = PPC;
 		} else if (name_to_target((char *)target_data.target_as_param) ==
 			target_data.host) {
 			if ((target_data.initial_gdb_target != UNKNOWN) &&
@@ -402,6 +410,17 @@ get_current_configuration(struct supported_gdb_version *sp)
 		}
 		if ((target_data.target == X86) &&
 		    (target_data.initial_gdb_target != X86))
+			arch_mismatch(sp);
+
+		if ((target_data.initial_gdb_target == PPC) &&
+		    (target_data.target != PPC)) {
+			if (target_data.target == PPC64) 
+				target_data.target = PPC;
+			else
+				arch_mismatch(sp);
+		}
+		if ((target_data.target == PPC) &&
+		    (target_data.initial_gdb_target != PPC))
 			arch_mismatch(sp);
 	}
 
@@ -556,7 +575,11 @@ build_configure(struct supported_gdb_version *sp)
 		break;
 	case PPC:
 		target = TARGET_PPC;
-		target_CFLAGS = TARGET_CFLAGS_PPC;
+		if (target_data.host == PPC64) {
+                        target_CFLAGS = TARGET_CFLAGS_PPC_ON_PPC64;
+			gdb_conf_flags = GDB_TARGET_PPC_ON_PPC64;
+		} else
+			target_CFLAGS = TARGET_CFLAGS_PPC;
 		break;
 	case IA64:
 		target = TARGET_IA64;

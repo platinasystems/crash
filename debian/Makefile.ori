@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,7 +27,7 @@ TARGET=
 GDB_CONF_FLAGS=
 
 ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
-ifeq ($(ARCH), ppc64)
+ifeq (${TARGET}, PPC64)
 CONF_FLAGS = -m64
 endif
 
@@ -256,8 +256,8 @@ gdb_merge: force
 	@if [ ! -f ${GDB}/config.status ]; then \
 	  (cd ${GDB}; ./configure ${GDB_CONF_FLAGS} --with-separate-debug-dir=/usr/lib/debug \
 	    --with-bugurl="" --with-expat=no --with-python=no; \
-	  make --no-print-directory; echo ${TARGET} > crash.target) \
-	else (cd ${GDB}/gdb; make --no-print-directory;); fi
+	  make --no-print-directory CRASH_TARGET=${TARGET}; echo ${TARGET} > crash.target) \
+	else (cd ${GDB}/gdb; make --no-print-directory CRASH_TARGET=${TARGET};); fi
 	@if [ ! -f ${GDB}/gdb/libgdb.a ]; then \
 	  echo; echo "gdb build failed: ${GDB}/gdb/libgdb.a does not exist"; \
 	  echo; exit 1; fi
@@ -528,7 +528,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.0.2
+VERSION=6.0.4
 RELEASE=0
 
 release: make_configure

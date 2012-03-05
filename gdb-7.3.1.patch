@@ -1209,7 +1209,7 @@
  AS_FOR_BUILD = @AS_FOR_BUILD@
  CC_FOR_BUILD = @CC_FOR_BUILD@
  CFLAGS_FOR_BUILD = @CFLAGS_FOR_BUILD@
-+ifeq ($(shell arch), ppc64)
++ifeq (${CRASH_TARGET}, PPC64)
 +CFLAGS_FOR_BUILD += -m64 -fPIC
 +endif
  CXXFLAGS_FOR_BUILD = @CXXFLAGS_FOR_BUILD@
@@ -1219,7 +1219,7 @@
  GNATMAKE = @GNATMAKE@
  
  CFLAGS = @CFLAGS@
-+ifeq ($(shell arch), ppc64)
++ifeq (${CRASH_TARGET}, PPC64)
 +CFLAGS += -m64 -fPIC
 +endif
  LDFLAGS = @LDFLAGS@
@@ -1308,3 +1308,40 @@
            fclose (stream);
            return 0;
          }
+--- gdb-7.3.1/bfd/bfdio.c.orig
++++ gdb-7.3.1/bfd/bfdio.c
+@@ -577,7 +577,7 @@ memory_bstat (bfd *abfd, struct stat *st
+ {
+   struct bfd_in_memory *bim = (struct bfd_in_memory *) abfd->iostream;
+ 
+-  memset (statbuf, 0, sizeof (statbuf));
++  memset (statbuf, 0, sizeof (struct stat));
+   statbuf->st_size = bim->size;
+ 
+   return 0;
+--- gdb-7.3.1/gdb/symtab.c.orig
++++ gdb-7.3.1/gdb/symtab.c
+@@ -5262,8 +5262,9 @@ gdb_add_symbol_file(struct gnu_request *
+ 	        }
+ 	
+ 	        if (!allsect) {
+-	            sprintf(req->buf, "add-symbol-file %s 0x%lx", lm->mod_namelist,
+-	                    lm->mod_text_start ? lm->mod_text_start : lm->mod_base);
++	            sprintf(req->buf, "add-symbol-file %s 0x%lx %s", lm->mod_namelist,
++	                    lm->mod_text_start ? lm->mod_text_start : lm->mod_base,
++			    lm->mod_flags & MOD_DO_READNOW ? "-readnow" : "");
+ 		    if (lm->mod_data_start) {
+ 	                    sprintf(buf, " -s .data 0x%lx", lm->mod_data_start);
+ 	                    strcat(req->buf, buf);
+@@ -5277,8 +5278,9 @@ gdb_add_symbol_file(struct gnu_request *
+ 	                    strcat(req->buf, buf);
+ 		    }
+ 	        } else {
+-	            sprintf(req->buf, "add-symbol-file %s 0x%lx", lm->mod_namelist,
+-	                    lm->mod_text_start);
++	            sprintf(req->buf, "add-symbol-file %s 0x%lx %s", lm->mod_namelist,
++	                    lm->mod_text_start, lm->mod_flags & MOD_DO_READNOW ?
++			    "-readnow" : "");
+ 	            for (i = 0; i < lm->mod_sections; i++) {
+ 	                    secname = lm->mod_section_data[i].name;
+ 	                    if ((lm->mod_section_data[i].flags & SEC_FOUND) &&

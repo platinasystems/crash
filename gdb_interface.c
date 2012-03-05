@@ -1,8 +1,8 @@
 /* gdb_interface.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 
 static void exit_after_gdb_info(void);
 static int is_restricted_command(char *, ulong);
+static void strip_redirection(char *);
 int get_frame_offset(ulong);
 
 int *gdb_output_format;
@@ -725,12 +726,29 @@ is_restricted_command(char *cmd, ulong flags)
 }
 
 /*
+ *  Remove pipe/redirection stuff from the end of the command line.
+ */ 
+static void
+strip_redirection(char *buf)
+{
+	char *p1, *p2;
+
+	p1 = strstr_rightmost(buf, args[argcnt-1]);
+	p2 = p1 + strlen(args[argcnt-1]);
+	console("strip_redirection: [%s]\n", p2);
+
+	if ((p1 = strpbrk(p2, "|!>")))
+		*p1 = NULLCHAR;
+
+	strip_ending_whitespace(buf);
+}
+
+/*
  *  Command for passing strings directly to gdb.
  */
 void
 cmd_gdb(void)
 {
-	char *p1, *p2;
 	char buf[BUFSIZE];
 
         if (!args[optind])
@@ -755,15 +773,8 @@ cmd_gdb(void)
 		} else
 			strcpy(buf, pc->orig_line);
 
-		if (pc->redirect & (REDIRECT_TO_FILE|REDIRECT_TO_PIPE)) {
-			p1 = strstr_rightmost(buf, args[argcnt-1]);
-			p2 = p1 + strlen(args[argcnt-1]);
-			if ((p1 = strstr(p2, ">")) || 
-			    (p1 = strstr(p2, "|")) ||
-			    (p1 = strstr(p2, "!")))
-				*p1 = NULLCHAR;
-			strip_ending_whitespace(buf);
-		}
+		if (pc->redirect & (REDIRECT_TO_FILE|REDIRECT_TO_PIPE))
+			strip_redirection(buf);
 
 		if (!gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR))
 			error(INFO, "gdb request failed: %s\n", buf);

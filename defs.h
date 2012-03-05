@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -412,6 +412,7 @@ struct program_context {
 #define FROM_RCFILE      (0x1000)
 #define MEMTYPE_KVADDR   (0x2000)
 #define MOD_SECTIONS     (0x4000)
+#define MOD_READNOW      (0x8000)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -870,6 +871,8 @@ struct machdep_table {
 	void (*process_elf_notes)(void *, unsigned long);
 	int (*get_kvaddr_ranges)(struct vaddr_range *);
         int (*verify_line_number)(ulong, ulong, ulong);
+        void (*get_irq_affinity)(int);
+        void (*show_interrupts)(int, ulong *);
 };
 
 /*
@@ -1631,6 +1634,34 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long sched_entity_my_q;
 	long sched_entity_on_rq;
 	long task_struct_on_rq;
+	long cfs_rq_curr;
+	long irq_desc_t_irq_data;
+	long irq_desc_t_kstat_irqs;
+	long irq_desc_t_affinity;
+	long irq_data_chip;
+	long irq_data_affinity;
+	long kernel_stat_irqs;
+	long socket_alloc_vfs_inode;
+	long class_devices;
+	long class_p;
+	long class_private_devices;
+	long device_knode_class;
+	long device_node;
+	long gendisk_dev;
+	long gendisk_kobj;
+	long gendisk_part0;
+	long gendisk_queue;
+	long hd_struct_dev;
+	long klist_k_list;
+	long klist_node_n_klist;
+	long klist_node_n_node;
+	long kobject_entry;
+	long kset_list;
+	long request_list_count;
+	long request_queue_in_flight;
+	long request_queue_rq;
+	long subsys_private_klist_devices;
+	long subsystem_kset;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1752,6 +1783,11 @@ struct size_table {         /* stash of commonly-used sizes */
 	long s390_stack_frame;
 	long percpu_data;
 	long sched_entity;
+	long kernel_stat;
+	long subsystem;
+	long class_private;
+	long rq_in_flight;
+	long class_private_devices;
 };
 
 struct array_table {
@@ -1941,6 +1977,7 @@ struct vm_table {                /* kernel VM-related data */
 #define VM_INIT                (0x100000)
 #define SWAPINFO_V1            (0x200000)
 #define SWAPINFO_V2            (0x400000)
+#define NODELISTS_IS_PTR       (0x800000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2127,6 +2164,7 @@ struct symbol_table_data {
 #define MOD_INITRD     (0x10)
 #define MOD_NOPATCH    (0x20)
 #define MOD_INIT       (0x40)
+#define MOD_DO_READNOW (0x80)
 
 #define SEC_FOUND       (0x10000)
 
@@ -2597,27 +2635,95 @@ struct load_module {
 #define _32BIT_
 #define MACHINE_TYPE       "PPC"
 
-#define PAGEBASE(X)  (((ulong)(X)) & (ulong)machdep->pagemask)
+#define PAGEBASE(X) 		((X) & machdep->pagemask)
 
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
 #define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
 
-#define PGDIR_SHIFT   (22)
-#define PTRS_PER_PTE  (1024)
-#define PTRS_PER_PGD  (1024)
+/* Holds the platform specific info for page translation */
+struct machine_specific {
 
-#define _PAGE_PRESENT   0x001   /* software: pte contains a translation */
-#define _PAGE_USER      0x002   /* matches one of the PP bits */
-#define _PAGE_RW        0x004   /* software: user write access allowed */
-#define _PAGE_GUARDED   0x008
-#define _PAGE_COHERENT  0x010   /* M: enforce memory coherence (SMP systems) */
-#define _PAGE_NO_CACHE  0x020   /* I: cache inhibit */
-#define _PAGE_WRITETHRU 0x040   /* W: cache write-through */
-#define _PAGE_DIRTY     0x080   /* C: page changed */
-#define _PAGE_ACCESSED  0x100   /* R: page referenced */
-#define _PAGE_HWWRITE   0x200   /* software: _PAGE_RW & _PAGE_DIRTY */
-#define _PAGE_SHARED    0
+	char *platform;
+
+	/* page address translation bits */
+	int pgdir_shift;
+	int ptrs_per_pgd;
+	int ptrs_per_pte;
+	int pte_size;
+
+	/* page flags */
+	ulong _page_present;
+	ulong _page_user;
+	ulong _page_rw;
+	ulong _page_guarded;
+	ulong _page_coherent;
+	ulong _page_no_cache;
+	ulong _page_writethru;
+	ulong _page_dirty;
+	ulong _page_accessed;
+	ulong _page_hwwrite;
+	ulong _page_shared;
+
+};
+
+/* Page translation bits */
+#define PPC_PLATFORM		(machdep->machspec->platform)
+#define PGDIR_SHIFT		(machdep->machspec->pgdir_shift)
+#define PTRS_PER_PTE		(machdep->machspec->ptrs_per_pte)
+#define PTRS_PER_PGD		(machdep->machspec->ptrs_per_pgd)
+#define PTE_SIZE		(machdep->machspec->pte_size)
+
+/* Default values for Page translation */
+#define DEFAULT_PGDIR_SHIFT	(22)
+#define DEFAULT_PTRS_PER_PTE	(1024)
+#define DEFAULT_PTRS_PER_PGD	(1024)
+#define DEFAULT_PTE_SIZE	sizeof(ulong)
+
+/* PPC44x translation bits */
+#define PPC44x_PGDIR_SHIFT	(21)
+#define PPC44x_PTRS_PER_PTE	(512)
+#define PPC44x_PTRS_PER_PGD	(2048)
+#define PPC44x_PTE_SIZE   	sizeof(ulonglong)
+
+/* PAGE flags */
+#define _PAGE_PRESENT   (machdep->machspec->_page_present)	/* software: pte contains a translation */
+#define _PAGE_USER      (machdep->machspec->_page_user)		/* matches one of the PP bits */
+#define _PAGE_RW        (machdep->machspec->_page_rw)		/* software: user write access allowed */
+#define _PAGE_GUARDED   (machdep->machspec->_page_guarded)
+#define _PAGE_COHERENT  (machdep->machspec->_page_coherent	/* M: enforce memory coherence (SMP systems) */)
+#define _PAGE_NO_CACHE  (machdep->machspec->_page_no_cache)	/* I: cache inhibit */
+#define _PAGE_WRITETHRU (machdep->machspec->_page_writethru)	/* W: cache write-through */
+#define _PAGE_DIRTY     (machdep->machspec->_page_dirty)	/* C: page changed */
+#define _PAGE_ACCESSED  (machdep->machspec->_page_accessed)	/* R: page referenced */
+#define _PAGE_HWWRITE   (machdep->machspec->_page_hwwrite)	/* software: _PAGE_RW & _PAGE_DIRTY */
+#define _PAGE_SHARED    (machdep->machspec->_page_shared)
+
+/* Default values for PAGE flags */
+#define DEFAULT_PAGE_PRESENT   0x001
+#define DEFAULT_PAGE_USER      0x002
+#define DEFAULT_PAGE_RW        0x004
+#define DEFAULT_PAGE_GUARDED   0x008
+#define DEFAULT_PAGE_COHERENT  0x010
+#define DEFAULT_PAGE_NO_CACHE  0x020
+#define DEFAULT_PAGE_WRITETHRU 0x040
+#define DEFAULT_PAGE_DIRTY     0x080
+#define DEFAULT_PAGE_ACCESSED  0x100
+#define DEFAULT_PAGE_HWWRITE   0x200
+#define DEFAULT_PAGE_SHARED    0
+
+/* PPC44x PAGE flags: Values from kernel asm/pte-44x.h */
+#define PPC44x_PAGE_PRESENT	0x001
+#define PPC44x_PAGE_RW		0x002
+#define PPC44x_PAGE_ACCESSED	0x008
+#define PPC44x_PAGE_DIRTY	0x010
+#define PPC44x_PAGE_USER	0x040
+#define PPC44x_PAGE_GUARDED	0x100
+#define PPC44x_PAGE_COHERENT	0x200
+#define PPC44x_PAGE_NO_CACHE	0x400
+#define PPC44x_PAGE_WRITETHRU	0x800
+#define PPC44x_PAGE_HWWRITE	0
+#define PPC44x_PAGE_SHARED	0
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
@@ -3039,6 +3145,9 @@ struct efi_memory_desc_t {
 
 #define BITS_PER_BYTE (8)
 #define BITS_PER_LONG (BITS_PER_BYTE * sizeof(long))
+#define NUM_TO_BIT(x) (1UL<<((x)%BITS_PER_LONG))
+#define NUM_IN_BITMAP(bitmap, x) (bitmap[(x)/BITS_PER_LONG] & NUM_TO_BIT(x))
+#define SET_BIT(bitmap, x) (bitmap[(x)/BITS_PER_LONG] |= NUM_TO_BIT(x))
 
 /*
  *  precision lengths for fprintf
@@ -3543,6 +3652,8 @@ void dump_build_data(void);
 #endif
 int clean_exit(int);
 int untrusted_file(FILE *, char *);
+char *readmem_function_name(void);
+char *writemem_function_name(void);
 
 /*
  *  cmdline.c
@@ -3676,6 +3787,7 @@ int calculate(char *, ulong *, ulonglong *, ulong);
 int endian_mismatch(char *, char, ulong);
 uint16_t swap16(uint16_t, int);
 uint32_t swap32(uint32_t, int);
+int make_cpumask(char *, ulong *, int, int *);
 
 /* 
  *  symbols.c 
@@ -4063,6 +4175,8 @@ void unlink_module(struct load_module *);
 int check_specified_module_tree(char *, char *);
 int is_system_call(char *, ulong);
 void generic_dump_irq(int);
+void generic_get_irq_affinity(int);
+void generic_show_interrupts(int, ulong *);
 int generic_dis_filter(ulong, char *, unsigned int);
 int kernel_BUG_encoding_bytes(void);
 void display_sys_stats(void);
@@ -4241,6 +4355,7 @@ struct machine_specific {
 	ulong exception_text_start;
 	ulong exception_text_end;
 	struct arm_pt_regs *crash_task_regs;
+	int unwind_index_prel31;
 };
 
 int init_unwind_tables(void);
@@ -4282,6 +4397,10 @@ struct machine_specific {
 	ulonglong last_pmd_read_PAE;
 	ulonglong last_ptbl_read_PAE;
 	ulong page_protnone;
+	int max_numnodes;
+	ulong *remap_start_vaddr;
+	ulong *remap_end_vaddr;
+	ulong *remap_start_pfn;
 };
 
 struct syment *x86_is_entry_tramp_address(ulong, ulong *); 
@@ -4699,6 +4818,8 @@ void x86_process_elf_notes(void *, unsigned long);
 void *diskdump_get_prstatus_percpu(int);
 void map_cpus_to_prstatus_kdump_cmprs(void);
 void diskdump_display_regs(int, FILE *);
+void process_elf32_notes(void *, ulong);
+void process_elf64_notes(void *, ulong);
 
 /*
  * makedumpfile.c

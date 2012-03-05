@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include "xen_hyper_defs.h"
 #include <curses.h>
 #include <getopt.h>
+#include <sys/prctl.h>
 
 static void setup_environment(int, char **);
 static int is_external_command(void);
@@ -964,6 +965,12 @@ setup_environment(int argc, char **argv)
 	kt->flags |= PRE_KERNEL_INIT;
 
 	/*
+	 *  Set up to perform a clean_exit() upon parent death.
+	 */
+	SIGACTION(SIGUSR2, restart, &pc->sigaction, NULL);
+	prctl(PR_SET_PDEATHSIG, SIGUSR2);
+
+	/*
 	 *  Get gdb version before initializing it since this might be one 
          *  of the short-hand commands that need it without running gdb.
 	 */
@@ -1069,6 +1076,7 @@ dump_program_context(void)
 {
 	int i;
 	int others = 0;
+	char *p1;
 	char buf[BUFSIZE];
 	char buf2[BUFSIZE];
 
@@ -1474,6 +1482,8 @@ dump_program_context(void)
 		fprintf(fp, "%sNO_MODIFY", others ? "|" : "");
         if (pc->curcmd_flags & MOD_SECTIONS)
 		fprintf(fp, "%sMOD_SECTIONS", others ? "|" : "");
+        if (pc->curcmd_flags & MOD_READNOW)
+		fprintf(fp, "%sMOD_READNOW", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
@@ -1500,54 +1510,90 @@ dump_program_context(void)
 	fprintf(fp, "             rmfd: %d\n", pc->rmfd);
 	fprintf(fp, "             rkfd: %d\n", pc->rkfd);
 	fprintf(fp, "       rcvbufsize: %ld\n", pc->rcvbufsize);
-	if (pc->readmem == read_dev_mem)
-		fprintf(fp, "          readmem: read_dev_mem()\n");
-	else if (pc->readmem == read_mclx_dumpfile)
-		fprintf(fp, "          readmem: read_mclx_dumpfile()\n");
-	else if (pc->readmem == read_lkcd_dumpfile)
-		fprintf(fp, "          readmem: read_lkcd_dumpfile()\n");
-	else if (pc->readmem == read_daemon)
-		fprintf(fp, "          readmem: read_daemon()\n");
-	else if (pc->readmem == read_netdump)
-		fprintf(fp, "          readmem: read_netdump()\n");
-	else if (pc->readmem == read_xendump)
-		fprintf(fp, "          readmem: read_xendump()\n");
-	else if (pc->readmem == read_kdump)
-		fprintf(fp, "          readmem: read_kdump()\n");
-	else if (pc->readmem == read_memory_device)
-		fprintf(fp, "          readmem: read_memory_device()\n");
-	else if (pc->readmem == read_xendump_hyper)
-		fprintf(fp, "          readmem: read_xendump_hyper()\n");
-	else if (pc->readmem == read_diskdump)
-		fprintf(fp, "          readmem: read_diskdump()\n");
+
+	fprintf(fp, "          readmem: ");
+	if ((p1 = readmem_function_name()))
+		fprintf(fp, "%s()\n", p1);
 	else
-		fprintf(fp, "          readmem: %lx\n", (ulong)pc->readmem);
-        if (pc->writemem == write_dev_mem)
-                fprintf(fp, "         writemem: write_dev_mem()\n");
-        else if (pc->writemem == write_mclx_dumpfile)
-                fprintf(fp, "         writemem: write_mclx_dumpfile()\n");
-        else if (pc->writemem == write_lkcd_dumpfile)
-                fprintf(fp, "         writemem: write_lkcd_dumpfile()\n");
-        else if (pc->writemem == write_daemon)
-                fprintf(fp, "         writemem: write_daemon()\n");
-        else if (pc->writemem == write_netdump)
-                fprintf(fp, "         writemem: write_netdump()\n");
-        else if (pc->writemem == write_xendump)
-                fprintf(fp, "         writemem: write_xendump()\n");
-        else if (pc->writemem == write_kdump)
-                fprintf(fp, "         writemem: write_kdump()\n");
-        else if (pc->writemem == write_memory_device)
-                fprintf(fp, "         writemem: write_memory_device()\n");
-        else if (pc->writemem == write_diskdump)
-                fprintf(fp, "         writemem: write_diskdump()\n");
-        else
-                fprintf(fp, "         writemem: %lx\n", (ulong)pc->writemem);
+		fprintf(fp, "%lx\n", (ulong)pc->readmem);
+
+	fprintf(fp, "         writemem: ");
+	if ((p1 = writemem_function_name()))
+		fprintf(fp, "%s()\n", p1);
+	else
+		fprintf(fp, "%lx\n", (ulong)pc->writemem);
 
 	fprintf(fp, "  dumpfile memory: %d\n", 
 		dumpfile_memory(DUMPFILE_MEM_USED)); 
 	fprintf(fp, "           curext: %lx\n", (ulong)pc->curext); 
 	fprintf(fp, "             sbrk: %lx\n", (ulong)pc->sbrk); 
 	fprintf(fp, "          cleanup: %s\n", pc->cleanup);
+}
+
+char *
+readmem_function_name(void)
+{
+	if (pc->readmem == read_dev_mem)
+		return("read_dev_mem");
+	else if (pc->readmem == read_mclx_dumpfile)
+		return("read_mclx_dumpfile");
+	else if (pc->readmem == read_lkcd_dumpfile)
+		return("read_lkcd_dumpfile");
+	else if (pc->readmem == read_daemon)
+		return("read_daemon");
+	else if (pc->readmem == read_netdump)
+		return("read_netdump");
+	else if (pc->readmem == read_xendump)
+		return("read_xendump");
+	else if (pc->readmem == read_kdump)
+		return("read_kdump");
+	else if (pc->readmem == read_memory_device)
+		return("read_memory_device");
+	else if (pc->readmem == read_xendump_hyper)
+		return("read_xendump_hyper");
+	else if (pc->readmem == read_diskdump)
+		return("read_diskdump");
+	else if (pc->readmem == read_proc_kcore)
+		return("read_proc_kcore");
+	else if (pc->readmem == read_sadump)
+		return("read_sadump");
+	else if (pc->readmem == read_s390_dumpfile)
+		return("read_s390_dumpfile");
+	else
+		return NULL;
+}
+
+char *
+writemem_function_name(void)
+{
+	if (pc->writemem == write_dev_mem)
+		return("write_dev_mem");
+	else if (pc->writemem == write_mclx_dumpfile)
+		return("write_mclx_dumpfile");
+	else if (pc->writemem == write_lkcd_dumpfile)
+		return("write_lkcd_dumpfile");
+	else if (pc->writemem == write_daemon)
+		return("write_daemon");
+	else if (pc->writemem == write_netdump)
+		return("write_netdump");
+	else if (pc->writemem == write_xendump)
+		return("write_xendump");
+	else if (pc->writemem == write_kdump)
+		return("write_kdump");
+	else if (pc->writemem == write_memory_device)
+		return("write_memory_device");
+//	else if (pc->writemem == write_xendump_hyper)
+//		return("write_xendump_hyper");
+	else if (pc->writemem == write_diskdump)
+		return("write_diskdump");
+	else if (pc->writemem == write_proc_kcore)
+		return("write_proc_kcore");
+	else if (pc->writemem == write_sadump)
+		return("write_sadump");
+	else if (pc->writemem == write_s390_dumpfile)
+		return("write_s390_dumpfile");
+	else
+		return NULL;
 }
 
 /*

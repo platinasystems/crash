@@ -7,8 +7,8 @@
  * netdump dumpfiles, the facilities in netdump.c are used.  For
  * compressed dumpfiles, the facilities in this file are used.
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005  FUJITSU LIMITED
  * Copyright (C) 2005  NEC Corporation
  *
@@ -232,44 +232,66 @@ open_dump_file(char *file)
 	return TRUE;
 }
 
-void 
-x86_process_elf_notes(void *note_ptr, unsigned long size_note)
+void
+process_elf32_notes(void *note_buf, unsigned long size_note)
 {
-	Elf32_Nhdr *note32 = NULL;
-	Elf64_Nhdr *note64 = NULL;
-	size_t tot, len = 0;
+	Elf32_Nhdr *nt;
+	size_t index, len = 0;
 	int num = 0;
 
-	for (tot = 0; tot < size_note; tot += len) {
-		if (machine_type("X86_64")) {
-			note64 = note_ptr + tot;
 
-			if (note64->n_type == NT_PRSTATUS) {
-				dd->nt_prstatus_percpu[num] = note64;
-				num++;
-			}
+	for (index = 0; index < size_note; index += len) {
+		nt = note_buf + index;
 
-			len = sizeof(Elf64_Nhdr);
-			len = roundup(len + note64->n_namesz, 4);
-			len = roundup(len + note64->n_descsz, 4);
-		} else if (machine_type("X86")) {
-			note32 = note_ptr + tot;
-
-			if (note32->n_type == NT_PRSTATUS) {
-				dd->nt_prstatus_percpu[num] = note32;
-				num++;
-			}
-
-			len = sizeof(Elf32_Nhdr);
-			len = roundup(len + note32->n_namesz, 4);
-			len = roundup(len + note32->n_descsz, 4);
+		if(nt->n_type == NT_PRSTATUS) {
+			dd->nt_prstatus_percpu[num] = nt;
+			num++;
 		}
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + nt->n_namesz, 4);
+		len = roundup(len + nt->n_descsz, 4);
 	}
 
 	if (num > 0) {
 		pc->flags2 |= ELF_NOTES;
 		dd->num_prstatus_notes = num;
 	}
+	return;
+}
+
+void
+process_elf64_notes(void *note_buf, unsigned long size_note)
+{
+	Elf64_Nhdr *nt;
+	size_t index, len = 0;
+	int num = 0;
+
+	for (index = 0; index < size_note; index += len) {
+		nt = note_buf + index;
+
+		if(nt->n_type == NT_PRSTATUS) {
+			dd->nt_prstatus_percpu[num] = nt;
+			num++;
+		}
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + nt->n_namesz, 4);
+		len = roundup(len + nt->n_descsz, 4);
+	}
+
+	if (num > 0) {
+		pc->flags2 |= ELF_NOTES;
+		dd->num_prstatus_notes = num;
+	}
+	return;
+}
+
+void 
+x86_process_elf_notes(void *note_ptr, unsigned long size_note)
+{
+	if (machine_type("X86_64"))
+		process_elf64_notes(note_ptr, size_note);
+	else if (machine_type("X86"))
+		process_elf32_notes(note_ptr, size_note);
 }
 
 static int 
@@ -342,7 +364,10 @@ restart:
 	else if (STRNEQ(header->utsname.machine, "ia64") &&
 	    machine_type_mismatch(file, "IA64", NULL, 0))
 		goto err;
-	else if (STRNEQ(header->utsname.machine, "ppc64") &&
+	else if (STREQ(header->utsname.machine, "ppc") &&
+	    machine_type_mismatch(file, "PPC", NULL, 0))
+		goto err;
+	else if (STREQ(header->utsname.machine, "ppc64") &&
 	    machine_type_mismatch(file, "PPC64", NULL, 0))
 		goto err;
 	else if (STRNEQ(header->utsname.machine, "arm") &&
@@ -432,6 +457,11 @@ restart:
 
 	dd->dumpable_bitmap = calloc(bitmap_len, 1);
 
+	if (CRASHDEBUG(8))
+		fprintf(fp, "%s: memory bitmap offset: %llx\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			(ulonglong)offset);
+
 	if (FLAT_FORMAT()) {
 		if (!read_flattened_format(dd->dfd, offset, dd->bitmap, bitmap_len)) {
 			error(INFO, "%s: cannot read memory bitmap\n",
@@ -471,6 +501,8 @@ restart:
 		dd->machine_type = EM_X86_64;
 	else if (machine_type("IA64"))
 		dd->machine_type = EM_IA_64;
+	else if (machine_type("PPC"))
+		dd->machine_type = EM_PPC;
 	else if (machine_type("PPC64"))
 		dd->machine_type = EM_PPC64;
 	else if (machine_type("S390X"))
@@ -844,29 +876,71 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 			}
 		}
 
-		if (i == num_dumpfiles)
+		if (i == num_dumpfiles) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_diskdump: SEEK_ERROR: "
+				    "paddr/pfn %llx/%lx beyond last dumpfile\n",
+					(ulonglong)paddr, pfn);
 			return SEEK_ERROR;
+		}
 	}
 
 	curpaddr = paddr & ~((physaddr_t)(dd->block_size-1));
 	page_offset = paddr & ((physaddr_t)(dd->block_size-1));
 
-	if ((pfn >= dd->header->max_mapnr) || !page_is_ram(pfn))
+	if ((pfn >= dd->header->max_mapnr) || !page_is_ram(pfn)) {
+		if (CRASHDEBUG(8)) {
+			fprintf(fp, "read_diskdump: SEEK_ERROR: "
+			    "paddr/pfn: %llx/%lx ",
+				(ulonglong)paddr, pfn);
+			if (pfn >= dd->header->max_mapnr)
+				fprintf(fp, "max_mapnr: %x\n",
+					dd->header->max_mapnr);
+			else
+				fprintf(fp, "!page_is_ram\n");
+		}
+
 		return SEEK_ERROR;
+	}
+
 	if (!page_is_dumpable(pfn)) {
 		if ((dd->flags & (ZERO_EXCLUDED|ERROR_EXCLUDED)) ==
-		    ERROR_EXCLUDED)
+		    ERROR_EXCLUDED) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_diskdump: PAGE_EXCLUDED: "
+			    	    "paddr/pfn: %llx/%lx\n",
+					(ulonglong)paddr, pfn);
 			return PAGE_EXCLUDED;
+		}
+		if (CRASHDEBUG(8))
+			fprintf(fp, "read_diskdump: zero-fill: "
+		    	    "paddr/pfn: %llx/%lx\n",
+				(ulonglong)paddr, pfn);
 		memset(bufptr, 0, cnt);
 		return cnt;
 	}
 
-	if (!page_is_cached(curpaddr))
-		if ((ret = cache_page(curpaddr)) < 0)
+	if (!page_is_cached(curpaddr)) {
+		if (CRASHDEBUG(8))
+			fprintf(fp, "read_diskdump: paddr/pfn: %llx/%lx"
+			    " -> cache physical page: %llx\n",
+				(ulonglong)paddr, pfn, (ulonglong)curpaddr);
+
+		if ((ret = cache_page(curpaddr)) < 0) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_diskdump: " 
+				    "%s: cannot cache page: %llx\n",
+					ret == SEEK_ERROR ?  
+					"SEEK_ERROR" : "READ_ERROR",
+					(ulonglong)curpaddr);
 			return ret;
+		}
+	} else if (CRASHDEBUG(8))
+		fprintf(fp, "read_diskdump: paddr/pfn: %llx/%lx"
+		    " -> physical page is cached: %llx\n", 
+			(ulonglong)paddr, pfn, (ulonglong)curpaddr);
 	
 	memcpy(bufptr, dd->curbufptr + page_offset, cnt);
-
 	return cnt;
 }
 
@@ -912,6 +986,31 @@ extern void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
 extern void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
 
 static void
+get_diskdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	Elf32_Nhdr *note;
+	int len;
+
+	if (KDUMP_CMPRS_VALID() &&
+		(bt->task == tt->panic_task || 
+		(is_task_active(bt->task) && dd->num_prstatus_notes > 1))) {
+		note  = (Elf32_Nhdr*) dd->nt_prstatus_percpu[bt->tc->processor];
+		if (!note)
+			error(FATAL,
+				    "cannot determine NT_PRSTATUS ELF note "
+				    "for %s task: %lx\n",
+					(bt->task == tt->panic_task) ?
+					"panic" : "active", bt->task);
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		 bt->machdep = (void *)((char *)note + len +
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	}
+
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
+static void
 get_diskdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 {
 	if ((bt->task == tt->panic_task) && DISKDUMP_VALID())
@@ -950,6 +1049,10 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		* needed by the "bt -t" option.
 		*/
 		machdep->get_stack_frame(bt, eip, esp);
+		break;
+
+	case EM_PPC:
+		return get_diskdump_regs_ppc(bt, eip, esp);
 		break;
 
 	case EM_PPC64:
@@ -1117,7 +1220,7 @@ dump_nt_prstatus_offset(FILE *fp)
 						(tot == 0) ? "" : "                      ",
 						(ulong)(offset + tot));
 
-			} else if (machine_type("X86")) {
+			} else if (machine_type("X86") || machine_type("PPC")) {
 				note32 = (void *)dd->notes_buf + tot;
 				len = sizeof(Elf32_Nhdr);
 				len = roundup(len + note32->n_namesz, 4);
@@ -1177,6 +1280,8 @@ __diskdump_memory_dump(FILE *fp)
 		fprintf(fp, "(EM_X86_64)\n"); break;
 	case EM_IA_64:
 		fprintf(fp, "(EM_IA_64)\n"); break;
+	case EM_PPC:
+		fprintf(fp, "(EM_PPC)\n"); break;
 	case EM_PPC64:
 		fprintf(fp, "(EM_PPC64)\n"); break;
 	case EM_S390:

@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -56,6 +56,8 @@ static int x86_64_print_stack_entry(struct bt_info *, FILE *, int, int, ulong);
 static void x86_64_display_full_frame(struct bt_info *, ulong, FILE *);
 static void x86_64_do_bt_reference_check(struct bt_info *, ulong,char *);
 static void x86_64_dump_irq(int);
+static void x86_64_get_irq_affinity(int);
+static void x86_64_show_interrupts(int, ulong *);
 static char *x86_64_extract_idt_function(ulong *, char *, ulong *);
 static ulong x86_64_get_pc(struct bt_info *);
 static ulong x86_64_get_sp(struct bt_info *);
@@ -471,6 +473,8 @@ x86_64_init(int when)
 		else
 			machdep->nr_irqs = 224; /* NR_IRQS (at least) */
 		machdep->dump_irq = x86_64_dump_irq;
+		machdep->get_irq_affinity = x86_64_get_irq_affinity;
+		machdep->show_interrupts = x86_64_show_interrupts;
 		if (!machdep->hz) {
 			machdep->hz = HZ;
 			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
@@ -631,6 +635,8 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "\n");
         fprintf(fp, "       get_task_pgd: x86_64_get_task_pgd()\n");
 	fprintf(fp, "           dump_irq: x86_64_dump_irq()\n");
+	fprintf(fp, "   get_irq_affinity: x86_64_get_irq_affinity()\n");
+	fprintf(fp, "    show_interrupts: x86_64_show_interrupts()\n");
         fprintf(fp, "    get_stack_frame: x86_64_get_stack_frame()\n");
         fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
         fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
@@ -2984,6 +2990,10 @@ in_exception_stack:
 	                case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs)/sizeof(ulong);
+				if (!bt->eframe_ip) {
+					level++;
+					break;
+				} /* else fall through */
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
 				if ((framesize = x86_64_get_framesize(bt, 
@@ -3089,6 +3099,10 @@ in_exception_stack:
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs)/sizeof(ulong);
+				if (!bt->eframe_ip) {
+					level++;
+					break;
+				} /* else fall through */
                         case BACKTRACE_ENTRY_DISPLAYED:
                                 level++;
 				if ((framesize = x86_64_get_framesize(bt, 
@@ -3312,6 +3326,10 @@ in_exception_stack:
 				level++;
 			rsp += SIZE(pt_regs);
 			i += SIZE(pt_regs)/sizeof(ulong);
+			if (!bt->eframe_ip) {
+				level++;
+				break;
+			} /* else fall through */
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
 			if ((framesize = x86_64_get_framesize(bt, 
@@ -4548,6 +4566,34 @@ x86_64_dump_irq(int irq)
 	    "x86_64_dump_irq: irq_desc[] or irq_desc_tree do not exist?\n");
 }
 
+static void
+x86_64_get_irq_affinity(int irq)
+{
+        if (symbol_exists("irq_desc") ||
+	    kernel_symbol_exists("irq_desc_ptrs") ||
+	    kernel_symbol_exists("irq_desc_tree")) {
+                machdep->get_irq_affinity = generic_get_irq_affinity;
+                return(generic_get_irq_affinity(irq));
+        }
+
+        error(FATAL,
+	    "x86_64_get_irq_affinity: irq_desc[] or irq_desc_tree do not exist?\n");
+}
+
+static void
+x86_64_show_interrupts(int irq, ulong *cpus)
+{
+        if (symbol_exists("irq_desc") ||
+	    kernel_symbol_exists("irq_desc_ptrs") ||
+	    kernel_symbol_exists("irq_desc_tree")) {
+                machdep->show_interrupts = generic_show_interrupts;
+                return(generic_show_interrupts(irq, cpus));
+        }
+
+        error(FATAL,
+	    "x86_64_show_interrupts: irq_desc[] or irq_desc_tree do not exist?\n");
+}
+
 /* 
  *  Do the work for irq -d
  */
@@ -5399,6 +5445,8 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
          *  going directly to read_netdump() instead of via read_kdump().
          */
         pc->readmem = read_netdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (temporary): read_netdump()\n");
 
         if (xkd->flags & KDUMP_CR3)
                 goto use_cr3;
@@ -5459,6 +5507,9 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	}
 
         pc->readmem = read_kdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (restore): read_kdump()\n");
+
 	return TRUE;
 
 use_cr3:
@@ -5525,6 +5576,8 @@ use_cr3:
         machdep->last_ptbl_read = 0;
         machdep->last_pmd_read = 0;
         pc->readmem = read_kdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (restore): read_kdump()\n");
 
         return TRUE;
 }
@@ -6521,7 +6574,7 @@ x86_64_print_eframe_regs_hyper(struct bt_info *bt)
 	fprintf(fp, "    RAX: %016lx  RBX: %016lx  RCX: %016lx\n", 
 		up[10], up[5], up[11]);
 	fprintf(fp, "    RDX: %016lx  RSI: %016lx  RDI: %016lx\n", 
- 		up[11], up[13], up[14]);
+ 		up[12], up[13], up[14]);
 	fprintf(fp, "    RBP: %016lx   R8: %016lx   R9: %016lx\n", 
 		up[4], up[9], up[8]);
 	fprintf(fp, "    R10: %016lx  R11: %016lx  R12: %016lx\n", 
