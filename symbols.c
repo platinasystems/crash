@@ -111,6 +111,7 @@ static int show_member_offset(FILE *, struct datatype_member *, char *);
 #define IN_UNION       (0x20000)
 #define IN_STRUCT      (0x40000)
 #define DATATYPE_QUERY (0x80000)
+#define ANON_MEMBER_QUERY (0x100000)
 
 #define INTEGER_TYPE    (UINT8|INT8|UINT16|INT16|UINT32|INT32|UINT64|INT64)
 
@@ -5078,7 +5079,7 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 
 /*
  *  Determine the offset of a member in an anonymous union
- *  in a structure.
+ *  in a structure or union.
  */
 static long
 anon_member_offset(char *name, char *member)
@@ -5087,18 +5088,29 @@ anon_member_offset(char *name, char *member)
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
 	ulong value;
+	int type;
 
 	value = -1;
+	type = STRUCT_REQUEST;
 	sprintf(buf, "print &((struct %s *)0x0)->%s", name, member);
 
-	open_tmpfile();
-	if (gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
-		rewind(pc->tmpfile);
-		if (fgets(buf, BUFSIZE, pc->tmpfile) &&
-	    	    (c = parse_line(strip_linefeeds(buf), arglist)))
+	open_tmpfile2();
+retry:
+	if (gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
+		rewind(pc->tmpfile2);
+		if (fgets(buf, BUFSIZE, pc->tmpfile2) &&
+		    (c = parse_line(strip_linefeeds(buf), arglist)))
 			value = stol(arglist[c-1], RETURN_ON_ERROR|QUIET, NULL);
 	}
-	close_tmpfile();
+
+	if ((value == -1) && (type == STRUCT_REQUEST)) {
+		type = UNION_REQUEST;
+		sprintf(buf, "print &((union %s *)0x0)->%s", name, member);
+		rewind(pc->tmpfile2);
+		goto retry;
+	}
+
+	close_tmpfile2();
 
 	return value;
 }
@@ -5767,7 +5779,8 @@ cmd_datatype_common(ulong flags)
         } else
                 structname = args[optind];
 
-	if ((arg_to_datatype(structname, dm, DATATYPE_QUERY|RETURN_ON_ERROR) < 1))
+	if ((arg_to_datatype(structname, dm,
+		DATATYPE_QUERY|ANON_MEMBER_QUERY|RETURN_ON_ERROR) < 1))
 		error(FATAL, "invalid data structure reference: %s\n", structname);
 
         if ((argc_members > 1) && !aflag) {
@@ -5800,7 +5813,8 @@ cmd_datatype_common(ulong flags)
                         	strcpy(separator+1, memberlist[i]);
 			}
 
-			switch (arg_to_datatype(structname, dm, RETURN_ON_ERROR))
+			switch (arg_to_datatype(structname, dm,
+				ANON_MEMBER_QUERY|RETURN_ON_ERROR))
 			{
 			case 0: error(FATAL, "invalid data structure reference: %s\n", 
 					structname);
@@ -5995,10 +6009,12 @@ arg_to_datatype(char *s, struct datatype_member *dm, ulong flags)
 
 	dm->member = p1+1;
 
-    	if ((dm->member_offset = MEMBER_OFFSET(dm->name, dm->member)) < 0) 
-		goto datatype_member_fatal;
+	if ((dm->member_offset = MEMBER_OFFSET(dm->name, dm->member)) >= 0)
+		return 2;
 
-	return 2;
+	if ((flags & ANON_MEMBER_QUERY) &&
+	    ((dm->member_offset = ANON_MEMBER_OFFSET(dm->name, dm->member)) >= 0))
+		return 2;
 
 datatype_member_fatal:
 
@@ -6736,6 +6752,8 @@ dump_datatype_flags(ulong flags, FILE *ofp)
 		fprintf(ofp, "%sSHOW_OFFSET", others++ ? "|" : "");
 	if (flags & DATATYPE_QUERY)
 		fprintf(ofp, "%sDATATYPE_QUERY", others++ ? "|" : "");
+	if (flags & ANON_MEMBER_QUERY)
+		fprintf(ofp, "%sANON_MEMBER_QUERY", others++ ? "|" : "");
 	fprintf(ofp, ")\n");
 }
 
@@ -6771,7 +6789,7 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 		sprintf(lookfor2, "  %s[", s);
 next_item:
 		while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-			if (STRNEQ(buf, lookfor1) || STRNEQ(buf, lookfor2)) {
+			if (strstr(buf, lookfor1) || strstr(buf, lookfor2)) {
 				on++;
 				if (strstr(buf, "= {")) 
 					indent = count_leading_spaces(buf);
@@ -6882,11 +6900,6 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		return FALSE;
 	}
 
-
-	if (STRNEQ(inbuf, "        ")) {
-		end_of_block = FALSE;
-		goto do_empty_offset;
-	}
 	if (STRNEQ(inbuf, "    union {")) 
 		dm->flags |= IN_UNION;
 	if (STRNEQ(inbuf, "    struct {")) 
@@ -6949,6 +6962,9 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 	offset = MEMBER_OFFSET(dm->name, target);
 
 	if (offset == -1) 
+		offset = ANON_MEMBER_OFFSET(dm->name, target);
+
+	if (offset == -1)
 		goto do_empty_offset;
 
 	if (end_of_block && dm->member) {
@@ -7272,6 +7288,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(task_struct_pid));
 	fprintf(fp, "             task_struct_state: %ld\n", 
 		OFFSET(task_struct_state));
+	fprintf(fp, "        task_struct_exit_state: %ld\n", 
+		OFFSET(task_struct_exit_state));
 	fprintf(fp, "              task_struct_comm: %ld\n", 
 		OFFSET(task_struct_comm));
 	fprintf(fp, "                task_struct_mm: %ld\n", 
@@ -7439,6 +7457,9 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(tms_tms_utime));
         fprintf(fp, "                 tms_tms_stime: %ld\n",
                 OFFSET(tms_tms_stime));
+
+	fprintf(fp, "              timekeeper_xtime: %ld\n",
+		OFFSET(timekeeper_xtime));
 
 	fprintf(fp, "                k_sigaction_sa: %ld\n",
         	OFFSET(k_sigaction_sa));
@@ -7934,6 +7955,16 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(vfsmount_mnt_mountpoint));
         fprintf(fp, "           vfsmount_mnt_parent: %ld\n", 
 		OFFSET(vfsmount_mnt_parent));
+	fprintf(fp, "              mount_mnt_parent: %ld\n",
+		OFFSET(mount_mnt_parent));
+	fprintf(fp, "          mount_mnt_mountpoint: %ld\n",
+		OFFSET(mount_mnt_mountpoint));
+	fprintf(fp, "                mount_mnt_list: %ld\n",
+		OFFSET(mount_mnt_list));
+	fprintf(fp, "             mount_mnt_devname: %ld\n",
+		OFFSET(mount_mnt_devname));
+	fprintf(fp, "                     mount_mnt: %ld\n",
+		OFFSET(mount_mnt));
 	fprintf(fp, "                namespace_root: %ld\n",
 			OFFSET(namespace_root));
 	fprintf(fp, "                namespace_list: %ld\n",
@@ -8701,6 +8732,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                          file: %ld\n", SIZE(file)); 
 	fprintf(fp, "                         inode: %ld\n", SIZE(inode)); 
 	fprintf(fp, "                      vfsmount: %ld\n", SIZE(vfsmount)); 
+	fprintf(fp, "                         mount: %ld\n", SIZE(mount));
 	fprintf(fp, "                   super_block: %ld\n", 
 		SIZE(super_block)); 
 	fprintf(fp, "                       irqdesc: %ld\n", SIZE(irqdesc));

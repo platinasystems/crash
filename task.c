@@ -35,6 +35,7 @@ static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
 static void child_list(ulong);
 static void initialize_task_state(void);
+static void dump_task_states(void);
 static void show_ps_data(ulong, struct task_context *);
 static void show_task_times(struct task_context *, ulong);
 static void show_task_args(struct task_context *);
@@ -82,6 +83,7 @@ static void translate_sigset(ulonglong);
 static ulonglong sigaction_mask(ulong);
 static int task_has_cpu(ulong, char *);
 static int is_foreach_keyword(char *, int *);
+static void foreach_cleanup(void *);
 static char *task_pointer_string(struct task_context *, ulong, char *);
 static int panic_context_adjusted(struct task_context *tc);
 static void show_last_run(struct task_context *);
@@ -212,6 +214,7 @@ task_init(void)
 	}
 
         MEMBER_OFFSET_INIT(task_struct_state, "task_struct", "state");
+        MEMBER_OFFSET_INIT(task_struct_exit_state, "task_struct", "exit_state");
         MEMBER_OFFSET_INIT(task_struct_pid, "task_struct", "pid");
         MEMBER_OFFSET_INIT(task_struct_comm, "task_struct", "comm");
         MEMBER_OFFSET_INIT(task_struct_next_task, "task_struct", "next_task");
@@ -3052,7 +3055,8 @@ show_ps(ulong flag, struct psinfo *psi)
 }
 
 /*
- *  Display the task preceded by the last_run stamp.
+ *  Display the task preceded by the last_run stamp and it
+ *  current state.
  */
 static void
 show_last_run(struct task_context *tc)
@@ -3066,16 +3070,18 @@ show_last_run(struct task_context *tc)
 	sprintf(buf, pc->output_radix == 10 ? "%lld" : "%llx", 
 		task_last_run(tcp->task));
 	c = strlen(buf);
-	sprintf(format, "[%c%dll%c]  ", '%', c, 
+	sprintf(format, "[%c%dll%c] ", '%', c, 
 		pc->output_radix == 10 ? 'u' : 'x');
 
 	if (tc) {
 		fprintf(fp, format, task_last_run(tc->task));
+		fprintf(fp, "[%s]  ", task_state_string(tc->task, buf, !VERBOSE));
 		print_task_header(fp, tc, FALSE);
 	} else {
         	tcp = FIRST_CONTEXT();
         	for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
 			fprintf(fp, format, task_last_run(tcp->task));
+			fprintf(fp, "[%s]  ", task_state_string(tc->task, buf, !VERBOSE));
 			print_task_header(fp, tcp, FALSE);
 		}
 	}
@@ -4318,11 +4324,86 @@ show_context(struct task_context *tc)
 static long _RUNNING_ = TASK_STATE_UNINITIALIZED;
 static long _INTERRUPTIBLE_ = TASK_STATE_UNINITIALIZED;
 static long _UNINTERRUPTIBLE_ = TASK_STATE_UNINITIALIZED;
-long _ZOMBIE_ = TASK_STATE_UNINITIALIZED;      /* also used by IS_ZOMBIE() */
 static long _STOPPED_ = TASK_STATE_UNINITIALIZED;
+static long _TRACING_STOPPED_ = TASK_STATE_UNINITIALIZED;
+long _ZOMBIE_ = TASK_STATE_UNINITIALIZED;      /* also used by IS_ZOMBIE() */
 static long _DEAD_ = TASK_STATE_UNINITIALIZED;
 static long _SWAPPING_ = TASK_STATE_UNINITIALIZED;
 static long _EXCLUSIVE_ = TASK_STATE_UNINITIALIZED;
+static long _WAKEKILL_ = TASK_STATE_UNINITIALIZED;
+static long _WAKING_ = TASK_STATE_UNINITIALIZED;
+static long _NONINTERACTIVE_ = TASK_STATE_UNINITIALIZED;
+
+#define valid_task_state(X) ((X) != TASK_STATE_UNINITIALIZED)
+
+static void
+dump_task_states(void)
+{
+	int hi, lo;
+
+	fprintf(fp, "           RUNNING: %3ld (0x%lx)\n", 
+		_RUNNING_, _RUNNING_);
+
+	fprintf(fp, "     INTERRUPTIBLE: %3ld (0x%lx)\n", 
+		_INTERRUPTIBLE_, _INTERRUPTIBLE_);
+
+	fprintf(fp, "   UNINTERRUPTIBLE: %3ld (0x%lx)\n", 
+		_UNINTERRUPTIBLE_, _UNINTERRUPTIBLE_);
+
+	fprintf(fp, "           STOPPED: %3ld (0x%lx)\n", 
+		_STOPPED_, _STOPPED_);
+
+	if (valid_task_state(_TRACING_STOPPED_)) {
+		if (count_bits_long(_TRACING_STOPPED_) > 1) {
+			lo = lowest_bit_long(_TRACING_STOPPED_);
+			hi = highest_bit_long(_TRACING_STOPPED_);
+			fprintf(fp, 
+			    "   TRACING_STOPPED: %3d and %d (0x%x and 0x%x)\n",
+				1<<lo, 1<<hi, 1<<lo, 1<<hi);
+		} else
+			fprintf(fp, "   TRACING_STOPPED: %3ld (0x%lx)\n", 
+				_TRACING_STOPPED_, _TRACING_STOPPED_);
+	}
+
+	fprintf(fp, "            ZOMBIE: %3ld (0x%lx)\n", 
+		_ZOMBIE_, _ZOMBIE_);
+
+	if (count_bits_long(_DEAD_) > 1) {
+		lo = lowest_bit_long(_DEAD_);
+		hi = highest_bit_long(_DEAD_);
+		fprintf(fp, "              DEAD: %3d and %d (0x%x and 0x%x)\n", 
+			1<<lo, 1<<hi, 1<<lo, 1<<hi); 
+	} else
+		fprintf(fp, "              DEAD: %3ld (0x%lx)\n", 
+			_DEAD_, _DEAD_);
+
+	if (valid_task_state(_NONINTERACTIVE_))
+		fprintf(fp, "    NONINTERACTIVE: %3ld (0x%lx)\n", 
+			_NONINTERACTIVE_, _NONINTERACTIVE_);
+
+	if (valid_task_state(_SWAPPING_))
+		fprintf(fp, "          SWAPPING: %3ld (0x%lx)\n", 
+			_SWAPPING_, _SWAPPING_);
+
+	if (valid_task_state(_EXCLUSIVE_))
+		fprintf(fp, "         EXCLUSIVE: %3ld (0x%lx)\n", 
+			_EXCLUSIVE_, _EXCLUSIVE_);
+
+	if (valid_task_state(_WAKEKILL_) && valid_task_state(_WAKING_)) {
+		if (_WAKEKILL_ < _WAKING_) {
+			fprintf(fp, "          WAKEKILL: %3ld (0x%lx)\n", 
+				_WAKEKILL_, _WAKEKILL_);
+			fprintf(fp, "            WAKING: %3ld (0x%lx)\n", 
+				_WAKING_, _WAKING_);
+		} else {
+			fprintf(fp, "            WAKING: %3ld (0x%lx)\n", 
+				_WAKING_, _WAKING_);
+			fprintf(fp, "          WAKEKILL: %3ld (0x%lx)\n", 
+				_WAKEKILL_, _WAKEKILL_);
+		}
+	}
+}
+
 
 /*
  *  Initialize the task state fields based upon the kernel's task_state_array
@@ -4359,22 +4440,35 @@ old_defaults:
 			break;
 
 		if (CRASHDEBUG(3)) 
-			fprintf(fp, "%s[%s]\n", bitpos ? "" : "\n", buf);
+			fprintf(fp, "%s%s[%d][%s]\n", bitpos ? "" : "\n", 
+				i < 10 ? " " : "", i, buf);
 
-		if (STRNEQ(buf, "R "))
+		if (strstr(buf, "(running)"))
 			_RUNNING_ = bitpos;
-		if (STRNEQ(buf, "S "))
+		else if (strstr(buf, "(sleeping)"))
 			_INTERRUPTIBLE_ = bitpos;
-		if (STRNEQ(buf, "D "))
+		else if (strstr(buf, "(disk sleep)"))
 			_UNINTERRUPTIBLE_ = bitpos;
-		if (STRNEQ(buf, "T "))
+		else if (strstr(buf, "(stopped)"))
 			_STOPPED_ = bitpos;
-		if (STRNEQ(buf, "Z "))
+		else if (strstr(buf, "(zombie)"))
 			_ZOMBIE_ = bitpos;
-		if (STRNEQ(buf, "X "))
-			_DEAD_ = bitpos;
-		if (STRNEQ(buf, "W "))
+		else if (strstr(buf, "(dead)")) {
+			if (_DEAD_ == TASK_STATE_UNINITIALIZED)
+				_DEAD_ = bitpos;
+			else
+				_DEAD_ |= bitpos;
+		} else if (strstr(buf, "(swapping)"))  /* non-existent? */
 			_SWAPPING_ = bitpos;
+		else if (strstr(buf, "(tracing stop)")) {
+			if (_TRACING_STOPPED_ == TASK_STATE_UNINITIALIZED)
+				_TRACING_STOPPED_ = bitpos;
+			else
+				_TRACING_STOPPED_ |= bitpos;
+		} else if (strstr(buf, "(wakekill)"))
+			_WAKEKILL_ = bitpos;
+		else if (strstr(buf, "(waking)"))
+			_WAKING_ = bitpos;
 
 		if (!bitpos)
 			bitpos = 1;
@@ -4387,21 +4481,31 @@ old_defaults:
 			break;
 	}
 
-	if (CRASHDEBUG(3)) {
-		fprintf(fp, "RUNNING: %ld\n", _RUNNING_);
-		fprintf(fp, "INTERRUPTIBLE: %ld\n", _INTERRUPTIBLE_);
-		fprintf(fp, "UNINTERRUPTIBLE: %ld\n", _UNINTERRUPTIBLE_);
-		fprintf(fp, "STOPPED: %ld\n", _STOPPED_);
-		fprintf(fp, "ZOMBIE: %ld\n", _ZOMBIE_);
-		fprintf(fp, "DEAD: %ld\n", _DEAD_);
-		fprintf(fp, "SWAPPING: %ld\n", _SWAPPING_);
+	if ((THIS_KERNEL_VERSION >= LINUX(2,6,16)) && 
+	    (THIS_KERNEL_VERSION < LINUX(2,6,24))) {
+		_NONINTERACTIVE_ = 64;
 	}
 
-	if ((_RUNNING_ == TASK_STATE_UNINITIALIZED) ||
-	    (_INTERRUPTIBLE_ == TASK_STATE_UNINITIALIZED) ||
-	    (_UNINTERRUPTIBLE_ == TASK_STATE_UNINITIALIZED) ||
-	    (_ZOMBIE_ == TASK_STATE_UNINITIALIZED) ||
-	    (_STOPPED_ == TASK_STATE_UNINITIALIZED)) {
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,32)) {
+		/*
+	 	 * Account for states not listed in task_state_array[]
+		 */
+		if (count_bits_long(_DEAD_) == 1) {
+			bitpos = 1<< lowest_bit_long(_DEAD_);
+			_DEAD_ |= (bitpos<<1);    /* TASK_DEAD */
+			_WAKEKILL_ = (bitpos<<2); /* TASK_WAKEKILL */
+			_WAKING_ = (bitpos<<3);   /* TASK_WAKING */
+		}
+	}
+
+	if (CRASHDEBUG(3))
+		dump_task_states();
+
+	if (!valid_task_state(_RUNNING_) ||
+	    !valid_task_state(_INTERRUPTIBLE_) ||
+	    !valid_task_state(_UNINTERRUPTIBLE_) ||
+	    !valid_task_state(_ZOMBIE_) ||
+	    !valid_task_state(_STOPPED_)) {
 		if (CRASHDEBUG(3))
 			fprintf(fp, 
 			    "initialize_task_state: using old defaults\n");
@@ -4409,63 +4513,166 @@ old_defaults:
 	}
 }
 
+/*
+ *  Print multiple state strings if appropriate.
+ */
+static char *
+task_state_string_verbose(ulong task, char *buf)
+{
+	long state, both;
+	int count;
+
+	state = task_state(task);
+
+	buf[0] = NULLCHAR;
+	count = 0;
+
+	if (state == _RUNNING_) {
+		sprintf(buf, "TASK_RUNNING");
+		return buf;
+	}
+
+	if (state & _INTERRUPTIBLE_)
+		sprintf(&buf[strlen(buf)], "%sTASK_INTERRUPTIBLE",
+			count++ ? "|" : "");
+
+	if (state & _UNINTERRUPTIBLE_)
+		sprintf(&buf[strlen(buf)], "%sTASK_UNINTERRUPTIBLE",
+			count++ ? "|" : "");
+
+	if (state & _STOPPED_)
+		sprintf(&buf[strlen(buf)], "%sTASK_STOPPED",
+			count++ ? "|" : "");
+
+	if (state & _TRACING_STOPPED_)
+		sprintf(&buf[strlen(buf)], "%sTASK_TRACED",
+			count++ ? "|" : "");
+
+	if ((both = (state & _DEAD_))) {
+		if (count_bits_long(both) > 1)
+			sprintf(&buf[strlen(buf)], "%sEXIT_DEAD|TASK_DEAD",
+				count++ ? "|" : "");
+		else
+			sprintf(&buf[strlen(buf)], "%sEXIT_DEAD",
+				count++ ? "|" : "");
+	}
+
+	if (state & _ZOMBIE_)
+		sprintf(&buf[strlen(buf)], "%sEXIT_ZOMBIE",
+			count++ ? "|" : "");
+
+	if (valid_task_state(_WAKING_) && (state & _WAKING_))
+		sprintf(&buf[strlen(buf)], "%sTASK_WAKING",
+			count++ ? "|" : "");
+
+	if (valid_task_state(_WAKEKILL_) && (state & _WAKEKILL_))
+		sprintf(&buf[strlen(buf)], "%sTASK_WAKEKILL",
+			count++ ? "|" : "");
+
+	if (valid_task_state(_NONINTERACTIVE_) &&
+	    (state & _NONINTERACTIVE_))
+		sprintf(&buf[strlen(buf)], "%sTASK_NONINTERACTIVE",
+			count++ ? "|" : "");
+
+	return buf;
+}
+
 char *
 task_state_string(ulong task, char *buf, int verbose)
 {
 	long state;
 	int exclusive;
-	int valid;
+	int valid, set;
 
 	if (_RUNNING_ == TASK_STATE_UNINITIALIZED) 
 		initialize_task_state();
+
+	if (verbose)
+		return task_state_string_verbose(task, buf);
 
 	if (buf)
 		sprintf(buf, verbose ? "(unknown)" : "??");
 
 	state = task_state(task);
 
-	valid = exclusive = 0;
-	if (_EXCLUSIVE_ != TASK_STATE_UNINITIALIZED) {
+	set = valid = exclusive = 0;
+	if (valid_task_state(_EXCLUSIVE_)) {
 		exclusive = state & _EXCLUSIVE_;
 		state &= ~(_EXCLUSIVE_);
 	}
 
 	if (state == _RUNNING_) {
-		sprintf(buf, verbose ? "TASK_RUNNING" : "RU"); valid++;
-	} else if (state == _INTERRUPTIBLE_) { 
-		sprintf(buf, verbose ? "TASK_INTERRUPTIBLE" : "IN"); valid++;
-	} else if (state == _UNINTERRUPTIBLE_) {
-		sprintf(buf, verbose ? "TASK_UNINTERRUPTIBLE" : "UN"); valid++;
-	} else if (state == _ZOMBIE_) { 
-		sprintf(buf, verbose ? "TASK_ZOMBIE" : "ZO"); valid++;
-	} else if (state == _STOPPED_) { 
-		sprintf(buf, verbose ? "TASK_STOPPED" : "ST"); valid++;
-	} else if (state == _DEAD_) { 
-		sprintf(buf, verbose ? "TASK_DEAD" : "DE"); valid++;
-	} else if (state == _SWAPPING_) {
-		sprintf(buf, verbose ? "TASK_SWAPPING" : "SW"); valid++;
+		sprintf(buf, "RU"); 
+		valid++;
+	}
+
+	if (state & _INTERRUPTIBLE_) { 
+		sprintf(buf, "IN"); 
+		valid++; 
+		set++;
+	}
+
+	if (state & _UNINTERRUPTIBLE_) {
+		sprintf(buf, "UN");
+		valid++; 
+		set++;
+	}
+
+	if (state & _ZOMBIE_) {
+		sprintf(buf, "ZO"); 
+		valid++; 
+		set++;
+	}
+
+	if (state & _STOPPED_) {
+		sprintf(buf, "ST"); 
+		valid++; 
+		set++;
+	}
+
+	if (valid_task_state(_TRACING_STOPPED_) &&
+	    (state & _TRACING_STOPPED_)) {
+		sprintf(buf, "ST"); 
+		valid++; 
+		set++;
+	}
+
+	if (state == _SWAPPING_) {
+		sprintf(buf, "SW"); 
+		valid++; 
+		set++;
+	}
+
+	if ((state & _DEAD_) && !set) {
+		sprintf(buf, "DE"); 
+		valid++; 
+		set++;
 	}
 
 	if (valid && exclusive) 
-		strcat(buf, verbose ? "|TASK_EXCLUSIVE" : "EX");
+		strcat(buf, "EX");
 
 	return buf;
 }
 
 /*
- *  Return a task's state.
+ *  Return a task's state and exit_state together.
  */
 ulong
 task_state(ulong task)
 {
-        ulong state;
+        ulong state, exit_state;
 
 	fill_task_struct(task);
 
-	state = tt->last_task_read ?
-		ULONG(tt->task_struct + OFFSET(task_struct_state)) : 0;
+	if (!tt->last_task_read)
+		return 0;
 
-        return state;
+	state = ULONG(tt->task_struct + OFFSET(task_struct_state));
+	exit_state = VALID_MEMBER(task_struct_exit_state) ?
+		ULONG(tt->task_struct + OFFSET(task_struct_exit_state)) : 0;
+
+        return (state | exit_state);
 }
 
 /*
@@ -4888,7 +5095,8 @@ cmd_foreach(void)
 {
 	int a, c, k, t, p;
 	ulong value;
-	struct foreach_data foreach_data, *fd;
+	static struct foreach_data foreach_data;
+	struct foreach_data *fd;
 	struct task_context *tc;
 	char *p1;
 	int key;
@@ -5054,9 +5262,37 @@ cmd_foreach(void)
 		 */
 		if (STREQ(args[optind], "kernel")) {
 			if (fd->flags & FOREACH_USER)
-				error(FATAL, 
+				error(FATAL,
 				   "user and kernel are mutually exclusive!\n");
 			fd->flags |= FOREACH_KERNEL;
+			optind++;
+			continue;
+		}
+
+		if (STREQ(args[optind], "RU") ||
+		    STREQ(args[optind], "IN") ||
+		    STREQ(args[optind], "UN") ||
+		    STREQ(args[optind], "ST") ||
+		    STREQ(args[optind], "ZO") ||
+		    STREQ(args[optind], "DE") ||
+		    STREQ(args[optind], "SW")) {
+
+			if (STREQ(args[optind], "RU"))
+				fd->state = _RUNNING_;
+			else if (STREQ(args[optind], "IN"))
+				fd->state = _INTERRUPTIBLE_;
+			else if (STREQ(args[optind], "UN"))
+				fd->state = _UNINTERRUPTIBLE_;
+			else if (STREQ(args[optind], "ST"))
+				fd->state = _STOPPED_;
+			else if (STREQ(args[optind], "ZO"))
+				fd->state = _ZOMBIE_;
+			else if (STREQ(args[optind], "DE"))
+				fd->state = _DEAD_;
+			else if (STREQ(args[optind], "SW"))
+				fd->state = _SWAPPING_;
+			fd->flags |= FOREACH_STATE;
+
 			optind++;
 			continue;
 		}
@@ -5079,11 +5315,42 @@ cmd_foreach(void)
                 if (STREQ(args[optind], "active")) {
 			if (!DUMPFILE())
 				error(FATAL, 
-				 "active option not allowed on live systems\n");
+				    "active option not allowed on live systems\n");
                         fd->flags |= FOREACH_ACTIVE;
                         optind++;
                         continue;
                 }
+
+		/*
+		 *  Regular expression is exclosed within "'" character.
+		 *  The args[optind] string may not be modified, so a copy 
+		 *  is duplicated.
+		 */
+		if (SINGLE_QUOTED_STRING(args[optind])) {
+			if (fd->regexs == MAX_REGEX_ARGS)
+				error(INFO, "too many expressions specified!\n");
+			else {
+				p1 = strdup(&args[optind][1]);
+				LASTCHAR(p1) = NULLCHAR;
+				
+				if (regcomp(&fd->regex_info[fd->regexs].regex, p1, 
+				    REG_EXTENDED|REG_NOSUB)) {
+					error(INFO, 
+					    "invalid regular expression: %s\n", 
+						p1);
+					free(p1);
+					goto bailout;
+				}
+
+				fd->regex_info[fd->regexs].pattern = p1;
+				if (fd->regexs++ == 0) {
+					pc->cmd_cleanup_arg = (void *)fd;
+					pc->cmd_cleanup = foreach_cleanup;
+				}
+			}
+			optind++;
+			continue;
+		}
 
 		/*
 	         *  If it's a command name, prefixed or otherwise, take it.
@@ -5137,10 +5404,12 @@ command_argument:
 	fd->tasks = t;
 	fd->args = a;
 
-	if (!fd->keys)
-		error(FATAL, "no keywords specified\n");
-
-	foreach(fd);
+	if (fd->keys)
+		foreach(fd);
+	else
+		error(INFO, "no keywords specified\n");
+bailout:
+	foreach_cleanup((void *)fd);
 }
 
 /*
@@ -5179,6 +5448,16 @@ foreach(struct foreach_data *fd)
 		fprintf(fp, "   comm_array: %s", fd->comms ? "" : "(none)");
                 for (j = 0; j < fd->comms; j++)
 			fprintf(fp, "[%s] ", fd->comm_array[j]); 
+		fprintf(fp, "\n");
+
+		fprintf(fp, "   regex_info: %s", fd->regexs ? "" : "(none)\n");
+                for (j = 0; j < fd->regexs; j++) {
+			fprintf(fp, "%s[%d] pattern: [%s] ", 
+				j ? "               " : "",
+				j, fd->regex_info[j].pattern); 
+			fprintf(fp, "regex: [%lx]\n", 
+				(ulong)&fd->regex_info[j].regex); 
+		}
 		fprintf(fp, "\n");
 
 		fprintf(fp, "keyword_array: %s", fd->keys ? "" : "(none)");
@@ -5221,34 +5500,33 @@ foreach(struct foreach_data *fd)
 
 		case FOREACH_VTOP:
 			if (!fd->args)
-			    error(FATAL, 
-			        "foreach command requires address argument\n");
+			    	error(FATAL,
+				    "foreach command requires address argument\n");
 			if (fd->reference)
 				error(FATAL,
-				   "vtop command does not support -R option\n");
+				    "vtop command does not support -R option\n");
                         if ((fd->flags & (FOREACH_u_FLAG|FOREACH_k_FLAG)) ==
-				(FOREACH_u_FLAG|FOREACH_k_FLAG)) {
+				(FOREACH_u_FLAG|FOREACH_k_FLAG))
                                 error(FATAL,
-                            "vtop: -u and -k options are mutually exclusive\n");
-                        }
+				    "vtop: -u and -k options are mutually exclusive\n");
 			break;
 
 		case FOREACH_VM:
                         if (count_bits_long(fd->flags &
                             (FOREACH_i_FLAG|FOREACH_p_FLAG|
                              FOREACH_m_FLAG|FOREACH_v_FLAG)) > 1)
-				error(FATAL, 
-			 "vm command accepts only one of -p, -m or -v flags\n");
+				error(FATAL,
+				    "vm command accepts only one of -p, -m or -v flags\n");
 			if (fd->reference) {
 				if (fd->flags & FOREACH_i_FLAG)
 					error(FATAL,
-                                 "vm: -i is not applicable to the -R option\n");
+					    "vm: -i is not applicable to the -R option\n");
 				if (fd->flags & FOREACH_m_FLAG)
-					error(FATAL, 
-                                 "vm: -m is not applicable to the -R option\n");
+					error(FATAL,
+					    "vm: -m is not applicable to the -R option\n");
 				if (fd->flags & FOREACH_v_FLAG)
-					error(FATAL, 
-                                 "vm: -v is not applicable to the -R option\n");
+					error(FATAL,
+					    "vm: -v is not applicable to the -R option\n");
 			}
 			break;
 
@@ -5260,20 +5538,21 @@ foreach(struct foreach_data *fd)
 #ifndef GDB_5_3
                         if ((fd->flags & FOREACH_g_FLAG))
                                 error(FATAL,
-                       "bt -g option is not supported when issued from foreach\n");
+				    "bt -g option is not supported when issued from foreach\n");
 #endif
 			bt = &bt_info;
 			break;
 
 		case FOREACH_TASK:
 			if ((fd->flags & (FOREACH_x_FLAG|FOREACH_d_FLAG)) ==
-				(FOREACH_x_FLAG|FOREACH_d_FLAG))
-				error(FATAL, "task: -x and -d options are "
-					"mutually exclusive\n");
+			    (FOREACH_x_FLAG|FOREACH_d_FLAG))
+				error(FATAL, 
+				    "task: -x and -d options are mutually exclusive\n");
                         if (count_bits_long(fd->flags & 
 			    (FOREACH_x_FLAG|FOREACH_d_FLAG)) > 1)
-                                error(FATAL, "%lx task command accepts -R member[,member],"
-					" and either -x or -d flags\n", fd->flags);
+                                error(FATAL,
+				    "task command accepts -R member[,member],"
+				    " and either -x or -d flags\n");
 			break;
 
 		case FOREACH_SET:
@@ -5283,10 +5562,9 @@ foreach(struct foreach_data *fd)
 			break;
 
                 case FOREACH_SIG:
-			if (fd->flags & (FOREACH_l_FLAG|FOREACH_s_FLAG)) {
-				error(FATAL, 
-			    	 "sig: -l and -s options are not applicable\n");
-			}
+			if (fd->flags & (FOREACH_l_FLAG|FOREACH_s_FLAG))
+				error(FATAL,
+				    "sig: -l and -s options are not applicable\n");
 			if (fd->flags & FOREACH_g_FLAG) {
 				if (!hq_open()) {
                 			error(INFO, 
@@ -5304,7 +5582,7 @@ foreach(struct foreach_data *fd)
 
 	
 	subsequent = FALSE;
-	specified = (fd->tasks || fd->pids || fd->comms ||
+	specified = (fd->tasks || fd->pids || fd->comms || fd->regexs ||
 		(fd->flags & FOREACH_SPECIFIED));
 	ref = &reference;
 
@@ -5322,20 +5600,39 @@ foreach(struct foreach_data *fd)
 		if ((fd->flags & FOREACH_KERNEL) && !is_kernel_thread(tc->task))
 			continue;
 
+		if ((fd->flags & FOREACH_STATE) && !(task_state(tc->task) & fd->state))
+			continue;
+
 		if (specified) {
-	        	for (j = 0; j < fd->tasks; j++) 
-				if (fd->task_array[j] == tc->task)
+			for (j = 0; j < fd->tasks; j++) {
+				if (fd->task_array[j] == tc->task) {
 					doit = TRUE;
+					break;
+				}
+			}
 	
-	       		for (j = 0; j < fd->pids; j++) 
-				if (fd->pid_array[j] == tc->pid)
+			for (j = 0; !doit && (j < fd->pids); j++) {
+				if (fd->pid_array[j] == tc->pid) {
 					doit = TRUE;
+					break;
+				}
+			}
 	
-	        	for (j = 0; j < fd->comms; j++) 
-				if (STREQ(fd->comm_array[j], tc->comm))
+	 		for (j = 0; !doit && (j < fd->comms); j++) {
+				if (STREQ(fd->comm_array[j], tc->comm)) {
 					doit = TRUE;
-		}
-		else 
+					break;
+				}
+			}
+
+			for (j = 0; !doit && (j < fd->regexs); j++) {
+				if (regexec(&fd->regex_info[j].regex, 
+				    tc->comm, 0, NULL, 0) == 0) {
+					doit = TRUE;
+					break;
+				}
+			}
+		} else 
 			doit = TRUE;
 
 		if (!doit)
@@ -5511,6 +5808,25 @@ foreach_bailout:
 	pc->flags &= ~IN_FOREACH;
 }
 
+/*
+ *  Clean up regex buffers and pattern strings.
+ */
+static void 
+foreach_cleanup(void *arg)
+{
+	int i;
+	struct foreach_data *fd;
+
+	pc->cmd_cleanup = NULL;
+	pc->cmd_cleanup_arg = NULL;
+
+	fd = (struct foreach_data *)arg;
+
+	for (i = 0; i < fd->regexs; i++) {
+		regfree(&fd->regex_info[i].regex);
+		free(fd->regex_info[i].pattern);
+	}
+}
 
 /*
  *  The currently available set of foreach commands.
@@ -6090,7 +6406,7 @@ dump_task_table(int verbose)
 		}
         }
         fprintf(fp, "\n");
-
+	dump_task_states();
 
 	if (!verbose)
 		return;

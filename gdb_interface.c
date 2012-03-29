@@ -750,23 +750,30 @@ void
 cmd_gdb(void)
 {
 	char buf[BUFSIZE];
+        char **argv;
 
-        if (!args[optind])
+	argv = STREQ(args[0], "gdb") ? &args[1] : &args[0];
+
+        if (*argv == NULL)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	/*
-	 *  Intercept set commands in case something has to be done here.
-	 */ 
-	if (STREQ(args[1], "set")) {
-		if (args[2] && args[3] && STREQ(args[2], "output-radix")) {
-			pc->output_radix = stol(args[3], FAULT_ON_ERROR, NULL);
-		}
-	}
+        if (STREQ(*argv, "set") && argv[1]) {
+                /*
+                 *  Intercept set commands in case something has to be done
+		 *  here or elsewhere.
+                 */ 
+                if (STREQ(argv[1], "gdb")) {
+                        cmd_set();
+                        return;
+                }
+                if (STREQ(argv[1], "output-radix") && argv[2])
+                        pc->output_radix = stol(argv[2], FAULT_ON_ERROR, NULL);
+        }
 
 	/*
 	 *  If the command is not restricted, pass it on.
 	 */
-	if (!is_restricted_command(args[1], FAULT_ON_ERROR)) {
+	if (!is_restricted_command(*argv, FAULT_ON_ERROR)) {
 		if (STREQ(pc->command_line, "gdb")) {
 			strcpy(buf, &pc->orig_line[3]);
 			strip_beginning_whitespace(buf);

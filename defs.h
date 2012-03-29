@@ -47,6 +47,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <execinfo.h> /* backtrace() */
+#include <regex.h>
 
 #ifndef ATTRIBUTE_UNUSED
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
@@ -112,6 +113,7 @@ static inline int string_exists(char *s) { return (s ? TRUE : FALSE); }
 #define LASTCHAR(s)      (s[strlen(s)-1])
 #define FIRSTCHAR(s)     (s[0])
 #define QUOTED_STRING(s) ((FIRSTCHAR(s) == '"') && (LASTCHAR(s) == '"'))
+#define SINGLE_QUOTED_STRING(s) ((FIRSTCHAR(s) == '\'') && (LASTCHAR(s) == '\''))
 #define PATHEQ(A, B)     ((A) && (B) && (pathcmp((char *)(A), (char *)(B)) == 0))
 
 #ifdef roundup
@@ -437,18 +439,21 @@ struct program_context {
 	off_t ifile_offset;             /* current offset into input file */
 	char *runtime_ifile_cmd;        /* runtime command using input file */
 	char *kvmdump_mapfile;          /* storage of physical to file offsets */
-	ulonglong flags2;               /* flags overrun */  
-#define FLAT           (0x1ULL)
-#define ELF_NOTES      (0x2ULL)
-#define GET_OSRELEASE  (0x4ULL)
-#define REMOTE_DAEMON  (0x8ULL)
+	ulonglong flags2;               /* flags overrun */
+#define FLAT           (0x01ULL)
+#define ELF_NOTES      (0x02ULL)
+#define GET_OSRELEASE  (0x04ULL)
+#define REMOTE_DAEMON  (0x08ULL)
 #define ERASEINFO_DATA (0x10ULL)
+#define GDB_CMD_MODE   (0x20ULL)
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
 	FILE *args_ifile;		/* per-command args input file */
+        void (*cmd_cleanup)(void *);    /* per-command cleanup function */
+	void *cmd_cleanup_arg;          /* optional cleanup function argument */
 };
 
 #define READMEM  pc->readmem
@@ -951,6 +956,7 @@ extern struct machdep_table *machdep;
 #define MAX_FOREACH_PIDS     (50)
 #define MAX_FOREACH_COMMS    (50)
 #define MAX_FOREACH_ARGS     (50)
+#define MAX_REGEX_ARGS       (10)
 
 #define FOREACH_CMD          (0x1)
 #define FOREACH_r_FLAG       (0x2)
@@ -977,6 +983,7 @@ extern struct machdep_table *machdep;
 #define FOREACH_F_FLAG  (0x400000)
 #define FOREACH_x_FLAG  (0x800000)
 #define FOREACH_d_FLAG (0x1000000)
+#define FOREACH_STATE  (0x2000000)
 
 struct foreach_data {
 	ulong flags;
@@ -985,12 +992,18 @@ struct foreach_data {
         char *comm_array[MAX_FOREACH_COMMS];
         ulong pid_array[MAX_FOREACH_PIDS];
 	ulong arg_array[MAX_FOREACH_ARGS];
+	struct regex_info {
+		char *pattern;
+		regex_t regex;
+	} regex_info[MAX_REGEX_ARGS];
+	ulong state;
 	char *reference;
 	int keys;
 	int pids;
 	int tasks;
 	int comms;
 	int args;
+	int regexs;
 };
 
 struct reference {       
@@ -1662,6 +1675,13 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long request_queue_rq;
 	long subsys_private_klist_devices;
 	long subsystem_kset;
+	long mount_mnt_parent;
+	long mount_mnt_mountpoint;
+	long mount_mnt_list;
+	long mount_mnt_devname;
+	long mount_mnt;
+	long task_struct_exit_state;
+	long timekeeper_xtime;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1788,6 +1808,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long class_private;
 	long rq_in_flight;
 	long class_private_devices;
+	long mount;
 };
 
 struct array_table {
@@ -2241,6 +2262,7 @@ struct load_module {
 #define PRINT_INODES      (0x10)   /* KVADDR, UVADDR, and PHYSADDR */
 #define PRINT_MM_STRUCT   (0x20)
 #define PRINT_VMA_STRUCTS (0x40)
+#define PRINT_SINGLE_VMA  (0x80)
 
 #define MIN_PAGE_SIZE  (4096)
 
@@ -2643,14 +2665,11 @@ struct load_module {
 
 /* Holds the platform specific info for page translation */
 struct machine_specific {
-
 	char *platform;
 
 	/* page address translation bits */
-	int pgdir_shift;
-	int ptrs_per_pgd;
-	int ptrs_per_pte;
 	int pte_size;
+	int pte_rpn_shift;
 
 	/* page flags */
 	ulong _page_present;
@@ -2665,26 +2684,30 @@ struct machine_specific {
 	ulong _page_hwwrite;
 	ulong _page_shared;
 
+	/* platform special vtop */
+	int (*vtop_special)(ulong vaddr, physaddr_t *paddr, int verbose);
+	void *mmu_special;
 };
 
+/* machdep flags for ppc32 specific */
+#define IS_PAE()		(machdep->flags & PAE)
+#define IS_BOOKE()		(machdep->flags & CPU_BOOKE)
 /* Page translation bits */
 #define PPC_PLATFORM		(machdep->machspec->platform)
-#define PGDIR_SHIFT		(machdep->machspec->pgdir_shift)
-#define PTRS_PER_PTE		(machdep->machspec->ptrs_per_pte)
-#define PTRS_PER_PGD		(machdep->machspec->ptrs_per_pgd)
 #define PTE_SIZE		(machdep->machspec->pte_size)
+#define PTE_RPN_SHIFT		(machdep->machspec->pte_rpn_shift)
+#define PAGE_SHIFT		(12)
+#define PTE_T_LOG2		(ffs(PTE_SIZE) - 1)
+#define PTE_SHIFT		(PAGE_SHIFT - PTE_T_LOG2)
+#define PGDIR_SHIFT		(PAGE_SHIFT + PTE_SHIFT)
+#define PTRS_PER_PGD		(1 << (32 - PGDIR_SHIFT))
+#define PTRS_PER_PTE		(1 << PTE_SHIFT)
+/* special vtop */
+#define VTOP_SPECIAL		(machdep->machspec->vtop_special)
+#define MMU_SPECIAL		(machdep->machspec->mmu_special)
 
-/* Default values for Page translation */
-#define DEFAULT_PGDIR_SHIFT	(22)
-#define DEFAULT_PTRS_PER_PTE	(1024)
-#define DEFAULT_PTRS_PER_PGD	(1024)
-#define DEFAULT_PTE_SIZE	sizeof(ulong)
-
-/* PPC44x translation bits */
-#define PPC44x_PGDIR_SHIFT	(21)
-#define PPC44x_PTRS_PER_PTE	(512)
-#define PPC44x_PTRS_PER_PGD	(2048)
-#define PPC44x_PTE_SIZE   	sizeof(ulonglong)
+/* PFN shifts */
+#define BOOKE3E_PTE_RPN_SHIFT	(24)
 
 /* PAGE flags */
 #define _PAGE_PRESENT   (machdep->machspec->_page_present)	/* software: pte contains a translation */
@@ -2724,6 +2747,36 @@ struct machine_specific {
 #define PPC44x_PAGE_WRITETHRU	0x800
 #define PPC44x_PAGE_HWWRITE	0
 #define PPC44x_PAGE_SHARED	0
+
+/* BOOK3E */
+#define BOOK3E_PAGE_PRESENT	0x000001
+#define BOOK3E_PAGE_BAP_SR	0x000004
+#define BOOK3E_PAGE_BAP_UR	0x000008 /* User Readable */
+#define BOOK3E_PAGE_BAP_SW	0x000010
+#define BOOK3E_PAGE_BAP_UW	0x000020 /* User Writable */
+#define BOOK3E_PAGE_USER	BOOK3E_PAGE_BAP_SR | BOOK3E_PAGE_BAP_UR
+#define BOOK3E_PAGE_RW		BOOK3E_PAGE_BAP_SW | BOOK3E_PAGE_BAP_UW
+#define BOOK3E_PAGE_DIRTY	0x001000
+#define BOOK3E_PAGE_ACCESSED	0x040000
+#define BOOK3E_PAGE_GUARDED	0x100000
+#define BOOK3E_PAGE_COHERENT	0x200000
+#define BOOK3E_PAGE_NO_CACHE	0x400000
+#define BOOK3E_PAGE_WRITETHRU	0x800000
+#define BOOK3E_PAGE_HWWRITE	0
+#define BOOK3E_PAGE_SHARED	0
+
+/* FSL BOOKE */
+#define FSL_BOOKE_PAGE_PRESENT	0x00001
+#define FSL_BOOKE_PAGE_USER	0x00002
+#define FSL_BOOKE_PAGE_RW	0x00004
+#define FSL_BOOKE_PAGE_DIRTY	0x00008
+#define FSL_BOOKE_PAGE_ACCESSED	0x00020
+#define FSL_BOOKE_PAGE_GUARDED	0x00080
+#define FSL_BOOKE_PAGE_COHERENT	0x00100
+#define FSL_BOOKE_PAGE_NO_CACHE	0x00200
+#define FSL_BOOKE_PAGE_WRITETHRU	0x00400
+#define FSL_BOOKE_PAGE_HWWRITE	0
+#define FSL_BOOKE_PAGE_SHARED	0
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
@@ -3663,6 +3716,7 @@ void alias_init(char *);
 struct alias_data *is_alias(char *);
 void deallocate_alias(char *);
 void cmdline_init(void);
+void set_command_prompt(char *);
 void exec_input_file(void);
 void process_command_line(void);
 void dump_history(void);
@@ -3760,6 +3814,7 @@ int extract_hex(char *, ulong *, char, ulong);
 int count_bits_int(int);
 int count_bits_long(ulong);
 int highest_bit_long(ulong);
+int lowest_bit_long(ulong);
 void buf_init(void);
 void sym_buf_init(void);
 void free_all_bufs(void);

@@ -1,3 +1,86 @@
+crash (6.0.5-1) unstable; urgency=low
+
+  * New upstream version 6.0.5
+  * Enhancement to the "foreach" command to allow any of the "name" arguments
+    to be POSIX extended regular expressions.  The expression string must be
+    encompassed by "'" characters, and will be matched against the names of
+    all tasks.
+  * Fix for the embedded gdb module's "ptype" command, and by extension, the
+    crash utility's "struct" command, to be able to fully display embedded
+    structure or union members of a structure/union.  Without the patch, if a
+    structure or union is a member of a structure or union that is a member of
+    a structure or union, then it is displayed as "struct {...}" or "union
+    {...}".
+  * Extend the "ps -l" output to also display the task state next to its
+    last_run/timestamp value.
+  * Enhancement to the "foreach" command which adds a new "state"
+    task-indentifier argument that filters tasks by their task state.  The
+    state argument may be any of the task states displayed by the "ps"
+    command: RU, IN, UN, ST, ZO, SW or DE.
+  * Implemented a new pc->cmd_cleanup function pointer and an optional
+    pc->cmd_cleanup_arg argument that will allow any command to register a
+    function and an optional argument that will be called after a command has
+    completed successfully, or more likely, unsuccessfully.  Normally the only
+    cleanup required for a command is the freeing of buffers that were
+    allocated with GETBUF(), but that is performed automatically after each
+    command is run.  However, with the introduction of the new POSIX regular
+    expression functionality of the "foreach" command, there needed to be a
+    way to call regfree() in the case where where regcomp() was called
+    successfully, but then the command later encountered one of several fatal
+    error conditions.  This facility is also available for use by extension
+    module commands.
+  * Enforce the usage of a kernel thread's pgd from its active_mm for the ARM
+    "vtop -c" command; if its active_mm is NULL, make the command fail
+    similarly to the other architectures, displaying the error message "vtop:
+    no active_mm for this kernel thread".
+  * Fix for the x86_64 "bt" command running against recent kernels if an
+    active task was operating on its IRQ stack when the crash occurred.
+    Without the patch, the determination of the IRQ exception frame was
+    off-by-8, displaying invalid register data and the error message "bt:
+    WARNING: possibly bogus exception frame". 
+  * Update to handle the vfsmount structure change in 3.3 kernels, in which
+    most members of the vfsmount structure have been moved into a new "struct
+    mount", and the vfsmount structure has been embedded in the new mount
+    structure.
+  * Fix for the "ps" command to prevent the display of "??" under the ST (task
+    state) column.  Without the patch, in more recent kernels, if more than
+    one bit were set in the task_struct.state field, the state would display
+    "??".  With the fix, the primary state will always be displayed.
+  * Update to the output of the "set" command when it displays a task's state.
+    Without the patch, if more than one bit was set in the task_struct.state
+    field, "STATE: (unknown)" would be displayed.  With the fix, all bits in
+    both the task_struct.state and task_struct.exit_state fields are
+    translated.
+  * Implemented a new "vm -P <vma-address>" option, which is similar to "vm
+    - p", but only does the page translations of the specified VM area of a
+    context.
+  * Add support for the Freescale PowerPC e500mc version of the E500 processor
+    chipset, and rework the PPC platform-specific code in order to more easily
+    support new processors.
+  * Implemented a new "gdb" crash environment variable that can be used to
+    alter a crash session's behavior such that all commands are passed
+    directly to the embedded gdb module.  The new mode is turned on and off by
+    entering "set gdb on" and "set gdb off".  When running in this mode, the
+    command prompt will be "gdb>".  In order to execute native crash commands
+    while running in this mode, precede the command with the "crash"
+    directive, for example, "crash ps".
+  * Fix for a "*** stack smashing detected ***: crash terminated" failure
+    during the initial system banner display on a 32-bit PPC platform.
+  * Redesigned/simplified the internal read_string() function to prevent a
+    potential segmentation violation.
+  * Updates for the 32-bit PPC "vtop" command output: (1) Translate kernel
+    virtual addresses for FSL BOOKE by using the TLBCAM setting (2) Remove the
+    PMD line from the display (3) Fix the displayed PHYSICAL values of FSL
+    BOOKE PTE format
+  * Fix for crash invocation failure on 3.3-era kernels in which the the
+    former standalone "xtime" timespec structure has been moved into the
+    "timekeeper" structure.  Without the patch, the crash session would fail
+    early on with the message "crash: cannot resolve: xtime".  The patch also
+    prevents the crash session failure in the unlikely event that the timespec
+    access fails.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 29 Mar 2012 09:41:13 -0600
+
 crash (6.0.4-1) unstable; urgency=low
 
   * New upstream version 6.0.4

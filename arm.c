@@ -1009,22 +1009,37 @@ static int
 arm_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
 {
 	ulong *pgd;
-	ulong mm;
 
 	if (!tc)
 		error(FATAL, "current context invalid\n");
 
 	*paddr = 0;
 
-	if (IS_KVADDR(uvaddr))
-		return arm_kvtop(tc, uvaddr, paddr, verbose);
+        if (is_kernel_thread(tc->task) && IS_KVADDR(uvaddr)) {
+		ulong active_mm;
 
-	mm = task_mm(tc->task, TRUE);
-	if (mm)
-		pgd = ULONG_PTR(tt->mm_struct + OFFSET(mm_struct_pgd));
-	else
-		readmem(tc->mm_struct + OFFSET(mm_struct_pgd), KVADDR, &pgd,
-			sizeof(long), "mm_struct pgd", FAULT_ON_ERROR);
+		readmem(tc->task + OFFSET(task_struct_active_mm),
+			KVADDR, &active_mm, sizeof(void *),
+			"task active_mm contents", FAULT_ON_ERROR);
+
+		if (!active_mm)
+			error(FATAL,
+			     "no active_mm for this kernel thread\n");
+
+		readmem(active_mm + OFFSET(mm_struct_pgd),
+			KVADDR, &pgd, sizeof(long),
+			"mm_struct pgd", FAULT_ON_ERROR);
+	} else {
+		ulong mm;
+
+		mm = task_mm(tc->task, TRUE);
+		if (mm)
+			pgd = ULONG_PTR(tt->mm_struct + OFFSET(mm_struct_pgd));
+		else
+			readmem(tc->mm_struct + OFFSET(mm_struct_pgd),
+				KVADDR, &pgd, sizeof(long), "mm_struct pgd",
+				FAULT_ON_ERROR);
+	}
 
 	return arm_vtop(uvaddr, pgd, paddr, verbose);
 }

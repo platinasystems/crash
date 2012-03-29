@@ -131,7 +131,6 @@ process_command_line(void)
 		
 		check_special_handling(pc->command_line);
         } else {
-                fflush(fp);
         	if (fgets(pc->command_line, BUFSIZE-1, stdin) == NULL)
 			clean_exit(1);
 		strcpy(pc->orig_line, pc->command_line);
@@ -883,11 +882,28 @@ cmdline_init(void)
 
 	SIGACTION(SIGPIPE, SIG_IGN, &pc->sigaction, NULL);
 
-	if ((pc->prompt = (char *)malloc(strlen(pc->program_name)+3)) == NULL)
-		pc->prompt = "> ";
-	else
-		sprintf(pc->prompt, "%s> ", pc->program_name);
+	set_command_prompt(NULL);
+}
 
+
+/*
+ *  Create and stash the original prompt, but allow changes during runtime.
+ */
+void
+set_command_prompt(char *new_prompt)
+{
+	static char *orig_prompt = NULL;
+
+	if (!orig_prompt) {
+		if (!(orig_prompt = (char *)malloc(strlen(pc->program_name)+3)))
+			error(FATAL, "cannot malloc prompt string\n");
+		sprintf(orig_prompt, "%s> ", pc->program_name);
+	}
+
+	if (new_prompt)
+		pc->prompt = new_prompt;
+	else
+		pc->prompt = orig_prompt;
 }
 
 /*
@@ -1066,13 +1082,14 @@ restore_sanity(void)
                 pc->args_ifile = NULL;
         }
 
-	if (pc->tmpfile) {
+	if (pc->tmpfile)
 		close_tmpfile();
-	}
 
-	if (pc->tmpfile2) {
+	if (pc->tmpfile2)
 		close_tmpfile2();
-	}
+
+	if (pc->cmd_cleanup)
+		pc->cmd_cleanup(pc->cmd_cleanup_arg);
 
 	if (pc->flags & TTY) {
 		if ((fd = open("/dev/tty", O_RDONLY)) < 0) {
@@ -2483,6 +2500,9 @@ exec_args_input_file(struct command_table_entry *ct, struct args_input_file *aif
 			(*ct->func)();
 			pc->flags &= ~IN_FOREACH;
 		}
+
+		if (pc->cmd_cleanup)
+			pc->cmd_cleanup(pc->cmd_cleanup_arg);
 
 		free_all_bufs();
 	}
