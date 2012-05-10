@@ -768,6 +768,9 @@ reattempt:
         if (is_datatype_command()) 
                 goto reattempt;
 
+	if (STRNEQ(args[0], "#") || STRNEQ(args[0], "//"))
+		return;
+
 	if (!(pc->flags & MINIMAL_MODE) &&
 	    is_gdb_command(TRUE, FAULT_ON_ERROR)) 
 		goto reattempt;
@@ -1310,6 +1313,8 @@ dump_program_context(void)
 		fprintf(fp, "%sGET_OSRELEASE", others++ ? "|" : "");
 	if (pc->flags2 & REMOTE_DAEMON)
 		fprintf(fp, "%sREMOTE_DAEMON", others++ ? "|" : "");
+	if (pc->flags2 & LIVE_DUMP)
+		fprintf(fp, "%sLIVE_DUMP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);

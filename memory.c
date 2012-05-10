@@ -7918,6 +7918,7 @@ kmem_cache_init(void)
 		kmem_cache_downsize();
 
 	cache_buf = GETBUF(SIZE(kmem_cache_s));
+	hq_open();
 
         do {
 		cache_count++;
@@ -7929,6 +7930,17 @@ kmem_cache_init(void)
 			error(INFO, 
 		          "%sunable to initialize kmem slab cache subsystem\n\n",
 				DUMPFILE() ? "\n" : "");
+			hq_close();
+			return;
+		}
+
+		if (!hq_enter(cache)) {
+			error(WARNING, 
+			    "%sduplicate kmem_cache entry in cache list: %lx\n",
+				DUMPFILE() ? "\n" : "", cache);
+			error(INFO, "unable to initialize kmem slab cache subsystem\n\n");
+			vt->flags |= KMEM_CACHE_UNAVAIL;
+			hq_close();
 			return;
 		}
 
@@ -7944,6 +7956,7 @@ kmem_cache_init(void)
 		 */
 		if (vt->flags & KMEM_CACHE_UNAVAIL) {
 			FREEBUF(cache_buf);
+			hq_close();
 			return;
 		}
 
@@ -7965,6 +7978,7 @@ kmem_cache_init(void)
 
         } while (cache != cache_end);
 
+	hq_close();
 	FREEBUF(cache_buf);
 
 	vt->kmem_max_c_num = max_cnum;
@@ -8209,7 +8223,8 @@ kmem_cache_s_array_nodes:
 			    "kmem_list3 shared", RETURN_ON_ERROR|QUIET)) {
 				if (!shared)
 					break;
-			} 
+			} else
+				continue;
 			if (readmem(shared + OFFSET(array_cache_limit),
 	       		    KVADDR, &limit, sizeof(int), "shared array_cache limit",
 		            RETURN_ON_ERROR|QUIET)) {

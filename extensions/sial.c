@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.15 2012/01/04 14:46:57 anderson Exp $
+ * $Id: sial.c,v 1.17 2012/03/27 19:11:20 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -887,6 +887,10 @@ struct command_table_entry *cp, *end;
     for (cp = command_table; cp->name; cp++) {
         if (!strcmp(cp->name, name)) {
             sial_free(cp->name);
+            sial_free(cp->help_data[0]);
+            sial_free(cp->help_data[2]);
+            sial_free(cp->help_data[3]);
+            free(cp->help_data);
             memmove(cp, cp+1, sizeof *cp *(NCMDS-(cp-command_table)-1));
             break;
         }
@@ -990,7 +994,11 @@ _init() /* Register the command set. */
 #ifdef PPC64
 #define SIAL_ABI  ABI_PPC64
 #else
+#ifdef PPC
+#define SIAL_ABI  ABI_PPC
+#else
 #error sial: Unkown ABI 
+#endif
 #endif
 #endif
 #endif

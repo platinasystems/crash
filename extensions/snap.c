@@ -570,7 +570,7 @@ generate_elf_header(int type, int fd, char *filename)
 
   	/* NT_TASKSTRUCT note */
 	task_struct = CURRENT_TASK();
-	len = dump_elf_note (ptr, NT_TASKSTRUCT, "CORE",
+	len = dump_elf_note (ptr, NT_TASKSTRUCT, "SNAP",
 		(char *)&task_struct, sizeof(ulonglong));
 	offset += len;
 	ptr += len;

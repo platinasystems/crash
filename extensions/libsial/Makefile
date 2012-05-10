@@ -24,10 +24,7 @@ LDIRT    = lex.sial.c lex.sialpp.c sial.tab.c sial.tab.h sialpp.tab.c \
 LIBDIR	 = /usr/lib
 TARGETS  = libsial.a
 
-CFLAGS += -O3 -g -fPIC
-ifeq ($(TARGET), PPC64)
-	CFLAGS += -m64
-endif
+CFLAGS += -O3 -g -fPIC $(TARGET_CFLAGS)
 
 CFILES   = sial_util.c sial_node.c sial_var.c sial_func.c sial_str.c \
 	sial_op.c sial_num.c sial_stat.c sial_builtin.c sial_type.c \

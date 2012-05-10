@@ -317,8 +317,8 @@ fdata *fd=sial_findfile(name, 0);
 
 	if(fd) {
 
-		sial_freefile(fd);
                 (void)sial_findfile(name, 1);
+		sial_freefile(fd);
 		return 1;
 
 	}
