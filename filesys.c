@@ -18,6 +18,7 @@
 #include "defs.h"
 #include <linux/major.h>
 #include <regex.h>
+#include <sys/utsname.h>
 
 static void show_mounts(ulong, int, struct task_context *);
 static int find_booted_kernel(void);
@@ -1941,6 +1942,8 @@ vfs_init(void)
 	MEMBER_OFFSET_INIT(inode_u, "inode", "u");
 	MEMBER_OFFSET_INIT(qstr_name, "qstr", "name");
 	MEMBER_OFFSET_INIT(qstr_len, "qstr", "len");
+	if (INVALID_MEMBER(qstr_len))
+		ANON_MEMBER_OFFSET_INIT(qstr_len, "qstr", "len");
 
 	MEMBER_OFFSET_INIT(vfsmount_mnt_next, "vfsmount", "mnt_next");
         MEMBER_OFFSET_INIT(vfsmount_mnt_devname, "vfsmount", "mnt_devname");
@@ -2024,7 +2027,15 @@ vfs_init(void)
 			"radix_tree_root","rnode");
 		MEMBER_OFFSET_INIT(radix_tree_node_slots, 
 			"radix_tree_node","slots");
+		MEMBER_OFFSET_INIT(radix_tree_node_height, 
+			"radix_tree_node","height");
 	}
+	MEMBER_OFFSET_INIT(rb_root_rb_node, 
+		"rb_root","rb_node");
+	MEMBER_OFFSET_INIT(rb_node_rb_left, 
+		"rb_node","rb_left");
+	MEMBER_OFFSET_INIT(rb_node_rb_right, 
+		"rb_node","rb_right");
 }
 
 void
@@ -3419,7 +3430,7 @@ same_file(char *f1, char *f2)
  *  Determine which live memory source to use.
  */
 
-#define MODPROBE_CMD "/sbin/modprobe -l --type drivers/char"
+#define MODPROBE_CMD "/sbin/modprobe -l --type drivers/char 2>&1"
 
 static void 
 get_live_memory_source(void)
@@ -3431,6 +3442,7 @@ get_live_memory_source(void)
 	char *name;
 	int use_module, crashbuiltin;
 	struct stat stat1, stat2;
+	struct utsname utsname;
 
 	if (!(pc->flags & PROC_KCORE))
 		pc->flags |= DEVMEM;
@@ -3467,6 +3479,15 @@ get_live_memory_source(void)
 		sprintf(modname1, "%s.o", pc->memory_module);
                 sprintf(modname2, "%s.ko", pc->memory_module);
 	        while (fgets(buf, BUFSIZE, pipe)) {
+			if (strstr(buf, "invalid option") && 
+			    (uname(&utsname) == 0)) {
+				sprintf(buf, 
+				    "/lib/modules/%s/kernel/drivers/char/%s", 
+					utsname.release, modname2);
+				if (file_exists(buf, &stat1))
+					use_module = TRUE;
+				break;
+			}
 			name = basename(strip_linefeeds(buf));
 			if (STREQ(name, modname1) || STREQ(name, modname2)) {
 				use_module = TRUE;
@@ -3808,8 +3829,7 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 		   "radix trees do not exist (or have changed their format)\n");
 
 	if (RADIX_TREE_MAP_SHIFT == UNINITIALIZED) {
-		if (!(nlen = datatype_info("radix_tree_node", "slots", 
-		    MEMBER_SIZE_REQUEST)))
+		if (!(nlen = MEMBER_SIZE("radix_tree_node", "slots")))
 			error(FATAL, "cannot determine length of " 
 				     "radix_tree_node.slots[] array\n");
 		nlen /= sizeof(void *);

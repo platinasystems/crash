@@ -71,6 +71,13 @@ struct vmcore_data {
 	struct xen_kdump_data *xen_kdump_data;
 	void *vmcoreinfo;
 	uint size_vmcoreinfo;
+/* Backup Region, first 640K of System RAM. */
+#define KEXEC_BACKUP_SRC_END	0x0009ffff
+	uint num_qemu_notes;
+	void *nt_qemu_percpu[NR_CPUS];
+	ulonglong backup_src_start;
+	ulong backup_src_size;
+	ulonglong backup_offset;
 };
 
 /*
@@ -172,3 +179,25 @@ struct proc_kcore_data {
 	Elf32_Phdr *load32;
 };
 
+struct QEMUCPUSegment {
+    uint32_t selector;
+    uint32_t limit;
+    uint32_t flags;
+    uint32_t pad;
+    uint64_t base;
+};
+
+typedef struct QEMUCPUSegment QEMUCPUSegment;
+
+struct QEMUCPUState {
+    uint32_t version;
+    uint32_t size;
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rsp, rbp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rip, rflags;
+    QEMUCPUSegment cs, ds, es, fs, gs, ss;
+    QEMUCPUSegment ldt, tr, gdt, idt;
+    uint64_t cr[5];
+};
+
+typedef struct QEMUCPUState QEMUCPUState;

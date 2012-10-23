@@ -187,10 +187,13 @@ static const char *isa_modes[] = {
 void
 arm_init(int when)
 {
+	ulong vaddr;
+
 #if defined(__i386__) || defined(__x86_64__)
 	if (ACTIVE())
 		error(FATAL, "compiled for the ARM architecture\n");
 #endif
+
 	switch (when) {
 	case PRE_SYMTAB:
 		machdep->verify_symbol = arm_verify_symbol;
@@ -294,15 +297,6 @@ arm_init(int when)
 				   "pr_pid");
 		MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus",
 				   "pr_reg");
-
-		/*
-		 * crash_notes contains machine specific information about the
-		 * crash. In particular, it contains CPU registers at the time
-		 * of the crash. We need this information to extract correct
-		 * backtraces from the panic task.
-		 */
-		if (!ACTIVE() && !arm_get_crash_notes())
-			error(WARNING, "Couldn't retrieve crash_notes\n");
 		break;
 
 	case POST_VM:
@@ -311,8 +305,21 @@ arm_init(int when)
 		 * Modules are placed in first vmalloc'd area. This is 16MB
 		 * below PAGE_OFFSET.
 		 */
-		machdep->machspec->modules_vaddr = first_vmalloc_address();
 		machdep->machspec->modules_end = machdep->kvbase - 1;
+		vaddr = first_vmalloc_address();
+		if (vaddr > machdep->machspec->modules_end)
+			machdep->machspec->modules_vaddr = DEFAULT_MODULES_VADDR;
+		else
+			machdep->machspec->modules_vaddr = vaddr;
+
+		/*
+		 * crash_notes contains machine specific information about the
+		 * crash. In particular, it contains CPU registers at the time
+		 * of the crash. We need this information to extract correct
+		 * backtraces from the panic task.
+		 */
+		if (!ACTIVE() && !arm_get_crash_notes())
+			error(WARNING, "could not retrieve crash_notes\n");
 
 		if (init_unwind_tables()) {
 			if (CRASHDEBUG(1))
@@ -614,7 +621,7 @@ static int
 arm_is_module_addr(ulong vaddr)
 {
 	ulong modules_start;
-	ulong modules_end = machdep->kvbase - 1;
+	ulong modules_end = machdep->machspec->modules_end;
 
 	if (!MODULES_VADDR) {
 		/*
@@ -622,7 +629,7 @@ arm_is_module_addr(ulong vaddr)
 		 * called, we use defaults here which is 16MB below kernel start
 		 * address.
 		 */
-		modules_start = machdep->kvbase - 16 * 1024 * 1024;
+		modules_start = DEFAULT_MODULES_VADDR;
 	} else {
 		modules_start = MODULES_VADDR;
 	}
@@ -1248,17 +1255,33 @@ arm_dump_backtrace_entry(struct bt_info *bt, int level, ulong from, ulong sp)
 	struct load_module *lm;
 	const char *name;
 	int offset = 0;
+	struct syment *symp;
+	ulong symbol_offset;
+	char *name_plus_offset;
+	char buf[BUFSIZE];
 
 	name = closest_symbol(bt->instptr);
+
+	name_plus_offset = NULL;
+	if (bt->flags & BT_SYMBOL_OFFSET) {
+		symp = value_search(bt->instptr, &symbol_offset);
+
+		if (symp && symbol_offset)
+			name_plus_offset = 
+				value_to_symstr(bt->instptr, buf, bt->radix);
+	}
 
 	if (module_symbol(bt->instptr, NULL, &lm, NULL, 0)) {
 		fprintf(fp, "%s#%d [<%08lx>] (%s [%s]) from [<%08lx>]\n",
 			level < 10 ? " " : "",
-			level, bt->instptr, name, lm->mod_name, from);
+			level, bt->instptr, 
+			name_plus_offset ? name_plus_offset : name,
+			lm->mod_name, from);
 	} else {
 		fprintf(fp, "%s#%d [<%08lx>] (%s) from [<%08lx>]\n",
 			level < 10 ? " " : "",
-			level, bt->instptr, name, from);
+			level, bt->instptr, 
+			name_plus_offset ? name_plus_offset : name, from);
 	}
 
 	if (bt->flags & BT_LINE_NUMBERS) {
@@ -1437,6 +1460,7 @@ arm_display_machine_stats(void)
 	fprintf(fp, "                 HZ: %d\n", machdep->hz);
 	fprintf(fp, "          PAGE SIZE: %d\n", PAGESIZE());
 	fprintf(fp, "KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
+	fprintf(fp, "KERNEL MODULES BASE: %lx\n", MODULES_VADDR);
 	fprintf(fp, "KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
 	fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
 }

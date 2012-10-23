@@ -51,7 +51,7 @@ static long rodata_search(ulong *, ulong);
 static int ascii_long(ulong word);
 static int is_bfd_format(char *); 
 static int is_binary_stripped(char *);
-static int namespace_ctl(int, struct namespace *, void *, void *);
+static int namespace_ctl(int, struct symbol_namespace *, void *, void *);
 static void symval_hash_init(void);
 static struct syment *symval_hash_search(ulong);
 static void symname_hash_init(void);
@@ -528,7 +528,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 		error(FATAL, "symbol table syment space malloc: %s\n",
 			strerror(errno));
 
-	if (!namespace_ctl(NAMESPACE_INIT, &st->namespace, 
+	if (!namespace_ctl(NAMESPACE_INIT, &st->kernel_namespace, 
 	    (void *)symcount, NULL))
 		error(FATAL, "symbol table namespace malloc: %s\n", 
 			strerror(errno));
@@ -562,7 +562,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 			else
 				sp->value = syminfo.value;
 			sp->type = syminfo.type;
-			namespace_ctl(NAMESPACE_INSTALL, &st->namespace,
+			namespace_ctl(NAMESPACE_INSTALL, &st->kernel_namespace,
 				sp, (char *)syminfo.name); 
 			sp++;
 			st->symcnt++;
@@ -573,7 +573,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 
 	st->flags |= KERNEL_SYMS;
 
-	namespace_ctl(NAMESPACE_COMPLETE, &st->namespace, 
+	namespace_ctl(NAMESPACE_COMPLETE, &st->kernel_namespace, 
 		st->symtable, st->symend);
 }
 
@@ -603,7 +603,7 @@ store_sysmap_symbols(void)
                 error(FATAL, "symbol table syment space malloc: %s\n",
                         strerror(errno));
 
-        if (!namespace_ctl(NAMESPACE_INIT, &st->namespace,
+        if (!namespace_ctl(NAMESPACE_INIT, &st->kernel_namespace,
             (void *)symcount, NULL))
                 error(FATAL, "symbol table namespace malloc: %s\n",
                         strerror(errno));
@@ -634,7 +634,7 @@ store_sysmap_symbols(void)
 			else
 				sp->value = syment.value;
                         sp->type = syment.type;
-                        namespace_ctl(NAMESPACE_INSTALL, &st->namespace,
+                        namespace_ctl(NAMESPACE_INSTALL, &st->kernel_namespace,
                                 sp, syment.name);
                         sp++;
                         st->symcnt++;
@@ -647,7 +647,7 @@ store_sysmap_symbols(void)
 
         st->flags |= KERNEL_SYMS;
 
-        namespace_ctl(NAMESPACE_COMPLETE, &st->namespace,
+        namespace_ctl(NAMESPACE_COMPLETE, &st->kernel_namespace,
                 st->symtable, st->symend);
 
 	symname_hash_init();
@@ -1744,7 +1744,7 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
 	int mcnt;
 	int mcnt_idx;
 	int found;
-	struct namespace *ns;
+	struct symbol_namespace *ns;
 
 	if (!(kt->flags & KALLSYMS_V1))
 		return 0;
@@ -1897,7 +1897,7 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 	ulong nksyms, ksymtab, kstrtab;
 	char *module_buf, *ptr, *locsymtab, *locstrtab, *nameptr;
 	struct syment *sp;
-	struct namespace *ns;
+	struct symbol_namespace *ns;
         int mcnt;
         int mcnt_idx;
 	char *module_buf_init = NULL;
@@ -2265,7 +2265,7 @@ load_module_filter(char *s, int type)
 #define AVERAGE_SYMBOL_SIZE (16)
 
 static int
-namespace_ctl(int cmd, struct namespace *ns, void *nsarg1, void *nsarg2)
+namespace_ctl(int cmd, struct symbol_namespace *ns, void *nsarg1, void *nsarg2)
 {
 	char *addr;
 	struct syment *sp, *sp_end;
@@ -2700,11 +2700,11 @@ dump_symbol_table(void)
 		if (SYMNAME_HASH % 6)
 			fprintf(fp, "\n");
 	}
-	fprintf(fp, "           namespace: ");
-	fprintf(fp, "address: %lx  ", (ulong)st->namespace.address);
-	fprintf(fp, "index: %ld  ", st->namespace.index); 
-	fprintf(fp, "size: %ld  ", (ulong)st->namespace.size);
-	fprintf(fp, "cnt: %ld\n", st->namespace.cnt);
+	fprintf(fp, "    symbol_namespace: ");
+	fprintf(fp, "address: %lx  ", (ulong)st->kernel_namespace.address);
+	fprintf(fp, "index: %ld  ", st->kernel_namespace.index); 
+	fprintf(fp, "size: %ld  ", (ulong)st->kernel_namespace.size);
+	fprintf(fp, "cnt: %ld\n", st->kernel_namespace.cnt);
 	fprintf(fp, " ext_module_symtable: %lx\n", 
 		(ulong)st->ext_module_symtable);
 	fprintf(fp, "   ext_module_symend: %lx\n", 
@@ -3560,6 +3560,8 @@ show_symbol(struct syment *sp, ulong offset, ulong show_flags)
 	struct load_module *lm;
 
 	lm = NULL;
+	if (CRASHDEBUG(1))
+		show_flags |= SHOW_LINENUM;
 
 	switch (show_flags & (SHOW_HEX_OFFS|SHOW_DEC_OFFS))
 	{
@@ -4787,6 +4789,9 @@ per_cpu_symbol_search(char *symbol)
 		if ((sp = symbol_search(new))) {
 			if ((sp->type == 'V') || (is_percpu_symbol(sp)))
 				return sp;
+			if ((sp->type == 'd') &&
+			    (st->__per_cpu_start == st->__per_cpu_end))
+				return sp;
 		}
 	} else {
 		if ((sp = symbol_search(symbol))) {
@@ -5758,11 +5763,6 @@ cmd_datatype_common(ulong flags)
 	else if (!aflag)
 		error(FATAL, "no kernel virtual address argument entered\n");
 
-	if ((flags & SHOW_OFFSET) && aflag) {
-		error(INFO, "-o option not valid with an address argument\n");
-		flags &= ~SHOW_OFFSET;
-	}
-
 	if (pflag && !aflag)
 		error(FATAL, "-p option requires address argument\n");
 
@@ -5796,6 +5796,10 @@ cmd_datatype_common(ulong flags)
 		argc_members = 0;
 		flags |= SHOW_OFFSET;
 	}
+
+        if ((argc_members > 1) && aflag && (flags & SHOW_OFFSET))
+		error(FATAL, 
+		    "-o option not valid with multiple member format\n");
 
 	len = dm->size;
 
@@ -5842,7 +5846,9 @@ cmd_datatype_common(ulong flags)
 			/* 
 	 		 *  No address was passed -- dump the structure/member declaration.
 	 		 */
-			if (!aflag) {
+			if (!aflag || (aflag && (flags & SHOW_OFFSET))) {
+				if (aflag)
+					dm->vaddr = addr;
 				set_temporary_radix(radix, &restore_radix);
 				do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
 				restore_current_radix(restore_radix);
@@ -6050,9 +6056,9 @@ dump_datatype_member(FILE *ofp, struct datatype_member *dm)
 	int others;
 
 	others = 0;
-        fprintf(ofp, "         name: %s\n", dm->name);
-        fprintf(ofp, "       member: %s\n", dm->member);
-        fprintf(ofp, "         type: %lx (", dm->type);
+        fprintf(ofp, "           name: %s\n", dm->name);
+        fprintf(ofp, "         member: %s\n", dm->member);
+        fprintf(ofp, "           type: %lx (", dm->type);
 	if (dm->type & STRUCT_REQUEST)
 		fprintf(ofp, "%sSTRUCT_REQUEST", others++ ? "|" : "");
         if (dm->type & UNION_REQUEST)
@@ -6078,11 +6084,15 @@ dump_datatype_member(FILE *ofp, struct datatype_member *dm)
         if (dm->type & IN_STRUCT)
 		fprintf(ofp, "%sIN_STRUCT", others++ ? "|" : "");
 	fprintf(ofp, ")\n");
-        fprintf(ofp, "         size: %ld\n", dm->size);
-        fprintf(ofp, "member_offset: %ld\n", dm->member_offset);
-        fprintf(ofp, "  member_size: %ld\n", dm->member_size);
-        fprintf(ofp, "        flags: %lx ", dm->flags);
+        fprintf(ofp, "           size: %ld\n", dm->size);
+        fprintf(ofp, "  member_offset: %ld\n", dm->member_offset);
+        fprintf(ofp, "    member_size: %ld\n", dm->member_size);
+	fprintf(ofp, "member_typecode: %d\n", dm->member_typecode);
+        fprintf(ofp, "          flags: %lx ", dm->flags);
 	dump_datatype_flags(dm->flags, ofp);
+	fprintf(ofp, "        tagname: %s\n", dm->tagname);
+	fprintf(ofp, "          value: %ld\n", dm->value);
+	fprintf(ofp, "          vaddr: %lx\n", dm->vaddr);
 	fprintf(ofp, "\n");
 }
 
@@ -6810,17 +6820,17 @@ next_item:
 				if (!indent) {
 					if ((p1 = strstr(buf, ", \n")))
 						sprintf(p1, "\n");
-					fprintf(pc->saved_fp, buf);
+					fprintf(pc->saved_fp, "%s", buf);
 					break;
 				}
 				if (strstr(buf, "}") && 
 				    (count_leading_spaces(buf) == indent)) {
 					if ((p1 = strstr(buf, "}, \n")))
 						sprintf(p1, "}\n");
-					fprintf(pc->saved_fp, buf);
+					fprintf(pc->saved_fp, "%s", buf);
 					break;
 				}
-				fprintf(pc->saved_fp, buf);
+				fprintf(pc->saved_fp, "%s", buf);
 				on++;
 			}
 		}
@@ -6973,8 +6983,11 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		goto do_empty_offset;
 
 	if (end_of_block && dm->member) {
-        	sprintf(buf1, *gdb_output_radix == 10 ?  
-			"  [%ld]" : "  [0x%lx]", offset);
+		if (dm->vaddr)
+			sprintf(buf1, "  [%lx]", offset + dm->vaddr);
+		else
+			sprintf(buf1, *gdb_output_radix == 10 ?  
+				"  [%ld]" : "  [0x%lx]", offset);
         	sprintf(fmt, "%c%ds", '%', len+1);
         	fprintf(ofp, fmt, " ");
 
@@ -6991,7 +7004,10 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
                 dm->flags &= ~(IN_UNION|IN_STRUCT);
 	}
 
-	sprintf(buf1, *gdb_output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
+	if (dm->vaddr)
+		sprintf(buf1, "  [%lx]", offset + dm->vaddr);
+	else
+		sprintf(buf1, *gdb_output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
 	sprintf(fmt, "%c%ds", '%', len);
 	fprintf(ofp, fmt, buf1);
 	fprintf(ofp, &inbuf[3]);
@@ -7232,6 +7248,8 @@ builtin_array_length(char *s, int len, int *two_dim)
 		lenptr = &array_table.kmem_cache_node;
 	else if (STREQ(s, "kmem_cache.cpu_slab"))
 		lenptr = &array_table.kmem_cache_cpu_slab;
+	else if (STREQ(s, "rt_prio_array.queue"))
+		lenptr = &array_table.rt_prio_array_queue;
 
 	if (!lenptr)                /* not stored */
 		return(len);        
@@ -7369,6 +7387,10 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_timestamp));
         fprintf(fp, "        task_struct_sched_info: %ld\n",
                 OFFSET(task_struct_sched_info));
+        fprintf(fp, "                task_struct_rt: %ld\n",
+                OFFSET(task_struct_rt));
+        fprintf(fp, "      sched_rt_entity_run_list: %ld\n",
+                OFFSET(sched_rt_entity_run_list));
 	fprintf(fp, "       sched_info_last_arrival: %ld\n",
                 OFFSET(sched_info_last_arrival));
         fprintf(fp, "       task_struct_thread_info: %ld\n",
@@ -7465,6 +7487,8 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "              timekeeper_xtime: %ld\n",
 		OFFSET(timekeeper_xtime));
+	fprintf(fp, "          timekeeper_xtime_sec: %ld\n",
+		OFFSET(timekeeper_xtime_sec));
 
 	fprintf(fp, "                k_sigaction_sa: %ld\n",
         	OFFSET(k_sigaction_sa));
@@ -8353,6 +8377,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(neighbour_nud_state));
         fprintf(fp, "      neigh_table_hash_buckets: %ld\n",
 		OFFSET(neigh_table_hash_buckets));
+        fprintf(fp, "         neigh_table_hash_mask: %ld\n",
+		OFFSET(neigh_table_hash_mask));
+        fprintf(fp, "        neigh_table_hash_shift: %ld\n",
+		OFFSET(neigh_table_hash_shift));
+        fprintf(fp, "           neigh_table_nht_ptr: %ld\n",
+		OFFSET(neigh_table_nht_ptr));
         fprintf(fp, "           neigh_table_key_len: %ld\n",
 		OFFSET(neigh_table_key_len));
 
@@ -8418,6 +8448,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(cpu_s_curr));
 	fprintf(fp, "              prio_array_queue: %ld\n",
 		OFFSET(prio_array_queue));
+	fprintf(fp, "           rt_prio_array_queue: %ld\n",
+		OFFSET(rt_prio_array_queue));
 	fprintf(fp, "          prio_array_nr_active: %ld\n",
 		OFFSET(prio_array_nr_active));
 	fprintf(fp, "          user_regs_struct_ebp: %ld\n",
@@ -8535,6 +8567,15 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(radix_tree_root_rnode));
         fprintf(fp, "         radix_tree_node_slots: %ld\n",
                 OFFSET(radix_tree_node_slots));
+        fprintf(fp, "        radix_tree_node_height: %ld\n",
+                OFFSET(radix_tree_node_height));
+
+        fprintf(fp, "               rb_root_rb_node: %ld\n",
+                OFFSET(rb_root_rb_node));
+        fprintf(fp, "               rb_node_rb_left: %ld\n",
+                OFFSET(rb_node_rb_left));
+        fprintf(fp, "              rb_node_rb_right: %ld\n",
+                OFFSET(rb_node_rb_right));
 
 	fprintf(fp, "            x8664_pda_pcurrent: %ld\n",
 		OFFSET(x8664_pda_pcurrent));
@@ -8589,6 +8630,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(cfs_rq_curr));
 	fprintf(fp, "                 rq_nr_running: %ld\n",
 		OFFSET(rq_nr_running));
+	fprintf(fp, "                  rq_timestamp: %ld\n",
+		OFFSET(rq_timestamp));
 	fprintf(fp, "                task_struct_se: %ld\n",
 		OFFSET(task_struct_se));
 	fprintf(fp, "         sched_entity_run_node: %ld\n",
@@ -8688,6 +8731,95 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(subsys_private_klist_devices));
 	fprintf(fp, "                subsystem_kset: %ld\n",
 		OFFSET(subsystem_kset));
+
+	fprintf(fp, "                     file_f_op: %ld\n",
+		OFFSET(file_f_op));
+	fprintf(fp, "             file_private_data: %ld\n",
+		OFFSET(file_private_data));
+	fprintf(fp, "                  hstate_order: %ld\n",
+		OFFSET(hstate_order));
+	fprintf(fp, "      hugetlbfs_sb_info_hstate: %ld\n",
+		OFFSET(hugetlbfs_sb_info_hstate));
+	fprintf(fp, "                 idr_layer_ary: %ld\n",
+		OFFSET(idr_layer_ary));
+	fprintf(fp, "               idr_layer_layer: %ld\n",
+		OFFSET(idr_layer_layer));
+	fprintf(fp, "                    idr_layers: %ld\n",
+		OFFSET(idr_layers));
+	fprintf(fp, "                       idr_top: %ld\n",
+		OFFSET(idr_top));
+	fprintf(fp, "                  ipc_id_ary_p: %ld\n",
+		OFFSET(ipc_id_ary_p));
+	fprintf(fp, "               ipc_ids_entries: %ld\n",
+		OFFSET(ipc_ids_entries));
+	fprintf(fp, "                ipc_ids_max_id: %ld\n",
+		OFFSET(ipc_ids_max_id));
+	fprintf(fp, "              ipc_ids_ipcs_idr: %ld\n",
+		OFFSET(ipc_ids_ipcs_idr));
+	fprintf(fp, "                ipc_ids_in_use: %ld\n",
+		OFFSET(ipc_ids_in_use));
+	fprintf(fp, "             ipc_namespace_ids: %ld\n",
+		OFFSET(ipc_namespace_ids));
+	fprintf(fp, "         kern_ipc_perm_deleted: %ld\n",
+		OFFSET(kern_ipc_perm_deleted));
+	fprintf(fp, "             kern_ipc_perm_key: %ld\n",
+		OFFSET(kern_ipc_perm_key));
+	fprintf(fp, "            kern_ipc_perm_mode: %ld\n",
+		OFFSET(kern_ipc_perm_mode));
+	fprintf(fp, "             kern_ipc_perm_uid: %ld\n",
+		OFFSET(kern_ipc_perm_uid));
+	fprintf(fp, "              kern_ipc_perm_id: %ld\n",
+		OFFSET(kern_ipc_perm_id));
+	fprintf(fp, "             kern_ipc_perm_seq: %ld\n",
+		OFFSET(kern_ipc_perm_seq));
+	fprintf(fp, "                nsproxy_ipc_ns: %ld\n",
+		OFFSET(nsproxy_ipc_ns));
+	fprintf(fp, "      shmem_inode_info_swapped: %ld\n",
+		OFFSET(shmem_inode_info_swapped));
+	fprintf(fp, "    shmem_inode_info_vfs_inode: %ld\n",
+		OFFSET(shmem_inode_info_vfs_inode));
+	fprintf(fp, "            shm_file_data_file: %ld\n",
+		OFFSET(shm_file_data_file));
+	fprintf(fp, "         shmid_kernel_shm_file: %ld\n",
+		OFFSET(shmid_kernel_shm_file));
+	fprintf(fp, "       shmid_kernel_shm_nattch: %ld\n",
+		OFFSET(shmid_kernel_shm_nattch));
+	fprintf(fp, "         shmid_kernel_shm_perm: %ld\n",
+		OFFSET(shmid_kernel_shm_perm));
+	fprintf(fp, "        shmid_kernel_shm_segsz: %ld\n",
+		OFFSET(shmid_kernel_shm_segsz));
+	fprintf(fp, "               shmid_kernel_id: %ld\n",
+		OFFSET(shmid_kernel_id));
+	fprintf(fp, "            sem_array_sem_perm: %ld\n",
+		OFFSET(sem_array_sem_perm));
+	fprintf(fp, "              sem_array_sem_id: %ld\n",
+		OFFSET(sem_array_sem_id));
+	fprintf(fp, "           sem_array_sem_nsems: %ld\n",
+		OFFSET(sem_array_sem_nsems));
+	fprintf(fp, "              msg_queue_q_perm: %ld\n",
+		OFFSET(msg_queue_q_perm));
+	fprintf(fp, "                msg_queue_q_id: %ld\n",
+		OFFSET(msg_queue_q_id));
+	fprintf(fp, "            msg_queue_q_cbytes: %ld\n",
+		OFFSET(msg_queue_q_cbytes));
+	fprintf(fp, "              msg_queue_q_qnum: %ld\n",
+		OFFSET(msg_queue_q_qnum));
+	fprintf(fp, "         super_block_s_fs_info: %ld\n",
+		OFFSET(super_block_s_fs_info));
+	fprintf(fp, "                   log_ts_nsec: %ld\n",
+		OFFSET(log_ts_nsec));
+	fprintf(fp, "                       log_len: %ld\n",
+		OFFSET(log_len));
+	fprintf(fp, "                  log_text_len: %ld\n",
+		OFFSET(log_text_len));
+	fprintf(fp, "                  log_dict_len: %ld\n",
+		OFFSET(log_dict_len));
+	fprintf(fp, "                     log_level: %ld\n",
+		OFFSET(log_level));
+	fprintf(fp, "               log_flags_level: %ld\n",
+		OFFSET(log_flags_level));
+	fprintf(fp, "          sched_rt_entity_my_q: %ld\n",
+		OFFSET(sched_rt_entity_my_q));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -8889,6 +9021,22 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(rq_in_flight));
 	fprintf(fp, "         class_private_devices: %ld\n",
 		SIZE(class_private_devices));
+	fprintf(fp, "                        hstate: %ld\n",
+		SIZE(hstate));
+	fprintf(fp, "                       ipc_ids: %ld\n",
+		SIZE(ipc_ids));
+	fprintf(fp, "                  shmid_kernel: %ld\n",
+		SIZE(shmid_kernel));
+	fprintf(fp, "                     sem_array: %ld\n",
+		SIZE(sem_array));
+	fprintf(fp, "                     msg_queue: %ld\n",
+		SIZE(msg_queue));
+	fprintf(fp, "                           log: %ld\n",
+		SIZE(log));
+	fprintf(fp, "                     log_level: %ld\n",
+		SIZE(log_level));
+	fprintf(fp, "                         rt_rq: %ld\n",
+		SIZE(rt_rq));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -8948,6 +9096,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		ARRAY_LENGTH(kmem_cache_node));
 	fprintf(fp, "           kmem_cache_cpu_slab: %d\n",
 		ARRAY_LENGTH(kmem_cache_cpu_slab));
+        fprintf(fp, "           rt_prio_array_queue: %d\n",
+                ARRAY_LENGTH(rt_prio_array_queue));
 
 	if (spec) {
 		int in_size_table, in_array_table, arrays, offsets, sizes;
@@ -9491,7 +9641,7 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 
 	    if (CRASHDEBUG(2)) {
 		    fprintf(fp, "update sec offset sym %s @ %lx  val %lx  section %s\n",
-			    s1->name, s1->value, syminfo.value, secname);
+			    s1->name, s1->value, (ulong)syminfo.value, secname);
 	    }
 
 	    if (strcmp(secname, ".text") == 0)

@@ -123,7 +123,8 @@ display_gdb_banner(void)
         deprecated_command_loop_hook = exit_after_gdb_info;
 #endif
 	args[0] = "gdb";
-        gdb_main_entry(1, args);
+	args[1] = "-version";
+	gdb_main_entry(2, args);
 }
 
 static void
@@ -197,8 +198,9 @@ gdb_session_init(void)
 		gdb_user_print_option_address("output_radix");
 #endif
 	/*
-         *  If the output radix is set in an .rc file, then pc->output_radix
-         *  will be non-zero.  Otherwise use the gdb default.
+         *  If the output radix is set via the --hex or --dec command line
+	 *  option, then pc->output_radix will be non-zero; otherwise use 
+	 *  the gdb default.  
 	 */
 	if (pc->output_radix) {  
 		*gdb_output_radix = pc->output_radix;
@@ -495,7 +497,11 @@ dump_gnu_request(struct gnu_request *req, int in_gdb)
 		console("name: %lx ", (ulong)req->name);
 	console("length: %ld ", req->length);
         console("typecode: %d\n", req->typecode);
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
 	console("typename: %s\n", req->typename);
+#else
+	console("type_name: %s\n", req->type_name);
+#endif
 	console("target_typename: %s\n", req->target_typename);
 	console("target_length: %ld ", req->target_length);
 	console("target_typecode: %d ", req->target_typecode);
@@ -578,7 +584,12 @@ gdb_command_string(int cmd, char *buf, int live)
         case GNU_PATCH_SYMBOL_VALUES:
                 sprintf(buf, "GNU_PATCH_SYMBOL_VALUES");
                 break;
-
+        case GNU_USER_PRINT_OPTION:
+                sprintf(buf, "GNU_USER_PRINT_OPTION");
+		break;
+        case GNU_SET_CRASH_BLOCK:
+                sprintf(buf, "GNU_SET_CRASH_BLOCK");
+		break;
 	case 0:
 		buf[0] = NULLCHAR;
 		break;
@@ -929,6 +940,54 @@ gdb_user_print_option_address(char *name)
 	request.name = name;
 	gdb_command_funnel(&request);    
 	return request.addr;
+}
+
+/*
+ *  Try to set a crash scope block based upon the vaddr.   
+ */
+int
+gdb_set_crash_scope(ulong vaddr, char *arg)
+{
+        struct gnu_request request, *req = &request;
+	char name[BUFSIZE];
+	struct load_module *lm;
+
+	if (!is_kernel_text(vaddr)) {
+		error(INFO, "invalid text address: %s\n", arg);
+		return FALSE;
+	}
+
+	if (module_symbol(vaddr, NULL, &lm, name, 0)) {
+		if (!(lm->mod_flags & MOD_LOAD_SYMS)) {
+			error(INFO, "attempting to find/load \"%s\" module debuginfo\n", 
+				lm->mod_name);
+			if (!load_module_symbols_helper(lm->mod_name)) {
+				error(INFO, "cannot find/load \"%s\" module debuginfo\n", 
+					lm->mod_name);
+				return FALSE;
+			}
+		}
+	}
+
+	req->command = GNU_SET_CRASH_BLOCK;
+	req->addr = vaddr;
+	req->flags = 0;
+	req->addr2 = 0;
+	gdb_command_funnel(req);    
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, 
+		    "gdb_set_crash_scope: %s  addr: %lx  block: %lx\n",
+			req->flags & GNU_COMMAND_FAILED ? "FAILED" : "OK",  
+			req->addr, req->addr2);
+
+	if (req->flags & GNU_COMMAND_FAILED) {
+		error(INFO, 
+			"gdb cannot find text block for address: %s\n", arg);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 #ifndef ALPHA

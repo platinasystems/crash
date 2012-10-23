@@ -1572,6 +1572,11 @@ ppc64_print_stack_entry(int frame,
 {
 	struct load_module *lm;
 	char *lrname = NULL;
+	ulong offset;
+	struct syment *sp;
+	char *name_plus_offset;
+	char buf[BUFSIZE];
+
 	if (BT_REFERENCE_CHECK(bt)) {
 		switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
 		{
@@ -1585,10 +1590,18 @@ ppc64_print_stack_entry(int frame,
 				bt->ref->cmdflags |= BT_REF_FOUND;
 			break;
 		}
-	} else {		
+	} else {
+		name_plus_offset = NULL;
+		if (bt->flags & BT_SYMBOL_OFFSET) {
+			sp = value_search(req->pc, &offset);
+			if (sp && offset) 
+				name_plus_offset = value_to_symstr(req->pc, buf, bt->radix);
+		}
+		
 		fprintf(fp, "%s#%d [%lx] %s at %lx",
 			frame < 10 ? " " : "", frame,
-			req->sp, req->name, req->pc);
+			req->sp, name_plus_offset ? name_plus_offset : req->name, 
+			req->pc);
 		if (module_symbol(req->pc, NULL, &lm, NULL, 0))
 			fprintf(fp, " [%s]", lm->mod_name);
 	

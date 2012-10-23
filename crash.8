@@ -384,6 +384,20 @@ any settings in either
 or 
 .I $HOME/.crashrc. 
 .TP
+.B --hex
+Set the default command output radix to 16, overriding the default radix of 10,
+and any radix settings in either
+.I ./.crashrc
+or
+.I $HOME/.crashrc.
+.TP
+.B --dec
+Set the default command output radix to 10, overriding any 
+radix settings in either
+.I ./.crashrc
+or 
+.I $HOME/.crashrc.  This is the default radix setting.
+.TP
 .B --CRASHPAGER
 Use the output paging command defined in the 
 .B CRASHPAGER
@@ -546,6 +560,9 @@ alone displays the command menu; if followed by a command name, a full
 description of a command, its options, and examples are displayed.
 Its output is far more complete and useful than this man page.
 .TP
+.I ipcs
+displays data about the System V IPC facilities.
+.TP
 .I irq
 displays data concerning interrupt request numbers and
 bottom-half interrupt handling. 
@@ -634,6 +651,9 @@ displays system-specific data.
 .TP
 .I task
 displays the contents of a task_struct.
+.TP
+.I tree
+displays the contents of a red-black tree or a radix tree.
 .TP
 .I timer
 displays the timer queue entries, both old- and new-style,

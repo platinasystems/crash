@@ -133,6 +133,7 @@ process_command_line(void)
         } else {
         	if (fgets(pc->command_line, BUFSIZE-1, stdin) == NULL)
 			clean_exit(1);
+		clean_line(pc->command_line);
 		strcpy(pc->orig_line, pc->command_line);
         }
 

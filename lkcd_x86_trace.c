@@ -5,8 +5,8 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -65,7 +65,7 @@ static int find_trace(kaddr_t, kaddr_t, kaddr_t, kaddr_t, trace_t *, int);
 static void dump_stack_frame(trace_t *, sframe_t *, FILE *);
 static void print_trace(trace_t *, int, FILE *);
 static int eframe_type(uaddr_t *);
-char *funcname_display(char *);
+static char *funcname_display(char *, ulong, struct bt_info *, char *);
 static void print_eframe(FILE *, uaddr_t *);
 static void trace_banner(FILE *);
 static void print_kaddr(kaddr_t, FILE *, int);
@@ -2663,35 +2663,36 @@ static void
 print_stack_entry(struct bt_info *bt, int level, ulong esp, ulong eip, 
 		  char *funcname, sframe_t *frmp, FILE *ofp)
 {
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 	struct syment *sp;
 	struct load_module *lm;
 
 	if (frmp && frmp->prev && STREQ(frmp->funcname, "error_code") &&
 	    (sp = x86_jmp_error_code((ulong)frmp->prev->pc)))
-		sprintf(buf, " (via %s)", sp->name);
+		sprintf(buf1, " (via %s)", sp->name);
 	else if (frmp && (STREQ(frmp->funcname, "stext_lock") ||
 		STRNEQ(frmp->funcname, ".text.lock")) &&
                 (sp = x86_text_lock_jmp(eip, NULL)))
-		sprintf(buf, " (via %s)", sp->name);
+		sprintf(buf1, " (via %s)", sp->name);
 	else
-		buf[0] = NULLCHAR;
+		buf1[0] = NULLCHAR;
 
 	if ((sp = eframe_label(funcname, eip))) 
 		funcname = sp->name;
 
 	fprintf(ofp, "%s#%d [%8lx] %s%s at %lx",
                 level < 10 ? " " : "", level, esp, 
-		funcname_display(funcname), 
-		strlen(buf) ? buf : "", eip);
+		funcname_display(funcname, eip, bt, buf2), 
+		strlen(buf1) ? buf1 : "", eip);
 	if (module_symbol(eip, NULL, &lm, NULL, 0))
 		fprintf(ofp, " [%s]", lm->mod_name);
 	fprintf(ofp, "\n");
 
         if (bt->flags & BT_LINE_NUMBERS) {
-                get_line_number(eip, buf, FALSE);
-                if (strlen(buf))
-                	fprintf(ofp, "    %s\n", buf);
+                get_line_number(eip, buf1, FALSE);
+                if (strlen(buf1))
+                	fprintf(ofp, "    %s\n", buf1);
         }
 }
 
@@ -2831,10 +2832,17 @@ eframe_label(char *funcname, ulong eip)
  *  this routine won't cause the passed-in function name pointer
  *  to be changed -- this is strictly for display purposes only.
  */
-char *
-funcname_display(char *funcname)
+static char *
+funcname_display(char *funcname, ulong eip, struct bt_info *bt, char *buf)
 {
 	struct syment *sp;
+	ulong offset;
+
+	if (bt->flags & BT_SYMBOL_OFFSET) {
+		sp = value_search(eip, &offset);
+		if (sp && offset)
+			return value_to_symstr(eip, buf, bt->radix);
+	}
 
         if (STREQ(funcname, "nmi_stack_correct") &&
             (sp = symbol_search("nmi"))) 

@@ -24,6 +24,9 @@ struct hq_entry;
 static void dealloc_hq_entry(struct hq_entry *);
 static void show_options(void);
 static void dump_struct_members(struct list_data *, int, ulong);
+static void rbtree_iteration(ulong, struct tree_data *, char *);
+static void rdtree_iteration(ulong, struct tree_data *, char *, ulong, uint);
+static void dump_struct_members_for_tree(struct tree_data *, int, ulong);
 
 /*
  *  General purpose error reporting routine.  Type INFO prints the message
@@ -1729,9 +1732,11 @@ cmd_set(void)
 	char buf[BUFSIZE];
 	char *extra_message;
 	struct task_context *tc;
+	struct syment *sp;
 
 #define defer()  do { } while (0)
 #define already_done()  do { } while (0)
+#define ignore()  do { } while (0)
 
 	extra_message = NULL;
 	runtime = pc->flags & RUNTIME ? TRUE : FALSE;
@@ -1999,8 +2004,8 @@ cmd_set(void)
                } else if (STREQ(args[optind], "scroll")) {
                         if (args[optind+1] && pc->scroll_command) {
                                 optind++;
-				if (!runtime)
-					defer();
+				if (from_rc_file)
+					already_done();
                                 else if (STREQ(args[optind], "on"))
                                         pc->flags |= SCROLL;
                                 else if (STREQ(args[optind], "off"))
@@ -2129,6 +2134,9 @@ cmd_set(void)
                                 optind++;
 				if (!runtime)
 					defer();
+				else if (from_rc_file && 
+				    (pc->flags2 & RADIX_OVERRIDE))
+					ignore();
                                 else if (STREQ(args[optind], "10") ||
 				    STRNEQ(args[optind], "dec") ||
 				    STRNEQ(args[optind], "ten")) 
@@ -2153,7 +2161,9 @@ cmd_set(void)
 			return;
 
                 } else if (STREQ(args[optind], "hex")) {
-			if (runtime) {
+			if (from_rc_file && (pc->flags2 & RADIX_OVERRIDE))
+				ignore();
+			else if (runtime) {
 				pc->output_radix = 16;
 				gdb_pass_through("set output-radix 16", 
 					NULL, GNU_FROM_TTY_OFF);
@@ -2162,7 +2172,9 @@ cmd_set(void)
 			return;
 
                 } else if (STREQ(args[optind], "dec")) {
-			if (runtime) {
+			if (from_rc_file && (pc->flags2 & RADIX_OVERRIDE))
+				ignore();
+			else if (runtime) {
 				pc->output_radix = 10;
                                 gdb_pass_through("set output-radix 10", 
                                         NULL, GNU_FROM_TTY_OFF);
@@ -2228,6 +2240,37 @@ cmd_set(void)
 			}
 			if (runtime)
 				fprintf(fp, "print_max: %d\n", *gdb_print_max);
+			return;
+
+                } else if (STREQ(args[optind], "scope")) {
+			optind++;
+			if (args[optind]) {
+				if (!runtime)
+					defer();
+				else if (can_eval(args[optind])) 
+					value = eval(args[optind], FAULT_ON_ERROR, NULL);
+				else if (hexadecimal(args[optind], 0))
+					value = htol(args[optind], FAULT_ON_ERROR, NULL);
+				else if ((sp = symbol_search(args[optind])))
+					value = sp->value;
+				else
+					goto invalid_set_command;
+
+				if (runtime) {
+					if (gdb_set_crash_scope(value, args[optind]))
+						pc->scope = value;
+					else
+						return;
+				}
+			}
+			if (runtime) {
+				fprintf(fp, "scope: %lx ", pc->scope);
+				if (pc->scope)
+					fprintf(fp, "(%s)\n", 
+						value_to_symstr(pc->scope, buf, 0));
+				else
+					fprintf(fp, "(not set)\n");
+			}
 			return;
 
                 } else if (STREQ(args[optind], "null-stop")) {
@@ -2371,6 +2414,7 @@ invalid_set_command:
 
 #undef defer
 #undef already_done
+#undef ignore
 }
 
 /*
@@ -2379,6 +2423,8 @@ invalid_set_command:
 static void
 show_options(void)
 {
+	char buf[BUFSIZE];
+
 	fprintf(fp, "        scroll: %s ",
 		pc->flags & SCROLL ? "on" : "off");
 	switch (pc->scroll_command)
@@ -2414,6 +2460,11 @@ show_options(void)
 	fprintf(fp, " zero_excluded: %s\n", *diskdump_flags & ZERO_EXCLUDED ? "on" : "off");
 	fprintf(fp, "     null-stop: %s\n", *gdb_stop_print_at_null ? "on" : "off");
 	fprintf(fp, "           gdb: %s\n", pc->flags2 & GDB_CMD_MODE ? "on" : "off");
+	fprintf(fp, "         scope: %lx ", pc->scope);
+	if (pc->scope)
+		fprintf(fp, "(%s)\n", value_to_symstr(pc->scope, buf, 0));
+	else
+		fprintf(fp, "(not set)\n");
 }
 
 
@@ -3083,8 +3134,8 @@ print_number(struct number_option *np, int bitflag, int longlongflagforce)
  *
  *  If the structures are linked using list_head structures, the -h or -H 
  *  options must be used.  In that case, the "start" address is:
- *  a pointer to  the embedded list_head structure (-h), or a pointer to a 
- *  LIST_HEAD() structure (-H).
+ *  a pointer to the structure that contains the list_head structure (-h),
+ *  or a pointer to a LIST_HEAD() structure (-H).
  *
  *  Given that the contents of the structures containing the next pointers
  *  often contain useful data, the "-s structname" also prints each structure
@@ -3111,7 +3162,7 @@ cmd_list(void)
 	ld = &list_data;
 	BZERO(ld, sizeof(struct list_data));
 
-        while ((c = getopt(argcnt, args, "Hhs:e:o:")) != EOF) {
+        while ((c = getopt(argcnt, args, "Hhs:e:o:xd")) != EOF) {
                 switch(c)
 		{
 		case 'H':
@@ -3149,6 +3200,20 @@ cmd_list(void)
 
 		case 'e':
 			ld->end = htol(optarg, FAULT_ON_ERROR, NULL);
+			break;
+
+		case 'x':
+			if (ld->flags & LIST_STRUCT_RADIX_10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			ld->flags |= LIST_STRUCT_RADIX_16;
+			break;
+
+		case 'd':
+			if (ld->flags & LIST_STRUCT_RADIX_16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			ld->flags |= LIST_STRUCT_RADIX_10;
 			break;
 
 		default:
@@ -3308,7 +3373,8 @@ next_arg:
 				fprintf(fp, "(empty)\n");
 				return;
 			}
-		}
+		} else
+			ld->start += ld->list_head_offset;
 	}
 
 	ld->flags &= ~(LIST_OFFSET_ENTERED|LIST_START_ENTERED);
@@ -3333,6 +3399,7 @@ do_list(struct list_data *ld)
 	ulong next, last, first;
 	ulong searchfor, readflag;
 	int i, count, others;
+	unsigned int radix;
 
 	if (CRASHDEBUG(1)) {
 		others = 0;
@@ -3351,6 +3418,12 @@ do_list(struct list_data *ld)
 			console("%sRETURN_ON_DUPLICATE", others++ ? "|" : "");
 		if (ld->flags & RETURN_ON_LIST_ERROR)
 			console("%sRETURN_ON_LIST_ERROR", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_LIST_ERROR)
+			console("%sRETURN_ON_LIST_ERROR", others++ ? "|" : "");
+		if (ld->flags & LIST_STRUCT_RADIX_10)
+			console("%sLIST_STRUCT_RADIX_10", others++ ? "|" : "");
+		if (ld->flags & LIST_STRUCT_RADIX_16)
+			console("%sLIST_STRUCT_RADIX_16", others++ ? "|" : "");
 		console(")\n");
 		console("           start: %lx\n", ld->start);
 		console("   member_offset: %ld\n", ld->member_offset);
@@ -3368,7 +3441,12 @@ do_list(struct list_data *ld)
 	count = 0;
 	searchfor = ld->searchfor;
 	ld->searchfor = 0;
-
+	if (ld->flags & LIST_STRUCT_RADIX_10)
+		radix = 10;
+	else if (ld->flags & LIST_STRUCT_RADIX_16)
+		radix = 16;
+	else	
+		radix = 0;
 	next = ld->start;
 
 	readflag = ld->flags & RETURN_ON_LIST_ERROR ? 
@@ -3393,7 +3471,7 @@ do_list(struct list_data *ld)
 					{
 					case 0:
 						dump_struct(ld->structname[i], 
-							next - ld->list_head_offset, 0);
+							next - ld->list_head_offset, radix);
 						break;
 					case 1:
 						dump_struct_members(ld, i, next);
@@ -3485,6 +3563,14 @@ dump_struct_members(struct list_data *ld, int idx, ulong next)
 	char *p1, *p2;
 	char *structname, *members;
 	char *arglist[MAXARGS];
+	unsigned int radix;
+
+	if (ld->flags & LIST_STRUCT_RADIX_10)
+		radix = 10;
+	else if (ld->flags & LIST_STRUCT_RADIX_16)
+		radix = 16;
+	else
+		radix = 0;
 
 	structname = GETBUF(strlen(ld->structname[idx])+1);
 	members = GETBUF(strlen(ld->structname[idx])+1);
@@ -3500,7 +3586,467 @@ dump_struct_members(struct list_data *ld, int idx, ulong next)
 	for (i = 0; i < argc; i++) {
 		*p1 = NULLCHAR;
 		strcat(structname, arglist[i]);
- 		dump_struct_member(structname, next - ld->list_head_offset, 0);
+ 		dump_struct_member(structname, next - ld->list_head_offset, radix);
+	}
+
+	FREEBUF(structname);
+	FREEBUF(members);
+}
+
+#define RADIXTREE_REQUEST (0x1)
+#define RBTREE_REQUEST    (0x2)
+
+void
+cmd_tree()
+{
+	int c, type_flag, others;
+	long root_offset;
+	struct tree_data tree_data, *td;
+	struct datatype_member struct_member, *sm;
+	struct syment *sp;
+	ulong value;
+
+	type_flag = 0;
+	root_offset = 0;
+	sm = &struct_member;
+	td = &tree_data;
+	BZERO(td, sizeof(struct tree_data));
+
+	while ((c = getopt(argcnt, args, "xdt:r:o:s:pN")) != EOF) {
+		switch (c)
+		{
+		case 't':
+			if (type_flag & (RADIXTREE_REQUEST|RBTREE_REQUEST)) {
+				error(INFO, "multiple tree types may not be entered\n");
+				cmd_usage(pc->curcmd, SYNOPSIS);
+			}
+
+			if (STRNEQ(optarg, "ra"))
+				type_flag = RADIXTREE_REQUEST;
+			else if (STRNEQ(optarg, "rb"))
+				type_flag = RBTREE_REQUEST;
+			else {
+				error(INFO, "invalid tree type: %s\n", optarg);
+				cmd_usage(pc->curcmd, SYNOPSIS);
+			}
+				
+			break;
+
+		case 'r':
+			if (td->flags & TREE_ROOT_OFFSET_ENTERED) 
+				error(FATAL,
+					"root offset value %d (0x%lx) already entered\n",
+						root_offset, root_offset);
+			else if (IS_A_NUMBER(optarg)) 
+				root_offset = stol(optarg, FAULT_ON_ERROR, NULL);
+			else if (arg_to_datatype(optarg, sm, RETURN_ON_ERROR) > 1) 
+				root_offset = sm->member_offset;
+			else
+				error(FATAL, "invalid -r argument: %s\n",
+					optarg);
+
+			td->flags |= TREE_ROOT_OFFSET_ENTERED; 
+			break;
+
+		case 'o':
+			if (td->flags & TREE_NODE_OFFSET_ENTERED) 
+				error(FATAL,
+					"node offset value %d (0x%lx) already entered\n",
+						td->node_member_offset, td->node_member_offset);
+			else if (IS_A_NUMBER(optarg)) 
+				td->node_member_offset = stol(optarg, 
+					FAULT_ON_ERROR, NULL);
+			else if (arg_to_datatype(optarg, sm, RETURN_ON_ERROR) > 1) 
+				td->node_member_offset = sm->member_offset;
+			else
+				error(FATAL, "invalid -o argument: %s\n",
+					optarg);
+
+			td->flags |= TREE_NODE_OFFSET_ENTERED; 
+			break;
+
+		case 's':
+			if (td->structname_args++ == 0) 
+				hq_open();
+			hq_enter((ulong)optarg);
+			break;
+
+		case 'p':
+			td->flags |= TREE_POSITION_DISPLAY;
+			break;
+
+		case 'N':
+			td->flags |= TREE_NODE_POINTER;
+			break;
+
+		case 'x':
+			if (td->flags & TREE_STRUCT_RADIX_10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			td->flags |= TREE_STRUCT_RADIX_16;
+			break;
+
+		case 'd':
+			if (td->flags & TREE_STRUCT_RADIX_16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			td->flags |= TREE_STRUCT_RADIX_10;
+			break;
+		default:
+			argerrs++;
+			break;
+		}
+	}
+
+	if (argerrs)
+		cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if ((type_flag & RADIXTREE_REQUEST) && (td->flags & TREE_NODE_OFFSET_ENTERED))
+		error(FATAL, "-o option is not applicable to radix trees\n");
+
+	if ((td->flags & TREE_ROOT_OFFSET_ENTERED) && 
+	    (td->flags & TREE_NODE_POINTER))
+		error(INFO, "-r and -N options are mutually exclusive\n");
+
+	if (!args[optind]) {
+		error(INFO, "a starting address is required\n");
+		cmd_usage(pc->curcmd, SYNOPSIS);
+	}
+
+	if ((sp = symbol_search(args[optind]))) {
+		td->start = sp->value;
+		goto next_arg;
+	}
+
+	if (!IS_A_NUMBER(args[optind])) {	
+		if (can_eval(args[optind])) {
+			value = eval(args[optind], FAULT_ON_ERROR, NULL);
+			if (IS_KVADDR(value)) {
+				td->start = value;
+				goto next_arg;
+			}
+		}
+		error(FATAL, "invalid start argument: %s\n", args[optind]);
+	} 
+
+	if (hexadecimal_only(args[optind], 0)) {
+		value = htol(args[optind], FAULT_ON_ERROR, NULL);
+		if (IS_KVADDR(value)) {
+			td->start = value;
+			goto next_arg;
+		}
+	}
+	 
+	error(FATAL, "invalid start argument: %s\n", args[optind]);
+
+next_arg:
+	if (args[optind+1]) {
+		error(INFO, "too many arguments entered\n");
+		cmd_usage(pc->curcmd, SYNOPSIS);
+	}
+
+	if (td->structname_args) {
+		td->structname = (char **)GETBUF(sizeof(char *) *
+				td->structname_args);
+		retrieve_list((ulong *)td->structname, td->structname_args); 
+		hq_close();
+	}
+
+	if (!(td->flags & TREE_NODE_POINTER))
+		td->start = td->start + root_offset;
+
+	if (CRASHDEBUG(1)) {
+		others = 0;
+		fprintf(fp, "             flags: %lx (", td->flags);
+		if (td->flags & TREE_ROOT_OFFSET_ENTERED)
+			fprintf(fp, "%sTREE_ROOT_OFFSET_ENTERED",
+				others++ ? "|" : "");
+		if (td->flags & TREE_NODE_OFFSET_ENTERED)
+			fprintf(fp, "%sTREE_NODE_OFFSET_ENTERED",
+				others++ ? "|" : "");
+		if (td->flags & TREE_NODE_POINTER)
+			fprintf(fp, "%sTREE_NODE_POINTER",
+				others++ ? "|" : "");
+		if (td->flags & TREE_POSITION_DISPLAY)
+			fprintf(fp, "%sTREE_POSITION_DISPLAY",
+				others++ ? "|" : "");
+		if (td->flags & TREE_STRUCT_RADIX_10)
+			fprintf(fp, "%sTREE_STRUCT_RADIX_10",
+				others++ ? "|" : "");
+		if (td->flags & TREE_STRUCT_RADIX_16)
+			fprintf(fp, "%sTREE_STRUCT_RADIX_16",
+				others++ ? "|" : "");
+		fprintf(fp, ")\n");
+		fprintf(fp, "              type: %s\n",
+			type_flag & RADIXTREE_REQUEST ? "radix" : "red-black");
+		fprintf(fp, "      node pointer: %s\n",
+			td->flags & TREE_NODE_POINTER ? "yes" : "no");
+		fprintf(fp, "             start: %lx\n", td->start);
+		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
+		fprintf(fp, "   structname_args: %d\n", td->structname_args);
+	}
+
+	td->flags &= ~TREE_NODE_OFFSET_ENTERED;
+	td->flags |= VERBOSE;
+
+	hq_open();
+	if (type_flag & RADIXTREE_REQUEST)
+		do_rdtree(td);
+	else
+		do_rbtree(td);
+	hq_close();
+
+        if (td->structname_args)
+		FREEBUF(td->structname);
+}
+
+static ulong RADIX_TREE_MAP_SHIFT = UNINITIALIZED;
+static ulong RADIX_TREE_MAP_SIZE = UNINITIALIZED;
+static ulong RADIX_TREE_MAP_MASK = UNINITIALIZED;
+
+void
+do_rdtree(struct tree_data *td)
+{
+	long nlen;
+	ulong node_p;
+	uint print_radix, height;
+	char pos[BUFSIZE];
+
+	if (!VALID_STRUCT(radix_tree_root) || !VALID_STRUCT(radix_tree_node) ||
+	    !VALID_MEMBER(radix_tree_root_height) ||
+	    !VALID_MEMBER(radix_tree_root_rnode) ||
+	    !VALID_MEMBER(radix_tree_node_slots) ||
+	    !ARRAY_LENGTH(height_to_maxindex)) 
+		error(FATAL, "radix trees do not exist or have changed "
+			"their format\n");
+
+	if (RADIX_TREE_MAP_SHIFT == UNINITIALIZED) {
+		if (!(nlen = MEMBER_SIZE("radix_tree_node", "slots")))
+			error(FATAL, "cannot determine length of " 
+				     "radix_tree_node.slots[] array\n");
+		nlen /= sizeof(void *);
+		RADIX_TREE_MAP_SHIFT = ffsl(nlen) - 1;
+		RADIX_TREE_MAP_SIZE = (1UL << RADIX_TREE_MAP_SHIFT);
+		RADIX_TREE_MAP_MASK = (RADIX_TREE_MAP_SIZE-1);
+	}
+
+	if (td->flags & TREE_STRUCT_RADIX_10)
+		print_radix = 10;
+	else if (td->flags & TREE_STRUCT_RADIX_16)
+		print_radix = 16;
+	else
+		print_radix = 0;
+
+	if (td->flags & TREE_NODE_POINTER) {
+		node_p = td->start;
+
+		if (node_p & 1)
+			node_p &= ~1;
+
+		if (VALID_MEMBER(radix_tree_node_height)) {
+			readmem(node_p + OFFSET(radix_tree_node_height), KVADDR,
+				&height, sizeof(uint), "radix_tree_node height",
+				FAULT_ON_ERROR);
+
+			if (height > ARRAY_LENGTH(height_to_maxindex)) {
+				fprintf(fp, "radix_tree_node at %lx\n", node_p);
+				dump_struct("radix_tree_node", node_p, print_radix);
+				error(FATAL, "height %d is greater than "
+					"height_to_maxindex[] index %ld\n",
+					height, ARRAY_LENGTH(height_to_maxindex));
+			}
+		} else 
+			error(FATAL, "-N option is not supported or applicable"
+				" for radix trees on this architecture or kernel\n");
+	} else {
+		readmem(td->start + OFFSET(radix_tree_root_height), KVADDR, &height,
+			sizeof(uint), "radix_tree_root height", FAULT_ON_ERROR);
+
+		if (height > ARRAY_LENGTH(height_to_maxindex)) {
+			fprintf(fp, "radix_tree_root at %lx\n", td->start);
+			dump_struct("radix_tree_root", (ulong)td->start, print_radix);
+			error(FATAL, "height %d is greater than "
+				"height_to_maxindex[] index %ld\n",
+				height, ARRAY_LENGTH(height_to_maxindex));
+		}
+
+		readmem(td->start + OFFSET(radix_tree_root_rnode), KVADDR, &node_p,
+			sizeof(void *), "radix_tree_root rnode", FAULT_ON_ERROR);
+	}
+
+	if (node_p & 1)
+		node_p &= ~1;
+
+	sprintf(pos, "root");
+	rdtree_iteration(node_p, td, pos, -1, height);
+}
+
+void rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum, uint height)
+{
+	ulong slot;
+	int i, index;
+	uint print_radix;
+	char pos[BUFSIZE];
+
+	if (indexnum != -1)
+		sprintf(pos, "%s/%ld", ppos, indexnum);
+	else
+		sprintf(pos, "%s", ppos);
+
+	for (index = 0; index < RADIX_TREE_MAP_SIZE; index++) {
+		readmem((ulong)node_p + OFFSET(radix_tree_node_slots) +
+			sizeof(void *) * index, KVADDR, &slot, sizeof(void *),
+			"radix_tree_node.slot[index]", FAULT_ON_ERROR);
+		if (!slot)
+			continue;
+		if (height == 1) {
+			if (!hq_enter(slot))
+				error(FATAL, "\nduplicate tree entry: %lx\n", node_p);
+
+			fprintf(fp, "%lx\n",slot);
+			
+			if (td->flags & TREE_POSITION_DISPLAY)
+				fprintf(fp, "  position: %s/%d\n", pos, index);
+
+			if (td->structname) {
+				if (td->flags & TREE_STRUCT_RADIX_10)
+					print_radix = 10;
+				else if (td->flags & TREE_STRUCT_RADIX_16)
+					print_radix = 16;
+				else
+					print_radix = 0;
+
+				for (i = 0; i < td->structname_args; i++) {
+					switch(count_chars(td->structname[i], '.'))
+					{
+					case 0:
+						dump_struct(td->structname[i],
+							slot, print_radix);
+						break;
+					case 1:
+						dump_struct_members_for_tree(td, i,
+							slot);
+						break;
+					default:
+						error(FATAL,
+						  "invalid struct reference: %s\n",
+							td->structname[i]);
+					}
+				}
+			}
+		} else 
+			rdtree_iteration(slot, td, pos, index, height-1);
+	}
+}
+
+void
+do_rbtree(struct tree_data *td)
+{
+	if (!VALID_MEMBER(rb_root_rb_node) || !VALID_MEMBER(rb_node_rb_left) ||
+	    !VALID_MEMBER(rb_node_rb_right))
+		error(FATAL, "red-black trees do not exist or have changed "
+			"their format\n");
+
+	ulong start;
+	char pos[BUFSIZE];
+	sprintf(pos, "root");
+
+	if (td->flags & TREE_NODE_POINTER)
+		start = td->start;
+	else
+		readmem(td->start + OFFSET(rb_root_rb_node), KVADDR,
+			&start, sizeof(void *), "rb_root rb_node", FAULT_ON_ERROR);
+
+	rbtree_iteration(start, td, pos);
+}
+
+void
+rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
+{
+	int i;
+	uint print_radix;
+	ulong struct_p, left_p, right_p;
+	char left_pos[BUFSIZE], right_pos[BUFSIZE];
+
+	if (!node_p)
+		return;
+
+	if (node_p && !hq_enter(node_p))
+		error(FATAL, "\nduplicate tree entry: %lx\n", node_p);
+
+	struct_p = node_p - td->node_member_offset;
+
+	fprintf(fp, "%lx\n", struct_p);
+	
+	if (td->flags & TREE_POSITION_DISPLAY)
+		fprintf(fp, "  position: %s\n", pos);
+
+	if (td->structname) {
+		if (td->flags & TREE_STRUCT_RADIX_10)
+			print_radix = 10;
+		else if (td->flags & TREE_STRUCT_RADIX_16)
+			print_radix = 16;
+		else
+			print_radix = 0;
+
+		for (i = 0; i < td->structname_args; i++) {
+			switch(count_chars(td->structname[i], '.'))
+			{
+			case 0:
+				dump_struct(td->structname[i], struct_p, print_radix);
+				break;
+			case 1:
+				dump_struct_members_for_tree(td, i, struct_p);
+				break;
+			default:
+				error(FATAL, "invalid struct reference: %s\n",
+					td->structname[i]);
+			}
+		}
+	}
+
+	readmem(node_p+OFFSET(rb_node_rb_left), KVADDR, &left_p,
+		sizeof(void *), "rb_node rb_left", FAULT_ON_ERROR);
+	readmem(node_p+OFFSET(rb_node_rb_right), KVADDR, &right_p,
+		sizeof(void *), "rb_node rb_right", FAULT_ON_ERROR);
+
+	sprintf(left_pos, "%s/l", pos);
+	sprintf(right_pos, "%s/r", pos);
+
+	rbtree_iteration(left_p, td, left_pos);
+	rbtree_iteration(right_p, td, right_pos);		
+}
+
+void
+dump_struct_members_for_tree(struct tree_data *td, int idx, ulong struct_p)
+{
+	int i, argc;
+	uint print_radix;
+	char *p1;
+	char *structname, *members;
+	char *arglist[MAXARGS];
+
+	if (td->flags & TREE_STRUCT_RADIX_10)
+		print_radix = 10;
+	else if (td->flags & TREE_STRUCT_RADIX_16)
+		print_radix = 16;
+	else
+		print_radix = 0;
+
+	structname = GETBUF(strlen(td->structname[idx])+1);
+	members = GETBUF(strlen(td->structname[idx])+1);
+
+	strcpy(structname, td->structname[idx]);
+	p1 = strstr(structname, ".") + 1;
+
+	strcpy(members, p1);
+	replace_string(members, ",", ' ');
+	argc = parse_line(members, arglist);
+
+	for (i = 0; i <argc; i++) {
+		*p1 = NULLCHAR;
+		strcat(structname, arglist[i]);
+		dump_struct_member(structname, struct_p, print_radix);
 	}
 
 	FREEBUF(structname);

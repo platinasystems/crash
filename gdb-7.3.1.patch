@@ -1357,3 +1357,437 @@
  	      if (!field_is_static (&TYPE_FIELD (type, i))
  		  && TYPE_FIELD_PACKED (type, i))
  		{
+diff -up gdb-7.3.1/gdb/psymtab.c.orig gdb-7.3.1/gdb/psymtab.c
+--- gdb-7.3.1/gdb/psymtab.c.orig	2012-05-18 14:15:57.000000000 -0400
++++ gdb-7.3.1/gdb/psymtab.c	2012-05-18 14:03:27.000000000 -0400
+@@ -295,6 +295,7 @@ find_pc_sect_psymtab (struct objfile *ob
+   /* Try just the PSYMTABS_ADDRMAP mapping first as it has better granularity
+      than the later used TEXTLOW/TEXTHIGH one.  */
+ 
++#ifndef __i386__
+   if (objfile->psymtabs_addrmap != NULL)
+     {
+       pst = addrmap_find (objfile->psymtabs_addrmap, pc);
+@@ -329,6 +330,7 @@ find_pc_sect_psymtab (struct objfile *ob
+     }
+ 
+  next:
++#endif
+ 
+   /* Existing PSYMTABS_ADDRMAP mapping is present even for PARTIAL_SYMTABs
+      which still have no corresponding full SYMTABs read.  But it is not
+--- gdb-7.3.1/gdb/printcmd.c.orig
++++ gdb-7.3.1/gdb/printcmd.c
+@@ -1016,11 +1016,62 @@ print_command_1 (char *exp, int inspect, int voidprint)
+ }
+ 
+ static void
++print_command_2 (char *exp, int inspect, int voidprint)
++{
++  struct expression *expr;
++  struct cleanup *old_chain = 0;
++  char format = 0;
++  struct value *val;
++  struct format_data fmt;
++  int cleanup = 0;
++
++  if (exp && *exp == '/')
++    {
++      exp++;
++      fmt = decode_format (&exp, last_format, 0);
++      validate_format (fmt, "print");
++      last_format = format = fmt.format;
++    }
++  else
++    {
++      fmt.count = 1;
++      fmt.format = 0;
++      fmt.size = 0;
++      fmt.raw = 0;
++    }
++
++  if (exp && *exp)
++    {
++      expr = parse_expression (exp);
++      old_chain = make_cleanup (free_current_contents, &expr);
++      cleanup = 1;
++      val = evaluate_expression (expr);
++    }
++  else
++    val = access_value_history (0);
++
++    printf_filtered ("%d %d %d %d %d %d\n",
++      TYPE_CODE (check_typedef(value_type (val))),
++      TYPE_UNSIGNED (check_typedef(value_type (val))),
++      TYPE_LENGTH (check_typedef(value_type(val))),
++      value_offset (val), value_bitpos (val), value_bitsize(val));
++
++  if (cleanup)
++    do_cleanups (old_chain);
++}
++
++static void
+ print_command (char *exp, int from_tty)
+ {
+   print_command_1 (exp, 0, 1);
+ }
+ 
++static void
++printm_command (char *exp, int from_tty)
++{
++  print_command_2 (exp, 0, 1);
++}
++
+ /* Same as print, except in epoch, it gets its own window.  */
+ static void
+ inspect_command (char *exp, int from_tty)
+@@ -2847,6 +2898,11 @@ but no count or size letter (see \"x\" command)."));
+   set_cmd_completer (c, expression_completer);
+   add_com_alias ("p", "print", class_vars, 1);
+ 
++  c = add_com ("printm", class_vars, printm_command, _("\
++Similar to \"print\" command, but it used to print the type, size, offset,\n\
++bitpos and bitsize of the expression EXP."));
++  set_cmd_completer (c, expression_completer);
++
+   c = add_com ("inspect", class_vars, inspect_command, _("\
+ Same as \"print\" command, except that if you are running in the epoch\n\
+ environment, the value is printed in its own window."));
+
+--- gdb-7.3.1/gdb/symtab.c.orig
++++ gdb-7.3.1/gdb/symtab.c
+@@ -1091,10 +1091,19 @@ lookup_symbol_in_language (const char *n
+ /* Behave like lookup_symbol_in_language, but performed with the
+    current language.  */
+ 
++#ifdef CRASH_MERGE
++static struct block *gdb_get_crash_block(void);
++#endif
++
+ struct symbol *
+ lookup_symbol (const char *name, const struct block *block,
+ 	       domain_enum domain, int *is_a_field_of_this)
+ {
++#ifdef CRASH_MERGE
++  if (!block)
++	block = gdb_get_crash_block();
++   
++#endif
+   return lookup_symbol_in_language (name, block, domain,
+ 				    current_language->la_language,
+ 				    is_a_field_of_this);
+@@ -4845,6 +4854,7 @@ static void gdb_patch_symbol_values(stru
+ extern void replace_ui_file_FILE(struct ui_file *, FILE *);
+ static void get_user_print_option_address(struct gnu_request *);
+ extern int get_frame_offset(CORE_ADDR);
++static void gdb_set_crash_block(struct gnu_request *);
+ 
+ struct objfile *gdb_kernel_objfile = { 0 };
+ 
+@@ -4938,6 +4948,10 @@ gdb_command_funnel(struct gnu_request *r
+ 		gdb_patch_symbol_values(req);
+ 		break;
+ 
++	case GNU_SET_CRASH_BLOCK:
++		gdb_set_crash_block(req);
++		break;
++		
+ 	default:
+ 		req->flags |= GNU_COMMAND_FAILED;
+ 		break;
+@@ -5445,4 +5459,30 @@ get_user_print_option_address(struct gnu
+                 req->addr = (ulong)&output_radix;
+ }
+ 
++CORE_ADDR crash_text_scope;
++
++static void 
++gdb_set_crash_block(struct gnu_request *req)
++{
++	if (!req->addr) {  /* debug */
++		crash_text_scope = 0;
++		return;
++	}
++
++	if ((req->addr2 = (ulong)block_for_pc(req->addr)))
++		crash_text_scope = req->addr;
++	else {
++		crash_text_scope = 0;
++		req->flags |= GNU_COMMAND_FAILED;
++	}
++}
++
++static struct block *
++gdb_get_crash_block(void)
++{
++	if (crash_text_scope)
++		return block_for_pc(crash_text_scope);
++	else
++		return NULL;
++}
+ #endif
+--- gdb-7.3.1/gdb/arm-linux-nat.c.orig
++++ gdb-7.3.1/gdb/arm-linux-nat.c
+@@ -1203,7 +1203,7 @@ arm_linux_remove_watchpoint (CORE_ADDR a
+ static int
+ arm_linux_stopped_data_address (struct target_ops *target, CORE_ADDR *addr_p)
+ {
+-  struct siginfo *siginfo_p = linux_nat_get_siginfo (inferior_ptid);
++  siginfo_t *siginfo_p = linux_nat_get_siginfo (inferior_ptid);
+   int slot = siginfo_p->si_errno;
+ 
+   /* This must be a hardware breakpoint.  */
+--- gdb-7.3.1/gdb/ia64-linux-nat.c.orig
++++ gdb-7.3.1/gdb/ia64-linux-nat.c
+@@ -640,7 +640,7 @@ static int
+ ia64_linux_stopped_data_address (struct target_ops *ops, CORE_ADDR *addr_p)
+ {
+   CORE_ADDR psr;
+-  struct siginfo *siginfo_p;
++  siginfo_t *siginfo_p;
+   struct regcache *regcache = get_current_regcache ();
+ 
+   siginfo_p = linux_nat_get_siginfo (inferior_ptid);
+--- gdb-7.3.1/gdb/ppc-linux-nat.c.orig
++++ gdb-7.3.1/gdb/ppc-linux-nat.c
+@@ -2161,7 +2161,7 @@ ppc_linux_thread_exit (struct thread_inf
+ static int
+ ppc_linux_stopped_data_address (struct target_ops *target, CORE_ADDR *addr_p)
+ {
+-  struct siginfo *siginfo_p;
++  siginfo_t *siginfo_p;
+ 
+   siginfo_p = linux_nat_get_siginfo (inferior_ptid);
+ 
+--- gdb-7.3.1/gdb/alpha-linux-tdep.c.orig
++++ gdb-7.3.1/gdb/alpha-linux-tdep.c
+@@ -115,7 +115,7 @@ alpha_linux_sigcontext_addr (struct fram
+   /* __NR_rt_sigreturn has a couple of structures on the stack.  This is:
+ 
+ 	struct rt_sigframe {
+-	  struct siginfo info;
++	  siginfo_t info;
+ 	  struct ucontext uc;
+         };
+ 
+--- gdb-7.3.1/gdb/procfs.c.orig
++++ gdb-7.3.1/gdb/procfs.c
+@@ -263,7 +263,7 @@ typedef struct sigaction gdb_sigaction_t
+ #ifdef HAVE_PR_SIGINFO64_T
+ typedef pr_siginfo64_t gdb_siginfo_t;
+ #else
+-typedef struct siginfo gdb_siginfo_t;
++typedef siginfo_t gdb_siginfo_t;
+ #endif
+ 
+ /* On mips-irix, praddset and prdelset are defined in such a way that
+--- gdb-7.3.1/gdb/amd64-linux-nat.c.orig
++++ gdb-7.3.1/gdb/amd64-linux-nat.c
+@@ -695,13 +695,13 @@ siginfo_from_compat_siginfo (siginfo_t *
+    INF.  */
+ 
+ static int
+-amd64_linux_siginfo_fixup (struct siginfo *native, gdb_byte *inf, int direction)
++amd64_linux_siginfo_fixup (siginfo_t *native, gdb_byte *inf, int direction)
+ {
+   /* Is the inferior 32-bit?  If so, then do fixup the siginfo
+      object.  */
+   if (gdbarch_addr_bit (get_frame_arch (get_current_frame ())) == 32)
+     {
+-      gdb_assert (sizeof (struct siginfo) == sizeof (compat_siginfo_t));
++      gdb_assert (sizeof (siginfo_t) == sizeof (compat_siginfo_t));
+ 
+       if (direction == 0)
+ 	compat_siginfo_from_siginfo ((struct compat_siginfo *) inf, native);
+--- gdb-7.3.1/gdb/linux-nat.h.orig
++++ gdb-7.3.1/gdb/linux-nat.h
+@@ -60,7 +60,7 @@ struct lwp_info
+ 
+   /* Non-zero si_signo if this LWP stopped with a trap.  si_addr may
+      be the address of a hardware watchpoint.  */
+-  struct siginfo siginfo;
++  siginfo_t siginfo;
+ 
+   /* STOPPED_BY_WATCHPOINT is non-zero if this LWP stopped with a data
+      watchpoint trap.  */
+@@ -160,7 +160,7 @@ void linux_nat_set_new_thread (struct ta
+    that ptrace returns, and the layout in the architecture of the
+    inferior.  */
+ void linux_nat_set_siginfo_fixup (struct target_ops *,
+-				  int (*) (struct siginfo *,
++				  int (*) (siginfo_t *,
+ 					   gdb_byte *,
+ 					   int));
+ 
+@@ -169,7 +169,7 @@ void linux_nat_set_siginfo_fixup (struct
+ void linux_nat_switch_fork (ptid_t new_ptid);
+ 
+ /* Return the saved siginfo associated with PTID.  */
+-struct siginfo *linux_nat_get_siginfo (ptid_t ptid);
++siginfo_t *linux_nat_get_siginfo (ptid_t ptid);
+ 
+ /* Compute and return the processor core of a given thread.  */
+ int linux_nat_core_of_thread_1 (ptid_t ptid);
+--- gdb-7.3.1/gdb/linux-nat.c.orig
++++ gdb-7.3.1/gdb/linux-nat.c
+@@ -214,7 +214,7 @@ static void (*linux_nat_new_thread) (pti
+ /* The method to call, if any, when the siginfo object needs to be
+    converted between the layout returned by ptrace, and the layout in
+    the architecture of the inferior.  */
+-static int (*linux_nat_siginfo_fixup) (struct siginfo *,
++static int (*linux_nat_siginfo_fixup) (siginfo_t *,
+ 				       gdb_byte *,
+ 				       int);
+ 
+@@ -3945,7 +3945,7 @@ linux_nat_mourn_inferior (struct target_
+    layout of the inferiors' architecture.  */
+ 
+ static void
+-siginfo_fixup (struct siginfo *siginfo, gdb_byte *inf_siginfo, int direction)
++siginfo_fixup (siginfo_t *siginfo, gdb_byte *inf_siginfo, int direction)
+ {
+   int done = 0;
+ 
+@@ -3957,9 +3957,9 @@ siginfo_fixup (struct siginfo *siginfo, 
+   if (!done)
+     {
+       if (direction == 1)
+-	memcpy (siginfo, inf_siginfo, sizeof (struct siginfo));
++	memcpy (siginfo, inf_siginfo, sizeof (siginfo_t));
+       else
+-	memcpy (inf_siginfo, siginfo, sizeof (struct siginfo));
++	memcpy (inf_siginfo, siginfo, sizeof (siginfo_t));
+     }
+ }
+ 
+@@ -3969,8 +3969,8 @@ linux_xfer_siginfo (struct target_ops *o
+ 		    const gdb_byte *writebuf, ULONGEST offset, LONGEST len)
+ {
+   int pid;
+-  struct siginfo siginfo;
+-  gdb_byte inf_siginfo[sizeof (struct siginfo)];
++  siginfo_t siginfo;
++  gdb_byte inf_siginfo[sizeof (siginfo_t)];
+ 
+   gdb_assert (object == TARGET_OBJECT_SIGNAL_INFO);
+   gdb_assert (readbuf || writebuf);
+@@ -5784,7 +5784,7 @@ linux_nat_set_new_thread (struct target_
+    inferior.  */
+ void
+ linux_nat_set_siginfo_fixup (struct target_ops *t,
+-			     int (*siginfo_fixup) (struct siginfo *,
++			     int (*siginfo_fixup) (siginfo_t *,
+ 						   gdb_byte *,
+ 						   int))
+ {
+@@ -5793,7 +5793,7 @@ linux_nat_set_siginfo_fixup (struct targ
+ }
+ 
+ /* Return the saved siginfo associated with PTID.  */
+-struct siginfo *
++siginfo_t *
+ linux_nat_get_siginfo (ptid_t ptid)
+ {
+   struct lwp_info *lp = find_lwp_pid (ptid);
+--- gdb-7.3.1/gdb/symtab.c.orig
++++ gdb-7.3.1/gdb/symtab.c
+@@ -5390,7 +5390,7 @@ gdb_get_symbol_type(struct gnu_request *
+ 
+         type = value_type(val);
+ 
+-	req->typename = TYPE_MAIN_TYPE(type)->name;
++	req->type_name = TYPE_MAIN_TYPE(type)->name;
+ 	req->typecode = TYPE_MAIN_TYPE(type)->code;
+ 	req->length = type->length;
+ 	target_type = TYPE_MAIN_TYPE(type)->target_type;
+--- gdb-7.3.1/gdb/main.c.orig
++++ gdb-7.3.1/gdb/main.c
+@@ -732,7 +732,7 @@ captured_main (void *data)
+     {
+       print_gdb_version (gdb_stdout);
+       wrap_here ("");
+-      printf_filtered ("\n");
++      printf_filtered ("\n\n");
+       exit (0);
+     }
+ 
+--- gdb-7.3.1/libiberty/objalloc.c.orig
++++ gdb-7.3.1/libiberty/objalloc.c
+@@ -1,5 +1,5 @@
+ /* objalloc.c -- routines to allocate memory for objects
+-   Copyright 1997 Free Software Foundation, Inc.
++   Copyright 1997-2012 Free Software Foundation, Inc.
+    Written by Ian Lance Taylor, Cygnus Solutions.
+ 
+ This program is free software; you can redistribute it and/or modify it
+@@ -112,8 +112,9 @@ objalloc_create (void)
+ /* Allocate space from an objalloc structure.  */
+ 
+ PTR
+-_objalloc_alloc (struct objalloc *o, unsigned long len)
++_objalloc_alloc (struct objalloc *o, unsigned long original_len)
+ {
++  unsigned long len = original_len;
+   /* We avoid confusion from zero sized objects by always allocating
+      at least 1 byte.  */
+   if (len == 0)
+@@ -121,6 +122,11 @@ _objalloc_alloc (struct objalloc *o, uns
+ 
+   len = (len + OBJALLOC_ALIGN - 1) &~ (OBJALLOC_ALIGN - 1);
+ 
++  /* Check for overflow in the alignment operator above and the malloc
++     argument below. */
++  if (len + CHUNK_HEADER_SIZE < original_len)
++    return NULL;
++
+   if (len <= o->current_space)
+     {
+       o->current_ptr += len;
+--- gdb-7.3.1/include/objalloc.h.orig
++++ gdb-7.3.1/include/objalloc.h
+@@ -1,5 +1,5 @@
+ /* objalloc.h -- routines to allocate memory for objects
+-   Copyright 1997, 2001 Free Software Foundation, Inc.
++   Copyright 1997-2012 Free Software Foundation, Inc.
+    Written by Ian Lance Taylor, Cygnus Solutions.
+ 
+ This program is free software; you can redistribute it and/or modify it
+@@ -71,38 +71,8 @@ extern struct objalloc *objalloc_create 
+ 
+ extern void *_objalloc_alloc (struct objalloc *, unsigned long);
+ 
+-/* The macro version of objalloc_alloc.  We only define this if using
+-   gcc, because otherwise we would have to evaluate the arguments
+-   multiple times, or use a temporary field as obstack.h does.  */
+-
+-#if defined (__GNUC__) && defined (__STDC__) && __STDC__
+-
+-/* NextStep 2.0 cc is really gcc 1.93 but it defines __GNUC__ = 2 and
+-   does not implement __extension__.  But that compiler doesn't define
+-   __GNUC_MINOR__.  */
+-#if __GNUC__ < 2 || (__NeXT__ && !__GNUC_MINOR__)
+-#define __extension__
+-#endif
+-
+-#define objalloc_alloc(o, l)						\
+-  __extension__								\
+-  ({ struct objalloc *__o = (o);					\
+-     unsigned long __len = (l);						\
+-     if (__len == 0)							\
+-       __len = 1;							\
+-     __len = (__len + OBJALLOC_ALIGN - 1) &~ (OBJALLOC_ALIGN - 1);	\
+-     (__len <= __o->current_space					\
+-      ? (__o->current_ptr += __len,					\
+-	 __o->current_space -= __len,					\
+-	 (void *) (__o->current_ptr - __len))				\
+-      : _objalloc_alloc (__o, __len)); })
+-
+-#else /* ! __GNUC__ */
+-
+ #define objalloc_alloc(o, l) _objalloc_alloc ((o), (l))
+ 
+-#endif /* ! __GNUC__ */
+-
+ /* Free an entire objalloc structure.  */
+ 
+ extern void objalloc_free (struct objalloc *);

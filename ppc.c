@@ -1,8 +1,8 @@
 /* ppc.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
  */ 
 #ifdef PPC
 #include "defs.h"
+#include <elf.h>
 
 
 #define MAX_PLATFORM_LEN	32	/* length for platform string */
@@ -225,6 +226,8 @@ probe_ppce500_platform(char *name)
 		if (IS_PAE()) {
 			PTE_RPN_SHIFT = BOOKE3E_PTE_RPN_SHIFT;
 			PLATFORM_PAGE_FLAGS_SETUP(BOOK3E);
+			/* Set special flag for book3e */
+			_PAGE_K_RW = BOOK3E_PAGE_KERNEL_RW;
 		} else
 			PLATFORM_PAGE_FLAGS_SETUP(FSL_BOOKE);
 		fsl_booke_mmu_setup();
@@ -359,16 +362,21 @@ ppc_init(int when)
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables, 
  			"thread_struct", "pg_tables");
 
-                STRUCT_SIZE_INIT(irqdesc, "irqdesc");
-        	STRUCT_SIZE_INIT(irq_desc_t, "irq_desc_t");
-               	/* as of 2.3.x PPC uses the generic irq handlers */
-        	if (VALID_SIZE(irq_desc_t)) 
-                	machdep->dump_irq = generic_dump_irq;
-		else {
+		if (VALID_SIZE(irq_desc_t)) {
+			/*
+			 * Use generic irq handlers for recent kernels whose
+			 * irq_desc_t have been initialized in kernel_init().
+			 */
+			machdep->dump_irq = generic_dump_irq;
+			machdep->show_interrupts = generic_show_interrupts;
+			machdep->get_irq_affinity = generic_get_irq_affinity;
+		} else {
 			machdep->dump_irq = ppc_dump_irq;
-                	MEMBER_OFFSET_INIT(irqdesc_action, "irqdesc", "action");
-                	MEMBER_OFFSET_INIT(irqdesc_ctl, "irqdesc", "ctl");
-                	MEMBER_OFFSET_INIT(irqdesc_level, "irqdesc", "level");
+			STRUCT_SIZE_INIT(irqdesc, "irqdesc");
+			STRUCT_SIZE_INIT(irq_desc_t, "irq_desc_t");
+			MEMBER_OFFSET_INIT(irqdesc_action, "irqdesc", "action");
+			MEMBER_OFFSET_INIT(irqdesc_ctl, "irqdesc", "ctl");
+			MEMBER_OFFSET_INIT(irqdesc_level, "irqdesc", "level");
 		}
 
                 MEMBER_OFFSET_INIT(device_node_type, "device_node", "type");
@@ -388,8 +396,11 @@ ppc_init(int when)
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 				"irq_desc", NULL, 0);
+		else if (symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(int),
+					&machdep->nr_irqs);
 		else
-			machdep->nr_irqs = 0;
+			machdep->nr_irqs = 512; /* NR_IRQS (at least) */
 		if (!machdep->hz) {
 			machdep->hz = HZ;
 			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
@@ -414,6 +425,8 @@ ppc_init(int when)
 			symbol_exists("hardirq_ctx"))
 			STRUCT_SIZE_INIT(irq_ctx, "hardirq_ctx");
 
+		STRUCT_SIZE_INIT(note_buf, "note_buf_t");
+		STRUCT_SIZE_INIT(elf_prstatus, "elf_prstatus");
 		break;
 
 	case POST_INIT:
@@ -465,6 +478,8 @@ ppc_dump_machdep_table(ulong arg)
 		fprintf(fp, "           dump_irq: generic_dump_irq()\n");
 	else
 		fprintf(fp, "           dump_irq: ppc_dump_irq()\n");
+	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
+	fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
         fprintf(fp, "    get_stack_frame: ppc_get_stack_frame()\n");
         fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
         fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
@@ -935,25 +950,38 @@ ppc_translate_pte(ulong pte32, void *physaddr, ulonglong pte64)
 	others = 0;
 
 	if (pte64) {
-		if (pte64 & _PAGE_PRESENT)
+		if (_PAGE_PRESENT &&
+		    (pte64 & _PAGE_PRESENT) == _PAGE_PRESENT)
 			fprintf(fp, "%sPRESENT", others++ ? "|" : "");
-		if (pte64 & _PAGE_USER)
+		if (_PAGE_USER &&
+		    (pte64 & _PAGE_USER) == _PAGE_USER)
 			fprintf(fp, "%sUSER", others++ ? "|" : "");
-		if (pte64 & _PAGE_RW)
+		if (_PAGE_RW &&
+		    (pte64 & _PAGE_RW) == _PAGE_RW)
 			fprintf(fp, "%sRW", others++ ? "|" : "");
-		if (pte64 & _PAGE_GUARDED)
+		if (_PAGE_K_RW &&
+		    ((pte64 & _PAGE_K_RW) == _PAGE_K_RW))
+			fprintf(fp, "%sK-RW", others++ ? "|" : "");
+		if (_PAGE_GUARDED &&
+		    (pte64 & _PAGE_GUARDED) == _PAGE_GUARDED)
 			fprintf(fp, "%sGUARDED", others++ ? "|" : "");
-		if (pte64 & _PAGE_COHERENT)
+		if (_PAGE_COHERENT &&
+		    (pte64 & _PAGE_COHERENT) == _PAGE_COHERENT)
 			fprintf(fp, "%sCOHERENT", others++ ? "|" : "");
-		if (pte64 & _PAGE_NO_CACHE)
+		if (_PAGE_NO_CACHE &&
+		    (pte64 & _PAGE_NO_CACHE) == _PAGE_NO_CACHE)
 			fprintf(fp, "%sNO_CACHE", others++ ? "|" : "");
-		if (pte64 & _PAGE_WRITETHRU)
+		if (_PAGE_WRITETHRU &&
+		    (pte64 & _PAGE_WRITETHRU) == _PAGE_WRITETHRU)
 			fprintf(fp, "%sWRITETHRU", others++ ? "|" : "");
-		if (pte64 & _PAGE_DIRTY)
+		if (_PAGE_DIRTY &&
+		    (pte64 & _PAGE_DIRTY) == _PAGE_DIRTY)
 			fprintf(fp, "%sDIRTY", others++ ? "|" : "");
-		if (pte64 & _PAGE_ACCESSED)
+		if (_PAGE_ACCESSED &&
+		    (pte64 & _PAGE_ACCESSED) == _PAGE_ACCESSED)
 			fprintf(fp, "%sACCESSED", others++ ? "|" : "");
-		if (pte64 & _PAGE_HWWRITE)
+		if (_PAGE_HWWRITE &&
+		    (pte64 & _PAGE_HWWRITE) == _PAGE_HWWRITE)
 			fprintf(fp, "%sHWWRITE", others++ ? "|" : "");
 	} else
 		fprintf(fp, "no mapping");
@@ -1168,6 +1196,10 @@ ppc_print_stack_entry(int frame,
 {
 	struct load_module *lm;
 	char *lrname = NULL;
+	ulong offset;
+	struct syment *sp;
+	char *name_plus_offset;
+	char buf[BUFSIZE];
 
 	if (BT_REFERENCE_CHECK(bt)) {
                 switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
@@ -1183,9 +1215,16 @@ ppc_print_stack_entry(int frame,
                         break;
                 }
 	} else {
+		name_plus_offset = NULL;
+		if (bt->flags & BT_SYMBOL_OFFSET) {
+			sp = value_search(req->pc, &offset);
+			if (sp && offset) 
+				name_plus_offset = value_to_symstr(req->pc, buf, bt->radix);
+		}
+		
 		fprintf(fp, "%s#%d [%lx] %s at %lx",
         		frame < 10 ? " " : "", frame,
-                	req->sp, req->name, req->pc);
+                	req->sp, name_plus_offset ? name_plus_offset : req->name, req->pc);
 		if (module_symbol(req->pc, NULL, &lm, NULL, 0))
 			fprintf(fp, " [%s]", lm->mod_name);
 
@@ -1931,5 +1970,80 @@ try_closest:
                         goto try_closest;
                 }
         }
+}
+
+/*
+ * Try to relocate NT_PRSTATUS notes according by in kernel crash_notes.
+ * Function is only called from ppc's get_regs.
+ */
+static int
+verify_crash_note_in_kernel(int cpu)
+{
+	int ret;
+	Elf32_Nhdr *note32;
+	ulong crash_notes_ptr;
+	char *buf, *name;
+
+	ret = TRUE;
+	if (!readmem(symbol_value("crash_notes"), KVADDR, &crash_notes_ptr,
+		     sizeof(ulong), "crash_notes", QUIET|RETURN_ON_ERROR) ||
+	    !crash_notes_ptr)
+		goto out;
+
+	buf = GETBUF(SIZE(note_buf));
+	if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+		crash_notes_ptr += kt->__per_cpu_offset[cpu];
+	if (!readmem(crash_notes_ptr, KVADDR, buf, SIZE(note_buf),
+		     "cpu crash_notes", QUIET|RETURN_ON_ERROR))
+		goto freebuf;
+
+	note32 = (Elf32_Nhdr *)buf;
+	name = (char *)(note32 + 1);
+	if (note32->n_type != NT_PRSTATUS ||
+	    note32->n_namesz != strlen("CORE") + 1 ||
+	    strncmp(name, "CORE", note32->n_namesz) ||
+	    note32->n_descsz != SIZE(elf_prstatus))
+		ret = FALSE;
+freebuf:
+	FREEBUF(buf);
+out:
+	return ret;
+}
+
+void
+ppc_relocate_nt_prstatus_percpu(void **nt_prstatus_percpu,
+				uint *num_prstatus_notes)
+{
+	static int relocated = FALSE;
+	void **nt_ptr;
+	int i, j, nrcpus;
+	size_t size;
+
+	/* relocation is possible only once */
+	if (relocated == TRUE)
+		return;
+	relocated = TRUE;
+	if (!symbol_exists("crash_notes") ||
+	    !VALID_STRUCT(note_buf) || !VALID_STRUCT(elf_prstatus))
+		return;
+
+	size = NR_CPUS * sizeof(void *);
+	nt_ptr = (void **)GETBUF(size);
+	BCOPY(nt_prstatus_percpu, nt_ptr, size);
+	BZERO(nt_prstatus_percpu, size);
+
+	*num_prstatus_notes = 0;
+	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
+	for (i = 0, j = 0; i < nrcpus; i++) {
+		if (!in_cpu_map(ONLINE, i))
+			continue;
+		if (verify_crash_note_in_kernel(i))
+			nt_prstatus_percpu[i] = nt_ptr[j++];
+		else if (CRASHDEBUG(1))
+			error(WARNING, "cpu#%d: crash_notes not saved\n", i);
+		/* num_prstatus_notes is always equal to online cpus in ppc */
+		(*num_prstatus_notes)++;
+	}
+	FREEBUF(nt_ptr);
 }
 #endif /* PPC */

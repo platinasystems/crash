@@ -27,7 +27,7 @@ TARGET=
 GDB_CONF_FLAGS=
 
 ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
-ifeq (${TARGET}, PPC64)
+ifeq (${ARCH}, ppc64)
 CONF_FLAGS = -m64
 endif
 
@@ -68,7 +68,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	netdump.c diskdump.c makedumpfile.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c unwind_arm.c \
 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
-	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c
+	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c ipcs.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
@@ -85,7 +85,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o unwind_arm.o \
 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
-	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o
+	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o ipcs.o
 
 MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/README
 
@@ -96,39 +96,8 @@ MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/R
 
 EXTENSIONS=extensions
 EXTENSION_SOURCE_FILES=${EXTENSIONS}/Makefile ${EXTENSIONS}/echo.c ${EXTENSIONS}/dminfo.c \
-	${EXTENSIONS}/snap.c ${EXTENSIONS}/snap.mk \
-	${EXTENSIONS}/trace.c \
-        ${EXTENSIONS}/libsial/Makefile \
-        ${EXTENSIONS}/libsial/mkbaseop.c \
-        ${EXTENSIONS}/libsial/README \
-        ${EXTENSIONS}/libsial/README.sial \
-        ${EXTENSIONS}/libsial/sial_alloc.c \
-        ${EXTENSIONS}/libsial/sial_api.c \
-        ${EXTENSIONS}/libsial/sial_api.h \
-        ${EXTENSIONS}/libsial/sial_builtin.c \
-        ${EXTENSIONS}/libsial/sial_case.c \
-        ${EXTENSIONS}/libsial/sial_define.c \
-        ${EXTENSIONS}/libsial/sial_func.c \
-        ${EXTENSIONS}/libsial/sial.h \
-        ${EXTENSIONS}/libsial/sial_input.c \
-        ${EXTENSIONS}/libsial/sial.l \
-        ${EXTENSIONS}/libsial/sial-lsed \
-        ${EXTENSIONS}/libsial/sial_member.c \
-        ${EXTENSIONS}/libsial/sial_node.c \
-        ${EXTENSIONS}/libsial/sial_num.c \
-        ${EXTENSIONS}/libsial/sial_op.c \
-        ${EXTENSIONS}/libsial/sialpp.l \
-        ${EXTENSIONS}/libsial/sialpp-lsed \
-        ${EXTENSIONS}/libsial/sialpp.y \
-        ${EXTENSIONS}/libsial/sial_print.c \
-        ${EXTENSIONS}/libsial/sial_stat.c \
-        ${EXTENSIONS}/libsial/sial_str.c \
-        ${EXTENSIONS}/libsial/sial_type.c \
-        ${EXTENSIONS}/libsial/sial_util.c \
-        ${EXTENSIONS}/libsial/sial_var.c \
-        ${EXTENSIONS}/libsial/sial.y \
-        ${EXTENSIONS}/sial.c \
-        ${EXTENSIONS}/sial.mk
+	${EXTENSIONS}/snap.c ${EXTENSIONS}/snap.mk ${EXTENSIONS}/trace.c \
+	${EXTENSIONS}/eppic.c ${EXTENSIONS}/eppic.mk
 
 DAEMON_OBJECT_FILES=remote_daemon.o va_server.o va_server_v1.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
@@ -285,7 +254,7 @@ force:
 
 make_configure: force
 	@rm -f configure
-	@cc ${CONF_FLAGS} -o configure configure.c ${WARNING_ERROR} ${WARNING_OPTIONS}
+	@${CC} ${CONF_FLAGS} -o configure configure.c ${WARNING_ERROR} ${WARNING_OPTIONS}
 
 clean: make_configure
 	@./configure ${CONF_TARGET_FLAG} -q -b
@@ -297,7 +266,7 @@ do_clean:
 	@(cd memory_driver; make --no-print-directory -i clean)
 
 make_build_data: force
-	cc -c ${CRASH_CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 install:
 	/usr/bin/install ${PROGRAM} ${INSTALLDIR}
@@ -319,171 +288,174 @@ nowarn: make_configure
 	@make --no-print-directory gdb_merge
 
 main.o: ${GENERIC_HFILES} main.c
-	cc -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
+	${CC} -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
 cmdline.o: ${GENERIC_HFILES} cmdline.c
-	cc -c ${CRASH_CFLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 tools.o: ${GENERIC_HFILES} tools.c
-	cc -c ${CRASH_CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 global_data.o: ${GENERIC_HFILES} global_data.c
-	cc -c ${CRASH_CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 symbols.o: ${GENERIC_HFILES} symbols.c
-	cc -c ${CRASH_CFLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 filesys.o: ${GENERIC_HFILES} filesys.c
-	cc -c ${CRASH_CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 help.o: ${GENERIC_HFILES} help.c
-	cc -c ${CRASH_CFLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 memory.o: ${GENERIC_HFILES} memory.c
-	cc -c ${CRASH_CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 test.o: ${GENERIC_HFILES} test.c
-	cc -c ${CRASH_CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 task.o: ${GENERIC_HFILES} task.c
-	cc -c ${CRASH_CFLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 kernel.o: ${GENERIC_HFILES} kernel.c
-	cc -c ${CRASH_CFLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 gdb_interface.o: ${GENERIC_HFILES} gdb_interface.c
-	cc -c ${CRASH_CFLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server.o: ${MCORE_HFILES} va_server.c
-	cc -c ${CRASH_CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 va_server_v1.o: ${MCORE_HFILES} va_server_v1.c
-	cc -c ${CRASH_CFLAGS} va_server_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} va_server_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_common.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_common.c
-	cc -c ${CRASH_CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v1.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v1.c
-	cc -c ${CRASH_CFLAGS} lkcd_v1.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_v1.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v2_v3.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v2_v3.c
-	cc -c ${CRASH_CFLAGS} lkcd_v2_v3.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_v2_v3.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v5.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v5.c
-	cc -c ${CRASH_CFLAGS} lkcd_v5.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_v5.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v7.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v7.c
-	cc -c ${CRASH_CFLAGS} lkcd_v7.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_v7.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_v8.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v8.c
-	cc -c ${CRASH_CFLAGS} lkcd_v8.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_v8.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 net.o: ${GENERIC_HFILES} net.c
-	cc -c ${CRASH_CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 dev.o: ${GENERIC_HFILES} dev.c
-	cc -c ${CRASH_CFLAGS} dev.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} dev.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 # remote.c functionality has been deprecated
 remote.o: ${GENERIC_HFILES} remote.c
-	@cc -c ${CRASH_CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	@${CC} -c ${CRASH_CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 remote_daemon.o: ${GENERIC_HFILES} remote.c
-	cc -c ${CRASH_CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 x86.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86.c
-	cc -c ${CRASH_CFLAGS} x86.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} x86.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 alpha.o: ${GENERIC_HFILES} alpha.c
-	cc -c ${CRASH_CFLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc.o: ${GENERIC_HFILES} ppc.c
-	cc -c ${CRASH_CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ia64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ia64.c
-	cc -c ${CRASH_CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ppc64.o: ${GENERIC_HFILES} ppc64.c
-	cc -c ${CRASH_CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 x86_64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86_64.c
-	cc -c ${CRASH_CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 arm.o: ${GENERIC_HFILES} ${REDHAT_HFILES} arm.c
-	cc -c ${CRASH_CFLAGS} arm.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} arm.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
-	cc -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390x.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x.c
-	cc -c ${CRASH_CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390dbf.o: ${GENERIC_HFILES} ${IBM_HFILES} s390dbf.c
-	cc -c ${CRASH_CFLAGS} s390dbf.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} s390dbf.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 s390_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390_dump.c
-	cc -c ${CRASH_CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-netdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
-	cc -c ${CRASH_CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+netdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ${SADUMP_HFILES} netdump.c
+	${CC} -c ${CRASH_CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
-	cc -c ${CRASH_CFLAGS} -DDAEMON netdump.c -o netdump_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} -DDAEMON netdump.c -o netdump_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 diskdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} diskdump.c
-	cc -c ${CRASH_CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 makedumpfile.o: ${GENERIC_HFILES} ${REDHAT_HFILES} makedumpfile.c
-	cc -c ${CRASH_CFLAGS} makedumpfile.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} makedumpfile.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xendump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} xendump.c
-	cc -c ${CRASH_CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} xendump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 kvmdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} kvmdump.c
-	cc -c ${CRASH_CFLAGS} kvmdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} kvmdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 qemu.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu.c
-	cc -c ${CRASH_CFLAGS} qemu.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} qemu.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 qemu-load.o: ${GENERIC_HFILES} ${REDHAT_HFILES} qemu-load.c
-	cc -c ${CRASH_CFLAGS} qemu-load.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} qemu-load.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 sadump.o: ${GENERIC_HFILES} ${SADUMP_HFILES} sadump.c
-	cc -c ${CRASH_CFLAGS} sadump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} sadump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+ipcs.o: ${GENERIC_HFILES} ipcs.c
+	${CC} -c ${CRASH_CFLAGS} ipcs.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 extensions.o: ${GENERIC_HFILES} extensions.c
-	cc -c ${CRASH_CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c 
-	cc -c ${CRASH_CFLAGS} lkcd_x86_trace.c -DREDHAT ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_x86_trace.c -DREDHAT ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_x86_32_64.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_x86_32_64.c
-	cc -c ${CRASH_CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} unwind_x86_32_64.c -o unwind_x86_32_64.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_arm.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind_arm.c
-	cc -c ${CRASH_CFLAGS} unwind_arm.c -o unwind_arm.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} unwind_arm.c -o unwind_arm.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V1 -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V1 -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v2.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V2 -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V2 -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
-	cc -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V3 -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} unwind.c -DREDHAT -DUNWIND_V3 -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
-	cc -c ${CRASH_CFLAGS} lkcd_fix_mem.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} lkcd_fix_mem.c -DMCLX ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper.o: ${GENERIC_HFILES} xen_hyper.c
-	cc -c ${CRASH_CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_command.o: ${GENERIC_HFILES} xen_hyper_command.c
-	cc -c ${CRASH_CFLAGS} xen_hyper_command.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} xen_hyper_command.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_global_data.o: ${GENERIC_HFILES} xen_hyper_global_data.c
-	cc -c ${CRASH_CFLAGS} xen_hyper_global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} xen_hyper_global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper_dump_tables.o: ${GENERIC_HFILES} xen_hyper_dump_tables.c
-	cc -c ${CRASH_CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	${CC} -c ${CRASH_CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ${PROGRAM}: force
 	@make --no-print-directory all
@@ -499,7 +471,7 @@ ${PROGRAM}d: daemon_deprecated make_configure
 	@make --no-print-directory daemon 
 
 daemon: ${DAEMON_OBJECT_FILES}
-	cc ${LDFLAGS} -o ${PROGRAM}d ${DAEMON_OBJECT_FILES} build_data.o -lz 
+	${CC} ${LDFLAGS} -o ${PROGRAM}d ${DAEMON_OBJECT_FILES} build_data.o -lz 
 
 files: make_configure
 	@./configure -q -b
@@ -528,7 +500,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.0.6
+VERSION=6.1.0
 RELEASE=0
 
 release: make_configure
