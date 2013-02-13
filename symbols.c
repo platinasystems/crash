@@ -3613,7 +3613,7 @@ show_symbol(struct syment *sp, ulong offset, ulong show_flags)
  *  any machine-dependent line_number_hooks reference.
  */
 char *
-get_line_number(ulong addr, char *buf, int strip_usr_src)
+get_line_number(ulong addr, char *buf, int reserved)
 {
 	char *p;
 	struct gnu_request request, *req;
@@ -3655,11 +3655,8 @@ get_line_number(ulong addr, char *buf, int strip_usr_src)
 		gdb_interface(req);
 	}
 
-	if (strip_usr_src && STRNEQ(buf, "/usr/src")) {
-		p = buf + strlen("/usr/src");
-		strcpy(buf, "..");
-		strcpy(&buf[2], p);
-	}
+	while ((p = strstr(buf, "//")))
+		shift_string_left(p+1, 1); 
 
 	return(buf);
 }
@@ -7639,6 +7636,17 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                vm_struct_next: %ld\n",
         	OFFSET(vm_struct_next));
 
+	fprintf(fp, "            vmap_area_va_start: %ld\n", 
+		OFFSET(vmap_area_va_start));
+	fprintf(fp, "              vmap_area_va_end: %ld\n", 
+		OFFSET(vmap_area_va_end));
+	fprintf(fp, "                vmap_area_list: %ld\n", 
+		OFFSET(vmap_area_list));
+	fprintf(fp, "                  vmap_area_vm: %ld\n", 
+		OFFSET(vmap_area_vm));
+	fprintf(fp, "               vmap_area_flags: %ld\n", 
+		OFFSET(vmap_area_flags));
+
 	fprintf(fp, "         module_size_of_struct: %ld\n", 
 		OFFSET(module_size_of_struct));
 	fprintf(fp, "                   module_next: %ld\n", 
@@ -8820,6 +8828,38 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(log_flags_level));
 	fprintf(fp, "          sched_rt_entity_my_q: %ld\n",
 		OFFSET(sched_rt_entity_my_q));
+	fprintf(fp, "             task_group_parent: %ld\n",
+		OFFSET(task_group_parent));
+	fprintf(fp, "                task_group_css: %ld\n",
+		OFFSET(task_group_css));
+	fprintf(fp, "    cgroup_subsys_state_cgroup: %ld\n",
+		OFFSET(cgroup_subsys_state_cgroup));
+	fprintf(fp, "                 cgroup_dentry: %ld\n",
+		OFFSET(cgroup_dentry));
+	fprintf(fp, "              task_group_rt_rq: %ld\n",
+		OFFSET(task_group_rt_rq));
+	fprintf(fp, "                      rt_rq_tg: %ld\n",
+		OFFSET(rt_rq_tg));
+	fprintf(fp, "             task_group_cfs_rq: %ld\n",
+		OFFSET(task_group_cfs_rq));
+	fprintf(fp, "                     cfs_rq_tg: %ld\n",
+		OFFSET(cfs_rq_tg));
+	fprintf(fp, "           task_group_siblings: %ld\n",
+		OFFSET(task_group_siblings));
+	fprintf(fp, "           task_group_children: %ld\n",
+		OFFSET(task_group_children));
+	fprintf(fp, "      task_group_cfs_bandwidth: %ld\n",
+		OFFSET(task_group_cfs_bandwidth));
+	fprintf(fp, "              cfs_rq_throttled: %ld\n",
+		OFFSET(cfs_rq_throttled));
+	fprintf(fp, "       task_group_rt_bandwidth: %ld\n",
+		OFFSET(task_group_rt_bandwidth));
+	fprintf(fp, "            rt_rq_rt_throttled: %ld\n",
+		OFFSET(rt_rq_rt_throttled));
+	fprintf(fp, "            rt_rq_highest_prio: %ld\n",
+		OFFSET(rt_rq_highest_prio));
+	fprintf(fp, "           rt_rq_rt_nr_running: %ld\n",
+		OFFSET(rt_rq_rt_nr_running));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -9037,6 +9077,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(log_level));
 	fprintf(fp, "                         rt_rq: %ld\n",
 		SIZE(rt_rq));
+	fprintf(fp, "                    task_group: %ld\n",
+		SIZE(task_group));
+	fprintf(fp, "                     vmap_area: %ld\n",
+		SIZE(vmap_area));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

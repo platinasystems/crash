@@ -61,7 +61,7 @@ UNWIND_HFILES=unwind.h unwind_i.h rse.h unwind_x86.h unwind_x86_64.h
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
 	alpha.c x86.c ppc.c ia64.c s390.c s390x.c s390dbf.c ppc64.c x86_64.c \
-	arm.c \
+	arm.c arm64.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
@@ -78,7 +78,7 @@ SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
 	alpha.o x86.o ppc.o ia64.o s390.o s390x.o s390dbf.o ppc64.o x86_64.o \
-	arm.o \
+	arm.o arm64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o makedumpfile.o xendump.o \
@@ -380,6 +380,9 @@ x86_64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} x86_64.c
 arm.o: ${GENERIC_HFILES} ${REDHAT_HFILES} arm.c
 	${CC} -c ${CRASH_CFLAGS} arm.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+arm64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} arm64.c
+	${CC} -c ${CRASH_CFLAGS} arm64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
 	${CC} -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -500,7 +503,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.1.0
+VERSION=6.1.3
 RELEASE=0
 
 release: make_configure

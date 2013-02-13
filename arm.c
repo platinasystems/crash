@@ -329,6 +329,12 @@ arm_init(int when)
 				fprintf(fp, "using framepointers\n");
 		}
 		break;
+
+	case LOG_ONLY:
+		machdep->machspec = &arm_machine_specific;
+		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL & 0xffff0000UL;
+		arm_init_machspec();
+		break;
 	}
 }
 
@@ -609,6 +615,12 @@ arm_verify_symbol(const char *name, ulong value, char type)
 		return FALSE;
 
 	if (STREQ(name, "$a") || STREQ(name, "$n") || STREQ(name, "$d"))
+		return FALSE;
+
+	if (STREQ(name, "PRRR") || STREQ(name, "NMRR"))
+		return FALSE;
+
+	if ((type == 'A') && STRNEQ(name, "__crc_"))
 		return FALSE;
 
 	if (CRASHDEBUG(8) && name && strlen(name))
@@ -939,6 +951,14 @@ arm_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 	 */
 	page_dir = pgd + PGD_OFFSET(vaddr) * 2;
 
+	/* The unity-mapped region is mapped using 1MB pages,
+	 * hence 1-level translation if bit 20 is set; if we
+	 * are 1MB apart physically, we move the page_dir in
+	 * case bit 20 is set.
+	 */
+	if (((vaddr) >> (20)) & 1)
+		page_dir = page_dir + 1;
+
 	FILL_PGD(PAGEBASE(pgd), KVADDR, PGDIR_SIZE());
 	pgd_pte = ULONG(machdep->pgd + PGDIR_OFFSET(page_dir));
 
@@ -964,12 +984,14 @@ arm_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 			MKSTR((ulong)page_middle)), pmd_pte);
 
 	if ((pmd_pte & PMD_TYPE_MASK) == PMD_TYPE_SECT) {
+		ulong sectionbase = pmd_pte & _SECTION_PAGE_MASK;
+
 		if (verbose) {
 			fprintf(fp, " PAGE: %s  (1MB)\n\n",
 				mkstring(buf, VADDR_PRLEN, RJUST | LONG_HEX,
-				MKSTR(PAGEBASE(pmd_pte))));
+				MKSTR(sectionbase)));
 		}
-		*paddr = PAGEBASE(pmd_pte) + (vaddr & ~_SECTION_PAGE_MASK);
+		*paddr = sectionbase + (vaddr & ~_SECTION_PAGE_MASK);
 		return TRUE;
 	}
 

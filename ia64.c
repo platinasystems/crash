@@ -1,8 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -260,6 +260,19 @@ ia64_init(int when)
 
 	case POST_INIT:
 		ia64_post_init();
+		break;
+
+	case LOG_ONLY:
+		machdep->machspec = &ia64_machine_specific;
+		machdep->machspec->kernel_start = kt->vmcoreinfo._stext_SYMBOL;
+		machdep->machspec->kernel_region = 
+			VADDR_REGION(kt->vmcoreinfo._stext_SYMBOL);
+		if (machdep->machspec->kernel_region == KERNEL_VMALLOC_REGION) {
+			machdep->machspec->vmalloc_start = 
+				machdep->machspec->kernel_start +
+				GIGABYTES((ulong)(4));
+			ia64_calc_phys_start();
+		}
 		break;
 	}
 }
@@ -2356,6 +2369,9 @@ ia64_display_machine_stats(void)
         fprintf(fp, "              MACHINE TYPE: %s\n", uts->machine);
         fprintf(fp, "               MEMORY SIZE: %s\n", get_memory_size(buf));
         fprintf(fp, "                      CPUS: %d\n", kt->cpus);
+	if (!STREQ(kt->hypervisor, "(undetermined)") &&
+	    !STREQ(kt->hypervisor, "bare hardware"))
+		fprintf(fp, "                HYPERVISOR: %s\n",  kt->hypervisor);
         fprintf(fp, "           PROCESSOR SPEED: ");
         if ((mhz = machdep->processor_speed()))
                 fprintf(fp, "%ld Mhz\n", mhz);

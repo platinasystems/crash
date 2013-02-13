@@ -1,7 +1,7 @@
 /* snap.c - capture live memory into a kdump or netdump dumpfile
  *
- * Copyright (C) 2009 David Anderson
- * Copyright (C) 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2009, 2013 David Anderson
+ * Copyright (C) 2009, 2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
 #include <linux/types.h>
 #include <elf.h>
 
-int _init(void);
-int _fini(void);
+void snap_init(void);
+void snap_fini(void);
 
 void cmd_snap(void);     
 char *help_snap[];
@@ -41,17 +41,15 @@ int supported = TRUE;
 int supported = FALSE;
 #endif
 
-int 
-_init(void) /* Register the command set. */
+void __attribute__((constructor)) 
+snap_init(void) /* Register the command set. */
 { 
         register_extension(command_table);
-	return 1;
 }
  
-int 
-_fini(void) 
+void __attribute__((destructor))
+snap_fini(void) 
 { 
-	return 1;
 }
 
 

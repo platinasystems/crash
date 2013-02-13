@@ -1,8 +1,8 @@
 /* x86.c - core analysis suite
  *
  * Portions Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2029,6 +2029,10 @@ x86_init(int when)
 
 	case POST_INIT:
 		read_idt_table(READ_IDT_INIT); 
+		break;
+
+	case LOG_ONLY:
+		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL & ~KVBASE_MASK;
 		break;
 	}
 }
@@ -4258,6 +4262,9 @@ x86_display_machine_stats(void)
         fprintf(fp, "       MACHINE TYPE: %s\n", uts->machine);
         fprintf(fp, "        MEMORY SIZE: %s\n", get_memory_size(buf));
 	fprintf(fp, "               CPUS: %d\n", kt->cpus);
+	if (!STREQ(kt->hypervisor, "(undetermined)") &&
+	    !STREQ(kt->hypervisor, "bare hardware"))
+		fprintf(fp, "         HYPERVISOR: %s\n",  kt->hypervisor);
 	fprintf(fp, "    PROCESSOR SPEED: ");
 	if ((mhz = machdep->processor_speed())) 
 		fprintf(fp, "%ld Mhz\n", mhz);
@@ -4684,6 +4691,7 @@ use_cr3:
 
         machdep->last_ptbl_read = BADADDR;
         machdep->last_pmd_read = BADADDR;
+        machdep->last_pgd_read = BADADDR;
 
         for (i = 0; i < xkd->p2m_frames; i++) {
                 xkd->p2m_mfn_frame_list[i] = x86_xen_kdump_page_mfn(kvaddr);
@@ -4698,6 +4706,7 @@ use_cr3:
 
         machdep->last_ptbl_read = 0;
         machdep->last_pmd_read = 0;
+        machdep->last_pgd_read = 0;
 	pc->readmem = read_kdump;
 	if (CRASHDEBUG(1)) 
 		fprintf(fp, "readmem (restore): read_kdump()\n");
@@ -4910,6 +4919,8 @@ x86_xendump_p2m_create(struct xendump_data *xd)
 	if (!xc_core_mfn_to_page(mfn, machdep->pgd))
 		error(FATAL, "cannot read/find cr3 page\n");
 
+	machdep->last_pgd_read = mfn;
+
 	if (CRASHDEBUG(1)) {
 		fprintf(xd->ofp, "contents of page directory page:\n");	
 
@@ -5007,6 +5018,8 @@ x86_pvops_xendump_p2m_create(struct xendump_data *xd)
 
 	if (!xc_core_mfn_to_page(mfn, machdep->pgd))
 		error(FATAL, "cannot read/find cr3 page\n");
+
+	machdep->last_pgd_read = mfn;
 
 	if (CRASHDEBUG(1)) {
 		fprintf(xd->ofp, "contents of page directory page:\n");	
@@ -5465,9 +5478,16 @@ x86_get_stackbase_hyper(ulong task)
 	if (!xen_hyper_test_pcpu_id(pcpu)) {
 		error(FATAL, "invalid pcpu number\n");
 	}
-	init_tss = symbol_value("init_tss");
+
+	if (symbol_exists("init_tss")) {
+		init_tss = symbol_value("init_tss");
+		init_tss += XEN_HYPER_SIZE(tss_struct) * pcpu;
+	} else {
+		init_tss = symbol_value("per_cpu__init_tss");
+		init_tss = xen_hyper_per_cpu(init_tss, pcpu);
+	}
+	
 	buf = GETBUF(XEN_HYPER_SIZE(tss_struct));
-	init_tss += XEN_HYPER_SIZE(tss_struct) * pcpu;
 	if (!readmem(init_tss, KVADDR, buf,
 			XEN_HYPER_SIZE(tss_struct), "init_tss", RETURN_ON_ERROR)) {
 		error(FATAL, "cannot read init_tss.\n");

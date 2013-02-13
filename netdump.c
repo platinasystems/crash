@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -43,6 +43,8 @@ static int proc_kcore_init_32(FILE *fp);
 static int proc_kcore_init_64(FILE *fp);
 static char *get_regs_from_note(char *, ulong *, ulong *);
 static void kdump_get_osrelease(void);
+static char *vmcoreinfo_read_string(const char *);
+
 
 #define ELFSTORE 1
 #define ELFREAD  0
@@ -205,7 +207,7 @@ is_netdump(char *file, ulong source_query)
                         &eheader[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
                 size = (size_t)load32->p_offset;
 
-		if ((load32->p_offset & (MIN_PAGE_SIZE-1)) &&
+		if ((load32->p_offset & (MIN_PAGE_SIZE-1)) ||
 		    (load32->p_align == 0))
                 	tmp_flags |= KDUMP_ELF32;
 		else
@@ -258,7 +260,7 @@ is_netdump(char *file, ulong source_query)
                 load64 = (Elf64_Phdr *)
                         &eheader[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
                 size = (size_t)load64->p_offset;
-		if ((load64->p_offset & (MIN_PAGE_SIZE-1)) &&
+		if ((load64->p_offset & (MIN_PAGE_SIZE-1)) ||
 		    (load64->p_align == 0))
                 	tmp_flags |= KDUMP_ELF64;
 		else
@@ -391,6 +393,15 @@ is_netdump(char *file, ulong source_query)
 	if ((source_query == KDUMP_LOCAL) && 
 	    (pc->flags2 & GET_OSRELEASE))
 		kdump_get_osrelease();
+
+	if ((source_query == KDUMP_LOCAL) && 
+	    (pc->flags2 & GET_LOG)) {
+		pc->dfd = nd->ndfd;
+		pc->readmem = read_kdump;
+		nd->flags |= KDUMP_LOCAL;
+		pc->flags |= KDUMP;
+		get_log_from_vmcoreinfo(file, vmcoreinfo_read_string);
+	}
 
 	return nd->header_size;
 
@@ -768,12 +779,13 @@ get_netdump_panic_task(void)
 	}
 
         if (nd->elf32 && (nd->elf32->e_machine == EM_386)) {
-		Elf32_Nhdr *note32;
+		Elf32_Nhdr *note32 = NULL;
 
-                if ((nd->num_prstatus_notes > 1) && (crashing_cpu != -1))
-                        note32 = (Elf32_Nhdr *)
-                                nd->nt_prstatus_percpu[crashing_cpu];
-                else
+                if (nd->num_prstatus_notes > 1) {
+			if (crashing_cpu != -1)
+				note32 = (Elf32_Nhdr *)
+					nd->nt_prstatus_percpu[crashing_cpu];
+                } else
                         note32 = (Elf32_Nhdr *)nd->nt_prstatus;
 
 		if (!note32)
@@ -815,12 +827,13 @@ check_ebp_esp:
                         }
                 }
 	} else if (nd->elf64) {
-		Elf64_Nhdr *note64;
+		Elf64_Nhdr *note64 = NULL;
 
-                if ((nd->num_prstatus_notes > 1) && (crashing_cpu != -1))
-                        note64 = (Elf64_Nhdr *)
-                                nd->nt_prstatus_percpu[crashing_cpu];
-                else
+                if (nd->num_prstatus_notes > 1) {
+			if (crashing_cpu != -1)
+				note64 = (Elf64_Nhdr *)
+					nd->nt_prstatus_percpu[crashing_cpu];
+                } else
                         note64 = (Elf64_Nhdr *)nd->nt_prstatus;
 
 		if (!note64)
@@ -1800,6 +1813,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 			if (READ_PAGESIZE_FROM_VMCOREINFO() && store)
 				nd->page_size = (uint)
 					vmcoreinfo_read_integer("PAGESIZE", 0);
+			pc->flags2 |= VMCOREINFO;
 		} else if (eraseinfo) {
 			netdump_print("(unused)\n");
 			if (note->n_descsz)
@@ -2079,6 +2093,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 			if (READ_PAGESIZE_FROM_VMCOREINFO() && store)
 				nd->page_size = (uint)
 					vmcoreinfo_read_integer("PAGESIZE", 0);
+			pc->flags2 |= VMCOREINFO;
 		} else if (eraseinfo) {
 			netdump_print("(unused)\n");
 			if (note->n_descsz)
@@ -2348,6 +2363,9 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 		else
                 	note = (Elf64_Nhdr *)nd->nt_prstatus;
 
+		if (!note)
+			goto no_nt_prstatus_exists;
+
                 len = sizeof(Elf64_Nhdr);
                 len = roundup(len + note->n_namesz, 4);
                 len = roundup(len + note->n_descsz, 4);
@@ -2384,6 +2402,10 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 	    (bt->flags & BT_DUMPFILE_SEARCH) && DISKDUMP_DUMPFILE() && 
 	    (note = (Elf64_Nhdr *)
 	     diskdump_get_prstatus_percpu(bt->tc->processor))) {
+
+		if (!note)
+			goto no_nt_prstatus_exists;
+
 		user_regs = get_regs_from_note((char *)note, &rip, &rsp);
 
 		if (CRASHDEBUG(1))
@@ -2399,6 +2421,7 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 		bt->machdep = (void *)user_regs;
 	}
 
+no_nt_prstatus_exists:
         machdep->get_stack_frame(bt, ripp, rspp);
 }
 
@@ -2668,12 +2691,16 @@ get_netdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
 		} else
 			note = (Elf32_Nhdr *)nd->nt_prstatus;
 
+		if (!note)
+			goto no_nt_prstatus_exists;
+
 		len = sizeof(Elf32_Nhdr);
 		len = roundup(len + note->n_namesz, 4);
 		bt->machdep = (void *)((char *)note + len + 
 			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 	}
 
+no_nt_prstatus_exists:
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
@@ -2702,12 +2729,16 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 		} else
 			note = (Elf64_Nhdr *)nd->nt_prstatus;
 
+		if (!note)
+			goto no_nt_prstatus_exists;
+
 		len = sizeof(Elf64_Nhdr);
 		len = roundup(len + note->n_namesz, 4);
 		bt->machdep = (void *)((char *)note + len + 
 			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 	}
 
+no_nt_prstatus_exists:
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
@@ -3085,6 +3116,10 @@ get_x86_regs_from_elf_notes(struct task_context *tc)
 		note = (void *)nd->nt_prstatus_percpu[tc->processor];
 	else
 		note = (void *)nd->nt_prstatus;
+
+	if (!note)
+		goto no_nt_prstatus_exists;
+
 	if (nd->elf32) {
 		note_32 = (Elf32_Nhdr *)note;
 		len = sizeof(Elf32_Nhdr);
@@ -3100,6 +3135,7 @@ get_x86_regs_from_elf_notes(struct task_context *tc)
 	/* NEED TO BE FIXED: Hack to get the proper alignment */
 	pt_regs +=4;
 
+no_nt_prstatus_exists:
 	return pt_regs;
 
 }
@@ -3118,11 +3154,15 @@ get_x86_64_regs_from_elf_notes(struct task_context *tc)
 	else
 		note = (Elf64_Nhdr *)nd->nt_prstatus;
 
+	if (!note)
+		goto no_nt_prstatus_exists;
+
 	len = sizeof(Elf64_Nhdr);
 	len = roundup(len + note->n_namesz, 4);
 	pt_regs = (void *)((char *)note + len +
 			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 
+no_nt_prstatus_exists:
 	return pt_regs;
 }
 
@@ -3146,11 +3186,15 @@ get_ppc_regs_from_elf_notes(struct task_context *tc)
 	} else
 		note = (Elf32_Nhdr *)nd->nt_prstatus;
 
+	if (!note)
+		goto no_nt_prstatus_exists;
+
 	len = sizeof(Elf32_Nhdr);
 	len = roundup(len + note->n_namesz, 4);
 	pt_regs = (void *)((char *)note + len +
 			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 
+no_nt_prstatus_exists:
 	return pt_regs;
 }
 
@@ -3174,11 +3218,15 @@ get_ppc64_regs_from_elf_notes(struct task_context *tc)
 	} else
 		note = (Elf64_Nhdr *)nd->nt_prstatus;
 
+	if (!note)
+		goto no_nt_prstatus_exists;
+
 	len = sizeof(Elf64_Nhdr);
 	len = roundup(len + note->n_namesz, 4);
 	pt_regs = (void *)((char *)note + len +
 			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 
+no_nt_prstatus_exists:
 	return pt_regs;
 }
 
@@ -3225,6 +3273,10 @@ get_arm_regs_from_elf_notes(struct task_context *tc)
 		note = (void *)nd->nt_prstatus_percpu[tc->processor];
 	else
 		note = (void *)nd->nt_prstatus;
+
+	if (!note)
+		goto no_nt_prstatus_exists;
+
 	if (nd->elf32) {
 		note_32 = (Elf32_Nhdr *)note;
 		len = sizeof(Elf32_Nhdr);
@@ -3238,6 +3290,7 @@ get_arm_regs_from_elf_notes(struct task_context *tc)
 	pt_regs = (void *)((char *)note + len +
 			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 
+no_nt_prstatus_exists:
 	return pt_regs;
 }
 

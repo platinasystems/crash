@@ -850,26 +850,29 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 		    text_value_cache_byte(addr, (unsigned char *)p1)) 
 			return TRUE;
 
-		if (readmem(addr, memtype, locbuf, SIZEOF_32BIT,
-                    "gdb_readmem_callback", RETURN_ON_ERROR)) {
-			*p1 = locbuf[0];
+		if (!readmem(addr, memtype, locbuf, SIZEOF_32BIT,
+		    "gdb_readmem_callback", RETURN_ON_ERROR)) 
+			return FALSE;
+
+		*p1 = locbuf[0];
+		if (memtype == KVADDR) {
 			p2 = (uint32_t *)locbuf;
 			text_value_cache(addr, *p2, 0);
-			return TRUE;
 		}
-		break;
+		return TRUE;
 
 	case SIZEOF_32BIT:
-                if ((memtype == KVADDR) && text_value_cache(addr, 0, buf)) 
+		if ((memtype == KVADDR) && text_value_cache(addr, 0, buf)) 
 			return TRUE;
 
-		if (readmem(addr, memtype, buf, SIZEOF_32BIT, 
-		    "gdb_readmem callback", FAULT_ON_ERROR)) {
-                       	text_value_cache(addr, 
+		if (!readmem(addr, memtype, buf, SIZEOF_32BIT, 
+		    "gdb_readmem callback", RETURN_ON_ERROR))
+			return FALSE;
+
+		if (memtype == KVADDR)
+			text_value_cache(addr, 
 				(uint32_t)*((uint32_t *)buf), NULL);
-			return TRUE;
-                }
-		break;
+		return TRUE;
 	}
 
 	return(readmem(addr, memtype, buf, len,

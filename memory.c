@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -186,6 +186,7 @@ static void gather_slab_cached_count(struct meminfo *);
 static void dump_slab_objects(struct meminfo *);
 static void dump_slab_objects_percpu(struct meminfo *);
 static void dump_vmlist(struct meminfo *);
+static void dump_vmap_area(struct meminfo *);
 static int dump_page_lists(struct meminfo *);
 static void dump_kmeminfo(void);
 static int page_to_phys(ulong, physaddr_t *); 
@@ -354,6 +355,22 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(vm_struct_addr, "vm_struct", "addr");
 	MEMBER_OFFSET_INIT(vm_struct_size, "vm_struct", "size");
 	MEMBER_OFFSET_INIT(vm_struct_next, "vm_struct", "next");
+
+	MEMBER_OFFSET_INIT(vmap_area_va_start, "vmap_area", "va_start");
+	MEMBER_OFFSET_INIT(vmap_area_va_end, "vmap_area", "va_end");
+	MEMBER_OFFSET_INIT(vmap_area_list, "vmap_area", "list");
+	MEMBER_OFFSET_INIT(vmap_area_flags, "vmap_area", "flags");
+	MEMBER_OFFSET_INIT(vmap_area_vm, "vmap_area", "vm");
+	if (INVALID_MEMBER(vmap_area_vm))
+		MEMBER_OFFSET_INIT(vmap_area_vm, "vmap_area", "private");
+	STRUCT_SIZE_INIT(vmap_area, "vmap_area");
+	if (VALID_MEMBER(vmap_area_va_start) &&
+	    VALID_MEMBER(vmap_area_va_end) &&
+	    VALID_MEMBER(vmap_area_flags) &&
+	    VALID_MEMBER(vmap_area_list) &&
+	    VALID_MEMBER(vmap_area_vm) &&
+	    kernel_symbol_exists("vmap_area_list"))
+		vt->flags |= USE_VMAP_AREA;
 
 	MEMBER_OFFSET_INIT(page_next, "page", "next");
 	if (VALID_MEMBER(page_next)) 
@@ -676,7 +693,15 @@ vm_init(void)
 			kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_array);
 		else if (ARRAY_LENGTH(kmem_cache_cpu_slab))
 			kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_cpu_slab);
+		else if (enumerator_value("WORK_CPU_UNBOUND", (long *)&value1))
+			kt->kernel_NR_CPUS = (int)value1;
+		else if ((i = get_array_length("__per_cpu_offset", NULL, 0)))
+			kt->kernel_NR_CPUS = i;
 	}
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "kernel NR_CPUS: %d %s\n", kt->kernel_NR_CPUS,
+			kt->kernel_NR_CPUS ? "" : "(unknown)"); 
 		
         if (kt->kernel_NR_CPUS > NR_CPUS) {
 		error(WARNING, 
@@ -7348,6 +7373,11 @@ dump_vmlist(struct meminfo *vi)
 	physaddr_t paddr;
 	int mod_vmlist;
 
+	if (vt->flags & USE_VMAP_AREA) {
+		dump_vmap_area(vi);
+		return;
+	}
+
 	get_symbol_data("vmlist", sizeof(void *), &vmlist);
 	next = vmlist;
 	count = verified = 0;
@@ -7452,6 +7482,144 @@ next_entry:
 	if (vi->flags & VMLIST_VERIFY)
 		vi->retval = verified;
 }
+
+static void
+dump_vmap_area(struct meminfo *vi)
+{
+	int i, cnt;
+	ulong start, end, vm_struct, flags;
+	struct list_data list_data, *ld;
+	char *vmap_area_buf; 
+	ulong *vmap_area_list;
+	ulong size, pcheck, count, verified; 
+	physaddr_t paddr;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+
+#define VM_VM_AREA 0x4   /* mm/vmalloc.c */
+
+	vmap_area_buf = GETBUF(SIZE(vmap_area));
+	start = count = verified = size = 0;
+
+	ld = &list_data;
+	BZERO(ld, sizeof(struct list_data));
+	ld->flags = LIST_HEAD_FORMAT|LIST_HEAD_POINTER;
+	get_symbol_data("vmap_area_list", sizeof(void *), &ld->start);
+	ld->list_head_offset = OFFSET(vmap_area_list);
+	ld->end = symbol_value("vmap_area_list");
+	hq_open();
+	cnt = do_list(ld);
+	vmap_area_list = (ulong *)GETBUF(cnt * sizeof(ulong));
+	cnt = retrieve_list(vmap_area_list, cnt);
+	hq_close();
+
+	for (i = 0; i < cnt; i++) {
+		if (!(pc->curcmd_flags & HEADER_PRINTED) && (i == 0) && 
+		    !(vi->flags & (GET_HIGHEST|GET_PHYS_TO_VMALLOC|
+		      GET_VMLIST_COUNT|GET_VMLIST|VMLIST_VERIFY))) {
+			fprintf(fp, "%s  ", 
+			    mkstring(buf1, MAX(strlen("VMAP_AREA"), VADDR_PRLEN),
+			    	CENTER|LJUST, "VMAP_AREA"));
+			fprintf(fp, "%s  ", 
+			    mkstring(buf1, MAX(strlen("VM_STRUCT"), VADDR_PRLEN),
+			    	CENTER|LJUST, "VM_STRUCT"));
+			fprintf(fp, "%s     SIZE\n",
+			    mkstring(buf1, (VADDR_PRLEN * 2) + strlen(" - "),
+				CENTER|LJUST, "ADDRESS RANGE"));
+			pc->curcmd_flags |= HEADER_PRINTED;
+		}
+
+		readmem(vmap_area_list[i], KVADDR, vmap_area_buf,
+                        SIZE(vmap_area), "vmap_area struct", FAULT_ON_ERROR); 
+
+		flags = ULONG(vmap_area_buf + OFFSET(vmap_area_flags));
+		if (flags != VM_VM_AREA)
+			continue;
+		start = ULONG(vmap_area_buf + OFFSET(vmap_area_va_start));
+		end = ULONG(vmap_area_buf + OFFSET(vmap_area_va_end));
+		vm_struct = ULONG(vmap_area_buf + OFFSET(vmap_area_vm));
+
+		size = end - start;
+
+		if (vi->flags & (GET_VMLIST_COUNT|GET_VMLIST)) {
+			/*
+			 *  Preceding GET_VMLIST_COUNT set vi->retval.
+			 */
+			if (vi->flags & GET_VMLIST) {
+				if (count < vi->retval) {
+					vi->vmlist[count].addr = start;
+					vi->vmlist[count].size = size;
+				}
+			}
+			count++;
+			continue;
+		}
+
+		if (!(vi->flags & ADDRESS_SPECIFIED) || 
+		    ((vi->memtype == KVADDR) &&
+		    ((vi->spec_addr >= start) && (vi->spec_addr < (start+size))))) {
+			if (vi->flags & VMLIST_VERIFY) {
+				verified++;
+				break;
+			} 	
+			fprintf(fp, "%s%s  %s%s  %s - %s  %7ld\n",
+				mkstring(buf1,VADDR_PRLEN, LONG_HEX|CENTER|LJUST,
+				MKSTR(vmap_area_list[i])), space(MINSPACE-1),
+				mkstring(buf2,VADDR_PRLEN, LONG_HEX|CENTER|LJUST,
+				MKSTR(vm_struct)), space(MINSPACE-1),
+				mkstring(buf3, VADDR_PRLEN, LONG_HEX|RJUST,
+				MKSTR(start)),
+				mkstring(buf4, VADDR_PRLEN, LONG_HEX|LJUST,
+				MKSTR(start+size)),
+				size);
+		}
+
+		if ((vi->flags & ADDRESS_SPECIFIED) && 
+		     (vi->memtype == PHYSADDR)) {
+			for (pcheck = start; pcheck < (start+size); 
+			     pcheck += PAGESIZE()) {
+				if (!kvtop(NULL, pcheck, &paddr, 0))
+					continue;
+		    		if ((vi->spec_addr >= paddr) && 
+				    (vi->spec_addr < (paddr+PAGESIZE()))) {
+					if (vi->flags & GET_PHYS_TO_VMALLOC) {
+						vi->retval = pcheck +
+						    PAGEOFFSET(paddr);
+						return;
+				        } else
+						fprintf(fp,
+						"%s%s  %s%s  %s - %s  %7ld\n",
+						mkstring(buf1,VADDR_PRLEN, 
+						LONG_HEX|CENTER|LJUST,
+						MKSTR(vmap_area_list[i])), 
+						space(MINSPACE-1),
+						mkstring(buf2, VADDR_PRLEN,
+						LONG_HEX|CENTER|LJUST,
+						MKSTR(vm_struct)), space(MINSPACE-1),
+						mkstring(buf3, VADDR_PRLEN,
+						LONG_HEX|RJUST, MKSTR(start)),
+						mkstring(buf4, VADDR_PRLEN,
+						LONG_HEX|LJUST,
+						MKSTR(start+size)), size);
+					break;
+				}
+			}
+
+		}
+	}
+
+	if (vi->flags & GET_HIGHEST)
+		vi->retval = start+size;
+
+	if (vi->flags & GET_VMLIST_COUNT)
+		vi->retval = count;
+
+	if (vi->flags & VMLIST_VERIFY)
+		vi->retval = verified;
+}
+
 
 /*
  *  dump_page_lists() displays information from the active_list,
@@ -11487,6 +11655,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sKMALLOC_SLUB", others++ ? "|" : "");\
 	if (vt->flags & KMALLOC_COMMON)
 		fprintf(fp, "%sKMALLOC_COMMON", others++ ? "|" : "");\
+	if (vt->flags & USE_VMAP_AREA)
+		fprintf(fp, "%sUSE_VMAP_AREA", others++ ? "|" : "");\
 	if (vt->flags & CONFIG_NUMA)
 		fprintf(fp, "%sCONFIG_NUMA", others++ ? "|" : "");\
 	if (vt->flags & VM_EVENT)
@@ -14476,18 +14646,32 @@ force_page_size(char *s)
 ulong
 first_vmalloc_address(void)
 {
-        ulong vmlist, addr;
+	static ulong vmalloc_start = 0;
+        ulong vm_struct, vmap_area;
 
-        get_symbol_data("vmlist", sizeof(void *), &vmlist);
+	if (DUMPFILE() && vmalloc_start)
+		return vmalloc_start;
 
-	if (!vmlist)
-		return 0;
+	if (vt->flags & USE_VMAP_AREA) {
+		get_symbol_data("vmap_area_list", sizeof(void *), &vmap_area);
+		if (!vmap_area)
+			return 0;
+		if (!readmem(vmap_area - OFFSET(vmap_area_list) +
+		    OFFSET(vmap_area_va_start), KVADDR, &vmalloc_start, 
+		    sizeof(void *), "first vmap_area va_start", RETURN_ON_ERROR)) 
+			non_matching_kernel();
 
-        if (!readmem(vmlist+OFFSET(vm_struct_addr), KVADDR, &addr, 
-	    sizeof(void *), "first vmlist addr", RETURN_ON_ERROR)) 
-		non_matching_kernel();
+	} else if (kernel_symbol_exists("vmlist")) {
+		get_symbol_data("vmlist", sizeof(void *), &vm_struct);
+		if (!vm_struct)
+			return 0;
+		if (!readmem(vm_struct+OFFSET(vm_struct_addr), KVADDR, 
+		    &vmalloc_start, sizeof(void *), 
+		    "first vmlist addr", RETURN_ON_ERROR)) 
+			non_matching_kernel();
+	} 
 
-        return addr;
+	return vmalloc_start;
 }
 
 /*
@@ -14499,7 +14683,7 @@ last_vmalloc_address(void)
 	struct meminfo meminfo;
 	static ulong vmalloc_limit = 0;
 
-	if (!vmalloc_limit) {
+	if (!vmalloc_limit || ACTIVE()) {
 		BZERO(&meminfo, sizeof(struct meminfo));
 		meminfo.memtype = KVADDR;
 		meminfo.spec_addr = 0;
@@ -14708,7 +14892,7 @@ sparse_mem_init(void)
 {
 	ulong addr;
 	ulong mem_section_size;
-	int dimension;
+	int len, dimension;
 
 	if (!IS_SPARSEMEM())
 		return;
@@ -14720,7 +14904,7 @@ sparse_mem_init(void)
 		error(FATAL, 
 		    "CONFIG_SPARSEMEM kernels not supported for this architecture\n");
 
-	if ((get_array_length("mem_section", &dimension, 0) ==
+	if ((len = get_array_length("mem_section", &dimension, 0) ==
 	    (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME())) || !dimension)
 		vt->flags |= SPARSEMEM_EX;
 
@@ -14740,6 +14924,8 @@ sparse_mem_init(void)
 		fprintf(fp, "SECTIONS_PER_ROOT = %ld\n", SECTIONS_PER_ROOT() );
 		fprintf(fp, "SECTION_ROOT_MASK = 0x%lx\n", SECTION_ROOT_MASK());
 		fprintf(fp, "PAGES_PER_SECTION = %ld\n", PAGES_PER_SECTION());
+		if (IS_SPARSEMEM_EX() && !len)
+			error(WARNING, "SPARSEMEM_EX: questionable section values\n");
 	}
 
 	if (!(vt->mem_sec = (void *)malloc(mem_section_size)))
@@ -15815,6 +16001,7 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 	long p;
 	short inuse;
         ulong *nodes, *per_cpu;
+	struct node_table *nt;
 
 	/*
 	 *  nodes[n] is not being used (for now)
@@ -15852,11 +16039,12 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 	}
 	
 	for (n = 0; n < vt->numnodes; n++) {
-		if (vt->flags & CONFIG_NUMA)
+		if (vt->flags & CONFIG_NUMA) {
+			nt = &vt->node_table[n];
 			node_ptr = ULONG(si->cache_buf +
 				OFFSET(kmem_cache_node) +
-				(sizeof(void *)*n));
-		else
+				(sizeof(void *) * nt->node_id));
+		} else
 			node_ptr = si->cache + 
 				OFFSET(kmem_cache_local_node);
 
@@ -15927,6 +16115,7 @@ do_kmem_cache_slub(struct meminfo *si)
 	ulong cpu_slab_ptr, node_ptr;
 	ulong node_nr_partial, node_nr_slabs;
 	ulong *per_cpu;
+	struct node_table *nt;
 
 	per_cpu = (ulong *)GETBUF(sizeof(ulong) * vt->numnodes);
 
@@ -15950,11 +16139,12 @@ do_kmem_cache_slub(struct meminfo *si)
         }
 
         for (n = 0; n < vt->numnodes; n++) {
-                if (vt->flags & CONFIG_NUMA)
+                if (vt->flags & CONFIG_NUMA) {
+			nt = &vt->node_table[n];
                         node_ptr = ULONG(si->cache_buf +
                                 OFFSET(kmem_cache_node) +
-                                (sizeof(void *)*n));
-                else
+                                (sizeof(void *)* nt->node_id));
+                } else
                         node_ptr = si->cache +
                                 OFFSET(kmem_cache_local_node);
 

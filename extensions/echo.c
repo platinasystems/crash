@@ -1,8 +1,8 @@
 /* echo.c - simple example of a crash extension
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2005, 2007, 2013 David Anderson
+ * Copyright (C) 2002-2005, 2007, 2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,36 +15,32 @@
  * GNU General Public License for more details.
  */
 
-#include "defs.h"    /* From the crash source top-level directory */
+#include "defs.h"      /* From the crash source top-level directory */
 
-int _init(void);
-int _fini(void);
+void echo_init(void);    /* constructor function */
+void echo_fini(void);    /* destructor function (optional) */
 
 void cmd_echo(void);     /* Declare the commands and their help data. */
 char *help_echo[];
 
 static struct command_table_entry command_table[] = {
-	{ "echo", cmd_echo, help_echo, 0 },    /* One or more commands, */
-	{ NULL }                               /* terminated by NULL, */
+        { "echo", cmd_echo, help_echo, 0},          /* One or more commands, */
+        { NULL },                                     /* terminated by NULL, */
 };
 
 
-int 
-_init(void) /* Register the command set. */
+void __attribute__((constructor))
+echo_init(void) /* Register the command set. */
 { 
         register_extension(command_table);
-	return 1;
 }
  
 /* 
- *  The _fini() function is called if the shared object is unloaded. 
+ *  This function is called if the shared object is unloaded. 
  *  If desired, perform any cleanups here. 
  */
-int 
-_fini(void) 
-{ 
-	return 1;
-}
+void __attribute__((destructor))
+echo_fini(void) { }
 
 
 /* 

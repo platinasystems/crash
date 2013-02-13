@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -95,7 +95,7 @@ __error(int type, char *fmt, ...)
 		fflush(stdout);
 	}
 
-        if ((fp != stdout) && (fp != pc->stdpipe)) {
+        if ((fp != stdout) && (fp != pc->stdpipe) && (fp != pc->tmpfile)) {
                 fprintf(fp, "%s%s%s %s", new_line ? "\n" : "",
 			type == WARNING ? "WARNING" : 
 			type == NOTE ? "NOTE" : 
@@ -3784,6 +3784,7 @@ next_arg:
 		fprintf(fp, "             start: %lx\n", td->start);
 		fprintf(fp, "node_member_offset: %ld\n", td->node_member_offset);
 		fprintf(fp, "   structname_args: %d\n", td->structname_args);
+		fprintf(fp, "             count: %d\n", td->count);
 	}
 
 	td->flags &= ~TREE_NODE_OFFSET_ENTERED;
@@ -3804,7 +3805,7 @@ static ulong RADIX_TREE_MAP_SHIFT = UNINITIALIZED;
 static ulong RADIX_TREE_MAP_SIZE = UNINITIALIZED;
 static ulong RADIX_TREE_MAP_MASK = UNINITIALIZED;
 
-void
+int
 do_rdtree(struct tree_data *td)
 {
 	long nlen;
@@ -3878,10 +3879,14 @@ do_rdtree(struct tree_data *td)
 		node_p &= ~1;
 
 	sprintf(pos, "root");
+
 	rdtree_iteration(node_p, td, pos, -1, height);
+
+	return td->count;
 }
 
-void rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum, uint height)
+void 
+rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum, uint height)
 {
 	ulong slot;
 	int i, index;
@@ -3900,11 +3905,14 @@ void rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong inde
 		if (!slot)
 			continue;
 		if (height == 1) {
-			if (!hq_enter(slot))
+			if (hq_enter(slot))
+				td->count++;
+			else
 				error(FATAL, "\nduplicate tree entry: %lx\n", node_p);
 
-			fprintf(fp, "%lx\n",slot);
-			
+			if (td->flags & VERBOSE)
+				fprintf(fp, "%lx\n",slot);
+
 			if (td->flags & TREE_POSITION_DISPLAY)
 				fprintf(fp, "  position: %s/%d\n", pos, index);
 
@@ -3939,16 +3947,17 @@ void rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong inde
 	}
 }
 
-void
+int
 do_rbtree(struct tree_data *td)
 {
+	ulong start;
+	char pos[BUFSIZE];
+
 	if (!VALID_MEMBER(rb_root_rb_node) || !VALID_MEMBER(rb_node_rb_left) ||
 	    !VALID_MEMBER(rb_node_rb_right))
 		error(FATAL, "red-black trees do not exist or have changed "
 			"their format\n");
 
-	ulong start;
-	char pos[BUFSIZE];
 	sprintf(pos, "root");
 
 	if (td->flags & TREE_NODE_POINTER)
@@ -3958,6 +3967,8 @@ do_rbtree(struct tree_data *td)
 			&start, sizeof(void *), "rb_root rb_node", FAULT_ON_ERROR);
 
 	rbtree_iteration(start, td, pos);
+
+	return td->count;
 }
 
 void
@@ -3971,12 +3982,15 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
 	if (!node_p)
 		return;
 
-	if (node_p && !hq_enter(node_p))
+	if (hq_enter(node_p))
+		td->count++;
+	else
 		error(FATAL, "\nduplicate tree entry: %lx\n", node_p);
 
 	struct_p = node_p - td->node_member_offset;
 
-	fprintf(fp, "%lx\n", struct_p);
+	if (td->flags & VERBOSE)
+		fprintf(fp, "%lx\n", struct_p);
 	
 	if (td->flags & TREE_POSITION_DISPLAY)
 		fprintf(fp, "  position: %s\n", pos);
@@ -4188,7 +4202,7 @@ hq_open(void)
 		return FALSE;
 
 	ht = &hash_table;
-	if (ht->flags & HASH_QUEUE_NONE)
+	if (ht->flags & (HASH_QUEUE_NONE|HASH_QUEUE_OPEN))
 		return FALSE;
 
 	ht->flags &= ~(HASH_QUEUE_FULL|HASH_QUEUE_CLOSED);
@@ -5515,3 +5529,22 @@ make_cpumask_error:
 
 	return UNUSED;
 }
+
+/*
+ * Copy a string into a sized buffer.  If necessary, truncate 
+ * the resultant string in the sized buffer so that it will 
+ * always be NULL-terminated.
+ */
+size_t 
+strlcpy(char *dest, char *src, size_t size)
+{
+	size_t ret = strlen(src);
+
+	if (size) {
+		size_t len = (ret >= size) ? size - 1 : ret;
+		memcpy(dest, src, len);
+		dest[len] = '\0';
+	}
+	return ret;
+}
+

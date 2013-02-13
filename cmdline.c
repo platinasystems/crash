@@ -1,8 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1159,6 +1159,8 @@ restore_sanity(void)
 	
 	if (REMOTE())
 		remote_clear_pipeline();
+
+	hq_close();
 }
 
 /*
@@ -1202,6 +1204,8 @@ restore_ifile_sanity(void)
 	restore_gdb_sanity();
 
 	free_all_bufs();
+
+	hq_close();
 }
 
 /*
@@ -2197,15 +2201,6 @@ shell_command(char *cmd)
         pclose(pipe);
 
 	return REDIRECT_SHELL_COMMAND;
-}
-
-int minimal_functions(char *name)
-{
-	return  STREQ("log", name) || STREQ("help",name)  || \
-		STREQ("dis", name) || STREQ("q", name)    || \
-		STREQ("sym", name) || STREQ("exit", name) || \
-		STREQ("rd", name)  || STREQ("eval", name) || \
-		STREQ("set", name); 
 }
 
 static int 

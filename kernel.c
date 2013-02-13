@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -62,6 +62,9 @@ static char *log_from_idx(uint32_t, char *);
 static uint32_t log_next(uint32_t, char *);
 static void dump_log_entry(char *, int);
 static void dump_variable_length_record_log(int);
+static void hypervisor_init(void);
+static void dump_log_legacy(void);
+static void dump_variable_length_record(void);
 
 
 /*
@@ -308,6 +311,9 @@ kernel_init()
 	STRUCT_SIZE_INIT(prio_array, "prio_array"); 
 
 	MEMBER_OFFSET_INIT(rq_cfs, "rq", "cfs");
+	MEMBER_OFFSET_INIT(task_group_cfs_rq, "task_group", "cfs_rq");
+	MEMBER_OFFSET_INIT(task_group_rt_rq, "task_group", "rt_rq");
+	MEMBER_OFFSET_INIT(task_group_parent, "task_group", "parent");
 
        /*
         *  In 2.4, smp_send_stop() sets smp_num_cpus back to 1
@@ -354,6 +360,8 @@ kernel_init()
 			"configured" : "calculated", kt->cpus, NR_CPUS);
 		error(FATAL, "recompile crash with larger NR_CPUS\n");
 	}
+
+	hypervisor_init();
 
 	STRUCT_SIZE_INIT(spinlock_t, "spinlock_t");
 	verify_spinlock();
@@ -4125,7 +4133,7 @@ dump_log_entry(char *logptr, int msg_flags)
 	char buf[BUFSIZE];
 	int ilen;
 
-	ilen = 0;
+	ilen = level = 0;
 	text_len = USHORT(logptr + OFFSET(log_text_len));
 	dict_len = USHORT(logptr + OFFSET(log_dict_len));
 	if (VALID_MEMBER(log_level)) {
@@ -4136,8 +4144,12 @@ dump_log_entry(char *logptr, int msg_flags)
 			level = USHORT(logptr + OFFSET(log_level));
 		else
 			level = UCHAR(logptr + OFFSET(log_level));
-	} else
-		level = UCHAR(logptr + OFFSET(log_flags_level));
+	} else {
+		if (VALID_MEMBER(log_flags_level))
+			level = UCHAR(logptr + OFFSET(log_flags_level));
+		else if (msg_flags & SHOW_LOG_LEVEL)
+			msg_flags &= ~SHOW_LOG_LEVEL;
+	}
 	ts_nsec = ULONGLONG(logptr + OFFSET(log_ts_nsec));
 
 	msg = logptr + SIZE(log);
@@ -4163,8 +4175,14 @@ dump_log_entry(char *logptr, int msg_flags)
 		fprintf(fp, buf);
 	}
 
-	for (i = 0, p = msg; i < text_len; i++, p++)
-		fputc(isprint(*p) ? *p : '.', fp);
+	for (i = 0, p = msg; i < text_len; i++, p++) {
+		if (*p == '\n')
+			fprintf(fp, "\n%s", space(ilen));
+		else if (isprint(*p) || isspace(*p)) 
+			fputc(*p, fp);
+		else
+			fputc('.', fp);
+	}
 	
 	if (dict_len & (msg_flags & SHOW_LOG_DICT)) {
 		fprintf(fp, "\n");
@@ -5027,6 +5045,22 @@ dump_kernel_table(int verbose)
 	} else
 		fprintf(fp, "(does not exist)\n");
 no_cpu_flags:
+	fprintf(fp, "    vmcoreinfo: \n");
+	fprintf(fp, "      log_buf_SYMBOL: %lx\n", kt->vmcoreinfo.log_buf_SYMBOL);
+	fprintf(fp, "      log_end_SYMBOL: %ld\n", kt->vmcoreinfo.log_end_SYMBOL);
+	fprintf(fp, "  log_buf_len_SYMBOL: %ld\n", kt->vmcoreinfo.log_buf_len_SYMBOL);
+	fprintf(fp, " logged_chars_SYMBOL: %ld\n", kt->vmcoreinfo.logged_chars_SYMBOL);
+	fprintf(fp, "log_first_idx_SYMBOL: %ld\n", kt->vmcoreinfo.log_first_idx_SYMBOL);
+	fprintf(fp, " log_next_idx_SYMBOL: %ld\n", kt->vmcoreinfo.log_next_idx_SYMBOL);
+	fprintf(fp, "            log_SIZE: %ld\n", kt->vmcoreinfo.log_SIZE);
+	fprintf(fp, "  log_ts_nsec_OFFSET: %ld\n", kt->vmcoreinfo.log_ts_nsec_OFFSET);
+	fprintf(fp, "      log_len_OFFSET: %ld\n", kt->vmcoreinfo.log_len_OFFSET);
+	fprintf(fp, " log_text_len_OFFSET: %ld\n", kt->vmcoreinfo.log_text_len_OFFSET);
+	fprintf(fp, " log_dict_len_OFFSET: %ld\n", kt->vmcoreinfo.log_dict_len_OFFSET);
+	fprintf(fp, "    phys_base_SYMBOL: %lx\n", kt->vmcoreinfo.phys_base_SYMBOL);
+	fprintf(fp, "       _stext_SYMBOL: %lx\n", kt->vmcoreinfo._stext_SYMBOL);
+        fprintf(fp, "    hypervisor: %s\n", kt->hypervisor); 
+
 	others = 0;
 	fprintf(fp, "     xen_flags: %lx (", kt->xen_flags);
         if (kt->xen_flags & WRITABLE_PAGE_TABLES)
@@ -8180,4 +8214,405 @@ get_xtime(struct timespec *date)
 		date->tv_sec = (__time_t)xtime_sec;
 	} else if (kernel_symbol_exists("xtime"))
 		get_symbol_data("xtime", sizeof(struct timespec), date);
+}
+
+
+static void 
+hypervisor_init(void)
+{
+	ulong x86_hyper, name, pv_init_ops;
+	char buf[BUFSIZE], *p1;
+
+	kt->hypervisor = "(undetermined)";
+	BZERO(buf, BUFSIZE);
+
+	if (kernel_symbol_exists("pv_info") && 
+	    MEMBER_EXISTS("pv_info", "name") &&
+	    readmem(symbol_value("pv_info") + MEMBER_OFFSET("pv_info", "name"), 
+	    KVADDR, &name, sizeof(char *), "pv_info.name", 
+	    QUIET|RETURN_ON_ERROR) && read_string(name, buf, BUFSIZE-1))
+		kt->hypervisor = strdup(buf);
+	else if (try_get_symbol_data("x86_hyper", sizeof(void *), &x86_hyper)) {
+		if (!x86_hyper)
+			kt->hypervisor = "bare hardware";
+		else if (MEMBER_EXISTS("hypervisor_x86", "name") &&
+	  	    readmem(x86_hyper + MEMBER_OFFSET("hypervisor_x86", "name"), 
+		    KVADDR, &name, sizeof(char *), "x86_hyper->name", 
+		    QUIET|RETURN_ON_ERROR) && read_string(name, buf, BUFSIZE-1))
+			kt->hypervisor = strdup(buf);
+	} else if (XENDUMP_DUMPFILE() || XEN()) 
+		kt->hypervisor = "Xen";
+	else if (KVMDUMP_DUMPFILE())
+		kt->hypervisor = "KVM";
+	else if (PVOPS() && readmem(symbol_value("pv_init_ops"), KVADDR, 
+	    &pv_init_ops, sizeof(void *), "pv_init_ops", RETURN_ON_ERROR) &&
+	    (p1 = value_symbol(pv_init_ops)) &&
+	    STREQ(p1, "native_patch"))
+		kt->hypervisor = "bare hardware";
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "hypervisor: %s\n", kt->hypervisor);
+}
+
+/*
+ *  Get and display the kernel log buffer using the vmcoreinfo
+ *  data alone without the vmlinux file.
+ */
+void
+get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *))
+{
+	char *string;
+	char buf[BUFSIZE];
+	char *p1, *p2;
+	struct vmcoreinfo_data *vmc = &kt->vmcoreinfo;
+
+	if (!(pc->flags2 & VMCOREINFO))
+		error(FATAL, "%s: no VMCOREINFO section\n", file);
+
+	vmc->log_SIZE = vmc->log_ts_nsec_OFFSET = vmc->log_len_OFFSET =
+	vmc->log_text_len_OFFSET = vmc->log_dict_len_OFFSET = -1;
+
+	if ((string = vmcoreinfo_read_string("OSRELEASE"))) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OSRELEASE: %s\n", string);
+		strcpy(buf, string);
+		p1 = p2 = buf;
+		while (*p2 != '.')
+			p2++;
+		*p2 = NULLCHAR;
+		kt->kernel_version[0] = atoi(p1);
+		p1 = ++p2;
+		while (*p2 != '.')
+			p2++;
+		*p2 = NULLCHAR;
+		kt->kernel_version[1] = atoi(p1);
+		p1 = ++p2;
+		while ((*p2 >= '0') && (*p2 <= '9'))
+			p2++;
+		*p2 = NULLCHAR;
+		kt->kernel_version[2] = atoi(p1);
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, "base kernel version: %d.%d.%d\n",
+				kt->kernel_version[0],
+				kt->kernel_version[1],
+				kt->kernel_version[2]);
+		free(string);
+	} else
+		error(FATAL, "VMCOREINFO: cannot determine kernel version\n");
+
+	if ((string = vmcoreinfo_read_string("PAGESIZE"))) {
+		machdep->pagesize = atoi(string);
+		machdep->pageoffset = machdep->pagesize - 1;
+		if (CRASHDEBUG(1))
+			fprintf(fp, "PAGESIZE: %d\n", machdep->pagesize);
+		free(string);
+	} else
+		error(FATAL, "VMCOREINFO: cannot determine page size\n");
+
+	if ((string = vmcoreinfo_read_string("SYMBOL(log_buf)"))) {
+		vmc->log_buf_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(log_buf): %lx\n", 
+				vmc->log_buf_SYMBOL);
+		free(string);
+	}
+	if ((string = vmcoreinfo_read_string("SYMBOL(log_end)"))) {
+		vmc->log_end_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(log_end): %lx\n", 
+				vmc->log_end_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(log_buf_len)"))) {
+		vmc->log_buf_len_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(log_buf_len): %lx\n", 
+				vmc->log_buf_len_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(logged_chars)"))) {
+		vmc->logged_chars_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(logged_chars): %lx\n", 
+				vmc->logged_chars_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(log_first_idx)"))) {
+		vmc->log_first_idx_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(log_first_idx): %lx\n", 
+				vmc->log_first_idx_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(log_next_idx)"))) {
+		vmc->log_next_idx_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(log_next_idx): %lx\n", 
+				vmc->log_next_idx_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(phys_base)"))) {
+		vmc->phys_base_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(phys_base): %lx\n", 
+				vmc->phys_base_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("SYMBOL(_stext)"))) {
+		vmc->_stext_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SYMBOL(_stext): %lx\n", 
+				vmc->_stext_SYMBOL);
+		free(string);
+	} 
+	if ((string = vmcoreinfo_read_string("OFFSET(log.ts_nsec)"))) {
+		vmc->log_ts_nsec_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(log.ts_nsec): %ld\n", 
+				vmc->log_ts_nsec_OFFSET);
+		free(string);
+	}
+	if ((string = vmcoreinfo_read_string("OFFSET(log.len)"))) {
+		vmc->log_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(log.len): %ld\n", 
+				vmc->log_len_OFFSET);
+		free(string);
+	}
+	if ((string = vmcoreinfo_read_string("OFFSET(log.text_len)"))) {
+		vmc->log_text_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(log.text_len): %ld\n", 
+				vmc->log_text_len_OFFSET);
+		free(string);
+	}
+	if ((string = vmcoreinfo_read_string("OFFSET(log.dict_len)"))) {
+		vmc->log_dict_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(log.dict_len): %ld\n", 
+				vmc->log_dict_len_OFFSET);
+		free(string);
+	}
+	if ((string = vmcoreinfo_read_string("SIZE(log)"))) {
+		vmc->log_SIZE = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SIZE(log): %ld\n", vmc->log_SIZE);
+		free(string);
+	}
+
+	/*
+	 *  The per-arch VTOP() macro must be functional.
+	 */
+	machdep_init(LOG_ONLY);
+
+	if (vmc->log_buf_SYMBOL && vmc->log_buf_len_SYMBOL &&
+	    vmc->log_first_idx_SYMBOL && vmc->log_next_idx_SYMBOL &&
+            (vmc->log_SIZE > 0) &&
+            (vmc->log_ts_nsec_OFFSET >= 0) &&
+            (vmc->log_len_OFFSET >= 0) &&
+            (vmc->log_text_len_OFFSET >= 0) &&
+            (vmc->log_dict_len_OFFSET >= 0))
+		dump_variable_length_record();
+	else if (vmc->log_buf_SYMBOL && vmc->log_end_SYMBOL && 
+	    vmc->log_buf_len_SYMBOL && vmc->logged_chars_SYMBOL)
+		dump_log_legacy();
+	else
+		error(FATAL, "VMCOREINFO: no log buffer data\n");
+}
+
+static void
+dump_log_legacy(void)
+{
+	int i;
+        physaddr_t paddr;
+        ulong long_value;
+        uint int_value;
+        ulong log_buf;
+        uint log_end, log_buf_len, logged_chars, total;
+	char *buf, *p;
+	ulong index, bytes;
+	struct vmcoreinfo_data *vmc;
+
+	vmc = &kt->vmcoreinfo;
+	log_buf = log_end = log_buf_len = logged_chars = 0;
+
+	paddr = VTOP(vmc->log_buf_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &long_value, sizeof(ulong), 
+	    "log_buf pointer", RETURN_ON_ERROR))
+		log_buf = long_value;
+	else
+		error(FATAL, "cannot read log_buf value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_buf vaddr: %lx paddr: %llx => %lx\n", 
+			vmc->log_buf_SYMBOL, (ulonglong)paddr, log_buf); 
+
+	paddr = VTOP(vmc->log_end_SYMBOL);
+	if (THIS_KERNEL_VERSION < LINUX(2,6,25)) {
+		if (readmem(paddr, PHYSADDR, &long_value, sizeof(ulong),
+		    "log_end (long)", RETURN_ON_ERROR))
+			log_end = (uint)long_value;
+		else
+			error(FATAL, "cannot read log_end value\n"); 
+	} else {
+		if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+		    "log_end (int)", RETURN_ON_ERROR))
+			log_end = int_value;
+		else
+			error(FATAL, "cannot read log_end value\n"); 
+	}
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_end vaddr: %lx paddr: %llx => %d\n", 
+			vmc->log_end_SYMBOL, (ulonglong)paddr, log_end); 
+
+	paddr = VTOP(vmc->log_buf_len_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+	    "log_buf_len", RETURN_ON_ERROR))
+		log_buf_len = int_value;
+	else
+		error(FATAL, "cannot read log_buf_len value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_buf_len vaddr: %lx paddr: %llx => %d\n", 
+			vmc->log_buf_len_SYMBOL, (ulonglong)paddr, log_buf_len); 
+
+	paddr = VTOP(vmc->logged_chars_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+	    "logged_chars", RETURN_ON_ERROR))
+		logged_chars = int_value;
+	else
+		error(FATAL, "cannot read logged_chars value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "logged_chars vaddr: %lx paddr: %llx => %d\n", 
+			vmc->logged_chars_SYMBOL, (ulonglong)paddr, logged_chars); 
+
+        if ((buf = calloc(sizeof(char), log_buf_len)) == NULL)
+		error(FATAL, "cannot calloc log_buf_len (%d) bytes\n", 
+			log_buf_len);
+
+	paddr = VTOP(log_buf);
+
+	if (log_end < log_buf_len) {
+		bytes = log_end;
+		if (!readmem(paddr, PHYSADDR, buf, bytes,
+		    "log_buf", RETURN_ON_ERROR))
+			error(FATAL, "cannot read log_buf\n");
+		total = bytes;
+	} else {
+                index = log_end & (log_buf_len - 1);
+		bytes = log_buf_len - index;
+		if (!readmem(paddr + index, PHYSADDR, buf, bytes,
+		    "log_buf + index", RETURN_ON_ERROR))
+			error(FATAL, "cannot read log_buf\n");
+		if (!readmem(paddr, PHYSADDR, buf + bytes, index,
+		    "log_buf", RETURN_ON_ERROR))
+			error(FATAL, "cannot read log_buf\n");
+		total = log_buf_len;
+	}
+
+	for (i = 0, p = buf; i < total; i++, p++) {
+		if (*p == NULLCHAR)
+			fputc('\n', fp);
+		else if (ascii(*p))
+			fputc(*p, fp);
+		else
+			fputc('.', fp);
+	}
+}
+
+static void
+dump_variable_length_record(void)
+{
+        physaddr_t paddr;
+	ulong long_value;
+	uint32_t int_value;
+	struct vmcoreinfo_data *vmc;
+	ulong log_buf;
+	uint32_t idx, log_buf_len, log_first_idx, log_next_idx;
+	char *buf, *logptr;
+
+	vmc = &kt->vmcoreinfo;
+	log_buf = log_buf_len = log_first_idx = log_next_idx = 0;
+
+	paddr = VTOP(vmc->log_buf_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &long_value, sizeof(ulong), 
+	    "log_buf pointer", RETURN_ON_ERROR))
+		log_buf = long_value;
+	else
+		error(FATAL, "cannot read log_buf value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_buf vaddr: %lx paddr: %llx => %lx\n", 
+			vmc->log_buf_SYMBOL, (ulonglong)paddr, log_buf); 
+
+	paddr = VTOP(vmc->log_buf_len_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+	    "log_buf_len", RETURN_ON_ERROR))
+		log_buf_len = int_value;
+	else
+		error(FATAL, "cannot read log_buf_len value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_buf_len vaddr: %lx paddr: %llx => %d\n", 
+			vmc->log_buf_len_SYMBOL, (ulonglong)paddr, log_buf_len); 
+
+	paddr = VTOP(vmc->log_first_idx_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+	    "log_first_idx", RETURN_ON_ERROR))
+		log_first_idx = int_value;
+	else
+		error(FATAL, "cannot read log_first_idx value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_first_idx vaddr: %lx paddr: %llx => %d\n", 
+			vmc->log_first_idx_SYMBOL, (ulonglong)paddr, log_first_idx); 
+
+	paddr = VTOP(vmc->log_next_idx_SYMBOL);
+	if (readmem(paddr, PHYSADDR, &int_value, sizeof(uint),
+	    "log_next_idx", RETURN_ON_ERROR))
+		log_next_idx = int_value;
+	else
+		error(FATAL, "cannot read log_next_idx value\n"); 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "log_next_idx vaddr: %lx paddr: %llx => %d\n", 
+			vmc->log_next_idx_SYMBOL, (ulonglong)paddr, log_next_idx); 
+
+	ASSIGN_SIZE(log)= vmc->log_SIZE;
+	ASSIGN_OFFSET(log_ts_nsec) = vmc->log_ts_nsec_OFFSET;
+	ASSIGN_OFFSET(log_len) = vmc->log_len_OFFSET;  
+	ASSIGN_OFFSET(log_text_len) = vmc->log_text_len_OFFSET;
+	ASSIGN_OFFSET(log_dict_len) = vmc->log_dict_len_OFFSET;
+
+        if ((buf = calloc(sizeof(char), log_buf_len)) == NULL)
+		error(FATAL, "cannot calloc log_buf_len (%d) bytes\n", 
+			log_buf_len);
+
+	paddr = VTOP(log_buf);
+
+	if (!readmem(paddr, PHYSADDR, buf, log_buf_len,
+	    "log_buf", RETURN_ON_ERROR))
+		error(FATAL, "cannot read log_buf\n");
+
+	hq_init();
+	hq_open();
+
+	idx = log_first_idx;
+	while (idx != log_next_idx) {
+		logptr = log_from_idx(idx, buf);
+
+		dump_log_entry(logptr, 0);
+
+		if (!hq_enter((ulong)logptr)) {
+			error(INFO, "\nduplicate log_buf message pointer\n");
+			break;
+		}
+
+		idx = log_next(idx, buf);
+
+		if (idx >= log_buf_len) {
+			error(INFO, "\ninvalid log_buf entry encountered\n");
+			break;
+		}
+
+		if (CRASHDEBUG(1) && (idx == log_next_idx))
+			fprintf(fp, "\nfound log_next_idx OK\n");
+	}
+
+	hq_close();
 }

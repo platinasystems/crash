@@ -1,8 +1,8 @@
 /* ppc.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2007, 2010-2013 David Anderson
+ * Copyright (C) 2002-2007, 2010-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -430,6 +430,10 @@ ppc_init(int when)
 		break;
 
 	case POST_INIT:
+		break;
+
+	case LOG_ONLY:
+		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL;
 		break;
 	}
 }
@@ -1526,14 +1530,11 @@ out:
  */
 static void ppc_dump_irq(int irq)
 {
-	struct datatype_member datatype_member, *dm;
         ulong irq_desc_addr, addr;
         int level, others;
         ulong action, ctl, value;
 	char typename[32];
 	int len;
-
-        dm = &datatype_member;
 
         irq_desc_addr = symbol_value("irq_desc") + (SIZE(irqdesc) * irq);
 	

@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 David Anderson
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -204,7 +204,11 @@ ppc64_init(int when)
 			ppc64_vmemmap_init();
 
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
-		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		if (THIS_KERNEL_VERSION >= LINUX(3,7,0))
+			machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_3_7;
+		else
+			machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+
 		ppc64_init_cpu_info();
 		machdep->vmalloc_start = ppc64_vmalloc_start;
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables,
@@ -295,6 +299,10 @@ ppc64_init(int when)
 		break;
 
 	case POST_INIT:
+		break;
+
+	case LOG_ONLY:
+		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL;
 		break;
 	}
 }
@@ -1528,6 +1536,16 @@ ppc64_back_trace(struct gnu_request *req, struct bt_info *bt)
 				newsp = regs.gpr[1];
 			} 
 		}
+
+		/*
+		 * Some Linux 3.7 kernel threads have been seen to have
+		 * their end-of-trace stack linkage pointer pointing
+		 * back to itself (instead of NULL), which would cause
+		 * an infinite loop at the .ret_from_kernel_thread frame.
+		 */
+		if (req->sp == newsp)
+			break;
+
 		req->pc = newpc;
 		req->sp = newsp;
 		frame++;
@@ -2077,13 +2095,10 @@ out:
 static void 
 ppc64_dump_irq(int irq)
 {
-        struct datatype_member datatype_member, *dm;
         ulong irq_desc_addr, addr;
         int level, others;
         ulong action, ctl, value;
         char typename[32];
-
-        dm = &datatype_member;
 
         irq_desc_addr = symbol_value("irq_desc") + (SIZE(irqdesc) * irq);
 
@@ -2527,10 +2542,8 @@ void
 ppc64_compiler_warning_stub(void)
 {
         struct line_number_hook *lhp;
-        char **p;
 
         lhp = &ppc64_line_number_hooks[0]; lhp++;
-        p = ENTRY_S;
 	ppc64_back_trace(NULL, NULL);
 	ppc64_dump_line_number(0);
 }
@@ -2545,7 +2558,7 @@ ppc64_compiler_warning_stub(void)
 void
 parse_cmdline_args(void)
 {
-	int index, i, c, errflag;
+	int index, i, c;
 	char *p;
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
@@ -2572,8 +2585,6 @@ parse_cmdline_args(void)
 		c = parse_line(buf, arglist);
 	
 		for (i = 0; i < c; i++) {
-			errflag = 0;
-	
 			if (STRNEQ(arglist[i], "vm=")) {
 				p = arglist[i] + strlen("vm=");
 				if (strlen(p)) {

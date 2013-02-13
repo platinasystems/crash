@@ -1,3 +1,342 @@
+crash (6.1.3-1) unstable; urgency=low
+
+  * New upstream version 6.1.3
+
+  * Implemented a new "crash --log dumpfile" option which dumps the 
+  kernel log buffer and exits.  A kernel namelist is not required,
+  but the dumpfile must contain the VMCOREINFO data from the ELF 
+  header of the original /proc/vmcore file that was created by the
+  kexec/kdump facility.  Accordingly, this option supports kdump ELF 
+  vmcores and compressed kdump vmcores created by the makedumpfile
+  facility, including those that are in makedumpfile's intermediary
+  "vmcore.flat" format.
+
+  * Fixes for the ppc64.c file to handle gcc-4.7.2 compiler warnings when
+  building crash with "make warn", or compiler failures when building
+  with "make Warn" on a PPC64 machine.  Without the patch, gcc-4.7.2 
+  generates three "error: variable ‘<variable>’ set but not used 
+  [-Werror=unused-but-set-variable]" messages.
+
+  * Update the PPC64 architecure's internal storage of the kernel's 
+  MAX_PHYSMEM_BITS value for Linux 3.7 and later kernels, which changed
+  from 44 to 46 to for 64TB support.  Without the patch, there is no 
+  known issue, but the stored value should be correct.
+
+  * Fix for the "mount" command's header display to indicate "MOUNT"
+  instead of "VFSMOUNT" on Linux 3.3 and later kernels because the
+  the first column contains a mount structure address instead of a
+  vfsmount structure address.  For those later kernels, it is 
+  permissable to enter either the mount structure address, or the 
+  address of the vfsmount structure that is embedded within it, as 
+  an optional argument.  The output has also been tightened up so
+  that the DIRNAME field is not shifted to the right based upon the
+  DEVNAME field length.
+
+  * Fix for the "mount <superblock>" search option on 2.6.32 and later
+  kernels.  Without the patch, it is possible that multiple filesystems
+  will be displayed.
+
+  * Update to the "mount" help page to indicate that a dentry address 
+  may be used as a search option.
+
+  * Fix for the "ps -l [pid|task|command]" option to display the 
+  specified tasks sorted with the most recently-run task (the largest 
+  last_run/timestamp) shown first, as is done with the "ps -l" option
+  with no arguments.  Without the patch, the timestamp data gets 
+  displayed in the order of the "[pid|task|command]" arguments.
+
+  * Added the "ps" command to the set of supported "foreach" commands,
+  serving as an alternative manner of passing task-identifying
+  arguments to the "ps" command.  For example, a command such as
+  "foreach RU ps" can be accomplished without having to pipe normal
+  "ps" output to "grep RU".  All "ps" options are supported from the
+  "foreach" framework.
+
+  * Fix for the "ps -G" restrictor option such that it also takes affect
+  if the -p, -c, -l, -a, -r or -g options are used.  Without the 
+  patch, thread group filtering would only take effect when the default 
+  "ps" command is used without any of the options above.
+
+  * Fortify the internal hq_open() function to return FALSE if it is
+  already open, and have restore_sanity() and restore_ifile_sanity()
+  call hq_close() unconditionally. 
+
+  * Added the "extend" command to the set of built-in commands that
+  support minimal mode.  A new MINIMAL flag has been created for 
+  extension modules to set in their command_table_entry.flags field(s)
+  to signal that a command supports minimal mode.  If the crash session
+  has been invoked with --minimal, then the "extend" command will 
+  require that the module registers at least one command that has 
+  the MINIMAL bit set.
+
+  * Prevent the "__crc_*" symbols from being added to the the ARM kernel
+  symbol list.
+
+  * Prevent the "PRRR" and "NMRR" absolute symbols from being added to
+  the ARM kernel symbol list.  Without the patch, it allows an invalid
+  set of addresses to pass the check in the in_ksymbol_range() function.
+
+  * Fix for the ppc.c file to handle a gcc-4.7.2 compiler warning when
+  building crash with "make warn", or compiler failures when building
+  with "make Warn" on a PPC machine.  Without the patch, gcc-4.7.2
+  generates the message "error: variable ‘dm’ set but not used
+  [-Werror=unused-but-set-variable]".
+
+  * Workaround for the "crash --osrelease dumpfile" option to be able
+  to work with malformed ARM compressed kdump headers.  ARM compressed 
+  kdumps that indicate header version 3 may contain a malformed 
+  kdump_sub_header structure with offset_vmcoreinfo and size_vmcoreinfo
+  fields offset by 4 bytes, and the actual vmcoreinfo data is not
+  preceded by its ELF note header and its "VMCOREINFO" string.  This 
+  workaround finds the vmcoreinfo data and patches the stored header's
+  offset_vmcoreinfo and size_vmcoreinfo values.  Without the patch, the
+  "--osrelease dumpfile" command line option fails with the message 
+  "crash: compressed kdump: cannot lseek dump vmcoreinfo", followed by
+  "unknown".
+
+  * Fix for the "help -n" option on 32-bit compressed kdumps.  Without
+  the patch, the offset_vmcoreinfo, offset_eraseinfo, and offset_note
+  fields of the kdump_sub_header have their upper 32-bits clipped off
+  when displayed.  However, it should be harmless since the offset 
+  values point into the first few pages of the dumpfile.
+
+  * Update of the extensions/echo.c extension module example, and the
+  "extend" help page, to utilize a constructor function to call the
+  register_extension() function.  The _init() and _fini() functions
+  have been designated as obsolete for usage by dlopen() and dlclose().
+  The echo.c example module has been modified to contain echo_init() 
+  and echo_fini() functions marked as __attribute__((constructor)) and
+  __attribute__((destructor)) respectively.
+
+  * Updated extensions/dminfo.c, extensions/snap.c and extensions/trace.c
+  to replace their _init() and _fini() functions with constructor and
+  destructor functions.
+
+  * Fix for the "bt" command on the PPC64 architecture when running 
+  on Linux 3.7 kernel threads.  Without the patch, some kernel threads
+  may fail to terminate on the final ".ret_from_kernel_thread" frame,
+  repeating that frame endlessly, because the stack linkage pointer 
+  points back to itself instead of being NULL.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 13 Feb 2013 09:28:40 -0700
+
+crash (6.1.2-1) UNRELEASED; urgency=low
+  
+  * New upstream version 6.1.2
+
+  * Enhancement of the "task" command to display both the task_struct and the
+    thread_info structures of a task.  The -R option accepts members of
+    either/both structure types.
+
+  * Fix for the X86_64 "search" and "rd" commands due to this commit:
+    http://git.kernel.org/linus/027ef6c87853b0a9df53175063028edb4950d476 Upon
+    any attempt to read a page within the RAM region reserved for AMD GART on
+    a live system, the Linux 3.7rc1 commit above causes causes /dev/mem,
+    /proc/kcore and the /dev/crash drivers to spin forever, leading to a
+    kernel soft lockup.  The RAM pages reserved for GART consist of 2MB large
+    pages whose _PAGE_PRESENT bits are turned off.  Prior to the above commit,
+    a read() attempt on GART RAM would cause an unresolvable page fault, and
+    would harmlessly return an EFAULT.  The commit above has changed
+    pmd_large() function such that it now returns TRUE if only _PAGE_PSE bit
+    is set in the PTE, whereas before it required both _PAGE_PSE and
+    _PAGE_PRESENT.  So instead of just failing the read() system call with an
+    EFAULT, the page fault handling code now considers it a spurious TLB
+    fault, and the instruction is retried indefinitely.  The crash utility
+    patch stores the GART physical memory range, and disallows any attempts to
+    read from it.
+
+  * If an EPPIC_GIT_URL environment variable is defined, then the URL that it
+    points to is used as an alternative to the code.google.com git source
+    repository for the eppic.so extension module.  However, the alternative
+    site is only accessed if code.google.com can first be pinged; this patch
+    removes that restriction. 
+
+  * Fix for the "files" command PATH display on kernels configured with
+    CONFIG_DEVTMPFS, when the vfsmount pointer in an file structure's "f_path"
+    member does not point to the root vfsmount required for reconstructing the
+    full file pathname.  Without the patch, open files in /dev directory may
+    be truncated and not show the "/dev" filename component.
+
+  * Enhancement to the "kmem -v" option on 2.6.28 and later kernels that
+    utilize the "vmap_area_list" list of mapped kernel virtual memory regions,
+    replacing the usage of the to-be-obsoleted "vmlist" list.  In those
+    kernels, the output of the command will also show each vmap_area structure
+    address, in addition to its vm_struct address, memory range, and size.
+
+  * Update to the exported do_rbtree() and do_rdtree() functions such that
+    they will return the number of items found in the targeted tree, similar
+    in nature to the do_list() function.  The two functions have also been
+    fixed such that the VERBOSE flag is actually recognized, so that external
+    callers are able to gather the entries in a tree without having them
+    displayed.  The calls to either function may be enclosed with hq_open()
+    and hq_close() so the that tree entries may be subsequently gathered by
+    retrieve_list() into a supplied buffer, as well as to recognize a
+    corrupted list with duplicate entries.
+
+  * Fix for the "extend -u" option to prevent the usage of a member of a
+    free()'d extension_table structure.  No command failure occurs, but rather
+    an inadvertent coding error.
+
+  * Fix to allow error() to be called during an open_tmpfile() sequence prior
+    to close_tmpfile() being called.  There are no crash functions that call
+    error() during an open_tmpfile() sequence, but there's no reason why it
+    cannot be done.  Without the patch, the error message gets displayed on
+    stdout (as expected), but the error message will also overwrite/corrupt
+    the tmpfile() data while it is being parsed. 
+
+  * Fix to properly determine whether X86_64 kernels were configured with
+    CONFIG_FRAME_POINTER, due to this ftrace-related commit:
+    http://git.kernel.org/linus/d57c5d51a30152f3175d2344cb6395f08bf8ee0c
+    Without the patch, the crash utility fails to determine whether the kernel
+    was built with CONFIG_FRAME_POINTER, and therefore the "bt" command cannot
+    take advantage of it for more reliable backtraces.
+
+  * Fix to properly determine whether 2.6.31 and earlier X86_64 kernels were
+    configured with CONFIG_FRAME_POINTER.  Without the patch, the crash
+    utility may fail to determine whether the kernel was built with
+    CONFIG_FRAME_POINTER.  In those kernel versions -- which may be dependent
+    upon the compiler version used -- one of the sample functions tested may
+    have their "push %rbp, mov %rsp,%rbp" function preamble separated by other
+    instruction(s), resulting in a false negative that precludes the "bt"
+    command from taking advantage of framepointers.
+
+  * Fix for the file and line-number string that is displayed by the "sym
+    <kernel-text>" option.  Without the patch, the "/usr/src/" part of the
+    string is stripped, and the filename string itself could have two
+    corrupted characters in the pathname, for example, showing
+    "k3.nel-3.6.fc17" instead of "kernel-3.6.fc17".  This is dependent upon
+    the compiler version, or perhaps the string library that is linked into
+    the crash binary, because it only has been seen on crash binaries built
+    with gcc-4.7.  The fix now displays the full pathname, no longer dropping
+    the "/usr/src" from beginning.
+
+  * Restricted the X86_64 "line_number_hook" to kernels earlier than 2.6.24,
+    i.e., kernels prior to the x86/x86_64 merge.  Without the patch, the
+    manufactured filename information for assembly-language files was
+    incorrect for 2.6.24 and later kernels.  Also, the kernel debuginfo data
+    now has file/line-number data for assembly-language files as well,
+    obviating the need for the hook.
+
+  * Fix for the extensions/trace.c extension module to prevent a double free
+    exception that would occur if a calloc() call fails during module
+    initialization. 
+
+  * Fix for the "p -u" option if a 32-bit kernel symbol is incorrectly passed
+    as an argument.  Without the patch, the command fails, but the next
+    command requiring the services of the embedded gdb module will generate an
+    error message of the sort "*** glibc detected *** crash: free(): invalid
+    pointer: <address> ***", or "*** glibc detected *** crash: munmap_chunk():
+    invalid pointer: <address> ***", followed by a backtrace, and an abort of
+    the crash session.
+
+  * Fix for the embedded gdb module to correctly handle kernel modules whose
+    ELF header contains "__ksymtab" and "__ksymtab_gpl" sections with non-zero
+    nonsensical "Address" values.
+
+  * Without the patch, if one of the odd sections above is encountered, the
+    "Offset" values of the remaining sections are not processed; and if the
+    module's .data section is ignored, gdb incorrectly calculates the address
+    of all symbols in the module's .data section, leading to incorrect output
+    if, for example, data is printed with the gdb "p" command.  This invalid
+    ELF section format was introduced in Linux 3.0 by the kernel's
+    "scripts/module-common.lds" file.
+
+  * Fix for the "runq -g" option if the kernel contains more than 200 task
+    groups.  Without the patch, the command generates a segmentation
+    violation.
+ 
+ -- Troy Heber <troyh@debian.org>  Wed, 13 Feb 2013 09:28:40 -0700
+
+crash (6.1.1-1) UNRELEASED; urgency=low
+  
+  * New upstream version 6.1.1
+
+  * Fixes for the ARM "vtop" command display of kernel unity-mapped virtual
+    addresses.  Without the patch, the PGD, PMD values may be incorrect, and
+    the PAGE value is always incorrectly calculated.
+
+  * Fix for Linux 2.6.34 and later kernels that are configured with
+    CONFIG_SLUB, but not configured with CONFIG_IKCONFIG, to be able to
+    determine the kernel's CONFIG_NR_CPUS value.  Without the patch, if the
+    actual number of cpus is larger than the crash utility's per-architecture
+    NR_CPUS maximum value, then the cpus beyond the NR_CPUS limit would not be
+    accounted for. 
+
+  * Increment the X86_64 NR_CPUS maximum value from 4096 to 5120.
+
+  * Try to determine whether the kernel is running as a virtual machine by
+    using any available kernel-specific data or by dumpfile type.  The results
+    of the hypervisor type search will be stored in the internal kernel_table
+    data structure, and if a hypervisor type can be determined, its name will
+    be displayed by the "mach" command.  The result of the hypervisor
+    determination, successful or otherwise, may be viewed during session
+    initialization if the -d<number> command line option is invoked, or during
+    runtime via the "help -k" option.  Only applicable to the X86, X86_64 and
+    IA64 architectures.
+
+  * Allow the "ps command" and "foreach name" command options to contain more
+    than the kernel's maximum of 15 characters that are stored in each task's
+    task_struct.comm[] array.  Without the patch, the two string arguments
+    were required to be the possibly-truncated command name string in order to
+    match.
+
+  * Enhancement to the "ps" command to allow any of the "command" arguments to
+    be POSIX extended regular expressions.  The expression string must be
+    encompassed by "'" characters, and will be matched against the names of
+    all tasks.
+
+  * Add support for 2GB pages in the S390X virtual-to-physical address
+    translation function.  Required for the new IBM zEC12 Mainframe.
+
+  * Initial preparation for support of the ARM64 architecture.
+
+  * Fix for the "log" command if a kernel message contains either a '\n' or a
+    '\t'.  Without the patch, the two characters are replaced with a '.', and
+    the message continues.  With the patch applied, the characters are
+    printed, and if it is a '\n', spaces are inserted after the linefeed so
+    that the subsequent characters in the message line up appropriately under
+    the preceding line.
+
+  * Fix for the "kmem -[sS]" options on kernels that configured with both
+    CONFIG_SLUB and CONFIG_NODES_SHIFT, and that are running on hardware that
+    generates NUMA node ids that are not numbered consecutively.  Without the
+    patch, both command options fail with the error message "kmem: invalid
+    kernel virtual address: 8  type: kmem_cache_node nr_partial".
+
+  * Fix for the "trace.so" extension module's "trace show" command.  Without
+    the patch, the output showing each trace point is shown with two
+    hexadecimal virtual addresses instead of displaying them symbolically
+    using the format "<function> <-- <function>".
+
+  * Fixes for handling incomplete/invalid ELF or compressed kdump vmcores
+    whose per-cpu NT_PRSTATUS notes are missing.  For example, this has been
+    seen to happen when kexec/kdump incorrectly recognizes a Xen DomU kernel
+    as a Xen Dom0 kernel.  Without the patch, possible ramifications would be
+    a NULL pointer dereference during session intialization when searching for
+    the panic task, or during the "bt" command on an active task. 
+
+  * Implemented a new "runq -g" option that displays CFS runqueue tasks
+    hierarchically by task_group.  Tasks in throttled groups are also
+    displayed.  The "runq" command with no option will no longer display
+    task_group data for the RT queue.
+
+  * Patchset for Xen support up to version 4.2:
+
+  * Fix for the S390X virtual-to-physical address translation to allow the HW
+    Change-bit override bit (0x100) to be used in page table entries.
+
+  * Fix for a rarely-seen circumstance in which a kdump ELF vmcore of a Xen
+    dom0 kernel gets incorrectly identified as a old-style netdump ELF vmcore.
+    This has only been seen after the original kdump ELF vmcore was
+    transformed via "makedumpfile -d1".  Without the patch, the crash session
+    fails during initialization with the messages "crash: invalid size
+    request: 0  type: xen kdump p2m mfn page", followed by "crash: cannot read
+    xen kdump p2m mfn page".  If run against the Xen hypervisor, the session
+    fails during initialization with the error message "crash: read error:
+    kernel virtual address: <address>  type: crashing_cpu". 
+ 
+ -- Troy Heber <troyh@debian.org>  Wed, 13 Feb 2013 09:28:40 -0700
+
 crash (6.1.0-1) unstable; urgency=low
 
   * Fix for 32-bit SADUMP dumpfiles to correctly check whether a requested
@@ -70,8 +409,9 @@ crash (6.1.0-1) unstable; urgency=low
   * Change for the "ps" command if a task is stopped due to the task being
     traced by another task.  Without the patch, the traced task is shown with
     the "ST" (stopped) status; with the patch it will be shown with a "TR"
-    (traced) status.  
-
+    ncement of the "task" command to display both the task_struct and the
+    thread_info structures of a task.  The -R option accepts members of
+    either/both structure types.
   * The "TR" state has been added to the "foreach" command's list of task
     state qualifiers.  Without the patch, there is no way to filter out tasks
     that are stopped due to being traced by another task.

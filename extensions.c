@@ -1,8 +1,8 @@
 /* extensions.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -266,7 +266,7 @@ load_extension(char *lib)
 
 	if (!(ext->flags & REGISTERED)) {
 		dlclose(ext->handle);
-		if (ext->flags & DUPLICATE_COMMAND_NAME)
+		if (ext->flags & (DUPLICATE_COMMAND_NAME | NO_MINIMAL_COMMANDS))
 			error(INFO, 
 		         "%s: shared object unloaded\n", ext->filename);
 		else
@@ -464,6 +464,7 @@ unload_extension(char *lib)
 
 				free(ext);
 				help_init();
+				break;
 			}
 		}
 		else if (STREQ(basename(lib), basename(ext->filename))) {
@@ -492,6 +493,8 @@ register_extension(struct command_table_entry *command_table)
 {
 	struct command_table_entry *cp;
 
+	pc->curext->flags |= NO_MINIMAL_COMMANDS;
+
         for (cp = command_table; cp->name; cp++) {
 		if (get_command_table_entry(cp->name)) {
 			error(INFO, 
@@ -499,6 +502,25 @@ register_extension(struct command_table_entry *command_table)
 				pc->curext->filename, cp->name);
 			pc->curext->flags |= DUPLICATE_COMMAND_NAME;
 			return;
+		}
+		if (cp->flags & MINIMAL)
+			pc->curext->flags &= ~NO_MINIMAL_COMMANDS;
+	}
+
+	if ((pc->flags & MINIMAL_MODE) && (pc->curext->flags & NO_MINIMAL_COMMANDS)) {
+		error(INFO, 
+		      "%s: does not contain any commands which support minimal mode\n",
+		      pc->curext->filename);
+		return;
+	}
+
+	if (pc->flags & MINIMAL_MODE) {
+		for (cp = command_table; cp->name; cp++) {
+			if (!(cp->flags & MINIMAL)) {
+				error(WARNING, 
+				      "%s: command \"%s\" does not support minimal mode\n",
+				      pc->curext->filename, cp->name);
+			}
 		}
 	}
 

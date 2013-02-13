@@ -8,7 +8,7 @@ Standards-Version: 3.9.3.1
 
 Package: crash
 Architecture: i386 ia64 alpha powerpc amd64
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, binutils
 Suggests: kernel-patch-lkcd, dumputils
 Description: kernel debugging utility, allowing gdb like syntax
  The core analysis suite is a self-contained tool that can be used to

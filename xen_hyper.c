@@ -645,15 +645,22 @@ xen_hyper_dumpinfo_init(void)
 		error(FATAL, "cannot malloc dumpinfo table context_xen_core_array space.\n");
 	}
 	BZERO(xhdit->context_xen_core_array, size);
-	addr = symbol_value("per_cpu__crash_notes");
+	if (symbol_exists("per_cpu__crash_notes"))
+		addr = symbol_value("per_cpu__crash_notes");
+	else
+		get_symbol_data("crash_notes", sizeof(ulong), &addr);
 	for (i = 0; i < machdep->get_smp_cpus(); i++) {
 		ulong addr_notes;
 
-		addr_notes = xen_hyper_per_cpu(addr, i);
+		if (symbol_exists("per_cpu__crash_notes"))
+			addr_notes = xen_hyper_per_cpu(addr, i);
+		else
+			addr_notes = addr + i * STRUCT_SIZE("crash_note_range_t") +
+					MEMBER_OFFSET("crash_note_range_t", "start");
 		if (xhdit->note_ver == XEN_HYPER_ELF_NOTE_V4) {
 			if (!readmem(addr_notes, KVADDR, &(xhdit->context_array[i].note),
-			sizeof(ulong), "per_cpu__crash_notes", RETURN_ON_ERROR)) {
-				error(WARNING, "cannot read per_cpu__crash_notes.\n");
+			sizeof(ulong), "crash_notes", RETURN_ON_ERROR)) {
+				error(WARNING, "cannot read crash_notes.\n");
 				return;
 			}
 		} else {
@@ -678,7 +685,7 @@ xen_hyper_dumpinfo_init(void)
 	xhdit->xen_info_cpu = samp_cpuid;
 	if (!xen_hyper_fill_elf_notes(xhdit->context_array[samp_cpuid].note,
 	buf, XEN_HYPER_ELF_NOTE_FILL_T_NOTE)) {
-		error(FATAL, "cannot read per_cpu__crash_notes.\n");
+		error(FATAL, "cannot read crash_notes.\n");
 	}
 	bp = buf;
 
@@ -1876,13 +1883,28 @@ xen_hyper_get_uptime_hyper(void)
 void
 xen_hyper_get_cpu_info(void)
 {
-	ulong addr;
+	ulong addr, init_begin, init_end;
 	ulong *cpumask;
 	uint *cpu_idx;
 	int i, j, cpus;
 
 	XEN_HYPER_STRUCT_SIZE_INIT(cpumask_t, "cpumask_t");
-	xht->max_cpus = XEN_HYPER_SIZE(cpumask_t) * 8;
+
+	if (symbol_exists("nr_cpu_ids"))
+		get_symbol_data("nr_cpu_ids", sizeof(uint), &xht->max_cpus);
+	else {
+		init_begin = symbol_value("__init_begin");
+		init_end = symbol_value("__init_end");
+		addr = symbol_value("max_cpus");
+
+		if (addr >= init_begin && addr < init_end)
+			xht->max_cpus = XEN_HYPER_SIZE(cpumask_t) * 8;
+		else {
+			get_symbol_data("max_cpus", sizeof(xht->max_cpus), &xht->max_cpus);
+			if (XEN_HYPER_SIZE(cpumask_t) * 8 > xht->max_cpus)
+				xht->max_cpus = XEN_HYPER_SIZE(cpumask_t) * 8;
+		}
+	}
 
 	if (xht->cpumask) {
 		free(xht->cpumask);
@@ -1890,11 +1912,10 @@ xen_hyper_get_cpu_info(void)
 	if((xht->cpumask = malloc(XEN_HYPER_SIZE(cpumask_t))) == NULL) {
 		error(FATAL, "cannot malloc cpumask space.\n");
 	}
-	/* kakuma: It may be better to use cpu_present_map. */
-	addr = symbol_value("cpu_online_map");
+	addr = symbol_value("cpu_present_map");
 	if (!readmem(addr, KVADDR, xht->cpumask,
-		XEN_HYPER_SIZE(cpumask_t), "cpu_online_map", RETURN_ON_ERROR)) {
-		error(FATAL, "cannot read cpu_online_map.\n");
+		XEN_HYPER_SIZE(cpumask_t), "cpu_present_map", RETURN_ON_ERROR)) {
+		error(FATAL, "cannot read cpu_present_map.\n");
 	}
 	if (xht->cpu_idxs) {
 		free(xht->cpu_idxs);

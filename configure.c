@@ -100,6 +100,7 @@ char *get_extra_flags(char *, char *);
 #undef PPC64
 #undef X86_64
 #undef ARM
+#undef ARM64
 
 #define UNKNOWN 0
 #define X86     1
@@ -111,6 +112,7 @@ char *get_extra_flags(char *, char *);
 #define PPC64   7
 #define X86_64  8
 #define ARM	9
+#define ARM64   10
 
 #define TARGET_X86    "TARGET=X86"
 #define TARGET_ALPHA  "TARGET=ALPHA"
@@ -121,6 +123,7 @@ char *get_extra_flags(char *, char *);
 #define TARGET_PPC64  "TARGET=PPC64"
 #define TARGET_X86_64 "TARGET=X86_64"
 #define TARGET_ARM    "TARGET=ARM"
+#define TARGET_ARM64  "TARGET=ARM64"
 
 #define TARGET_CFLAGS_X86    "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_ALPHA  "TARGET_CFLAGS="
@@ -135,12 +138,15 @@ char *get_extra_flags(char *, char *);
 #define TARGET_CFLAGS_ARM_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_X86_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_PPC_ON_PPC64   "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64 -fPIC"
+#define TARGET_CFLAGS_ARM64            "TARGET_CFLAGS="
+#define TARGET_CFLAGS_ARM64_ON_X86_64  "TARGET_CFLAGS="
 
 #define GDB_TARGET_DEFAULT        "GDB_CONF_FLAGS="
 #define GDB_TARGET_ARM_ON_X86     "GDB_CONF_FLAGS=--target=arm-elf-linux"
 #define GDB_TARGET_ARM_ON_X86_64  "GDB_CONF_FLAGS=--target=arm-elf-linux CFLAGS=-m32"
 #define GDB_TARGET_X86_ON_X86_64  "GDB_CONF_FLAGS=--target=i686-pc-linux-gnu CFLAGS=-m32"
 #define GDB_TARGET_PPC_ON_PPC64   "GDB_CONF_FLAGS=--target=ppc-elf-linux CFLAGS=-m32"
+#define GDB_TARGET_ARM64_ON_X86_64  "GDB_CONF_FLAGS=--target=aarch64-elf-linux"   /* TBD */
 
 /*
  *  The original plan was to allow the use of a particular version
@@ -154,7 +160,8 @@ char *get_extra_flags(char *, char *);
 #define GDB_6_1   (2)
 #define GDB_7_0   (3)
 #define GDB_7_3_1 (4)
-#define SUPPORTED_GDB_VERSIONS (GDB_7_3_1 + 1)
+#define GDB_7_6_x (5)   /* TBD */
+#define SUPPORTED_GDB_VERSIONS (GDB_7_6_x + 1)
 
 int default_gdb = GDB_7_3_1;
 
@@ -210,6 +217,15 @@ struct supported_gdb_version {
 	    "GDB_OFILES=${GDB_7.3.1_OFILES}",
 	    "GDB_PATCH_FILES=gdb-7.3.1.patch",
 	    "GDB_FLAGS=-DGDB_7_3_1",
+	    "GPLv3"
+	},
+	{
+	    "GDB=gdb-7.6.x",     /* TBD */
+	    "7.6.x",
+	    "GDB_FILES=${GDB_7.6.x_FILES}",
+	    "GDB_OFILES=${GDB_7.6.x_OFILES}",
+	    "GDB_PATCH_FILES=gdb-7.6.x.patch",
+	    "GDB_FLAGS=-DGDB_7_6_x",
 	    "GPLv3"
 	},
 };
@@ -341,6 +357,9 @@ get_current_configuration(struct supported_gdb_version *sp)
 #ifdef __arm__
         target_data.target = ARM;
 #endif
+#ifdef __aarch64__
+        target_data.target = ARM64;
+#endif
 
 	set_initial_target(sp);
 
@@ -363,6 +382,12 @@ get_current_configuration(struct supported_gdb_version *sp)
 			 *  Build an X86 crash binary on an X86_64 host.
 			 */
 			target_data.target = X86;
+		} else if ((target_data.target == X86_64) &&
+			(name_to_target((char *)target_data.target_as_param) == ARM64)) {
+			/*
+			 *  Build an ARM64 crash binary on an X86_64 host.
+			 */
+			target_data.target = ARM64;
 		} else if ((target_data.target == PPC64) &&
 			(name_to_target((char *)target_data.target_as_param) == PPC)) {
 			/*
@@ -410,6 +435,17 @@ get_current_configuration(struct supported_gdb_version *sp)
 		}
 		if ((target_data.target == X86) &&
 		    (target_data.initial_gdb_target != X86))
+			arch_mismatch(sp);
+
+		if ((target_data.initial_gdb_target == ARM64) &&
+		    (target_data.target != ARM64)) {
+			if (target_data.target == X86_64) 
+				target_data.target = ARM64;
+			else
+				arch_mismatch(sp);
+		}
+		if ((target_data.target == ARM64) &&
+		    (target_data.initial_gdb_target != ARM64))
 			arch_mismatch(sp);
 
 		if ((target_data.initial_gdb_target == PPC) &&
@@ -526,6 +562,9 @@ show_configuration(void)
 	case ARM:
 		printf("TARGET: ARM\n");
 		break;
+	case ARM64:
+		printf("TARGET: ARM64\n");
+		break;
 	}
 
 	if (strlen(target_data.program)) {
@@ -612,6 +651,14 @@ build_configure(struct supported_gdb_version *sp)
 		} else
                         target_CFLAGS = TARGET_CFLAGS_ARM;
                 break;
+	case ARM64:
+		target = TARGET_ARM64;
+		if (target_data.host == X86_64) {
+			target_CFLAGS = TARGET_CFLAGS_ARM64_ON_X86_64;
+			gdb_conf_flags = GDB_TARGET_ARM64_ON_X86_64;
+		} else
+			target_CFLAGS = TARGET_CFLAGS_ARM64;
+		break;
 	}
 
 	ldflags = get_extra_flags("LDFLAGS.extra", NULL);
@@ -1425,6 +1472,8 @@ set_initial_target(struct supported_gdb_version *sp)
 		target_data.initial_gdb_target = S390X;
 	else if (strncmp(buf, "S390", strlen("S390")) == 0)
 		target_data.initial_gdb_target = S390;
+	else if (strncmp(buf, "ARM64", strlen("ARM64")) == 0)
+		target_data.initial_gdb_target = ARM64;
 	else if (strncmp(buf, "ARM", strlen("ARM")) == 0)
 		target_data.initial_gdb_target = ARM;
 }
@@ -1443,6 +1492,7 @@ target_to_name(int target)
 	case PPC64:  return("PPC64");
 	case X86_64: return("X86_64");
 	case ARM:    return("ARM"); 
+	case ARM64:  return("ARM64");
 	}
 
 	return "UNKNOWN";
@@ -1483,6 +1533,12 @@ name_to_target(char *name)
                 return S390;
         else if (strncmp(name, "s390", strlen("s390")) == 0)
                 return S390;
+        else if (strncmp(name, "ARM64", strlen("ARM64")) == 0)
+                return ARM64;
+        else if (strncmp(name, "arm64", strlen("arm64")) == 0)
+                return ARM64;
+        else if (strncmp(name, "aarch64", strlen("aarch64")) == 0)
+		return ARM64;
         else if (strncmp(name, "ARM", strlen("ARM")) == 0)
                 return ARM;
         else if (strncmp(name, "arm", strlen("arm")) == 0)
