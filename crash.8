@@ -188,7 +188,7 @@ Use
 as the
 .I mapfile\fP.
 .TP
-.B \-e \fI vi | emacs\fR
+.B \-e \fIvi | emacs\fR
 Set the 
 .B readline(3) 
 command line editing mode to "vi" or "emacs".  The default
@@ -202,6 +202,13 @@ does not start with "vmlinux".
 .TP
 .B \-k
 Indicate that the NAMELIST file is an LKCD "Kerntypes" debuginfo file.
+.TP
+.BI -g \ [namelist]
+Determine if a  
+.I vmlinux 
+or 
+.I xen-syms 
+namelist file contains debugging data.
 .TP
 .B \-t
 Display the system-crash timestamp and exit. 
@@ -262,6 +269,14 @@ variable, then that directory will be used.  Otherwise
 (32-bit architectures) will be used;
 if they do not exist, then the 
 .I ./extensions directory will be used.
+.TP
+.BI --active
+Track only the active task on each cpu.
+.TP
+.BI --buildinfo
+Display the crash binary's build date, the user ID of the builder,
+the hostname of the machine where the build was done, the target 
+architecture, the version number, and the compiler version.
 .TP
 .BI --memory_module \ modname
 Use the
@@ -414,6 +429,9 @@ or
 .TP
 .B --no_scroll
 Do not pass run-time command output to any scrolling command. 
+.TP
+.B --no_strip
+Do not strip cloned kernel text symbol names.
 .TP
 .B --no_crashrc
 Do not execute the commands in either

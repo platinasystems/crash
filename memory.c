@@ -8483,8 +8483,7 @@ kmem_cache_s_array_nodes:
             "array cache array", RETURN_ON_ERROR))
 		goto bail_out;
 
-	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
-	     cpudata[i]; i++) {
+	for (i = max_limit = 0; (i < kt->cpus) && cpudata[i]; i++) {
                 if (!readmem(cpudata[i]+OFFSET(array_cache_limit),
                     KVADDR, &limit, sizeof(int),
                     "array cache limit", RETURN_ON_ERROR))
@@ -9750,6 +9749,8 @@ no_inuse_check_v1:
 		errcnt++;
 	}
 
+	si->errors += errcnt;
+
 	return(errcnt ? FALSE : TRUE);
 }
 
@@ -10275,6 +10276,8 @@ no_inuse_check_v2:
                         si->curname, list, si->slab, s_mem);
 		errcnt++;
 	}
+
+	si->errors += errcnt;
 
 	return(errcnt ? FALSE : TRUE);
 }
@@ -11153,6 +11156,7 @@ gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
 	  	  "\"%s\" cache: array_cache.avail %d greater than limit %ld\n",
 				si->curname, avail, vt->kmem_max_limit);
 			si->errors++;
+			continue;
 		}
 
 		if (CRASHDEBUG(2))
@@ -13447,19 +13451,26 @@ cmd_swap(void)
 #define SWAP_MAP_BAD    0x8000
 
 char *swap_info_hdr = \
-"FILENAME           TYPE         SIZE      USED   PCT  PRIORITY\n";
+"SWAP_INFO_STRUCT    TYPE       SIZE       USED     PCT  PRI  FILENAME\n";
 
 static int
 dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 {
 	int i, j;
-	int swap_device, pages, prio, usedswap;
+	int swap_device, prio;
+	ulong pages, usedswap;
 	ulong flags, swap_file, max, swap_map, pct;
 	ulong vfsmnt;
 	ulong swap_info, swap_info_ptr;
 	ushort *smap;
 	ulong inuse_pages, totalswap, totalused;
+	char *devname;
 	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+	char buf5[BUFSIZE];
 
 	if (!symbol_exists("nr_swapfiles"))
 		error(FATAL, "nr_swapfiles doesn't exist in this kernel!\n");
@@ -13548,8 +13559,13 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 					1, vfsmnt);
 			} else if (VALID_MEMBER
 				(swap_info_struct_old_block_size)) {
+				devname = vfsmount_devname(file_to_vfsmnt(swap_file), 
+					buf1, BUFSIZE);
 				get_pathname(file_to_dentry(swap_file), 
 					buf, BUFSIZE, 1, file_to_vfsmnt(swap_file));
+				if ((STREQ(devname, "devtmpfs") || STREQ(devname, "udev")) 
+				    && !STRNEQ(buf, "/dev/"))
+					string_insert("/dev", buf);
 			} else {
 				get_pathname(swap_file, buf, BUFSIZE, 1, 0);
 			}
@@ -13595,10 +13611,23 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 		usedswap <<= (PAGESHIFT() - 10);
 		pct = (usedswap * 100)/pages;
 
-		if (swapflags & VERBOSE)
-			fprintf(fp, "%-15s  %s    %7dk %7dk  %2ld%%     %d\n", 
-				buf, swap_device ? "PARTITION" : "  FILE   ", 
-				pages, usedswap, pct, prio);
+		if (swapflags & VERBOSE) {
+			sprintf(buf1, "%lx", (vt->flags & SWAPINFO_V2) ? 
+				swap_info_ptr : swap_info);
+			sprintf(buf2, "%ldk", pages); 
+			sprintf(buf3, "%ldk", usedswap); 
+			sprintf(buf4, "%2ld%%", pct);
+			sprintf(buf5, "%d", prio);
+			fprintf(fp, "%s  %s %s %s %s %s  %s\n", 
+				mkstring(buf1, 
+				MAX(VADDR_PRLEN, strlen("SWAP_INFO_STRUCT")),  
+				CENTER|LJUST, NULL),
+				swap_device ? "PARTITION" : "  FILE   ",
+				mkstring(buf2, 10, CENTER|RJUST, NULL),
+				mkstring(buf3, 10, CENTER|RJUST, NULL),
+				mkstring(buf4, 4, CENTER|RJUST, NULL),
+				mkstring(buf5, 4, RJUST, NULL), buf);
+		}
 	}
 
 	if (totalswap_pages)
@@ -16048,6 +16077,9 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 			node_ptr = si->cache + 
 				OFFSET(kmem_cache_local_node);
 
+		if (!node_ptr) 
+			continue; 
+		
                	if (!readmem(node_ptr + OFFSET(kmem_cache_node_nr_partial), 
 		    KVADDR, &node_nr_partial, sizeof(ulong), 
 		    "kmem_cache_node nr_partial", RETURN_ON_ERROR))
@@ -16148,14 +16180,17 @@ do_kmem_cache_slub(struct meminfo *si)
                         node_ptr = si->cache +
                                 OFFSET(kmem_cache_local_node);
 
-	 	if (!readmem(node_ptr + OFFSET(kmem_cache_node_nr_partial),
-		    KVADDR, &node_nr_partial, sizeof(ulong),
-		    "kmem_cache_node nr_partial", RETURN_ON_ERROR))
-			break;
-		if (!readmem(node_ptr + OFFSET(kmem_cache_node_nr_slabs),
-		    KVADDR, &node_nr_slabs, sizeof(ulong),
-		    "kmem_cache_node nr_slabs", RETURN_ON_ERROR))
-			break;
+		if (node_ptr) { 
+		 	if (!readmem(node_ptr + OFFSET(kmem_cache_node_nr_partial),
+			    KVADDR, &node_nr_partial, sizeof(ulong),
+			    "kmem_cache_node nr_partial", RETURN_ON_ERROR))
+				break;
+			if (!readmem(node_ptr + OFFSET(kmem_cache_node_nr_slabs),
+			    KVADDR, &node_nr_slabs, sizeof(ulong),
+			    "kmem_cache_node nr_slabs", RETURN_ON_ERROR))
+				break;
+		} else
+			node_nr_partial = node_nr_slabs = 0;
 
 		fprintf(fp, "KMEM_CACHE_NODE   NODE  SLABS  PARTIAL  PER-CPU\n");
 
@@ -16354,6 +16389,9 @@ do_node_lists_slub(struct meminfo *si, ulong node_ptr, int node)
 {
 	ulong next, list_head, flags;
 	int first;
+
+	if (!node_ptr)
+		return;
 
 	list_head = node_ptr + OFFSET(kmem_cache_node_partial);
  	if (!readmem(list_head, KVADDR, &next, sizeof(ulong),

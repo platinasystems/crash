@@ -35,9 +35,7 @@ static struct option long_options[] = {
         {"memory_device", required_argument, 0, 0},
         {"no_kallsyms", 0, 0, 0},
         {"no_modules", 0, 0, 0},
-        {"no_namelist_gzip", 0, 0, 0},
         {"help", optional_argument, 0, 'h'},
-	{"data_debug", 0, 0, 0},
 	{"no_data_debug", 0, 0, 0},
 	{"no_crashrc", 0, 0, 0},
 	{"no_kmem_cache", 0, 0, 0},
@@ -47,7 +45,6 @@ static struct option long_options[] = {
 	{"machdep", required_argument, 0, 0},
 	{"version", 0, 0, 0},
 	{"buildinfo", 0, 0, 0},
-	{"shadow_page_tables", 0, 0, 0},
         {"cpus", required_argument, 0, 0},
         {"no_ikconfig", 0, 0, 0},
         {"hyper", 0, 0, 0},
@@ -70,6 +67,7 @@ static struct option long_options[] = {
 	{"log", required_argument, 0, 0},
 	{"hex", 0, 0, 0},
 	{"dec", 0, 0, 0},
+	{"no_strip", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -110,14 +108,6 @@ main(int argc, char **argv)
 		        else if (STREQ(long_options[option_index].name, 
 			    "no_ikconfig")) 
 				kt->flags |= NO_IKCONFIG;
-
-		        else if (STREQ(long_options[option_index].name, 
-			    "no_namelist_gzip")) 
-				pc->flags |= NAMELIST_NO_GZIP;
-
-		        else if (STREQ(long_options[option_index].name, 
-			    "data_debug")) 
-				pc->flags |= DATADEBUG;
 
 		        else if (STREQ(long_options[option_index].name, 
 			    "no_data_debug")) 
@@ -166,10 +156,6 @@ main(int argc, char **argv)
 				clean_exit(0);
 			}
 
-		        else if (STREQ(long_options[option_index].name, 
-			    "shadow_page_tables")) 
-				kt->xen_flags |= SHADOW_PAGE_TABLES;
-
 		        else if (STREQ(long_options[option_index].name, "cpus")) 
 				kt->cpus_override = optarg;
 
@@ -196,6 +182,9 @@ main(int argc, char **argv)
 
 		        else if (STREQ(long_options[option_index].name, "no_panic")) 
 				tt->flags |= PANIC_TASK_NOT_FOUND;
+
+		        else if (STREQ(long_options[option_index].name, "no_strip")) 
+				st->flags |= NO_STRIP;
 
 		        else if (STREQ(long_options[option_index].name, "more")) {
 				if ((pc->scroll_command != SCROLL_NONE) &&

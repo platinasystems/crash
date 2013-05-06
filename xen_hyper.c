@@ -43,10 +43,14 @@ xen_hyper_init(void)
 #endif
 
 #ifdef X86_64
-	if (xen_major_version() >= 4)
-		xht->xen_virt_start = 0xffff82c480000000;
-	else
-		xht->xen_virt_start = 0xffff828c80000000;
+	xht->xen_virt_start = symbol_value("start");
+
+	/*
+	 * Xen virtual mapping is aligned to 1 GiB boundary.
+	 * Image starts no more than 1 GiB below
+	 * beginning of virtual address space.
+	 */
+	xht->xen_virt_start &= 0xffffffffc0000000;
 #endif
 
 	if (machine_type("X86_64") &&

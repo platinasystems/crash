@@ -122,7 +122,7 @@
 #define NR_CPUS  (4096)
 #endif
 #ifdef PPC64
-#define NR_CPUS  (1024)
+#define NR_CPUS  (2048)
 #endif
 #ifdef S390
 #define NR_CPUS  (64)
@@ -1848,6 +1848,25 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long vmap_area_list;
 	long vmap_area_flags;
 	long vmap_area_vm;
+	long hrtimer_cpu_base_clock_base;
+	long hrtimer_clock_base_offset;
+	long hrtimer_clock_base_active;
+	long hrtimer_clock_base_first;
+	long hrtimer_clock_base_get_time;
+	long hrtimer_base_first;
+	long hrtimer_base_pending;
+	long hrtimer_base_get_time;
+	long hrtimer_node;
+	long hrtimer_list;
+	long hrtimer_softexpires;
+	long hrtimer_expires;
+	long hrtimer_function;
+	long timerqueue_head_next;
+	long timerqueue_node_expires;
+	long timerqueue_node_node;
+	long ktime_t_tv64;
+	long ktime_t_sec;
+	long ktime_t_nsec;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1985,6 +2004,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long rt_rq;
 	long task_group;
 	long vmap_area;
+	long hrtimer_clock_base;
+	long hrtimer_base;
 };
 
 struct array_table {
@@ -2023,18 +2044,19 @@ struct array_table {
  *  of the offset_table or size_table, or with data structures whose names
  *  or members are only known/specified during runtime.
  */
-#define STRUCT_SIZE(X)      datatype_info((X), NULL, NULL)
-#define UNION_SIZE(X)       datatype_info((X), NULL, NULL)
-#define STRUCT_EXISTS(X)    (datatype_info((X), NULL, NULL) >= 0)
+#define MEMBER_SIZE_REQUEST ((struct datatype_member *)(-1))
+#define ANON_MEMBER_OFFSET_REQUEST ((struct datatype_member *)(-2))
+#define MEMBER_TYPE_REQUEST ((struct datatype_member *)(-3))
+#define STRUCT_SIZE_REQUEST ((struct datatype_member *)(-4))
+
+#define STRUCT_SIZE(X)      datatype_info((X), NULL, STRUCT_SIZE_REQUEST)
+#define UNION_SIZE(X)       datatype_info((X), NULL, STRUCT_SIZE_REQUEST)
+#define STRUCT_EXISTS(X)    (datatype_info((X), NULL, STRUCT_SIZE_REQUEST) >= 0)
 #define DATATYPE_SIZE(X)    datatype_info((X)->name, NULL, (X))
 #define MEMBER_OFFSET(X,Y)  datatype_info((X), (Y), NULL)
 #define MEMBER_EXISTS(X,Y)  (datatype_info((X), (Y), NULL) >= 0)
-#define MEMBER_SIZE_REQUEST ((struct datatype_member *)(-1))
-#define MEMBER_TYPE_REQUEST ((struct datatype_member *)(-3))
 #define MEMBER_SIZE(X,Y)    datatype_info((X), (Y), MEMBER_SIZE_REQUEST)
 #define MEMBER_TYPE(X,Y)    datatype_info((X), (Y), MEMBER_TYPE_REQUEST)
-
-#define ANON_MEMBER_OFFSET_REQUEST ((struct datatype_member *)(-2))
 #define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
 
 /*
@@ -2223,6 +2245,7 @@ struct list_data {             /* generic structure used by do_list() to walk */
 #define RETURN_ON_LIST_ERROR (VERBOSE << 6)
 #define LIST_STRUCT_RADIX_10 (VERBOSE << 7)
 #define LIST_STRUCT_RADIX_16 (VERBOSE << 8)
+#define LIST_HEAD_REVERSE    (VERBOSE << 9)
 
 struct tree_data {
 	ulong flags;
@@ -2253,6 +2276,20 @@ struct alias_data {                 /* command alias storage */
 	int origin;
 	char *args[MAXARGS];
 	char argbuf[1];
+};
+
+struct rb_node
+{
+        unsigned long  rb_parent_color;
+#define RB_RED          0
+#define RB_BLACK        1
+        struct rb_node *rb_right;
+        struct rb_node *rb_left;
+};
+
+struct rb_root
+{
+        struct rb_node *rb_node;
 };
 
 #define NUMBER_STACKFRAMES 4
@@ -2368,6 +2405,7 @@ struct symbol_table_data {
 #define MODSECT_V2      (0x4000)
 #define MODSECT_V3      (0x8000)
 #define MODSECT_VMASK   (MODSECT_V1|MODSECT_V2|MODSECT_V3)
+#define NO_STRIP       (0x10000)
 
 #endif /* !GDB_COMMON */
 
@@ -3695,6 +3733,7 @@ struct gnu_request {
 #define GNU_COMMAND_FAILED      (0x10)
 #define GNU_FROM_TTY_OFF        (0x20)
 #define GNU_NO_READMEM          (0x40)
+#define GNU_VAR_LENGTH_TYPECODE (0x80)
 
 #undef TRUE
 #undef FALSE
@@ -4081,6 +4120,12 @@ uint16_t swap16(uint16_t, int);
 uint32_t swap32(uint32_t, int);
 int make_cpumask(char *, ulong *, int, int *);
 size_t strlcpy(char *, char *, size_t);
+struct rb_node *rb_first(struct rb_root *);
+struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
+struct rb_node *rb_right(struct rb_node *, struct rb_node *);
+struct rb_node *rb_left(struct rb_node *, struct rb_node *);
+struct rb_node *rb_next(struct rb_node *);
+struct rb_node *rb_last(struct rb_root *);
 
 /* 
  *  symbols.c 
@@ -4261,6 +4306,7 @@ void set_tmpfile2(FILE *);
 void close_tmpfile2(void);
 void open_files_dump(ulong, int, struct reference *);
 void get_pathname(ulong, char *, int, int, ulong);
+char *vfsmount_devname(ulong, char *, int);
 ulong file_to_dentry(ulong);
 ulong file_to_vfsmnt(ulong);
 int get_proc_version(void);
@@ -4647,6 +4693,7 @@ struct arm_pt_regs {
 #define KSYMS_START	(0x1)
 #define PHYS_BASE	(0x2)
 #define PGTABLE_V2	(0x4)
+#define IDMAP_PGD	(0x8)
 
 struct machine_specific {
 	ulong phys_base;

@@ -68,7 +68,7 @@ store_flat_data_array(char *file, struct flat_data **fda)
 		return -1;
 	}
 	if (lseek(fd, MAX_SIZE_MDF_HEADER, SEEK_SET) < 0) {
-		error(INFO, "unable to seek dump file %s\n", file);
+		error(INFO, "%s: seek error (flat format)\n", file);
 		close(fd);
 		return -1;
 	}
@@ -79,14 +79,15 @@ store_flat_data_array(char *file, struct flat_data **fda)
 					 * num_allocated;
 			ptr = realloc(ptr, size_allocated);
 			if (ptr == NULL) {
-				error(INFO, "unable to allocate\n");
+				error(INFO, 
+				    "unable to realloc flat_data structures\n");
 				break;
 			}
 		}
 		offset_fdh = lseek(fd, 0x0, SEEK_CUR);
 
 		if (read(fd, &fdh, sizeof(fdh)) < 0) {
-			error(INFO, "unable to read dump file %s\n", file);
+			error(INFO, "read error: %s (flat format)\n", file);
 			break;
 		}
 		if (!is_bigendian()){
@@ -105,7 +106,7 @@ store_flat_data_array(char *file, struct flat_data **fda)
 
 		/* seek for next makedumpfile_data_header. */
 		if (lseek(fd, fdh.buf_size, SEEK_CUR) < 0) {
-			error(INFO, "unable to seek dump file %s\n", file);
+			error(INFO, "%s: seek error (flat format)\n", file);
 			break;
 		}
 	}
@@ -153,9 +154,10 @@ read_all_makedumpfile_data_header(char *file)
 {
 	unsigned long long	num;
 	struct flat_data	*fda = NULL;
+	long long retval;
 
-	num = store_flat_data_array(file, &fda);
-	if (num < 0)
+	retval = num = store_flat_data_array(file, &fda);
+	if (retval < 0)
 		return FALSE;
 
 	sort_flat_data_array(&fda, num);
@@ -211,12 +213,12 @@ read_raw_dump_file(int fd, off_t offset, void *buf, size_t size)
 {
 	if (lseek(fd, offset, SEEK_SET) < 0) {
 		if (CRASHDEBUG(1))
-			error(INFO, "cannot lseek dump file\n");
+			error(INFO, "read_raw_dump_file: lseek error (flat format)\n");
 		return FALSE;
 	}
 	if (read(fd, buf, size) < size) {
 		if (CRASHDEBUG(1))
-			error(INFO, "cannot read dump file\n");
+			error(INFO, "read_raw_dump_file: read error (flat format)\n");
 		return FALSE;
 	}
 

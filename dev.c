@@ -1,8 +1,8 @@
 /* dev.c - core analysis suite 
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3961,7 +3961,7 @@ display_one_diskio(struct iter *i, unsigned long gendisk)
 	i->get_diskio(queue_addr, &io);
 	in_flight = i->get_in_flight(queue_addr);
 
-	fprintf(fp, "%s%s0x%s%s%s%s0x%s%s%5d%s%s%s%s%s%5u\n",
+	fprintf(fp, "%s%s%s  %s%s%s%s  %s%5d%s%s%s%s%s%5u\n",
 		mkstring(buf0, 5, RJUST|INT_DEC, (char *)(unsigned long)major),
 		space(MINSPACE),
 		mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX, (char *)gendisk),
@@ -4004,7 +4004,7 @@ display_all_diskio(void)
 		"NAME      ",
 		space(MINSPACE),
 		mkstring(buf1, VADDR_PRLEN <= 11 ? 13 : VADDR_PRLEN + 2, LJUST,
-			"REQUEST QUEUE"),
+			"REQUEST_QUEUE"),
 		space(MINSPACE),
 		mkstring(buf2, 5, RJUST, "TOTAL"),
 		space(MINSPACE),
@@ -4050,7 +4050,10 @@ void diskio_init(void)
 	MEMBER_OFFSET_INIT(request_list_count, "request_list", "count");
 	MEMBER_OFFSET_INIT(request_queue_in_flight, "request_queue",
 		"in_flight");
-	MEMBER_OFFSET_INIT(request_queue_rq, "request_queue", "rq");
+	if (MEMBER_EXISTS("request_queue", "rq"))
+		MEMBER_OFFSET_INIT(request_queue_rq, "request_queue", "rq");
+	else
+		MEMBER_OFFSET_INIT(request_queue_rq, "request_queue", "root_rl");
 	MEMBER_OFFSET_INIT(subsys_private_klist_devices, "subsys_private",
 		"klist_devices");
 	MEMBER_OFFSET_INIT(subsystem_kset, "subsystem", "kset");

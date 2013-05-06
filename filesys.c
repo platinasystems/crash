@@ -47,7 +47,6 @@ static int create_memory_device(dev_t);
 static void *radix_tree_lookup(ulong, ulong, int);
 static int match_file_string(char *, char *, char *);
 static ulong get_root_vfsmount(char *);
-static char *vfsmount_devname(ulong, char *, int);
 
 
 #define DENTRY_CACHE (20)
@@ -4023,7 +4022,7 @@ match_file_string(char *filename, char *string, char *buffer)
 	return found;
 }
 
-static char *
+char *
 vfsmount_devname(ulong vfsmnt, char *buf, int maxlen)
 {
 	ulong devp;

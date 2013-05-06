@@ -1821,3 +1821,16 @@ diff -up gdb-7.3.1/gdb/psymtab.c.orig gdb-7.3.1/gdb/psymtab.c
  	  break;
  
        if (cur_sec == NULL)
+--- gdb-7.3.1/gdb/symtab.c.orig
++++ gdb-7.3.1/gdb/symtab.c
+@@ -5054,6 +5054,10 @@ gdb_get_datatype(struct gnu_request *req
+ 		if (gdb_CRASHDEBUG(2))
+         		console("expr->elts[0].opcode: OP_VAR_VALUE\n");
+ 		type = expr->elts[2].symbol->type;
++		if (req->flags & GNU_VAR_LENGTH_TYPECODE) {
++			req->typecode = TYPE_CODE(type);
++			req->length = TYPE_LENGTH(type);
++		}
+ 		if (TYPE_CODE(type) == TYPE_CODE_ENUM) {
+ 			req->typecode = TYPE_CODE(type);
+ 			req->value = SYMBOL_VALUE(expr->elts[2].symbol);

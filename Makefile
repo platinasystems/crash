@@ -503,7 +503,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.1.3
+VERSION=6.1.6
 RELEASE=0
 
 release: make_configure

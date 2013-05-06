@@ -297,63 +297,91 @@ x86_process_elf_notes(void *note_ptr, unsigned long size_note)
 		process_elf32_notes(note_ptr, size_note);
 }
 
+#if defined(__i386__) && defined(ARM)
 /*
- * ARM compressed kdumps with header version 3 may contain a malformed
- * kdump_sub_header structure with offset_vmcoreinfo and size_vmcoreinfo
- * fields offset by 4 bytes, and the actual vmcoreinfo data is not
- * preceded by its ELF note header and its "VMCOREINFO" string.  This
- * workaround finds the vmcoreinfo data and patches the stored copy
- * copy of the header's offset_vmcoreinfo and size_vmcoreinfo values.
+ * The kdump_sub_header member offsets are different when the crash 
+ * binary is built natively on an ARM host vs. when built with  
+ * "make target=ARM" on an x86/x86_64 host.  This is because the
+ * off_t structure members will be aligned on an 8-byte boundary when
+ * compiled as an ARM binary -- which will be reflected in the 
+ * kdump_sub_header in a compressed ARM kdump.  
+ *
+ * When crash is compiled as an x86 binary, these are the 
+ * structure's offsets:
+ * 
+ * struct kdump_sub_header {
+ * [0]     unsigned long   phys_base;
+ * [4]     int             dump_level;         /  header_version 1 and later  /
+ * [8]     int             split;              /  header_version 2 and later  /
+ * [12]    unsigned long   start_pfn;          /  header_version 2 and later  /
+ * [16]    unsigned long   end_pfn;            /  header_version 2 and later  /
+ * [20]    off_t           offset_vmcoreinfo;  /  header_version 3 and later  /
+ * [28]    unsigned long   size_vmcoreinfo;    /  header_version 3 and later  /
+ * [32]    off_t           offset_note;        /  header_version 4 and later  /
+ * [40]    unsigned long   size_note;          /  header_version 4 and later  /
+ * [44]    off_t           offset_eraseinfo;   /  header_version 5 and later  /
+ * [52]    unsigned long   size_eraseinfo;     /  header_version 5 and later  /
+ * };
+ * 
+ * But when compiled on an ARM processor, each 64-bit "off_t" would be pushed
+ * up to an 8-byte boundary:
+ * 
+ * struct kdump_sub_header {
+ * [0]     unsigned long   phys_base;
+ * [4]     int             dump_level;         /  header_version 1 and later  /
+ * [8]     int             split;              /  header_version 2 and later  /
+ * [12]    unsigned long   start_pfn;          /  header_version 2 and later  /
+ * [16]    unsigned long   end_pfn;            /  header_version 2 and later  /
+ * [24]    off_t           offset_vmcoreinfo;  /  header_version 3 and later  /
+ * [32]    unsigned long   size_vmcoreinfo;    /  header_version 3 and later  /
+ * [40]    off_t           offset_note;        /  header_version 4 and later  /
+ * [48]    unsigned long   size_note;          /  header_version 4 and later  /
+ * [56]    off_t           offset_eraseinfo;   /  header_version 5 and later  /
+ * [62]    unsigned long   size_eraseinfo;     /  header_version 5 and later  /
+ * };
+ * 
  */
-static void
-arm_vmcoreinfo_kludge(int header_version, off_t offset, int block_size)
-{
-	ulong i, found;
-	char *p;
-	struct kdump_sub_header *kdsh;
 
-	if (header_version != 3)
-		return;
+struct kdump_sub_header_ARM_target {
+        unsigned long   phys_base;
+        int             dump_level;         /* header_version 1 and later */
+        int             split;              /* header_version 2 and later */
+        unsigned long   start_pfn;          /* header_version 2 and later */
+        unsigned long   end_pfn;            /* header_version 2 and later */
+	int		pad1;
+        off_t           offset_vmcoreinfo;  /* header_version 3 and later */
+        unsigned long   size_vmcoreinfo;    /* header_version 3 and later */
+	int 		pad2;	
+        off_t           offset_note;        /* header_version 4 and later */
+        unsigned long   size_note;          /* header_version 4 and later */
+	int 		pad3;	
+        off_t           offset_eraseinfo;   /* header_version 5 and later */
+        unsigned long   size_eraseinfo;     /* header_version 5 and later */
+};
+
+static void
+arm_kdump_header_adjust(int header_version)
+{
+	struct kdump_sub_header *kdsh;
+	struct kdump_sub_header_ARM_target *kdsh_ARM_target;
 
 	kdsh = dd->sub_header_kdump;
-	p = (char *)kdsh;
+	kdsh_ARM_target = (struct kdump_sub_header_ARM_target *)kdsh;
 
-	for (i = found = 0; i < block_size; i++, p++) {
-		if (!found && (*p == 'O')) {
-			if (STRNEQ(p, "OSRELEASE=")) {
-				found = i;
-				continue;
-			}
-		}
-		if (found && (*p == NULLCHAR))
-			break;
+	if (header_version >= 3) {
+		kdsh->offset_vmcoreinfo = kdsh_ARM_target->offset_vmcoreinfo; 
+		kdsh->size_vmcoreinfo = kdsh_ARM_target->size_vmcoreinfo;
 	}
-
-	if (found) {
-		if (CRASHDEBUG(1)) {
-			if (kdsh->offset_vmcoreinfo != (found + offset)) {
-				fprintf(fp, "compressed kdump: "
-				    "invalid offset_vmcoreinfo: %lld (0x%llx)\n",
-					(ulonglong)kdsh->offset_vmcoreinfo,
-					(ulonglong)kdsh->offset_vmcoreinfo);
-				fprintf(fp,
-				    "%ssetting offset_vmcoreinfo: %lld (0x%llx)\n",
-					space(18),
-					(ulonglong)(found + offset), 
-					(ulonglong)(found + offset));
-			}
-			if (kdsh->size_vmcoreinfo != (i - found)) {
-				fprintf(fp, "compressed kdump: "
-				    "invalid size_vmcoreinfo: %ld\n",
-					kdsh->size_vmcoreinfo);
-				fprintf(fp, "%ssetting size_vmcoreinfo: %ld\n",
-					space(18), i - found);
-			}
-		}
-		kdsh->offset_vmcoreinfo = (off_t)(found + offset);
-		kdsh->size_vmcoreinfo = i - found;
+	if (header_version >= 4) {
+		kdsh->offset_note = kdsh_ARM_target->offset_note;
+		kdsh->size_note = kdsh_ARM_target->size_note;
+	}
+	if (header_version >= 5) {
+		kdsh->offset_eraseinfo = kdsh_ARM_target->offset_eraseinfo;
+		kdsh->size_eraseinfo = kdsh_ARM_target->size_eraseinfo;
 	}
 }
+#endif  /* __i386__ && ARM */
 
 static int 
 read_dump_header(char *file)
@@ -506,8 +534,9 @@ restart:
 		}
 		dd->sub_header_kdump = sub_header_kdump;
 
-		if (machine_type("ARM"))
-			arm_vmcoreinfo_kludge(header->header_version, offset, block_size);
+#if defined(__i386__) && defined(ARM)
+		arm_kdump_header_adjust(header->header_version);
+#endif
 	}
 
 	/* read memory bitmap */
