@@ -1,8 +1,8 @@
 /* configure.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -160,10 +160,10 @@ char *get_extra_flags(char *, char *);
 #define GDB_6_1   (2)
 #define GDB_7_0   (3)
 #define GDB_7_3_1 (4)
-#define GDB_7_6_x (5)   /* TBD */
-#define SUPPORTED_GDB_VERSIONS (GDB_7_6_x + 1)
+#define GDB_7_6   (5)
+#define SUPPORTED_GDB_VERSIONS (GDB_7_6 + 1)
 
-int default_gdb = GDB_7_3_1;
+int default_gdb = GDB_7_6;
 
 struct supported_gdb_version {
 	char *GDB;
@@ -220,12 +220,12 @@ struct supported_gdb_version {
 	    "GPLv3"
 	},
 	{
-	    "GDB=gdb-7.6.x",     /* TBD */
-	    "7.6.x",
-	    "GDB_FILES=${GDB_7.6.x_FILES}",
-	    "GDB_OFILES=${GDB_7.6.x_OFILES}",
-	    "GDB_PATCH_FILES=gdb-7.6.x.patch",
-	    "GDB_FLAGS=-DGDB_7_6_x",
+	    "GDB=gdb-7.6",
+	    "7.6",
+	    "GDB_FILES=${GDB_7.6_FILES}",
+	    "GDB_OFILES=${GDB_7.6_OFILES}",
+	    "GDB_PATCH_FILES=gdb-7.6.patch",
+	    "GDB_FLAGS=-DGDB_7_6",
 	    "GPLv3"
 	},
 };
@@ -1255,7 +1255,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("Vendor: Red Hat, Inc.\n");
 	printf("Packager: Dave Anderson <anderson@redhat.com>\n");
 	printf("ExclusiveOS: Linux\n");
-	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm\n");
+	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm aarch64\n");
 	printf("Buildroot: %%{_tmppath}/%%{name}-root\n");
 	printf("BuildRequires: ncurses-devel zlib-devel\n");
 	printf("Requires: binutils\n");
@@ -1396,6 +1396,12 @@ setup_gdb_defaults(void)
 		if (strcmp(buf, "7.3.1") == 0) {
 			fclose(fp);
 			sp = &supported_gdb_versions[GDB_7_3_1];
+			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
+			return store_gdb_defaults(sp);
+		}
+		if (strcmp(buf, "7.6") == 0) {
+			fclose(fp);
+			sp = &supported_gdb_versions[GDB_7_6];
 			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
 			return store_gdb_defaults(sp);
 		}

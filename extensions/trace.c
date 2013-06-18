@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <setjmp.h>
+#include <stdlib.h>
 
 static int verbose = 0;
 
@@ -891,7 +892,7 @@ out_fail:
 
 static int ftrace_init_event_type(ulong call, struct event_type *aevent_type)
 {
-	ulong fields_head;
+	ulong fields_head = 0;
 
 	if (ftrace_get_event_type_fields(call, &fields_head) < 0)
 		return -1;
@@ -1372,7 +1373,7 @@ static void ftrace_dump(int argc, char *argv[])
 			if (dump_symbols || dump_meta_data || argc - optind > 1)
 				cmd_usage(pc->curcmd, SYNOPSIS);
 			else {
-				char *trace_dat;
+				char *trace_dat = "trace.dat";
 				int fd;
 
 				if (argc - optind == 0)
@@ -1442,6 +1443,8 @@ static void ftrace_show(int argc, char *argv[])
 	int fd;
 	FILE *file;
 	size_t ret;
+	size_t nitems __attribute__ ((__unused__));
+	char *unused __attribute__ ((__unused__));
 
 	/* check trace-cmd */
 	if (env_trace_cmd)
@@ -1464,7 +1467,7 @@ static void ftrace_show(int argc, char *argv[])
 	}
 
 	/* dump trace.dat to the temp file */
-	mktemp(tmp);
+	unused = mktemp(tmp);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (trace_cmd_data_output(fd) < 0)
 		goto out;
@@ -1477,7 +1480,7 @@ static void ftrace_show(int argc, char *argv[])
 		ret = fread(buf, 1, sizeof(buf), file);
 		if (ret == 0)
 			break;
-		fwrite(buf, 1, ret, fp);
+		nitems = fwrite(buf, 1, ret, fp);
 	}
 	pclose(file);
 out:

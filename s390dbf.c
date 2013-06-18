@@ -438,7 +438,8 @@ sprintf_format_fn(debug_info_t * id, debug_view_t *view,
 {
 #define _BUFSIZE 1024
 	char buf[_BUFSIZE];
-	int i, k, rc = 0, num_longs = 0, num_used_args = 0, num_strings = 0;
+	int i, k, rc = 0, num_longs = 0, num_strings = 0;
+	int num_used_args ATTRIBUTE_UNUSED;
 	/* use kaddr_t to store long values of 32bit and 64bit archs here */
 	kaddr_t inbuf_cpy[DEBUG_SPRINTF_MAX_ARGS];
 	/* store ptrs to strings to be deallocated at end of this function */
@@ -727,7 +728,7 @@ debug_format_output_v1(debug_info_t * debug_area, debug_view_t *view,
 	debug_entry_t *act_entry, *last_entry;
 	char *act_entry_data;
 	char buf[2048];
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 
 	/* print prolog */
 	if (view->prolog_proc) {
@@ -789,7 +790,7 @@ debug_format_output_v2(debug_info_t * debug_area,
 	debug_entry_t *act_entry;
 	char *act_entry_data;
 	char buf[2048];
-	size_t items;
+	size_t items ATTRIBUTE_UNUSED;
 
 	/* print prolog */
 	if (view->prolog_proc) {

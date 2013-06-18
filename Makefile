@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
-# Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002-2013 David Anderson
+# Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,10 +34,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=gdb-7.3.1
-GDB_FILES=${GDB_7.3.1_FILES}
+GDB=gdb-7.6
+GDB_FILES=${GDB_7.6_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-7.3.1.patch
+GDB_PATCH_FILES=gdb-7.6.patch
 
 #
 # Default installation directory
@@ -172,6 +172,9 @@ GDB_7.0_OFILES=${GDB}/gdb/symtab.o
 GDB_7.3.1_FILES=
 GDB_7.3.1_OFILES=${GDB}/gdb/symtab.o
 
+GDB_7.6_FILES=
+GDB_7.6_OFILES=${GDB}/gdb/symtab.o
+
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
 #
@@ -222,19 +225,22 @@ gdb_merge: force
 	  make --no-print-directory gdb_unzip; fi
 	@echo "${LDFLAGS} -lz -ldl -rdynamic" > ${GDB}/gdb/mergelibs
 	@echo "../../${PROGRAM} ../../${PROGRAM}lib.a" > ${GDB}/gdb/mergeobj
+	@rm -f ${PROGRAM}
 	@if [ ! -f ${GDB}/config.status ]; then \
 	  (cd ${GDB}; ./configure ${GDB_CONF_FLAGS} --with-separate-debug-dir=/usr/lib/debug \
 	    --with-bugurl="" --with-expat=no --with-python=no; \
 	  make --no-print-directory CRASH_TARGET=${TARGET}; echo ${TARGET} > crash.target) \
 	else (cd ${GDB}/gdb; make --no-print-directory CRASH_TARGET=${TARGET};); fi
-	@if [ ! -f ${GDB}/gdb/libgdb.a ]; then \
-	  echo; echo "gdb build failed: ${GDB}/gdb/libgdb.a does not exist"; \
+	@if [ ! -f ${PROGRAM} ]; then \
+	  echo; echo "${PROGRAM} build failed"; \
 	  echo; exit 1; fi
 
 gdb_unzip:
 	@rm -f gdb.files
 	@for FILE in ${GDB_FILES} dummy; do\
 	  echo $$FILE >> gdb.files; done
+	@if [ ! -f ${GDB}.tar.gz ] && [ -f /usr/bin/wget ]; then \
+	  wget http://ftp.gnu.org/gnu/gdb/${GDB}.tar.gz; fi
 	@tar --exclude-from gdb.files -xvzmf ${GDB}.tar.gz
 	@make --no-print-directory gdb_patch
 
@@ -503,7 +509,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=6.1.6
+VERSION=7.0.1
 RELEASE=0
 
 release: make_configure

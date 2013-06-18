@@ -62,7 +62,7 @@ lib-eppic:
 	cd eppic/libeppic && make
             
 eppic.so: ../defs.h $(APPFILE) lib-eppic
-	gcc -g -I.. -Ieppic/libeppic -I../$(GDB)/bfd -I../$(GDB)/include -I../$(GDB)/gdb -I../$(GDB)/gdb/config -I../$(GDB)/gdb/common -I../$(GDB) -nostartfiles -shared -rdynamic -o eppic.so $(APPFILE) -fPIC $(TARGET_FLAGS) $(GDB_FLAGS) -Leppic/libeppic -leppic 
+	gcc -g -Ieppic/libeppic -I../$(GDB)/gdb -I../$(GDB)/bfd -I../$(GDB)/include -I../$(GDB)/gdb/config -I../$(GDB)/gdb/common -I../$(GDB) -nostartfiles -shared -rdynamic -o eppic.so $(APPFILE) -fPIC $(TARGET_FLAGS) $(GDB_FLAGS) -Leppic/libeppic -leppic 
 
 clean:
 	if  [ -d eppic/libeppic ]; \

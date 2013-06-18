@@ -37,6 +37,7 @@ static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
 static void get_netdump_regs_ppc(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_arm(struct bt_info *, ulong *, ulong *);
+static void get_netdump_regs_arm64(struct bt_info *, ulong *, ulong *);
 static physaddr_t xen_kdump_p2m(physaddr_t);
 static void check_dumpfile_size(char *);
 static int proc_kcore_init_32(FILE *fp);
@@ -52,11 +53,11 @@ static char *vmcoreinfo_read_string(const char *);
 #define MIN_PAGE_SIZE (4096)
 
 /* 
- * PPC64 and IA64 architectures have configurable page sizes,
- * which can differ from the host machine's page size.
+ * Architectures that have configurable page sizes,
+ * can differ from the host machine's page size.
  */
 #define READ_PAGESIZE_FROM_VMCOREINFO() \
-	(machine_type("IA64") || machine_type("PPC64") || machine_type("PPC"))
+	(machine_type("IA64") || machine_type("PPC64") || machine_type("PPC") || machine_type("ARM64"))
 
 /*
  * kdump installs NT_PRSTATUS elf notes only to the cpus
@@ -241,8 +242,15 @@ is_netdump(char *file, ulong source_query)
 			    source_query))
 				goto bailout;
 			break;
+
 		case EM_386:
 			if (machine_type_mismatch(file, "X86", NULL,
+			    source_query))
+				goto bailout;
+			break;
+
+		case EM_AARCH64:
+			if (machine_type_mismatch(file, "ARM64", NULL,
 			    source_query))
 				goto bailout;
 			break;
@@ -2289,6 +2297,11 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	case EM_ARM:
 		return get_netdump_regs_arm(bt, eip, esp);
 		break;
+
+	case EM_AARCH64:
+		return get_netdump_regs_arm64(bt, eip, esp);
+		break;
+
 	default:
 		error(FATAL, 
 		   "support for ELF machine type %d not available\n",
@@ -2748,6 +2761,12 @@ get_netdump_regs_arm(struct bt_info *bt, ulong *eip, ulong *esp)
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
+static void
+get_netdump_regs_arm64(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
 int 
 is_partial_netdump(void)
 {
@@ -3072,6 +3091,9 @@ get_regs_from_elf_notes(struct task_context *tc)
 	case EM_X86_64:
 	case EM_ARM:
 		break;
+	case EM_AARCH64:
+		error(FATAL, 
+			"get_regs_from_elf_notes: ARM64 support TBD\n");
 	default:
 		error(FATAL,
 		      "support for ELF machine type %d not available\n",
@@ -3095,6 +3117,8 @@ get_regs_from_elf_notes(struct task_context *tc)
 		return get_x86_64_regs_from_elf_notes(tc);
 	case EM_ARM:
 		return get_arm_regs_from_elf_notes(tc);
+	case EM_AARCH64:
+		break;  /* TBD */
 	}
 
 	return NULL;

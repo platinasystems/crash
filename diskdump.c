@@ -465,6 +465,9 @@ restart:
 	else if (STRNEQ(header->utsname.machine, "s390x") &&
 	    machine_type_mismatch(file, "S390X", NULL, 0))
 		goto err;
+	else if (STRNEQ(header->utsname.machine, "aarch64") &&
+	    machine_type_mismatch(file, "ARM64", NULL, 0))
+		goto err;
 
 	if (header->block_size != block_size) {
 		block_size = header->block_size;
@@ -601,6 +604,8 @@ restart:
 		dd->machine_type = EM_PPC64;
 	else if (machine_type("S390X"))
 		dd->machine_type = EM_S390;
+	else if (machine_type("ARM64"))
+		dd->machine_type = EM_AARCH64;
 	else {
 		error(INFO, "%s: unsupported machine type: %s\n", 
 			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
@@ -1193,6 +1198,12 @@ get_diskdump_regs_arm(struct bt_info *bt, ulong *eip, ulong *esp)
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
+static void
+get_diskdump_regs_arm64(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
 /*
  *  Send the request to the proper architecture hander.
  */
@@ -1230,15 +1241,19 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	case EM_X86_64:
 		return get_netdump_regs_x86_64(bt, eip, esp);
 		break;
+
 	case EM_S390:
 		return machdep->get_stack_frame(bt, eip, esp);
+		break;
+
+	case EM_AARCH64:
+		get_diskdump_regs_arm64(bt, eip, esp);
 		break;
 
 	default:
 		error(FATAL, "%s: unsupported machine type: %s\n",
 			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
 			MACHINE_TYPE);
-
 	}
 }
 
@@ -1378,7 +1393,8 @@ dump_nt_prstatus_offset(FILE *fp)
 
 		fprintf(fp, "  NT_PRSTATUS_offset: ");
 		for (tot = cnt = 0; tot < size; tot += len) {
-			if (machine_type("X86_64") || machine_type("S390X")) {
+			if (machine_type("X86_64") || machine_type("S390X") ||
+			    machine_type("ARM64")) {
 				note64 = (void *)dd->notes_buf + tot;
 				len = sizeof(Elf64_Nhdr);
 				len = roundup(len + note64->n_namesz, 4);
@@ -1465,6 +1481,8 @@ __diskdump_memory_dump(FILE *fp)
 		fprintf(fp, "(EM_PPC64)\n"); break;
 	case EM_S390:
 		fprintf(fp, "(EM_S390)\n"); break;
+	case EM_AARCH64:
+		fprintf(fp, "(EM_AARCH64)\n"); break;
 	default:
 		fprintf(fp, "(unknown)\n"); break;
 	}
@@ -1899,6 +1917,15 @@ diskdump_display_regs(int cpu, FILE *ofp)
 		    USHORT(user_regs + OFFSET(user_regs_struct_cs)),
 		    USHORT(user_regs + OFFSET(user_regs_struct_ss))
 		);
+	}
+
+	if (machine_type("ARM64")) {
+		note64 = dd->nt_prstatus_percpu[cpu];
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note64->n_namesz, 4);
+		len = roundup(len + note64->n_descsz, 4);
+//		user_regs = (char *)note64 + len - SIZE(user_regs_struct) - sizeof(long);
+		fprintf(ofp, "diskdump_display_regs: ARM64 register dump TBD\n");
 	}
 
 	if (machine_type("X86")) {

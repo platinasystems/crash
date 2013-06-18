@@ -87,7 +87,7 @@ update_gdb_hooks(void)
         	exit_after_gdb_info : main_loop;
 	target_new_objfile_hook = NULL;
 #endif
-#if defined(GDB_7_0) || defined(GDB_7_3_1)
+#if defined(GDB_7_0) || defined(GDB_7_3_1) || defined(GDB_7_6)
 	deprecated_command_loop_hook = pc->flags & VERSION_QUERY ?
 		exit_after_gdb_info : main_loop;
 #endif
@@ -918,7 +918,11 @@ gdb_error_hook(void)
 			gdb_command_string(pc->cur_gdb_cmd, buf1, TRUE), buf2);
 	}
 
+#ifdef GDB_7_6
+	do_cleanups(all_cleanups()); 
+#else
 	do_cleanups(NULL); 
+#endif
 
 	longjmp(pc->gdb_interface_env, 1);
 }

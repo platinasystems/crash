@@ -2,11 +2,21 @@
 
 # Uncomment this to turn on verbose mode.
 export DH_VERBOSE=1
-export DEB_CFLAGS_MAINT_SET=$(dpkg-buildflags --get CFLAGS) -Wno-error=unused-but-set-parameter -Wno-error=unused-but-set-variable
+export EXTDIR=/usr/lib/crash/extensions
+DPKG_EXPORT_BUILDFLAGS = 1
+include /usr/share/dpkg/buildflags.mk
+CFLAGS += -Wno-error=format-security
 
 
 %:
 	dh $@ --with quilt
+
+#override_dh_auto_configure:
+#	dh_auto_configure -- $(shell dpkg-buildflags --export=configure)
+
+override_dh_auto_build:
+	dh_auto_build
+	$(MAKE) extensions
 
 override_dh_auto_clean:
 	cp $(CURDIR)/Makefile $(CURDIR)/debian/Makefile.ori
@@ -16,13 +26,16 @@ override_dh_clean:
 	dh_clean
 	cp $(CURDIR)/debian/Makefile.ori $(CURDIR)/Makefile
 	rm -Rf $(CURDIR)/configure
-	rm -Rf $(CURDIR)/gdb-7.0
+	rm -Rf $(CURDIR)/gdb-7.6
 	rm -Rf $(CURDIR)/gdb.files
 	rm -Rf $(CURDIR)/build_data.c
+	rm -Rf $(CURDIR)/extensions/*.so
 
 override_dh_auto_install:
 	dh_auto_install
 	cp $(CURDIR)/debian/Makefile.ori $(CURDIR)/Makefile
+	mkdir -p $(CURDIR)/debian/crash$(EXTDIR)
+	cp -p extensions/*.so $(CURDIR)/debian/crash$(EXTDIR)
 
 override_dh_auto_test:
 	# Crash does not provide a testsuite

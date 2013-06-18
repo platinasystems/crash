@@ -56,7 +56,60 @@ static void ppc64_clear_machdep_cache(void);
 static void ppc64_vmemmap_init(void);
 static int ppc64_get_kvaddr_ranges(struct vaddr_range *);
 
-struct machine_specific ppc64_machine_specific = { { 0 }, 0, 0 };
+
+static int book3e_is_kvaddr(ulong addr)
+{
+	return (addr >= BOOK3E_VMBASE);
+}
+
+
+static int book3e_is_vmaddr(ulong addr)
+{
+	return (addr >= BOOK3E_VMBASE) && (addr < machdep->identity_map_base);
+}
+
+static int ppc64_is_vmaddr(ulong addr)
+{
+	return (vt->vmalloc_start && addr >= vt->vmalloc_start);
+}
+
+
+struct machine_specific ppc64_machine_specific = { 
+	.hwintrstack = { 0 }, 
+	.hwstackbuf = 0,
+	.hwstacksize = 0,
+	.pte_shift = PTE_SHIFT,
+	._page_present = 0x1UL,
+	._page_user = 0x2UL,
+	._page_rw = 0x4UL,
+	._page_guarded = 0x8UL,
+	._page_coherent = 0x10UL,
+	._page_no_cache = 0x20UL,
+	._page_writethru = 0x40UL,
+	._page_dirty = 0x80UL,
+	._page_accessed = 0x100UL,
+	.is_kvaddr = generic_is_kvaddr,
+	.is_vmaddr = ppc64_is_vmaddr,
+};
+
+struct machine_specific book3e_machine_specific = {
+	.hwintrstack = { 0 },
+	.hwstackbuf = 0,
+	.hwstacksize = 0,
+	.pte_shift = PTE_SHIFT_L4_BOOK3E_64K, 
+	._page_present = 0x1UL,
+	._page_user = 0xCUL,
+	._page_rw = 0x30UL,
+	._page_guarded = 0x100000UL,
+	._page_coherent = 0x200000UL,
+	._page_no_cache = 0x400000UL,
+	._page_writethru = 0x800000UL,
+	._page_dirty = 0x1000UL,
+	._page_accessed = 0x40000UL,
+	.is_kvaddr = book3e_is_kvaddr,
+	.is_vmaddr = book3e_is_vmaddr,
+};
+
 
 /*
  *  Do all necessary machine-specific setup here.  This is called several
@@ -103,6 +156,12 @@ ppc64_init(int when)
                 * Also moved the following code block from
                 * PRE_SYMTAB case here.
                 */
+		if (symbol_exists("interrupt_base_book3e")) {
+			machdep->machspec = &book3e_machine_specific;
+			machdep->flags |= BOOK3E;
+			machdep->kvbase = BOOK3E_VMBASE;
+		} else
+			machdep->kvbase = symbol_value("_stext");
                 if (symbol_exists("__hash_page_64K"))
                         machdep->pagesize = PPC64_64K_PAGE_SIZE;
                 else
@@ -119,9 +178,8 @@ ppc64_init(int when)
 		if ((machdep->machspec->level4 = (char *)malloc(PAGESIZE())) == NULL)
 			error(FATAL, "cannot malloc level4 space.");
 
-	        machdep->kvbase = symbol_value("_stext");
-		machdep->identity_map_base = machdep->kvbase;
-                machdep->is_kvaddr = generic_is_kvaddr;
+		machdep->identity_map_base = symbol_value("_stext"); 
+                machdep->is_kvaddr = machdep->machspec->is_kvaddr; 
                 machdep->is_uvaddr = generic_is_uvaddr;
 	        machdep->eframe_search = ppc64_eframe_search;
 	        machdep->back_trace = ppc64_back_trace_cmd;
@@ -173,8 +231,9 @@ ppc64_init(int when)
 				m->l2_index_size = PMD_INDEX_SIZE_L4_64K;
 				m->l3_index_size = PUD_INDEX_SIZE_L4_64K;
 				m->l4_index_size = PGD_INDEX_SIZE_L4_64K;
-				m->pte_shift = symbol_exists("demote_segment_4k") ?
-					PTE_SHIFT_L4_64K_V2 : PTE_SHIFT_L4_64K_V1; 
+				if (!(machdep->flags & BOOK3E))
+					m->pte_shift = symbol_exists("demote_segment_4k") ?
+						PTE_SHIFT_L4_64K_V2 : PTE_SHIFT_L4_64K_V1; 
 				m->l2_masked_bits = PMD_MASKED_BITS_64K;
 			} else {
 				/* 4K pagesize */
@@ -182,7 +241,8 @@ ppc64_init(int when)
 				m->l2_index_size = PMD_INDEX_SIZE_L4_4K;
 				m->l3_index_size = PUD_INDEX_SIZE_L4_4K;
 				m->l4_index_size = PGD_INDEX_SIZE_L4_4K;
-				m->pte_shift = PTE_SHIFT_L4_4K; 
+				m->pte_shift = (machdep->flags & BOOK3E) ? 
+					PTE_SHIFT_L4_BOOK3E_4K : PTE_SHIFT_L4_4K; 
 				m->l2_masked_bits = PMD_MASKED_BITS_4K;
 			}
 
@@ -354,7 +414,7 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
-	fprintf(fp, "  identity_map_base: %lx\n", machdep->kvbase);
+	fprintf(fp, "  identity_map_base: %lx\n", machdep->identity_map_base);
         fprintf(fp, "           pagesize: %d\n", machdep->pagesize);
         fprintf(fp, "          pageshift: %d\n", machdep->pageshift);
         fprintf(fp, "           pagemask: %llx\n", machdep->pagemask);
@@ -384,7 +444,9 @@ ppc64_dump_machdep_table(ulong arg)
 	fprintf(fp, "         dis_filter: ppc64_dis_filter()\n");
 	fprintf(fp, "           cmd_mach: ppc64_cmd_mach()\n");
 	fprintf(fp, "       get_smp_cpus: ppc64_get_smp_cpus()\n");
-        fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
+        fprintf(fp, "          is_kvaddr: %s\n", 
+		machdep->is_kvaddr == book3e_is_kvaddr ? 
+		"book3e_is_kvaddr()" : "generic_is_kvaddr()"); 
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
         fprintf(fp, "  get_kvaddr_ranges: ppc64_get_kvaddr_ranges()\n");
@@ -410,7 +472,13 @@ ppc64_dump_machdep_table(ulong arg)
                         machdep->cmdline_args[i] : "(unused)");
         }
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
-	fprintf(fp, "     hwintrstack[%d]: ", NR_CPUS);
+	fprintf(fp, "            is_kvaddr: %s\n", 
+		machdep->machspec->is_kvaddr == book3e_is_kvaddr ? 
+		"book3e_is_kvaddr()" : "generic_is_kvaddr()");
+	fprintf(fp, "            is_vmaddr: %s\n", 
+		machdep->machspec->is_vmaddr == book3e_is_vmaddr ? 
+		"book3e_is_vmaddr()" : "ppc64_is_vmaddr()");
+	fprintf(fp, "    hwintrstack[%d]: ", NR_CPUS);
        	for (c = 0; c < NR_CPUS; c++) {
 		for (others = 0, i = c; i < NR_CPUS; i++) {
 			if (machdep->machspec->hwintrstack[i])
@@ -898,6 +966,12 @@ ppc64_processor_speed(void)
 
         if (machdep->mhz)
                 return(machdep->mhz);
+
+	if (symbol_exists("ppc_proc_freq")) {
+		get_symbol_data("ppc_proc_freq", sizeof(ulong), &mhz);
+		mhz /= 1000000;
+		return (machdep->mhz = mhz);
+	}
 
         if(symbol_exists("allnodes")) {
                 get_symbol_data("allnodes", sizeof(void *), &node);
