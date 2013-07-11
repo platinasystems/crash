@@ -1,3 +1,12 @@
+crash (7.0.1-2) unstable; urgency=low
+
+  * Missed updating the Architecture line in the -1 upload, armel
+    (closes: #656132) 
+  * Move defs.h to /usr/include/crash (closes: #702513)
+  * Patch from Stefan Bader to add a format string to all *printf calls
+    
+ -- Troy Heber <troyh@debian.org>  Thu, 11 Jul 2013 08:51:32 -0600
+
 crash (7.0.1-1) unstable; urgency=low
 
   * Enable armel (closes: #656132) 

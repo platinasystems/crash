@@ -1,0 +1,785 @@
+Add format string literal to fprintf calls
+ Maybe all strings used directly never will contain any characters that
+ cause arguments to be parsed, but maybe they do.
+ Take no risks and add a "%s" format string to all calls that are potentially
+ vulnerable.
+
+Signed-off-by: Stefan Bader <stefan.bader@canonical.com>
+
+Index: crash-7.0.1/cmdline.c
+===================================================================
+--- crash-7.0.1.orig/cmdline.c	2013-07-11 14:34:38.085318626 +0200
++++ crash-7.0.1/cmdline.c	2013-07-11 14:52:44.598630317 +0200
+@@ -62,7 +62,7 @@ process_command_line(void)
+ 
+ 	if (!(pc->flags & 
+ 	    (READLINE|SILENT|CMDLINE_IFILE|RCHOME_IFILE|RCLOCAL_IFILE))) 
+-		fprintf(fp, pc->prompt);
++		fprintf(fp, "%s", pc->prompt);
+ 	fflush(fp);
+ 
+ 	/*
+Index: crash-7.0.1/dev.c
+===================================================================
+--- crash-7.0.1.orig/dev.c	2013-07-11 14:34:38.173319055 +0200
++++ crash-7.0.1/dev.c	2013-07-11 14:52:44.602630336 +0200
+@@ -224,8 +224,9 @@ char_device_struct:
+ 		switch (name_typecode)
+ 		{
+ 		case TYPE_CODE_ARRAY:
+-			snprintf(buf, name_size, char_device_struct_buf +	
+-			    OFFSET(char_device_struct_name));
++			snprintf(buf, name_size, "%s",
++				 char_device_struct_buf +
++				 OFFSET(char_device_struct_name));
+ 			break;
+ 		case TYPE_CODE_PTR:
+ 		default:
+@@ -294,8 +295,9 @@ char_device_struct:
+ 			switch (name_typecode)
+ 			{
+ 			case TYPE_CODE_ARRAY:
+-				snprintf(buf, name_size, char_device_struct_buf +	
+-			    		OFFSET(char_device_struct_name));
++				snprintf(buf, name_size, "%s",
++					 char_device_struct_buf +
++					 OFFSET(char_device_struct_name));
+ 				break;
+ 			case TYPE_CODE_PTR:
+ 			default:
+Index: crash-7.0.1/filesys.c
+===================================================================
+--- crash-7.0.1.orig/filesys.c	2013-07-11 14:34:38.137318875 +0200
++++ crash-7.0.1/filesys.c	2013-07-11 14:52:44.606630363 +0200
+@@ -1290,10 +1290,10 @@ cmd_mount(void)
+ 						namespace_context);
+ 				} else {
+ 					if (!(pc->curcmd_flags & HEADER_PRINTED)) {
+-						fprintf(fp, mount_hdr);
++						fprintf(fp, "%s", mount_hdr);
+ 						pc->curcmd_flags |= HEADER_PRINTED;
+ 					}
+-					fprintf(fp, buf2);
++					fprintf(fp, "%s", buf2);
+ 				}
+ 				found = FALSE;
+ 				fp = pc->tmpfile;
+@@ -1420,7 +1420,7 @@ show_mounts(ulong one_vfsmount, int flag
+ 		sbp = ULONG(vfsmount_buf + OFFSET(vfsmount_mnt_sb)); 
+ 
+ 		if (flags)
+-			fprintf(fp, mount_hdr);
++			fprintf(fp, "%s", mount_hdr);
+                 fprintf(fp, "%s %s ",
+ 			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
+ 			MKSTR(*vfsmnt)),
+@@ -1449,7 +1449,7 @@ show_mounts(ulong one_vfsmount, int flag
+ 		sprintf(buf1, "%s%s", buf3, buf4);
+ 		while ((strlen(buf1) > 17) && (buf1[strlen(buf1)-2] == ' '))
+ 			strip_ending_char(buf1, ' ');
+-		fprintf(fp, buf1);
++		fprintf(fp, "%s", buf1);
+ 
+ 		if (VALID_MEMBER(vfsmount_mnt_dirname)) {
+                 	if (read_string(dirp, buf1, BUFSIZE-1))
+@@ -1486,7 +1486,7 @@ show_mounts(ulong one_vfsmount, int flag
+ 					fprintf(fp, "%s\n",
+                                             mkstring(buf2, VADDR_PRLEN,
+                                                 CENTER, "OPEN FILES"));
+-					fprintf(fp, mount_files_header);
++					fprintf(fp, "%s", mount_files_header);
+ 					files_header_printed = 1;
+ 				}
+ 				file_dump(0, *dp, inode, 0, DUMP_DENTRY_ONLY);
+@@ -2221,14 +2221,14 @@ cmd_files(void)
+ #define PRINT_FILE_REFERENCE()                  \
+ 	if (!root_pwd_printed) {                \
+         	print_task_header(fp, tc, 0);   \
+-                fprintf(fp, root_pwd);          \
++                fprintf(fp, "%s", root_pwd);    \
+ 		root_pwd_printed = TRUE;        \
+ 	}                                       \
+ 	if (!header_printed) {                  \
+-		fprintf(fp, files_header);      \
++		fprintf(fp, "%s", files_header);\
+                 header_printed = TRUE;          \
+ 	}                                       \
+-	fprintf(fp, buf4);                      \
++	fprintf(fp, "%s", buf4);                \
+ 	ref->cmdflags |= FILES_REF_FOUND;
+ 
+ #define FILENAME_COMPONENT(P,C) \
+@@ -2506,7 +2506,7 @@ open_files_dump(ulong task, int flags, s
+ 				}
+ 				else if (file) {
+ 					if (!header_printed) {
+-						fprintf(fp, files_header);
++						fprintf(fp, "%s", files_header);
+ 						header_printed = 1;
+ 					}
+ 					file_dump(file, 0, 0, i, 
+@@ -3238,7 +3238,7 @@ cmd_fuser(void)
+ 				if (!STREQ(uses, "")) {
+ 					if (!fuser_header_printed) {
+ 						fprintf(pc->saved_fp,
+-							fuser_header);
++							"%s", fuser_header);
+ 						fuser_header_printed = 1;
+ 					}
+ 					show_fuser(task_buf, uses);
+@@ -3294,7 +3294,7 @@ cmd_fuser(void)
+ 		}
+ 		if (!STREQ(uses, "")) {
+ 			if (!fuser_header_printed) {
+-				fprintf(pc->saved_fp, fuser_header);
++				fprintf(pc->saved_fp, "%s", fuser_header);
+ 				fuser_header_printed = 1;
+ 			}
+ 			show_fuser(task_buf, uses);
+Index: crash-7.0.1/kernel.c
+===================================================================
+--- crash-7.0.1.orig/kernel.c	2013-07-11 14:34:38.061318503 +0200
++++ crash-7.0.1/kernel.c	2013-07-11 14:52:44.614630390 +0200
+@@ -1000,7 +1000,7 @@ bad_match:
+ 	if (REMOTE())
+ 		sprintf(buf, "%s:%s", pc->server, pc->server_memsrc);
+ 	else
+-		sprintf(buf, ACTIVE() ? pc->live_memsrc : pc->dumpfile);
++		sprintf(buf, "%s", ACTIVE() ? pc->live_memsrc : pc->dumpfile);
+ 
+ 	error(INFO, "%s and %s do not match!\n",
+ 		pc->system_map ? pc->system_map : 
+@@ -1262,7 +1262,7 @@ verify_namelist()
+         if (REMOTE())
+                 sprintf(buffer, "%s:%s", pc->server, pc->server_memsrc);
+         else
+-                sprintf(buffer, ACTIVE() ? "live system" : pc->dumpfile);
++                sprintf(buffer, "%s", ACTIVE() ? "live system" : pc->dumpfile);
+ 
+ 	sprintf(buffer2, " %s is %s -- %s is %s\n",
+                 namelist, namelist_smp ? "SMP" : "not SMP",
+@@ -4381,13 +4381,13 @@ dump_log_entry(char *logptr, int msg_fla
+ 		rem = (ulonglong)ts_nsec % (ulonglong)1000000000;
+ 		sprintf(buf, "[%5lld.%06ld] ", nanos, rem/1000);
+ 		ilen = strlen(buf);
+-		fprintf(fp, buf);
++		fprintf(fp, "%s", buf);
+ 	}
+ 
+ 	if (msg_flags & SHOW_LOG_LEVEL) {
+ 		sprintf(buf, "<%x>", level);
+ 		ilen += strlen(buf);
+-		fprintf(fp, buf);
++		fprintf(fp, "%s", buf);
+ 	}
+ 
+ 	for (i = 0, p = msg; i < text_len; i++, p++) {
+@@ -4901,7 +4901,7 @@ dump_sys_call_table(char *spec, int cnt)
+ 	if (spec)
+ 		open_tmpfile();
+ 
+-	fprintf(fp, sys_call_hdr);
++	fprintf(fp, "%s", sys_call_hdr);
+ 
+         for (i = 0, sct = sys_call_table; i < NR_syscalls; i++, sct++) {
+                 if (!(scp = value_symbol(*sct))) {
+Index: crash-7.0.1/lkcd_common.c
+===================================================================
+--- crash-7.0.1.orig/lkcd_common.c	2013-07-11 14:34:38.189319133 +0200
++++ crash-7.0.1/lkcd_common.c	2013-07-11 14:52:44.618630409 +0200
+@@ -1325,7 +1325,7 @@ lkcd_print(char *fmt, ...)
+         va_end(ap);
+ 
+ 	if (lkcd->fp)
+-		fprintf(lkcd->fp, buf);
++		fprintf(lkcd->fp, "%s", buf);
+ 	else
+ 		console(buf);
+ }
+Index: crash-7.0.1/memory.c
+===================================================================
+--- crash-7.0.1.orig/memory.c	2013-07-11 14:34:37.997318190 +0200
++++ crash-7.0.1/memory.c	2013-07-11 14:53:07.942744447 +0200
+@@ -3608,7 +3608,7 @@ vm_area_dump(ulong task, ulong flag, ulo
+ 
+ 	if (!(flag & (PHYSADDR|VERIFY_ADDR|PRINT_VMA_STRUCTS|PRINT_SINGLE_VMA)) && 
+ 	    !DO_REF_SEARCH(ref)) 
+-		fprintf(fp, vma_header);
++		fprintf(fp, "%s", vma_header);
+ 
+ 	for (found = FALSE; vma; vma = vm_next) {
+ 
+@@ -3868,7 +3868,7 @@ vm_area_page_dump(ulong vma,
+ 		}
+ 
+ 		if (display)
+-			fprintf(fp, buf3);
++			fprintf(fp, "%s", buf3);
+ 
+ 		start += PAGESIZE();
+ 	}
+@@ -5725,7 +5725,7 @@ dump_page_hash_table(struct meminfo *hi)
+ 		close_tmpfile();
+ 
+ 		if (found) {
+-			fprintf(fp, hash_table);
++			fprintf(fp, "%s", hash_table);
+ 			fprintf(fp, "%lx\n", searchpage);
+ 			hi->retval = TRUE;
+ 		}
+@@ -5829,7 +5829,7 @@ dump_free_pages(struct meminfo *fi)
+ 		open_tmpfile();
+ 
+ 	if (!verbose)
+-		fprintf(fp, free_area_hdr1);
++		fprintf(fp, "%s", free_area_hdr1);
+ 
+        	hq_open();
+ 	for (i = 0; i < nr_mem_lists; i++) {
+@@ -5838,7 +5838,7 @@ dump_free_pages(struct meminfo *fi)
+ 		chunk_size = power(2, i);
+ 
+ 		if (verbose)
+-			fprintf(fp, free_area_hdr2);
++			fprintf(fp, "%s", free_area_hdr2);
+ 
+ 		fprintf(fp, "%3d  ", i);
+ 		sprintf(buf, "%ldk", (chunk_size * PAGESIZE())/1024);
+@@ -5924,8 +5924,8 @@ dump_free_pages(struct meminfo *fi)
+ 	if (found) {
+ 		order--;
+ 
+-		fprintf(fp, last_free_hdr);
+-		fprintf(fp, last_free);
++		fprintf(fp, "%s", last_free_hdr);
++		fprintf(fp, "%s", last_free);
+ 		fprintf(fp, "%lx  ", this_addr);
+ 		if (order) {
+                 	switch (fi->memtype)
+@@ -6039,12 +6039,12 @@ dump_multidimensional_free_pages(struct
+         hq_open();
+         for (i = sum = found = 0; i < dimension; i++) {
+         	if (!verbose)
+-                	fprintf(fp, free_area_hdr5);
++                	fprintf(fp, "%s", free_area_hdr5);
+                	pp = (ulong *)(free_area_buf + 
+ 			((SIZE(free_area_struct)*nr_mem_lists)*i));
+ 		for (j = 0; j < nr_mem_lists; j++) {
+                         if (verbose)
+-                                fprintf(fp, free_area_hdr6);
++                                fprintf(fp, "%s", free_area_hdr6);
+ 
+ 			sprintf(buf, "[%d][%d]", i, j);
+ 			fprintf(fp, "%7s  ", buf);
+@@ -6137,7 +6137,7 @@ dump_multidimensional_free_pages(struct
+ 	close_tmpfile();
+ 
+ 	if (found) {
+-		fprintf(fp, last_area_hdr);
++		fprintf(fp, "%s", last_area_hdr);
+ 		fprintf(fp, "%s\n", last_area);
+ 		fprintf(fp, "%lx  ", this_addr);
+                 if (order) {
+@@ -6433,7 +6433,7 @@ dump_free_pages_zones_v1(struct meminfo
+                         zone_hdr,
+                         mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "MEM_MAP"));
+ 		fprintf(fp, "%s\n", last_zone);
+-		fprintf(fp, last_area_hdr);
++		fprintf(fp, "%s", last_area_hdr);
+ 		fprintf(fp, "%s\n", last_area);
+ 		fprintf(fp, "%lx  ", this_addr);
+                 if (order) {
+@@ -6758,7 +6758,7 @@ dump_free_pages_zones_v2(struct meminfo
+                         zone_hdr,
+                         mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "MEM_MAP"));
+ 		fprintf(fp, "%s\n", last_zone);
+-		fprintf(fp, last_area_hdr);
++		fprintf(fp, "%s", last_area_hdr);
+ 		fprintf(fp, "%s\n", last_area);
+ 		fprintf(fp, "%lx  ", this_addr);
+                 if (order) {
+@@ -6924,7 +6924,7 @@ dump_zone_free_area(ulong free_area, int
+ 	ld = &list_data;
+ 
+ 	if (!verbose)
+-		fprintf(fp, free_area_hdr4);
++		fprintf(fp, "%s", free_area_hdr4);
+ 
+ 	total_free = 0;
+ 	flen = MAX(VADDR_PRLEN, strlen("FREE_AREA_STRUCT"));
+@@ -6935,7 +6935,7 @@ dump_zone_free_area(ulong free_area, int
+ 	for (i = 0; i < num; i++, 
+ 	     free_area += SIZE_OPTION(free_area_struct, free_area)) {
+ 		if (verbose)
+-			fprintf(fp, free_area_hdr3);
++			fprintf(fp, "%s", free_area_hdr3);
+ 		fprintf(fp, "%3d ", i);
+ 		chunk_size = power(2, i);
+ 		sprintf(buf, "%ldk", (chunk_size * PAGESIZE())/1024);
+@@ -6999,7 +6999,7 @@ multiple_lists:
+ 		     j++, free_list += SIZE(list_head)) {
+ 
+ 			if (verbose)
+-				fprintf(fp, free_area_hdr3);
++				fprintf(fp, "%s", free_area_hdr3);
+ 
+ 			fprintf(fp, "%3d ", i);
+ 			chunk_size = power(2, i);
+@@ -7109,7 +7109,7 @@ dump_kmeminfo(void)
+ 		}
+ 	}
+ 
+-	fprintf(fp, kmeminfo_hdr);
++	fprintf(fp, "%s", kmeminfo_hdr);
+ 	/*
+ 	 *  Get total RAM based upon how the various versions of si_meminfo()
+          *  have done it, latest to earliest:
+@@ -8697,7 +8697,7 @@ dump_kmem_cache(struct meminfo *si)
+ 
+ 	if ((!(si->flags & VERBOSE) || si->reqname) &&
+ 	     !(si->flags & (ADDRESS_SPECIFIED|GET_SLAB_PAGES)))
+-		fprintf(fp, kmem_cache_hdr);
++		fprintf(fp, "%s", kmem_cache_hdr);
+ 
+ 	si->addrlist = (ulong *)GETBUF((vt->kmem_max_c_num+1) * sizeof(ulong));
+ 	cnt = 0;
+@@ -8804,9 +8804,9 @@ dump_kmem_cache(struct meminfo *si)
+ 				do_slab_chain(SLAB_WALKTHROUGH, si);
+ 
+ 				if (si->found) {
+-					fprintf(fp, kmem_cache_hdr);
++					fprintf(fp, "%s", kmem_cache_hdr);
+ 					DUMP_KMEM_CACHE_INFO_V1();
+-					fprintf(fp, slab_hdr);
++					fprintf(fp, "%s", slab_hdr);
+ 					DUMP_SLAB_INFO();
+ 
+ 					switch (si->found)
+@@ -8833,14 +8833,16 @@ dump_kmem_cache(struct meminfo *si)
+ 						break;
+ 						
+ 					case KMEM_OBJECT_ADDR_FREE:
+-                                                fprintf(fp, free_inuse_hdr);
++                                                fprintf(fp, "%s",
++							free_inuse_hdr);
+ 						fprintf(fp, "   %lx\n", 
+ 							si->container ? si->container :
+                                                         (ulong)si->spec_addr);
+ 						break;
+ 
+                                         case KMEM_OBJECT_ADDR_INUSE:
+-                                                fprintf(fp, free_inuse_hdr);
++                                                fprintf(fp, "%s",
++							free_inuse_hdr);
+                                                 fprintf(fp, "  [%lx]\n",
+ 							si->container ? si->container :
+                                                         (ulong)si->spec_addr);
+@@ -8903,7 +8905,7 @@ dump_kmem_cache_percpu_v1(struct meminfo
+ 
+ 	if ((!(si->flags & VERBOSE) || si->reqname) &&
+ 	     !(si->flags & (ADDRESS_SPECIFIED|GET_SLAB_PAGES)))
+-		fprintf(fp, kmem_cache_hdr);
++		fprintf(fp, "%s", kmem_cache_hdr);
+ 
+ 	si->addrlist = (ulong *)GETBUF((vt->kmem_max_c_num+1) * sizeof(ulong));
+ 	si->kmem_bufctl = (int *)GETBUF((vt->kmem_max_c_num+1) * sizeof(int));
+@@ -9018,9 +9020,9 @@ dump_kmem_cache_percpu_v1(struct meminfo
+ 			do_slab_chain_percpu_v1(SLAB_WALKTHROUGH, si);
+ 
+ 			if (si->found) {
+-				fprintf(fp, kmem_cache_hdr);
++				fprintf(fp, "%s", kmem_cache_hdr);
+ 				DUMP_KMEM_CACHE_INFO_V1();
+-				fprintf(fp, slab_hdr);
++				fprintf(fp, "%s", slab_hdr);
+         			gather_slab_cached_count(si);
+ 				DUMP_SLAB_INFO();
+ 
+@@ -9045,21 +9047,21 @@ dump_kmem_cache_percpu_v1(struct meminfo
+ 					break;
+ 						
+ 				case KMEM_OBJECT_ADDR_FREE:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+ 					fprintf(fp, "   %lx\n", 
+ 						si->container ? si->container :
+ 						(ulong)si->spec_addr);
+ 					break;
+ 
+                                 case KMEM_OBJECT_ADDR_INUSE:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+ 					fprintf(fp, "  [%lx]\n", 
+ 						si->container ? si->container :
+ 						(ulong)si->spec_addr);
+                                         break;
+ 
+                                 case KMEM_OBJECT_ADDR_CACHED:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+                                         fprintf(fp, 
+ 					    "   %lx  (cpu %d cache)\n", 
+ 						si->container ? si->container :
+@@ -9123,7 +9125,7 @@ dump_kmem_cache_percpu_v2(struct meminfo
+ 
+ 	if ((!(si->flags & VERBOSE) || si->reqname) &&
+ 	     !(si->flags & (ADDRESS_SPECIFIED|GET_SLAB_PAGES)))
+-		fprintf(fp, kmem_cache_hdr);
++		fprintf(fp, "%s", kmem_cache_hdr);
+ 
+ 	si->addrlist = (ulong *)GETBUF((vt->kmem_max_c_num+1) * sizeof(ulong));
+ 	si->kmem_bufctl = (int *)GETBUF((vt->kmem_max_c_num+1) * sizeof(int));
+@@ -9262,9 +9264,9 @@ dump_kmem_cache_percpu_v2(struct meminfo
+ 				do_slab_chain_percpu_v2(SLAB_WALKTHROUGH, si);
+ 
+ 			if (si->found) {
+-				fprintf(fp, kmem_cache_hdr);
++				fprintf(fp, "%s", kmem_cache_hdr);
+ 				DUMP_KMEM_CACHE_INFO_V2();
+-				fprintf(fp, slab_hdr);
++				fprintf(fp, "%s", slab_hdr);
+         			gather_slab_cached_count(si);
+ 				DUMP_SLAB_INFO();
+ 
+@@ -9289,21 +9291,21 @@ dump_kmem_cache_percpu_v2(struct meminfo
+ 					break;
+ 						
+ 				case KMEM_OBJECT_ADDR_FREE:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+ 					fprintf(fp, "   %lx\n", 
+ 						si->container ? si->container :
+ 						(ulong)si->spec_addr);
+ 					break;
+ 
+                                 case KMEM_OBJECT_ADDR_INUSE:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+                                         fprintf(fp, "  [%lx]\n", 
+ 						si->container ? si->container :
+ 						(ulong)si->spec_addr);
+                                         break;
+ 
+                                 case KMEM_OBJECT_ADDR_CACHED:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+                                         fprintf(fp, 
+ 					    "   %lx  (cpu %d cache)\n", 
+ 						si->container ? si->container :
+@@ -9311,7 +9313,7 @@ dump_kmem_cache_percpu_v2(struct meminfo
+                                         break;
+ 
+                                 case KMEM_OBJECT_ADDR_SHARED:
+-                                        fprintf(fp, free_inuse_hdr);
++                                        fprintf(fp, "%s", free_inuse_hdr);
+                                         fprintf(fp,
+                                             "   %lx  (shared cache)\n",
+ 						si->container ? si->container :
+@@ -10422,7 +10424,7 @@ dump_slab(struct meminfo *si)
+ 	si->s_index = ULONG_PTR(si->slab_buf + OFFSET(kmem_slab_s_s_index));
+ 
+ 	if (!(si->flags & ADDRESS_SPECIFIED)) {
+-		fprintf(fp, slab_hdr);
++		fprintf(fp, "%s", slab_hdr);
+ 		DUMP_SLAB_INFO();
+ 	}
+ 
+@@ -10474,7 +10476,7 @@ dump_slab_percpu_v1(struct meminfo *si)
+ 	gather_slab_cached_count(si);
+ 
+ 	if (!(si->flags & ADDRESS_SPECIFIED)) {
+-		fprintf(fp, slab_hdr);
++		fprintf(fp, "%s", slab_hdr);
+ 		DUMP_SLAB_INFO();
+ 	}
+ 
+@@ -10526,7 +10528,7 @@ dump_slab_percpu_v2(struct meminfo *si)
+ 	gather_slab_cached_count(si);
+ 
+ 	if (!(si->flags & ADDRESS_SPECIFIED)) {
+-		fprintf(fp, slab_hdr);
++		fprintf(fp, "%s", slab_hdr);
+ 		DUMP_SLAB_INFO();
+ 	}
+ 
+@@ -10774,7 +10776,7 @@ dump_slab_objects(struct meminfo *si)
+                 }
+ 
+         if (!(si->flags & ADDRESS_SPECIFIED)) 
+-		fprintf(fp, free_inuse_hdr);
++		fprintf(fp, "%s", free_inuse_hdr);
+ 
+         /* For on-slab bufctls, c_offset is the distance between the start of
+          * an obj and its related bufctl.  For off-slab bufctls, c_offset is
+@@ -10850,7 +10852,7 @@ dump_slab_objects_percpu(struct meminfo
+                 }
+ 
+         if (!(si->flags & ADDRESS_SPECIFIED)) 
+-		fprintf(fp, free_inuse_hdr);
++		fprintf(fp, "%s", free_inuse_hdr);
+ 
+ 	for (i = 0, obj = si->s_mem; i < si->c_num; i++, obj += si->size) {
+ 		on_free_list = FALSE;
+@@ -13494,7 +13496,7 @@ dump_swap_info(ulong swapflags, ulong *t
+ 	swap_info = symbol_value("swap_info");
+ 
+ 	if (swapflags & VERBOSE)
+-		fprintf(fp, swap_info_hdr);
++		fprintf(fp, "%s", swap_info_hdr);
+ 
+ 	totalswap = totalused = 0;
+ 
+@@ -15948,7 +15950,7 @@ dump_kmem_cache_slub(struct meminfo *si)
+ 
+ 	if (!si->reqname &&
+ 	     !(si->flags & (ADDRESS_SPECIFIED|GET_SLAB_PAGES)))
+-		fprintf(fp, kmem_cache_hdr);
++		fprintf(fp, "%s", kmem_cache_hdr);
+ 
+ 	if (si->flags & ADDRESS_SPECIFIED) {
+ 		if ((p1 = is_slab_page(si, kbuf))) {
+@@ -15983,7 +15985,7 @@ dump_kmem_cache_slub(struct meminfo *si)
+ 		if (reqname) {
+ 			if (!STREQ(reqname, buf))
+ 				continue;
+-			fprintf(fp, kmem_cache_hdr);
++			fprintf(fp, "%s", kmem_cache_hdr);
+ 		}
+ 		if (ignore_cache(si, buf)) {
+ 			fprintf(fp, "%lx %-18s [IGNORED]\n", 
+@@ -16027,7 +16029,7 @@ dump_kmem_cache_slub(struct meminfo *si)
+ 		} else if (si->flags & VERBOSE) {
+ 			do_kmem_cache_slub(si);
+ 			if (!reqname && ((i+1) < si->cache_count))
+-				fprintf(fp, kmem_cache_hdr);
++				fprintf(fp, "%s", kmem_cache_hdr);
+ 		}
+ 
+ next_cache:
+Index: crash-7.0.1/netdump.c
+===================================================================
+--- crash-7.0.1.orig/netdump.c	2013-07-11 14:34:38.041318408 +0200
++++ crash-7.0.1/netdump.c	2013-07-11 14:52:44.634630494 +0200
+@@ -691,7 +691,7 @@ netdump_print(char *fmt, ...)
+         va_end(ap);
+ 
+         if (nd->ofp)
+-                fprintf(nd->ofp, buf);
++                fprintf(nd->ofp, "%s", buf);
+         else
+                 console(buf);
+ }
+Index: crash-7.0.1/symbols.c
+===================================================================
+--- crash-7.0.1.orig/symbols.c	2013-07-11 14:34:38.153318953 +0200
++++ crash-7.0.1/symbols.c	2013-07-11 14:53:30.506854746 +0200
+@@ -5691,7 +5691,7 @@ dereference_pointer(ulong addr, struct d
+ 				}
+ 			}
+ 			p1 = strstr(buf1, "=");
+-			fprintf(pc->saved_fp, p1+2);
++			fprintf(pc->saved_fp, "%s", p1+2);
+ 		} else
+ 			fprintf(pc->saved_fp, "     %s", buf1);
+ 	}
+@@ -6042,7 +6042,7 @@ do_datatype_declaration(struct datatype_
+ 				if ((flags & SHOW_OFFSET) && whitespace(buf[0]))
+ 					show_member_offset(sfp, dm, buf);
+ 				else
+-                                        fprintf(sfp, buf);
++                                        fprintf(sfp, "%s", buf);
+ 			}
+ 		}
+         }
+@@ -6295,7 +6295,7 @@ gdb_whatis(char *s)
+ 		p1 = buf;
+ 		if (STRNEQ(buf, "type = "))
+ 			p1 += strlen("type = ");
+-		fprintf(pc->saved_fp, p1);
++		fprintf(pc->saved_fp, "%s", p1);
+         }
+ 
+ 	close_tmpfile();
+@@ -6453,7 +6453,7 @@ cmd_p(void)
+ 		int firstline;
+ 
+ 		if (leader) {
+-			fprintf(pc->saved_fp, buf2); 
++			fprintf(pc->saved_fp, "%s", buf2);
+ 			fflush(pc->saved_fp);
+ 		}
+ 
+@@ -6464,7 +6464,7 @@ cmd_p(void)
+ 			    (p1 = strstr(buf1, "{")) &&
+ 			    !STRNEQ(p1, "{\n")) { 
+ 				*p1 = NULLCHAR;
+-				fprintf(pc->saved_fp, buf1);
++				fprintf(pc->saved_fp, "%s", buf1);
+ 				fprintf(pc->saved_fp, "\n {");
+ 				print_verbatim(pc->saved_fp, p1+1);
+ 			} else
+@@ -7110,7 +7110,7 @@ show_member_offset(FILE *ofp, struct dat
+ 		sprintf(buf1, *gdb_output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
+ 	sprintf(fmt, "%c%ds", '%', len);
+ 	fprintf(ofp, fmt, buf1);
+-	fprintf(ofp, &inbuf[3]);
++	fprintf(ofp, "%s", &inbuf[3]);
+ 
+ 	return TRUE;
+ 
+@@ -9347,7 +9347,7 @@ dump_offset_table(char *spec, ulong make
+ 				    strstr(buf, " offset_table:"))
+ 					break;
+ 		
+-				fprintf(pc->saved_fp, buf);
++				fprintf(pc->saved_fp, "%s", buf);
+ 			}
+ 		}
+ 		close_tmpfile();
+Index: crash-7.0.1/task.c
+===================================================================
+--- crash-7.0.1.orig/task.c	2013-07-11 14:34:38.209319226 +0200
++++ crash-7.0.1/task.c	2013-07-11 14:52:44.654630595 +0200
+@@ -2727,7 +2727,7 @@ task_struct_member(struct task_context *
+ 				print_task_header(pc->saved_fp, tc, 0);
+ 				header_printed = TRUE;
+ 			}
+-			fprintf(pc->saved_fp, buf);
++			fprintf(pc->saved_fp, "%s", buf);
+ 			if (STRNEQ(buf, lookfor2))
+ 				BZERO(lookfor2, BUFSIZE);
+ 			continue;
+@@ -2738,7 +2738,7 @@ task_struct_member(struct task_context *
+                                 print_task_header(pc->saved_fp, tc, 0);
+                                 header_printed = TRUE;
+                         }
+-			fprintf(pc->saved_fp, buf);
++			fprintf(pc->saved_fp, "%s", buf);
+ 			if (strstr(buf, lookfor3))
+ 				BZERO(lookfor3, BUFSIZE);
+ 			continue;
+@@ -2754,7 +2754,7 @@ task_struct_member(struct task_context *
+                                 	print_task_header(pc->saved_fp, tc, 0);
+                                 	header_printed = TRUE;
+                         	}
+-				fprintf(pc->saved_fp, buf); 
++				fprintf(pc->saved_fp, "%s", buf);
+                         	if (strstr(buf, "{{\n")) 
+                                 	sprintf(lookfor2, "    }},");
+                         	else if (strstr(buf, "{\n")) 
+@@ -3447,16 +3447,18 @@ task_pointer_string(struct task_context
+ 		}
+ 
+ 		if (bt->stkptr)
+-			sprintf(buf, mkstring(buf1, VADDR_PRLEN, 
+-				CENTER|RJUST|LONG_HEX,
+-                        	MKSTR(bt->stkptr)));
++			sprintf(buf, "%s",
++				mkstring(buf1, VADDR_PRLEN,
++					 CENTER|RJUST|LONG_HEX,
++					 MKSTR(bt->stkptr)));
+ 		else
+ 			sprintf(buf, "%s",
+ 			    mkstring(buf1, VADDR_PRLEN, CENTER|RJUST, "--"));
+ 	} else 
+-		sprintf(buf, mkstring(buf1, VADDR_PRLEN, 
+-			CENTER|RJUST|LONG_HEX, 
+-			MKSTR(tc->task)));
++		sprintf(buf, "%s",
++			mkstring(buf1, VADDR_PRLEN,
++				 CENTER|RJUST|LONG_HEX,
++				 MKSTR(tc->task)));
+ 
+ 	return buf;
+ }
+@@ -8612,7 +8614,7 @@ translate_sigset(ulonglong sigset)
+ 			}
+ 
+ 			len += strlen(buf);
+-			fprintf(fp, buf);
++			fprintf(fp, "%s", buf);
+ 		}
+ 
+ 		sigset >>= 1;
+Index: crash-7.0.1/tools.c
+===================================================================
+--- crash-7.0.1.orig/tools.c	2013-07-11 14:34:37.937317902 +0200
++++ crash-7.0.1/tools.c	2013-07-11 14:52:44.658630611 +0200
+@@ -5389,7 +5389,7 @@ please_wait(char *s)
+ 	pc->flags |= PLEASE_WAIT;
+ 
+         please_wait_len = sprintf(buf, "\rplease wait... (%s)", s);
+-	fprintf(fp, buf);
++	fprintf(fp, "%s", buf);
+         fflush(fp);
+ }
+ 
+Index: crash-7.0.1/va_server.c
+===================================================================
+--- crash-7.0.1.orig/va_server.c	2013-07-11 14:34:38.017318292 +0200
++++ crash-7.0.1/va_server.c	2013-07-11 14:52:44.658630611 +0200
+@@ -416,7 +416,7 @@ vas_memory_dump(FILE *fp)
+ 	hdr = sizeof(long) == 4 ? memory_dump_hdr_32 : memory_dump_hdr_64;
+ 	fmt = sizeof(long) == 4 ? memory_dump_fmt_32 : memory_dump_fmt_64;
+ 
+-	fprintf(fp, hdr);
++	fprintf(fp, "%s", hdr);
+ 
+         for (blks = 0, m = vas_map_base->map; m->start_va; m++) {
+ 		fprintf(fp, fmt,
+Index: crash-7.0.1/x86_64.c
+===================================================================
+--- crash-7.0.1.orig/x86_64.c	2013-07-11 14:34:37.957317995 +0200
++++ crash-7.0.1/x86_64.c	2013-07-11 14:52:44.666630649 +0200
+@@ -4679,7 +4679,7 @@ x86_64_extract_idt_function(ulong *ip, c
+ 
+ 	value_to_symstr(addr, locbuf, 0);
+ 	if (strlen(locbuf))
+-		sprintf(buf, locbuf);
++		sprintf(buf, "%s", locbuf);
+ 	else {
+ 		sprintf(buf, "%016lx", addr);
+ 		if (kvtop(NULL, addr, &phys, 0)) {
+@@ -4745,7 +4745,7 @@ x86_64_dis_filter(ulong vaddr, char *inb
+ 		sprintf(buf1, "0x%lx <%s>\n", value,	
+ 			value_to_symstr(value, buf2, output_radix));
+ 
+-		sprintf(p1, buf1);
++		sprintf(p1, "%s", buf1);
+ 	
+         } else if (STREQ(argv[argc-2], "callq") &&
+             hexadecimal(argv[argc-1], 0)) {
+@@ -4763,7 +4763,7 @@ x86_64_dis_filter(ulong vaddr, char *inb
+                                 value_to_symstr(value, buf2, output_radix));
+                         if (IS_MODULE_VADDR(value) &&
+                             !strstr(buf2, "+"))
+-                                sprintf(p1, buf1);
++                                sprintf(p1, "%s", buf1);
+                 }
+         }
+ 
+@@ -7256,7 +7256,7 @@ x86_64_get_framesize(struct bt_info *bt,
+ 		strcpy(buf2, buf);
+ 
+ 		if (CRASHDEBUG(3))
+-			fprintf(fp, buf2);
++			fprintf(fp, "%s", buf2);
+ 
+ 		c = parse_line(buf, arglist);
+ 
+Index: crash-7.0.1/xendump.c
+===================================================================
+--- crash-7.0.1.orig/xendump.c	2013-07-11 14:34:38.105318719 +0200
++++ crash-7.0.1/xendump.c	2013-07-11 14:52:44.670630676 +0200
+@@ -1974,9 +1974,9 @@ xendump_print(char *fmt, ...)
+         va_end(ap);
+ 
+         if (xd->ofp)
+-                fprintf(xd->ofp, buf);
++                fprintf(xd->ofp, "%s", buf);
+         else if (!XENDUMP_VALID() && CRASHDEBUG(7))
+-		fprintf(stderr, buf);
++		fprintf(stderr, "%s", buf);
+                 
+ }
+ 
