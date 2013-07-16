@@ -1,3 +1,11 @@
+crash (7.0.1-3) unstable; urgency=low
+
+  * Updated format-strings patch to cover additional architectures
+  * Requested update to packages-arch-specific to enable s390x and armel
+    (#717283)
+
+ -- Troy Heber <troyh@debian.org>  Tue, 16 Jul 2013 07:00:41 -0600
+
 crash (7.0.1-2) unstable; urgency=low
 
   * Missed updating the Architecture line in the -1 upload, armel

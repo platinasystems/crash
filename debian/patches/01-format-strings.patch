@@ -8,8 +8,8 @@ Signed-off-by: Stefan Bader <stefan.bader@canonical.com>
 
 Index: crash-7.0.1/cmdline.c
 ===================================================================
---- crash-7.0.1.orig/cmdline.c	2013-07-11 14:34:38.085318626 +0200
-+++ crash-7.0.1/cmdline.c	2013-07-11 14:52:44.598630317 +0200
+--- crash-7.0.1.orig/cmdline.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/cmdline.c	2013-07-12 12:14:27.096469371 +0200
 @@ -62,7 +62,7 @@ process_command_line(void)
  
  	if (!(pc->flags & 
@@ -21,8 +21,8 @@ Index: crash-7.0.1/cmdline.c
  	/*
 Index: crash-7.0.1/dev.c
 ===================================================================
---- crash-7.0.1.orig/dev.c	2013-07-11 14:34:38.173319055 +0200
-+++ crash-7.0.1/dev.c	2013-07-11 14:52:44.602630336 +0200
+--- crash-7.0.1.orig/dev.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/dev.c	2013-07-12 12:14:27.100469394 +0200
 @@ -224,8 +224,9 @@ char_device_struct:
  		switch (name_typecode)
  		{
@@ -49,8 +49,8 @@ Index: crash-7.0.1/dev.c
  			default:
 Index: crash-7.0.1/filesys.c
 ===================================================================
---- crash-7.0.1.orig/filesys.c	2013-07-11 14:34:38.137318875 +0200
-+++ crash-7.0.1/filesys.c	2013-07-11 14:52:44.606630363 +0200
+--- crash-7.0.1.orig/filesys.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/filesys.c	2013-07-12 12:14:27.104469419 +0200
 @@ -1290,10 +1290,10 @@ cmd_mount(void)
  						namespace_context);
  				} else {
@@ -138,8 +138,8 @@ Index: crash-7.0.1/filesys.c
  			show_fuser(task_buf, uses);
 Index: crash-7.0.1/kernel.c
 ===================================================================
---- crash-7.0.1.orig/kernel.c	2013-07-11 14:34:38.061318503 +0200
-+++ crash-7.0.1/kernel.c	2013-07-11 14:52:44.614630390 +0200
+--- crash-7.0.1.orig/kernel.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/kernel.c	2013-07-12 12:14:27.116469476 +0200
 @@ -1000,7 +1000,7 @@ bad_match:
  	if (REMOTE())
  		sprintf(buf, "%s:%s", pc->server, pc->server_memsrc);
@@ -185,8 +185,8 @@ Index: crash-7.0.1/kernel.c
                  if (!(scp = value_symbol(*sct))) {
 Index: crash-7.0.1/lkcd_common.c
 ===================================================================
---- crash-7.0.1.orig/lkcd_common.c	2013-07-11 14:34:38.189319133 +0200
-+++ crash-7.0.1/lkcd_common.c	2013-07-11 14:52:44.618630409 +0200
+--- crash-7.0.1.orig/lkcd_common.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/lkcd_common.c	2013-07-12 12:14:27.116469476 +0200
 @@ -1325,7 +1325,7 @@ lkcd_print(char *fmt, ...)
          va_end(ap);
  
@@ -198,8 +198,8 @@ Index: crash-7.0.1/lkcd_common.c
  }
 Index: crash-7.0.1/memory.c
 ===================================================================
---- crash-7.0.1.orig/memory.c	2013-07-11 14:34:37.997318190 +0200
-+++ crash-7.0.1/memory.c	2013-07-11 14:53:07.942744447 +0200
+--- crash-7.0.1.orig/memory.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/memory.c	2013-07-12 12:14:27.132469548 +0200
 @@ -3608,7 +3608,7 @@ vm_area_dump(ulong task, ulong flag, ulo
  
  	if (!(flag & (PHYSADDR|VERIFY_ADDR|PRINT_VMA_STRUCTS|PRINT_SINGLE_VMA)) && 
@@ -558,8 +558,8 @@ Index: crash-7.0.1/memory.c
  next_cache:
 Index: crash-7.0.1/netdump.c
 ===================================================================
---- crash-7.0.1.orig/netdump.c	2013-07-11 14:34:38.041318408 +0200
-+++ crash-7.0.1/netdump.c	2013-07-11 14:52:44.634630494 +0200
+--- crash-7.0.1.orig/netdump.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/netdump.c	2013-07-12 12:14:27.136469573 +0200
 @@ -691,7 +691,7 @@ netdump_print(char *fmt, ...)
          va_end(ap);
  
@@ -571,8 +571,8 @@ Index: crash-7.0.1/netdump.c
  }
 Index: crash-7.0.1/symbols.c
 ===================================================================
---- crash-7.0.1.orig/symbols.c	2013-07-11 14:34:38.153318953 +0200
-+++ crash-7.0.1/symbols.c	2013-07-11 14:53:30.506854746 +0200
+--- crash-7.0.1.orig/symbols.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/symbols.c	2013-07-12 12:14:27.148469625 +0200
 @@ -5691,7 +5691,7 @@ dereference_pointer(ulong addr, struct d
  				}
  			}
@@ -638,8 +638,8 @@ Index: crash-7.0.1/symbols.c
  		close_tmpfile();
 Index: crash-7.0.1/task.c
 ===================================================================
---- crash-7.0.1.orig/task.c	2013-07-11 14:34:38.209319226 +0200
-+++ crash-7.0.1/task.c	2013-07-11 14:52:44.654630595 +0200
+--- crash-7.0.1.orig/task.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/task.c	2013-07-12 12:14:27.156469673 +0200
 @@ -2727,7 +2727,7 @@ task_struct_member(struct task_context *
  				print_task_header(pc->saved_fp, tc, 0);
  				header_printed = TRUE;
@@ -703,8 +703,8 @@ Index: crash-7.0.1/task.c
  		sigset >>= 1;
 Index: crash-7.0.1/tools.c
 ===================================================================
---- crash-7.0.1.orig/tools.c	2013-07-11 14:34:37.937317902 +0200
-+++ crash-7.0.1/tools.c	2013-07-11 14:52:44.658630611 +0200
+--- crash-7.0.1.orig/tools.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/tools.c	2013-07-12 12:14:27.160469688 +0200
 @@ -5389,7 +5389,7 @@ please_wait(char *s)
  	pc->flags |= PLEASE_WAIT;
  
@@ -716,8 +716,8 @@ Index: crash-7.0.1/tools.c
  
 Index: crash-7.0.1/va_server.c
 ===================================================================
---- crash-7.0.1.orig/va_server.c	2013-07-11 14:34:38.017318292 +0200
-+++ crash-7.0.1/va_server.c	2013-07-11 14:52:44.658630611 +0200
+--- crash-7.0.1.orig/va_server.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/va_server.c	2013-07-12 12:14:27.160469688 +0200
 @@ -416,7 +416,7 @@ vas_memory_dump(FILE *fp)
  	hdr = sizeof(long) == 4 ? memory_dump_hdr_32 : memory_dump_hdr_64;
  	fmt = sizeof(long) == 4 ? memory_dump_fmt_32 : memory_dump_fmt_64;
@@ -729,8 +729,8 @@ Index: crash-7.0.1/va_server.c
  		fprintf(fp, fmt,
 Index: crash-7.0.1/x86_64.c
 ===================================================================
---- crash-7.0.1.orig/x86_64.c	2013-07-11 14:34:37.957317995 +0200
-+++ crash-7.0.1/x86_64.c	2013-07-11 14:52:44.666630649 +0200
+--- crash-7.0.1.orig/x86_64.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/x86_64.c	2013-07-12 12:14:27.168469730 +0200
 @@ -4679,7 +4679,7 @@ x86_64_extract_idt_function(ulong *ip, c
  
  	value_to_symstr(addr, locbuf, 0);
@@ -769,8 +769,8 @@ Index: crash-7.0.1/x86_64.c
  
 Index: crash-7.0.1/xendump.c
 ===================================================================
---- crash-7.0.1.orig/xendump.c	2013-07-11 14:34:38.105318719 +0200
-+++ crash-7.0.1/xendump.c	2013-07-11 14:52:44.670630676 +0200
+--- crash-7.0.1.orig/xendump.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/xendump.c	2013-07-12 12:14:27.172469743 +0200
 @@ -1974,9 +1974,9 @@ xendump_print(char *fmt, ...)
          va_end(ap);
  
@@ -783,3 +783,47 @@ Index: crash-7.0.1/xendump.c
                  
  }
  
+Index: crash-7.0.1/arm.c
+===================================================================
+--- crash-7.0.1.orig/arm.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/arm.c	2013-07-12 12:14:42.168543061 +0200
+@@ -1437,7 +1437,7 @@ arm_dis_filter(ulong vaddr, char *inbuf,
+ 		sprintf(buf1, "0x%lx <%s>\n", value,
+ 			value_to_symstr(value, buf2, output_radix));
+ 
+-		sprintf(p1, buf1);
++		sprintf(p1, "%s", buf1);
+ 	}
+ 
+ 	console("    %s", inbuf);
+Index: crash-7.0.1/x86.c
+===================================================================
+--- crash-7.0.1.orig/x86.c	2013-06-17 20:18:36.000000000 +0200
++++ crash-7.0.1/x86.c	2013-07-12 12:15:36.436808362 +0200
+@@ -3886,7 +3886,7 @@ extract_idt_function(ulong *ip, char *bu
+ 
+ 	value_to_symstr(addr, locbuf, 0);
+ 	if (strlen(locbuf))
+-		sprintf(buf, locbuf);
++		sprintf(buf, "%s", locbuf);
+ 	else {
+ 		sprintf(buf, "%08lx", addr);
+ 		if (kvtop(NULL, addr, &phys, 0)) {
+@@ -4125,7 +4125,7 @@ x86_dis_filter(ulong vaddr, char *inbuf,
+ 		sprintf(buf1, "0x%lx <%s>\n", value,	
+ 			value_to_symstr(value, buf2, output_radix));
+ 
+-		sprintf(p1, buf1);
++		sprintf(p1, "%s", buf1);
+ 	} else if (STREQ(argv[argc-2], "call") && 
+ 	    hexadecimal(argv[argc-1], 0)) {
+ 		/* 
+@@ -4143,7 +4143,7 @@ x86_dis_filter(ulong vaddr, char *inbuf,
+                                 output_radix));
+                         if (IS_MODULE_VADDR(value) &&
+                             !strstr(buf2, "+"))
+-                                sprintf(p1, buf1);
++                                sprintf(p1, "%s", buf1);
+ 		}
+ 	} 
+ 	else if (STREQ(argv[2], "ud2a"))
