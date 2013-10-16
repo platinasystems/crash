@@ -1,3 +1,134 @@
+crash (7.0.2-1) unstable; urgency=low
+
+  * Added "bison" to the BuildRequires line of the crash.spec file.
+           Without the patch, the build of the embedded gdb-7.6 module will fail
+           unless either /usr/bin/bison or /usr/bin/yacc are available.  The 
+           failure will result in a stream of error messages from different 
+           files that indicate:
+
+             multiple definition of 'main'
+             undefined reference to 'c_parse_escape'
+             undefined reference to 'ada_parse'
+             undefined reference to 'ada_error'
+             undefined reference to 'c_parse'
+             undefined reference to 'c_error'
+             undefined reference to 'cp_demangled_name_to_comp'
+             undefined reference to 'cp_demangled_name_parse_free'
+             undefined reference to 'cp_comp_to_string'
+             undefined reference to 'cp_new_demangle_parse_info'
+             
+           and the build fails like so:
+
+             collect2: ld returned 1 exit status
+             make[4]: *** [gdb] Error 1
+             crash build failed
+             
+           If building with rpmbuild, the new BuildRequires "bison" entry will 
+           prevent the build from initiating unless the bison package has been
+           installed.  If building with the tar.gz file, the build attempt will
+           proceed and fail unless either the bison or byacc (Berkeley Yacc) 
+           package is installed.
+
+  * Fix the S390X initialization sequence on kernels that are configured
+           with CONFIG_STRICT_DEVMEM to automatically try /proc/kcore if:
+
+            (1) the /dev/crash driver is not available, and 
+            (2) the initial /dev/mem access fails.  
+
+           Without the patch, if /dev/mem is selected as the memory source and 
+           it is restricted, the crash session will fail during initialization
+           with the error message "crash: read error: kernel virtual address: 
+           <address>  type: cpu_possible_mask". 
+
+  * When checking whether a argument on the crash command line is a dumpfile
+    that may be in makedumpfile's "flattened" format, do not bother checking
+    character device files.
+
+  * Fix for the PPC64 virtual-to-physical virtual address translation
+    mechanism for vmalloc and user-space virtual addresses on Linux 3.10 and
+    later kernels.  Without the patch, the message "WARNING: cannot access
+    vmalloc'd module memory" is displayed during initialization, and during
+    the crash session, if a command attempts to translate or read a vmalloc or
+    user-space virtual address, it will fail.
+
+  * Clean up all files that emit "warning: format not a string literal and no
+    format arguments" when compiled with -Wformat-security warning option.
+    All instances of fprintf, sprintf and snprintf using the format
+    "fprintf(fp, buf)" are replaced with "fprintf(fp, "%s", buf)".  Also, the
+    -Wformat-security warning option has been added to the option list used
+    when compiling with "make warn".
+
+  * Fix a build failure when compiling with very old gcc-3.4.6 version on a
+    2.6.9-based RHEL4 IA64 host.  The bfd library in gdb-7.6 is compiled with
+    the -Werror option, and it fails with the message "elflink.c:4733:
+    warning: 'idx' might be used uninitialized in this function".
+
+  * Fix a build failure when compiling with very old gcc-3.4.6 version on a
+    2.6.9-based RHEL4 S390 or S390X hosts.  The embedded gdb-7.6 fails to
+    compile with the error message "s390-nat.c:364: error: storage size of
+    'iov' isn't known".
+
+  * Fix to properly store two-digit kernel version numbers. (closes: #717036)
+
+  * Fix to provide hugepage address translation for the "vtop" command on the
+    PPC64 architecture.
+
+  * Fix for the "log" command to account for the kernel data structure name
+    change from "log" to "printk_log" in Linux 3.11-rc4 and later kernels.
+    Without the patch, the message "WARNING: log buf data structure(s) have
+    changed" will be displayed during initialization and by the "log" command. 
+
+  * Fix to add a linefeed after the description of the "kmem -I" option in the
+    "help kmem" output, which was recently added in crash-7.0.0. 
+
+  * Document the "-s" command line option in the "crash -h|--help" output and
+    in the crash.8 man page to also indicate that runtime command scrolling is
+    turned off by default.
+
+  * Fix for the "irq -d" option on 2.6.25 and later X86_64 kernels to display
+    the Intel interrupt descriptor table contents.  Without the patch, those
+    kernel versions would display "irq: -d option not supported or applicable
+    on this architecture or kernel".
+
+  * Fix for the "kmem -[sS]" options on Linux 3.11-rc1 and later kernels that
+    are configured with CONFIG_SLAB.  Without the patch, the command fails
+    with the error message "kmem: invalid structure member offset: 
+
+  * Fix for the "kmem <address>" and the "bt -F" options on Linux 3.8 and
+    later kernels that are configured with CONFIG_SLUB.  Without the patch,
+    the command would fail with the error message "kmem: invalid structure
+    member offset: page_slab".
+
+  * Fix misspellings in the "bt" and "search" help page output.
+
+  * Fix for the determination of the base of the kernel's unity-mapped virtual
+    address region on recent ARM kernels whose "_stext" variable address has
+    changed from 0xc0008000 to 0xc0100000.  Without the patch, the crash
+    session fails during invocation with the error message "crash: vmlinux and
+    vmcore do not match!".
+
+  * When printing data structures, prevent the embedded gdb from symbolically
+    translating pointers that are not kernel virtual addresses.  Kernel or
+    module symbols that are not virtual addresses can be mistaken for virtual
+    addresses, leading to NULL pointers being invalidly translated into a
+    symbol name from the vmlinux or module object file.  For example, in
+    X86_64 kernels, NULL pointers are translated into the symbol
+    "irq_stack_union", whose value is not a virtual address, but rather a
+    per-cpu offset value of 0.
+
+  * Fix for the "kmem -s <address>" or "kmem <address>" options on Linux 3.11
+    and later kernels configured with CONFIG_SLAB.  Without the patch, both
+    commands fail with the error message "kmem: cannot resolve cache_cache".
+
+  * Fix to prevent the "bt" command from generating a segmentation violation
+    in a case where the per-cpu "current_task" variable and the runqueue's
+    "curr" variable did not agree, and the panic task had overflowed its
+    kernel stack.  This led to the selection of the a starting RSP address
+    which belonged to the other task; without the patch, the command generated
+    a segmentation violation after printing the first frame of the backtrace.  
+
+ -- Troy Heber <troyh@debian.org>  Wed, 16 Oct 2013 10:26:33 -0600
+
 crash (7.0.1-3) unstable; urgency=low
 
   * Updated format-strings patch to cover additional architectures

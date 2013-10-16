@@ -218,21 +218,28 @@ kernel_init()
 
 	strncpy(buf, kt->utsname.release, MIN(strlen(kt->utsname.release), 65));
 	if (ascii_string(kt->utsname.release)) {
+		char separator;
+
 		p1 = p2 = buf;
 		while (*p2 != '.')
 			p2++;
 		*p2 = NULLCHAR;
 		kt->kernel_version[0] = atoi(p1);
 		p1 = ++p2;
-		while (*p2 != '.')
+		while (*p2 != '.' && *p2 != '-' && *p2 != '\0')
 			p2++;
+		separator = *p2;
 		*p2 = NULLCHAR;
 		kt->kernel_version[1] = atoi(p1);
-		p1 = ++p2;
-		while ((*p2 >= '0') && (*p2 <= '9'))
-			p2++;
-		*p2 = NULLCHAR;
-		kt->kernel_version[2] = atoi(p1);
+		*p2 = separator;
+		if (*p2 == '.') {
+			p1 = ++p2;
+			while ((*p2 >= '0') && (*p2 <= '9'))
+				p2++;
+			*p2 = NULLCHAR;
+			kt->kernel_version[2] = atoi(p1);
+		} else
+			kt->kernel_version[2] = 0;
 
 		if (CRASHDEBUG(1))
 			fprintf(fp, "base kernel version: %d.%d.%d\n",
@@ -1000,7 +1007,7 @@ bad_match:
 	if (REMOTE())
 		sprintf(buf, "%s:%s", pc->server, pc->server_memsrc);
 	else
-		sprintf(buf, ACTIVE() ? pc->live_memsrc : pc->dumpfile);
+		sprintf(buf, "%s", ACTIVE() ? pc->live_memsrc : pc->dumpfile);
 
 	error(INFO, "%s and %s do not match!\n",
 		pc->system_map ? pc->system_map : 
@@ -1262,7 +1269,7 @@ verify_namelist()
         if (REMOTE())
                 sprintf(buffer, "%s:%s", pc->server, pc->server_memsrc);
         else
-                sprintf(buffer, ACTIVE() ? "live system" : pc->dumpfile);
+                sprintf(buffer, "%s", ACTIVE() ? "live system" : pc->dumpfile);
 
 	sprintf(buffer2, " %s is %s -- %s is %s\n",
                 namelist, namelist_smp ? "SMP" : "not SMP",
@@ -2352,6 +2359,9 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 int
 in_alternate_stack(int cpu, ulong address)
 {
+	if (cpu >= NR_CPUS)
+		return FALSE;
+
 	if (machdep->in_alternate_stack)
 		if (machdep->in_alternate_stack(cpu, address))
 			return TRUE;
@@ -4381,13 +4391,13 @@ dump_log_entry(char *logptr, int msg_flags)
 		rem = (ulonglong)ts_nsec % (ulonglong)1000000000;
 		sprintf(buf, "[%5lld.%06ld] ", nanos, rem/1000);
 		ilen = strlen(buf);
-		fprintf(fp, buf);
+		fprintf(fp, "%s", buf);
 	}
 
 	if (msg_flags & SHOW_LOG_LEVEL) {
 		sprintf(buf, "<%x>", level);
 		ilen += strlen(buf);
-		fprintf(fp, buf);
+		fprintf(fp, "%s", buf);
 	}
 
 	for (i = 0, p = msg; i < text_len; i++, p++) {
@@ -4428,17 +4438,26 @@ dump_variable_length_record_log(int msg_flags)
 {
 	uint32_t idx, log_first_idx, log_next_idx, log_buf_len;
 	ulong log_buf;
-	char *logptr, *logbuf;
+	char *logptr, *logbuf, *log_struct_name;
 
 	if (INVALID_SIZE(log)) {
-		STRUCT_SIZE_INIT(log, "log");
-		MEMBER_OFFSET_INIT(log_ts_nsec, "log", "ts_nsec");
-		MEMBER_OFFSET_INIT(log_len, "log", "len");
-		MEMBER_OFFSET_INIT(log_text_len, "log", "text_len");
-		MEMBER_OFFSET_INIT(log_dict_len, "log", "dict_len");
-		MEMBER_OFFSET_INIT(log_level, "log", "level");
-		MEMBER_SIZE_INIT(log_level, "log", "level");
-		MEMBER_OFFSET_INIT(log_flags_level, "log", "flags_level");
+		if (STRUCT_EXISTS("printk_log")) {
+			/*
+			 * In kernel 3.11 the log structure name was renamed
+			 * from log to printk_log.  See 62e32ac3505a0cab.
+			 */
+			log_struct_name = "printk_log";
+		} else 
+			log_struct_name = "log";
+
+		STRUCT_SIZE_INIT(log, log_struct_name);
+		MEMBER_OFFSET_INIT(log_ts_nsec, log_struct_name, "ts_nsec");
+		MEMBER_OFFSET_INIT(log_len, log_struct_name, "len");
+		MEMBER_OFFSET_INIT(log_text_len, log_struct_name, "text_len");
+		MEMBER_OFFSET_INIT(log_dict_len, log_struct_name, "dict_len");
+		MEMBER_OFFSET_INIT(log_level, log_struct_name, "level");
+		MEMBER_SIZE_INIT(log_level, log_struct_name, "level");
+		MEMBER_OFFSET_INIT(log_flags_level, log_struct_name, "flags_level");
 			
 		/*
 		 * If things change, don't kill a dumpfile session 
@@ -4901,7 +4920,7 @@ dump_sys_call_table(char *spec, int cnt)
 	if (spec)
 		open_tmpfile();
 
-	fprintf(fp, sys_call_hdr);
+	fprintf(fp, "%s", sys_call_hdr);
 
         for (i = 0, sct = sys_call_table; i < NR_syscalls; i++, sct++) {
                 if (!(scp = value_symbol(*sct))) {

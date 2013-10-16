@@ -62,7 +62,7 @@ process_command_line(void)
 
 	if (!(pc->flags & 
 	    (READLINE|SILENT|CMDLINE_IFILE|RCHOME_IFILE|RCLOCAL_IFILE))) 
-		fprintf(fp, pc->prompt);
+		fprintf(fp, "%s", pc->prompt);
 	fflush(fp);
 
 	/*

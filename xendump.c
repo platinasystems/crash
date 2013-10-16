@@ -1,8 +1,8 @@
 /* 
  * xendump.c 
  * 
- * Copyright (C) 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2006-2011, 2013 David Anderson
+ * Copyright (C) 2006-2011, 2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1974,9 +1974,9 @@ xendump_print(char *fmt, ...)
         va_end(ap);
 
         if (xd->ofp)
-                fprintf(xd->ofp, buf);
+                fprintf(xd->ofp, "%s", buf);
         else if (!XENDUMP_VALID() && CRASHDEBUG(7))
-		fprintf(stderr, buf);
+		fprintf(stderr, "%s", buf);
                 
 }
 

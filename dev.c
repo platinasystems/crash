@@ -224,8 +224,9 @@ char_device_struct:
 		switch (name_typecode)
 		{
 		case TYPE_CODE_ARRAY:
-			snprintf(buf, name_size, char_device_struct_buf +	
-			    OFFSET(char_device_struct_name));
+			snprintf(buf, name_size, "%s",
+				 char_device_struct_buf +
+				 OFFSET(char_device_struct_name));
 			break;
 		case TYPE_CODE_PTR:
 		default:
@@ -294,8 +295,9 @@ char_device_struct:
 			switch (name_typecode)
 			{
 			case TYPE_CODE_ARRAY:
-				snprintf(buf, name_size, char_device_struct_buf +	
-			    		OFFSET(char_device_struct_name));
+				snprintf(buf, name_size, "%s",
+					 char_device_struct_buf +
+					 OFFSET(char_device_struct_name));
 				break;
 			case TYPE_CODE_PTR:
 			default:

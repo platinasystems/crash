@@ -1117,7 +1117,7 @@ arm64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 		sprintf(buf1, "0x%lx <%s>\n", value,
 			value_to_symstr(value, buf2, output_radix));
 
-		sprintf(p1, buf1);
+		sprintf(p1, "%s", buf1);
 	}
 
 	console("    %s", inbuf);

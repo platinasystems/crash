@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -5691,7 +5691,7 @@ dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
 				}
 			}
 			p1 = strstr(buf1, "=");
-			fprintf(pc->saved_fp, p1+2);
+			fprintf(pc->saved_fp, "%s", p1+2);
 		} else
 			fprintf(pc->saved_fp, "     %s", buf1);
 	}
@@ -6042,7 +6042,7 @@ do_datatype_declaration(struct datatype_member *dm, ulong flags)
 				if ((flags & SHOW_OFFSET) && whitespace(buf[0]))
 					show_member_offset(sfp, dm, buf);
 				else
-                                        fprintf(sfp, buf);
+                                        fprintf(sfp, "%s", buf);
 			}
 		}
         }
@@ -6295,7 +6295,7 @@ gdb_whatis(char *s)
 		p1 = buf;
 		if (STRNEQ(buf, "type = "))
 			p1 += strlen("type = ");
-		fprintf(pc->saved_fp, p1);
+		fprintf(pc->saved_fp, "%s", p1);
         }
 
 	close_tmpfile();
@@ -6453,7 +6453,7 @@ cmd_p(void)
 		int firstline;
 
 		if (leader) {
-			fprintf(pc->saved_fp, buf2); 
+			fprintf(pc->saved_fp, "%s", buf2);
 			fflush(pc->saved_fp);
 		}
 
@@ -6464,7 +6464,7 @@ cmd_p(void)
 			    (p1 = strstr(buf1, "{")) &&
 			    !STRNEQ(p1, "{\n")) { 
 				*p1 = NULLCHAR;
-				fprintf(pc->saved_fp, buf1);
+				fprintf(pc->saved_fp, "%s", buf1);
 				fprintf(pc->saved_fp, "\n {");
 				print_verbatim(pc->saved_fp, p1+1);
 			} else
@@ -7110,7 +7110,7 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		sprintf(buf1, *gdb_output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
 	sprintf(fmt, "%c%ds", '%', len);
 	fprintf(ofp, fmt, buf1);
-	fprintf(ofp, &inbuf[3]);
+	fprintf(ofp, "%s", &inbuf[3]);
 
 	return TRUE;
 
@@ -9347,7 +9347,7 @@ dump_offset_table(char *spec, ulong makestruct)
 				    strstr(buf, " offset_table:"))
 					break;
 		
-				fprintf(pc->saved_fp, buf);
+				fprintf(pc->saved_fp, "%s", buf);
 			}
 		}
 		close_tmpfile();

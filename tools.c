@@ -5389,7 +5389,7 @@ please_wait(char *s)
 	pc->flags |= PLEASE_WAIT;
 
         please_wait_len = sprintf(buf, "\rplease wait... (%s)", s);
-	fprintf(fp, buf);
+	fprintf(fp, "%s", buf);
         fflush(fp);
 }
 

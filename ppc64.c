@@ -55,7 +55,51 @@ static int ppc64_get_cpu_map(void);
 static void ppc64_clear_machdep_cache(void);
 static void ppc64_vmemmap_init(void);
 static int ppc64_get_kvaddr_ranges(struct vaddr_range *);
+static uint get_ptetype(ulong pte);
+static int is_hugepage(ulong pte);
+static int is_hugepd(ulong pte);
+static ulong hugepage_dir(ulong pte);
 
+static inline uint get_ptetype(ulong pte)
+{
+	uint pte_type = 0; /* 0: regular entry; 1: huge pte; 2: huge pd */
+
+	if (is_hugepage(pte))
+		pte_type = 1;
+	else if (is_hugepd(pte))
+		pte_type = 2;
+
+	return pte_type;
+}
+
+static int is_hugepage(ulong pte)
+{
+	/*
+	 * leaf pte for huge page, bottom two bits != 00
+	 */
+	return ((pte & HUGE_PTE_MASK) != 0x0);
+}
+
+static inline int is_hugepd(ulong pte)
+{
+	if (THIS_KERNEL_VERSION >= LINUX(3,10,0)) {
+		/*
+		 * hugepd pointer, bottom two bits == 00 and next 4 bits
+		 * indicate size of table
+		*/
+		return (((pte & HUGE_PTE_MASK) == 0x0) &&
+			((pte & HUGEPD_SHIFT_MASK) != 0));
+	} else
+		return ((pte & PD_HUGE) == 0x0);
+}
+
+static inline ulong hugepage_dir(ulong pte)
+{
+	if (THIS_KERNEL_VERSION >= LINUX(3,10,0))
+		return (ulong)(pte & ~HUGEPD_SHIFT_MASK);
+	else
+		return (ulong)((pte & ~HUGEPD_SHIFT_MASK) | PD_HUGE);
+}
 
 static int book3e_is_kvaddr(ulong addr)
 {
@@ -227,10 +271,18 @@ ppc64_init(int when)
 			struct machine_specific *m = machdep->machspec;
 			if (machdep->pagesize == 65536) {
 				/* 64K pagesize */
-				m->l1_index_size = PTE_INDEX_SIZE_L4_64K;
-				m->l2_index_size = PMD_INDEX_SIZE_L4_64K;
-				m->l3_index_size = PUD_INDEX_SIZE_L4_64K;
-				m->l4_index_size = PGD_INDEX_SIZE_L4_64K;
+				if (THIS_KERNEL_VERSION >= LINUX(3,10,0)) {
+					m->l1_index_size = PTE_INDEX_SIZE_L4_64K_3_10;
+					m->l2_index_size = PMD_INDEX_SIZE_L4_64K_3_10;
+					m->l3_index_size = PUD_INDEX_SIZE_L4_64K;
+					m->l4_index_size = PGD_INDEX_SIZE_L4_64K_3_10;
+
+				} else {
+					m->l1_index_size = PTE_INDEX_SIZE_L4_64K;
+					m->l2_index_size = PMD_INDEX_SIZE_L4_64K;
+					m->l3_index_size = PUD_INDEX_SIZE_L4_64K;
+					m->l4_index_size = PGD_INDEX_SIZE_L4_64K;
+				}
 				if (!(machdep->flags & BOOK3E))
 					m->pte_shift = symbol_exists("demote_segment_4k") ?
 						PTE_SHIFT_L4_64K_V2 : PTE_SHIFT_L4_64K_V1; 
@@ -629,6 +681,7 @@ ppc64_vtop_level4(ulong vaddr, ulong *level4, physaddr_t *paddr, int verbose)
 	ulong *page_table;
 	ulong level4_pte, pgd_pte, pmd_pte;
 	ulong pte;
+	uint  hugepage_type = 0; /* 0: regular entry; 1: huge pte; 2: huge pd */
 
 	if (verbose)
 		fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)level4);
@@ -641,6 +694,12 @@ ppc64_vtop_level4(ulong vaddr, ulong *level4, physaddr_t *paddr, int verbose)
 	if (!level4_pte)
 		return FALSE;
 
+	hugepage_type = get_ptetype(level4_pte);
+	if (hugepage_type) {
+		pte = level4_pte;
+		goto out;
+	}
+
 	/* Sometimes we don't have level3 pagetable entries */
 	if (machdep->machspec->l3_index_size != 0) {
 		page_dir = (ulong *)((ulong *)level4_pte + PGD_OFFSET_L4(vaddr));
@@ -651,6 +710,12 @@ ppc64_vtop_level4(ulong vaddr, ulong *level4, physaddr_t *paddr, int verbose)
 			fprintf(fp, "  PGD: %lx => %lx\n", (ulong)page_dir, pgd_pte);
 		if (!pgd_pte)
 			return FALSE;
+
+		hugepage_type = get_ptetype(pgd_pte);
+		if (hugepage_type) {
+			pte = pgd_pte;
+			goto out;
+		}
 	} else {
 		pgd_pte = level4_pte;
 	}
@@ -664,6 +729,12 @@ ppc64_vtop_level4(ulong vaddr, ulong *level4, physaddr_t *paddr, int verbose)
 
 	if (!(pmd_pte))
 		return FALSE;
+
+	hugepage_type = get_ptetype(pmd_pte);
+	if (hugepage_type) {
+		pte = pmd_pte;
+		goto out;
+	}
 
 	page_table = (ulong *)(pmd_pte & ~(machdep->machspec->l2_masked_bits))
 			 + (BTOP(vaddr) & (machdep->machspec->ptrs_per_l1 - 1));
@@ -688,17 +759,37 @@ ppc64_vtop_level4(ulong vaddr, ulong *level4, physaddr_t *paddr, int verbose)
 	if (!pte)
 		return FALSE;
 
-	*paddr = PAGEBASE(PTOB(pte >> machdep->machspec->pte_shift)) 
-			+ PAGEOFFSET(vaddr);
+out:
+	if (hugepage_type) {
+		if (hugepage_type == 2) {
+			/* TODO: Calculate the offset within the huge page
+			 * directory for this huge page to get corresponding
+			 * physical address. In the current form, it may
+			 * return the physical address of the first huge page
+			 * in this directory for all the huge pages
+			 * in this huge page directory.
+			 */
+			readmem(hugepage_dir(pte), KVADDR, &pte, sizeof(pte),
+				"hugepd_entry", RETURN_ON_ERROR);
+		}
+		/* TODO: get page offset for huge pages based on page size */
+		*paddr = PAGEBASE(PTOB(pte >> machdep->machspec->pte_shift));
+	} else {
+		*paddr = PAGEBASE(PTOB(pte >> machdep->machspec->pte_shift))
+				+ PAGEOFFSET(vaddr);
+	}
 
 	if (verbose) {
-		fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(*paddr));
+		if (hugepage_type)
+			fprintf(fp, " HUGE PAGE: %lx\n\n", PAGEBASE(*paddr));
+		else
+			fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(*paddr));
 		ppc64_translate_pte(pte, 0, machdep->machspec->pte_shift);
 	}
 
 	return TRUE;
 }
-	
+
 /*
  *  Translates a user virtual address to its physical address.  cmd_vtop()
  *  sets the verbose flag so that the pte translation gets displayed; all
@@ -2387,7 +2478,7 @@ ppc64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 		sprintf(buf1, "0x%lx <%s>\n", value,	
 			value_to_symstr(value, buf2, output_radix));
 
-		sprintf(p1, buf1);
+		sprintf(p1, "%s", buf1);
 	}
 
 	console("    %s", inbuf);

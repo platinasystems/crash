@@ -2727,7 +2727,7 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 				print_task_header(pc->saved_fp, tc, 0);
 				header_printed = TRUE;
 			}
-			fprintf(pc->saved_fp, buf);
+			fprintf(pc->saved_fp, "%s", buf);
 			if (STRNEQ(buf, lookfor2))
 				BZERO(lookfor2, BUFSIZE);
 			continue;
@@ -2738,7 +2738,7 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
                                 print_task_header(pc->saved_fp, tc, 0);
                                 header_printed = TRUE;
                         }
-			fprintf(pc->saved_fp, buf);
+			fprintf(pc->saved_fp, "%s", buf);
 			if (strstr(buf, lookfor3))
 				BZERO(lookfor3, BUFSIZE);
 			continue;
@@ -2754,7 +2754,7 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
                                 	print_task_header(pc->saved_fp, tc, 0);
                                 	header_printed = TRUE;
                         	}
-				fprintf(pc->saved_fp, buf); 
+				fprintf(pc->saved_fp, "%s", buf);
                         	if (strstr(buf, "{{\n")) 
                                 	sprintf(lookfor2, "    }},");
                         	else if (strstr(buf, "{\n")) 
@@ -3447,16 +3447,18 @@ task_pointer_string(struct task_context *tc, ulong do_kstackp, char *buf)
 		}
 
 		if (bt->stkptr)
-			sprintf(buf, mkstring(buf1, VADDR_PRLEN, 
-				CENTER|RJUST|LONG_HEX,
-                        	MKSTR(bt->stkptr)));
+			sprintf(buf, "%s",
+				mkstring(buf1, VADDR_PRLEN,
+					 CENTER|RJUST|LONG_HEX,
+					 MKSTR(bt->stkptr)));
 		else
 			sprintf(buf, "%s",
 			    mkstring(buf1, VADDR_PRLEN, CENTER|RJUST, "--"));
 	} else 
-		sprintf(buf, mkstring(buf1, VADDR_PRLEN, 
-			CENTER|RJUST|LONG_HEX, 
-			MKSTR(tc->task)));
+		sprintf(buf, "%s",
+			mkstring(buf1, VADDR_PRLEN,
+				 CENTER|RJUST|LONG_HEX,
+				 MKSTR(tc->task)));
 
 	return buf;
 }
@@ -8612,7 +8614,7 @@ translate_sigset(ulonglong sigset)
 			}
 
 			len += strlen(buf);
-			fprintf(fp, buf);
+			fprintf(fp, "%s", buf);
 		}
 
 		sigset >>= 1;

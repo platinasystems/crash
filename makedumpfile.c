@@ -172,9 +172,13 @@ void
 check_flattened_format(char *file)
 {
 	int fd;
+	struct stat stat;
 	struct makedumpfile_header fh;
 
 	if (flattened_format)
+		return;
+
+	if (file_exists(file, &stat) && S_ISCHR(stat.st_mode))
 		return;
 
 	fd = open(file, O_RDONLY);

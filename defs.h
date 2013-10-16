@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "7.0.1"
+#define BASELEVEL_REVISION  "7.0.2"
 
 #undef TRUE
 #undef FALSE
@@ -3485,13 +3485,20 @@ struct efi_memory_desc_t {
 #define PMD_INDEX_SIZE_L4_64K  12
 #define PUD_INDEX_SIZE_L4_64K  0
 #define PGD_INDEX_SIZE_L4_64K  4
+#define PTE_INDEX_SIZE_L4_64K_3_10  8
+#define PMD_INDEX_SIZE_L4_64K_3_10  10
+#define PGD_INDEX_SIZE_L4_64K_3_10  12
 #define PTE_SHIFT_L4_64K_V1  32
 #define PTE_SHIFT_L4_64K_V2  30
 #define PTE_SHIFT_L4_BOOK3E_64K 28
 #define PTE_SHIFT_L4_BOOK3E_4K 24
 #define PMD_MASKED_BITS_64K  0x1ff
 
-#define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & 0x1ff)
+#define PD_HUGE           0x8000000000000000
+#define HUGE_PTE_MASK     0x03
+#define HUGEPD_SHIFT_MASK 0x3f
+#define L4_MASK           (THIS_KERNEL_VERSION >= LINUX(3,10,0) ? 0xfff : 0x1ff)
+#define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & L4_MASK)
 
 #define PGD_OFFSET_L4(vaddr)	\
 	((vaddr >> (machdep->machspec->l3_shift)) & (machdep->machspec->ptrs_per_l3 - 1))
@@ -3947,6 +3954,7 @@ void patch_load_module(struct objfile *objfile, struct minimal_symbol *msymbol);
 int patch_kernel_symbol(struct gnu_request *);
 struct syment *symbol_search(char *);
 int gdb_line_number_callback(ulong, ulong, ulong);
+int gdb_print_callback(ulong);
 #endif
 
 #ifndef GDB_COMMON
@@ -4890,6 +4898,8 @@ struct arm_pt_regs {
 #define PGTABLE_V2	(0x4)
 #define IDMAP_PGD	(0x8)
 
+#define KVBASE_MASK	(0x1ffffff)
+
 struct machine_specific {
 	ulong phys_base;
 	ulong vmalloc_start_addr;
@@ -5801,6 +5811,7 @@ void gdb_interface(struct gnu_request *);
 int gdb_pass_through(char *, FILE *, ulong);
 int gdb_readmem_callback(ulong, void *, int, int);
 int gdb_line_number_callback(ulong, ulong, ulong);
+int gdb_print_callback(ulong);
 void gdb_error_hook(void);
 void restore_gdb_sanity(void);
 int is_gdb_command(int, ulong);

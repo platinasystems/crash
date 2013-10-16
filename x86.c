@@ -3886,7 +3886,7 @@ extract_idt_function(ulong *ip, char *buf, ulong *retaddr)
 
 	value_to_symstr(addr, locbuf, 0);
 	if (strlen(locbuf))
-		sprintf(buf, locbuf);
+		sprintf(buf, "%s", locbuf);
 	else {
 		sprintf(buf, "%08lx", addr);
 		if (kvtop(NULL, addr, &phys, 0)) {
@@ -4125,7 +4125,7 @@ x86_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 		sprintf(buf1, "0x%lx <%s>\n", value,	
 			value_to_symstr(value, buf2, output_radix));
 
-		sprintf(p1, buf1);
+		sprintf(p1, "%s", buf1);
 	} else if (STREQ(argv[argc-2], "call") && 
 	    hexadecimal(argv[argc-1], 0)) {
 		/* 
@@ -4143,7 +4143,7 @@ x86_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
                                 output_radix));
                         if (IS_MODULE_VADDR(value) &&
                             !strstr(buf2, "+"))
-                                sprintf(p1, buf1);
+                                sprintf(p1, "%s", buf1);
 		}
 	} 
 	else if (STREQ(argv[2], "ud2a"))

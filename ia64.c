@@ -1504,7 +1504,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 					output_radix));
 				if (IS_MODULE_VADDR(value) &&
 				    !strstr(buf2, "+"))
-					sprintf(p2, buf1);
+					sprintf(p2, "%s", buf1);
 			} 
 		} else {
 			p1 = &argv[argc-1][3];
@@ -1515,7 +1515,7 @@ ia64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 					output_radix));
 				if (IS_MODULE_VADDR(value) &&
 				    !strstr(buf2, "+"))
-					sprintf(p2, buf1);
+					sprintf(p2, "%s", buf1);
 			}
 		}
 	}

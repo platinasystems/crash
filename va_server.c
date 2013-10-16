@@ -1,8 +1,8 @@
 /* va_server.c - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2006, 2011, 2013 David Anderson
+ * Copyright (C) 2002-2006, 2011, 2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -416,7 +416,7 @@ vas_memory_dump(FILE *fp)
 	hdr = sizeof(long) == 4 ? memory_dump_hdr_32 : memory_dump_hdr_64;
 	fmt = sizeof(long) == 4 ? memory_dump_fmt_32 : memory_dump_fmt_64;
 
-	fprintf(fp, hdr);
+	fprintf(fp, "%s", hdr);
 
         for (blks = 0, m = vas_map_base->map; m->start_va; m++) {
 		fprintf(fp, fmt,
