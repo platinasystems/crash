@@ -117,7 +117,9 @@ typedef struct _dump_header_s {
 #ifndef IA64
 #ifndef S390
 #ifndef S390X
+#ifndef ARM64
 	struct pt_regs       dh_regs;
+#endif
 #endif
 #endif
 #endif

@@ -474,7 +474,7 @@ task_init(void)
 		tt->this_task = pid_to_task(active_pid);
 	}
 	else {
-		if (KDUMP_DUMPFILE())
+		if (KDUMP_DUMPFILE() && !(pc->flags2 & QEMU_MEM_DUMP))
 			map_cpus_to_prstatus();
 		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
 			map_cpus_to_prstatus_kdump_cmprs();
@@ -4873,10 +4873,10 @@ task_mm(ulong task, int fill)
 char *
 task_cpu(int processor, char *buf, int verbose)
 {
-	if (processor < NO_PROC_ID)
+	if (processor < NR_CPUS)
 		sprintf(buf, "%d", processor);
-	if (processor == NO_PROC_ID)
-		sprintf(buf, verbose ? "NO_PROC_ID" : "-");
+	else
+		sprintf(buf, verbose ? "(unknown)" : "?");
 
         return buf;
 }

@@ -59,7 +59,7 @@ store_flat_data_array(char *file, struct flat_data **fda)
 	unsigned long long	num_allocated = 0;
 	unsigned long long	num_stored    = 0;
 	unsigned long long	size_allocated;
-	struct flat_data	*ptr = NULL, *cur;
+	struct flat_data	*ptr = NULL, *cur, *new;
 	struct makedumpfile_data_header	fdh;
 
 	fd = open(file, O_RDONLY);
@@ -77,12 +77,13 @@ store_flat_data_array(char *file, struct flat_data **fda)
 			num_allocated += 100;
 			size_allocated = sizeof(struct flat_data)
 					 * num_allocated;
-			ptr = realloc(ptr, size_allocated);
-			if (ptr == NULL) {
+			new = realloc(ptr, size_allocated);
+			if (new == NULL) {
 				error(INFO, 
 				    "unable to realloc flat_data structures\n");
 				break;
 			}
+			ptr = new;
 		}
 		offset_fdh = lseek(fd, 0x0, SEEK_CUR);
 

@@ -790,7 +790,7 @@ make_rh_rpm_package(char *package, int release)
 				break;
 			} 
 		}
-		fclose(fp);
+		pclose(fp);
 	
 		if (!cur) {
 			fprintf(stderr, "cannot get version from \"crash -v\"\n");

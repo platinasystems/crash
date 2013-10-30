@@ -7251,6 +7251,9 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		}
 	}
 
+	if ((sp->value >= kt->init_begin) && (sp->value < kt->init_end))
+		return 0;
+
 	framesize = max = 0;
         max_instructions = textaddr - sp->value; 
 	instr = arg = -1;

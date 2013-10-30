@@ -1116,8 +1116,10 @@ daemon_proc_version(char *buf)
                 return FALSE;
 
         if (fread(buf, sizeof(char),
-                BUFSIZE-1, pipe) <= 0)
+                BUFSIZE-1, pipe) <= 0) {
+		pclose(pipe);
                 return FALSE;
+	}
 
         pclose(pipe);
 

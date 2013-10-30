@@ -590,8 +590,11 @@ static int swap_entry(ulong entry)
 	if (THIS_KERNEL_VERSION < LINUX(2,6,19)) {
 		if ((entry & 0x601ULL) == 0x600ULL)
 			return 1;
-	} else {
+	} if (THIS_KERNEL_VERSION < LINUX(3,12,0)) {
 		if ((entry & 0x403ULL) == 0x403ULL)
+			return 1;
+	} else {
+		if ((entry & 0x603ULL) == 0x402ULL)
 			return 1;
 	}
 	return 0;

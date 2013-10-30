@@ -1,3 +1,111 @@
+crash (7.0.3-1) unstable; urgency=low
+
+  * Fix for the ARM architecture if the backtrace unwind information cannot be
+    gathered during session initialization.  Without the patch, the two
+    unwind-related warning messages indicating "WARNING: UNWIND: failed to
+    gather unwind_table list" and "WARNING: UNWIND: failed to initialize
+    module unwind tables" are followed by the fatal error message "crash:
+    cannot hash task_struct entries".
+
+  * Fix for the "help -[Dn]" dumpfile information display of the GUID EFI
+    table in the header of SADUMP dumpfiles.  Without the patch, only 33 of
+    the 36 bytes in the table are translated.
+
+  * Fix for the determination of the kernel NR_CPUS configurable for Linux 3.8
+    and later kernels that are configured with CONFIG_SLAB.  Without the
+    patch, the kernel's compiled-in NR_CPUS value was incorrectly calculated
+    to be the sum of the kernel's NR_CPUS and MAX_NUMNODES configurables.
+     
+  * In the next release of makedumpfile, the status field of the dumpfile
+    header of compressed kdumps will show the compression type that was
+    utilized.  The "help -[Dn]" output has been updated to display that
+    information.
+
+  * For kernels configured with CONFIG_SLAB in which an array_cache pointer
+    referenced by a kmem_cache structure is invalid, the individual cache(s)
+    will be marked as invalid.  During session initialization, the message
+    "crash: kmem_cache: <cache-address>: invalid array_cache pointer" will be
+    displayed, and during runtime, attempts to access the cache(s) will result
+    in a message indicating that the cache is "[INVALID/CORRPUTED]".  Without
+    the patch, the message "crash: unable to initialize kmem slab cache
+    subsystem" is displayed during session initialization, and run-time
+    commands that attempt to access the kmem slab cache subsystem fail with
+    the error message "kmem cache slab subsystem not available".
+
+  * Fix for the "kmem -[sS] <slab-object-address>" option in Linux 3.6 and
+    later kernels configured with CONFIG_SLAB.  Without the patch, the command
+    fails with the message "kmem: address is not allocated in slab subsystem:
+    <slab-object-address>.  This also causes the "kmem <slab-object-address>"
+    command to (quietly) fail to determine that the address is a slab object.
+
+  * Fix for the "bt" command if a kernel __init text address is encountered.
+    Without the patch, and depending upon the reallocation of the __init text
+    memory, a bogus framesize may be calculated, or more likely, in a
+    compressed kdump, a warning message indicating "bt: page excluded: kernel
+    virtual address: <address>  type: gdb_readmem_callback" will be displayed
+    following the frame data.
+
+  * Update for determining whether an S390X PTE contains a swap entry in Linux
+    3.12 and later kernels.
+
+  * Resurrected the translation and display of the page.flags bits by the
+    "kmem -p" command on Linux 2.6.26 and later kernels whose vmlinux
+    debuginfo data contains either the "pageflags" enumerator or the
+    "pageflag_names" array of trace_print_flags structures.  If they are not
+    available, just the page.flags value is printed in hexadecimal, as has
+    been done since Linux 2.4.9.
+
+  * Fix for the "bt" command when used with vmcore files that were created
+    with the recently-introduced "virsh dump --memory-only", which dumps KVM
+    guests into an ELF vmcore similar to those created by the kdump facility.
+    Without the patch, a faulty backtrace for the panic task may be generated
+    due to the use of incorrect starting RSP/RIP registers; this happens
+    because (unlike kdump) the non-panicking cpus are offlined prior to the
+    dumpfile being created, which in turn leads to the use of the wrong
+    NT_PRSTATUS note. 
+
+  * Fix for the CPU number display on systems with 255 or more cpus during the
+    initial banner, by the "set" command, the "ps" command, and by all
+    commands that display the per-task header consisting of the task address,
+    pid, cpu and command name.  Without the patch, for cpu 255, the "sys"
+    command displays "NO_PROC_ID", and the other commands would show a "-" for
+    the cpu number; for cpu numbers greater than 255, garbage values would be
+    displayed in the cpu number field.
+
+  * Implemented support for compressed kdump header version 6, in which
+    makedumpfile(8) adds new fields in the kdump_sub_header to support large
+    memory systems with pfn values that are larger than 32-bits.  Without the
+    patch, if the system contains physical memory located in high memory such
+    that its maximum pfn value is overflows the 32-bit "max_mapnr" field in
+    the header, the crash session will fail with the error message "crash:
+    vmlinux and vmcore do not match!".
+
+  * Fix for the "net -s" command on Linux 3.8 and later kernels.  Without the
+    patch, the command fails with the message "net: invalid structure member
+    offset: inet_opt_daddr".
+
+  * Fix a build failure in a native ARM64 environment due to obsolete LKCD
+    dumpfile headers. 
+
+  * Implementation of a new "per-cpu object" as an argument format that can be
+    passed to the "p", "struct", "union" or "*" commands.  The format is
+    expressed as either <per-cpu symbol>:<cpu-specifier> or as <per-cpu
+    offset>:<cpu-specifier>, where the per-cpu symbol or per-cpu offset must
+    precede a colon, and where the <cpu-identifier> follows the colon.
+    Without the patch, per-cpu symbols are only accepted by the "p" command,
+    and the data type and the resolved kernel virtual address for each per-cpu
+    instance are displayed shown.  With this patch, a colon and a
+    cpu-specifier may be appended to the symbol name, and the the contents of
+    the symbol on each cpu that is specified will be displayed by the "p"
+    command.  For the "struct/union/*" commands, an argument may be specified
+    using either a per-cpu offset value or per-cpu symbol name followed by a
+    colon and cpu-specifier, and the contents of each structure/union on each
+    specified cpu will be displayed.
+
+    Fixed several minor flaws that were detected by a Coverity Scan.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 30 Oct 2013 16:12:40 -0600
+
 crash (7.0.2-1) unstable; urgency=low
 
   * Added "bison" to the BuildRequires line of the crash.spec file.

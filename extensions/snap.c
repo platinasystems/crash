@@ -416,7 +416,8 @@ generate_elf_header(int type, int fd, char *filename)
 	} else if (machine_type("PPC64")) {
 		e_machine = EM_PPC64;
 		prstatus_len = sizeof(prstatus.ppc64);
-	}
+	} else
+		return NULL;
 
 	/* should be enought for the notes + roundup + two blocks */
 	buffer = (char *)GETBUF(sizeof(Elf64_Ehdr) +
@@ -538,7 +539,7 @@ generate_elf_header(int type, int fd, char *filename)
 			break;
 		}
 
-		l_offset += load[i].p_filesz;
+//		l_offset += load[i].p_filesz;
 		offset += sizeof(Elf64_Phdr);
 		ptr += sizeof(Elf64_Phdr);
 	}

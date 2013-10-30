@@ -18,6 +18,7 @@
 
 #include "defs.h"
 #include "sadump.h"
+#include <arpa/inet.h> /* htonl, htons */
 #include <elf.h>
 
 enum {
@@ -118,7 +119,7 @@ read_dump_header(char *file)
 {
 	struct sadump_part_header *sph = NULL;
 	struct sadump_header *sh = NULL;
-	struct sadump_disk_set_header *sdh = NULL;
+	struct sadump_disk_set_header *new, *sdh = NULL;
 	struct sadump_media_header *smh = NULL;
 	struct sadump_diskset_data *sd_list_len_0 = NULL;
 	size_t block_size = SADUMP_DEFAULT_BLOCK_SIZE;
@@ -127,7 +128,8 @@ read_dump_header(char *file)
 	uint32_t smram_cpu_state_size = 0;
 	ulong bitmap_len, dumpable_bitmap_len;
 	char *bitmap = NULL, *dumpable_bitmap = NULL, *page_buf = NULL;
-	char guid1[33], guid2[33];
+	char guid1[SADUMP_EFI_GUID_TEXT_REPR_LEN+1];
+	char guid2[SADUMP_EFI_GUID_TEXT_REPR_LEN+1];
 
 	sph = malloc(block_size);
 	if (!sph) {
@@ -226,12 +228,13 @@ restart:
 		header_size = header_blocks * block_size;
 
 		if (header_size > block_size) {
-			sdh = realloc(sdh, header_size);
-			if (!sdh) {
+			new = realloc(sdh, header_size);
+			if (!new) {
 				error(INFO, "sadump: cannot re-allocate disk "
 				      "set buffer\n");
 				goto err;
 			}
+			sdh = new;
 		}
 
 		if (!read_device(sdh, header_size, &offset)) {
@@ -468,7 +471,8 @@ add_disk(char *file)
 	struct sadump_part_header *ph;
 	struct sadump_diskset_data *this_disk;
 	int diskid;
-	char guid1[33], guid2[33];
+	char guid1[SADUMP_EFI_GUID_TEXT_REPR_LEN+1];
+	char guid2[SADUMP_EFI_GUID_TEXT_REPR_LEN+1];
 
 	diskid = sd->sd_list_len - 1;
 	this_disk = sd->sd_list[diskid];
@@ -863,7 +867,7 @@ guid_to_str(efi_guid_t *guid, char *buf, size_t buflen)
 {
 	snprintf(buf, buflen,
 		 "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-		 guid->data1, guid->data2, guid->data3,
+		 htonl(guid->data1), htons(guid->data2), htons(guid->data3),
 		 guid->data4[0], guid->data4[1], guid->data4[2],
 		 guid->data4[3], guid->data4[4], guid->data4[5],
 		 guid->data4[6], guid->data4[7]);
@@ -905,7 +909,7 @@ int sadump_memory_dump(FILE *fp)
 	struct sadump_header *sh;
 	struct sadump_media_header *smh;
 	int i, others;
-	char guid[33];
+	char guid[SADUMP_EFI_GUID_TEXT_REPR_LEN+1];
 
 	fprintf(fp, "sadump_data: \n");
 	fprintf(fp, "          filename: %s\n", sd->filename);

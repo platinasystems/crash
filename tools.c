@@ -989,7 +989,7 @@ dtoi(char *s, int flags, int *errptr)
                 if ((s[j] < '0' || s[j] > '9'))
                         break ;
 
-        if (s[j] != '\0' || (sscanf(s, "%d", &retval) != 1)) {
+        if (s[j] != '\0' || (sscanf(s, "%d", (int *)&retval) != 1)) {
 		if (!(flags & QUIET))
                 	error(INFO, "%s: \"%c\" is not a digit 0 - 9\n", 
 				s, s[j]);
@@ -5489,6 +5489,19 @@ swap32(uint32_t val, int swap)
 		return val;
 }
 
+/*
+ *  Get a sufficiently large buffer for cpumask.
+ *  You should call FREEBUF() on the result when you no longer need it.
+ */
+ulong *
+get_cpumask_buf(void)
+{
+	int cpulen;
+	if ((cpulen = STRUCT_SIZE("cpumask_t")) < 0)
+		cpulen = DIV_ROUND_UP(kt->cpus, BITS_PER_LONG) * sizeof(ulong);
+	return (ulong *)GETBUF(cpulen);
+}
+
 int
 make_cpumask(char *s, ulong *mask, int flags, int *errptr)
 {
@@ -5505,14 +5518,20 @@ make_cpumask(char *s, ulong *mask, int flags, int *errptr)
 	p = strtok(s, ",");
 	while (p) {
 		s = strtok(NULL, "");
-		start = end = -1;
-		q = strtok(p, "-");
-		start = dtoi(q, flags, errptr);
-		if ((q = strtok(NULL, "-")))
-			end = dtoi(q, flags, errptr);
 
-		if (end == -1)
-			end = start;
+		if (STREQ(p, "a") || STREQ(p, "all")) {
+			start = 0;
+			end = kt->cpus - 1;
+		} else {
+			start = end = -1;
+			q = strtok(p, "-");
+			start = dtoi(q, flags, errptr);
+			if ((q = strtok(NULL, "-")))
+				end = dtoi(q, flags, errptr);
+
+			if (end == -1)
+				end = start;
+		}
 
 		for (i = start; i <= end; i++)
 			SET_BIT(mask, i);

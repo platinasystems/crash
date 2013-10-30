@@ -5377,7 +5377,6 @@ cmd_irq(void)
         int i, c;
 	int nr_irqs;
 	ulong *cpus;
-	int len;
 	int show_intr, choose_cpu;
 	char buf[10];
 	char arg_buf[BUFSIZE];
@@ -5485,9 +5484,7 @@ cmd_irq(void)
 		error(FATAL, "cannot determine number of IRQs\n");
 
 	if (show_intr) {
-		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
-			len = DIV_ROUND_UP(kt->cpus, BITS_PER_LONG) * sizeof(ulong);
-		cpus = (ulong *)GETBUF(len);
+		cpus = get_cpumask_buf();
 
 		if (choose_cpu) {
 			make_cpumask(arg_buf, cpus, FAULT_ON_ERROR, NULL);
@@ -5648,6 +5645,7 @@ generic_dump_irq(int irq)
 	ulong tmp1, tmp2;
 
 	handler = UNINITIALIZED;
+	action = 0;
 	
 	irq_desc_addr = get_irq_desc_addr(irq);
 	if (!irq_desc_addr && symbol_exists("irq_desc_ptrs")) {
@@ -8398,6 +8396,7 @@ static void add_ikconfig_entry(char *line, struct ikconfig_list *ent)
 static int setup_ikconfig(char *config)
 {
 	char *ent, *tokptr;
+	struct ikconfig_list *new;
 
 	ikconfig_all = calloc(1, sizeof(struct ikconfig_list) * IKCONFIG_MAX);
 	if (!ikconfig_all) {
@@ -8424,8 +8423,9 @@ static int setup_ikconfig(char *config)
 		free(ikconfig_all);
 		return 0;
 	}
-	ikconfig_all = realloc(ikconfig_all,
-			   sizeof(struct ikconfig_list) * kt->ikconfig_ents);
+	if ((new = realloc(ikconfig_all,
+	    sizeof(struct ikconfig_list) * kt->ikconfig_ents)))
+		ikconfig_all = new;
 
 	return 1;
 }

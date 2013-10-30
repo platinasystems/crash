@@ -357,8 +357,8 @@ gdb_interface(struct gnu_request *req)
 		restart(0);
 
 	if (!req->fp) {
-		req->fp = pc->flags & RUNTIME ? fp : 
-			  CRASHDEBUG(1) ? fp : pc->nullfp;
+		req->fp = ((pc->flags & RUNTIME) || (pc->flags2 & ALLOW_FP)) ? 
+			fp : CRASHDEBUG(1) ? fp : pc->nullfp;
 	}
 
 	pc->cur_req = req;

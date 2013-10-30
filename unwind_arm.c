@@ -325,7 +325,8 @@ init_module_unwind_tables(void)
 	hq_open();
 	cnt = do_list(&ld);
 	if (cnt == -1) {
-		error(WARNING, "UNWIND: failed to gather unwind_table list");
+		error(WARNING, "UNWIND: failed to gather unwind_table list\n");
+		hq_close();
 		return FALSE;
 	}
 	table_list = (ulong *)GETBUF(cnt * sizeof(ulong));
