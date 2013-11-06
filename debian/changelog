@@ -1,3 +1,10 @@
+crash (7.0.3-2) unstable; urgency=low
+
+  * Fix from  Louis Bouchard <louis.bouchard@canonical.com> to resolve FTBS on
+    i386 
+
+ -- Troy Heber <troyh@debian.org>  Wed, 06 Nov 2013 09:41:06 -0700
+
 crash (7.0.3-1) unstable; urgency=low
 
   * Fix for the ARM architecture if the backtrace unwind information cannot be
