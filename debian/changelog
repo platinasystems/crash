@@ -1,3 +1,10 @@
+crash (7.0.3-3) unstable; urgency=low
+
+  * Add autopkgtest and try to keep the Debian and Ubuntu crash packages in
+    sync  (closes: #721095)
+
+ -- Troy Heber <troyh@debian.org>  Thu, 07 Nov 2013 08:14:34 -0700
+
 crash (7.0.3-2) unstable; urgency=low
 
   * Fix from  Louis Bouchard <louis.bouchard@canonical.com> to resolve FTBS on

@@ -1,0 +1,20 @@
+#/bin/sh -x
+set -e
+
+echo "Adding linux-image debug symbols."
+if [ "$(lsb_release -is)" = "Debian" ]; then
+    sudo apt-get install linux-image-$(uname -r)-dbg
+elif [ "$(lsb_release -is)" = "Ubuntu" ]; then
+    sudo tee /etc/apt/sources.list.d/ddebs.list << EOF
+    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)          main restricted universe multiverse
+    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)-security main restricted universe multiverse
+    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)-updates  main restricted universe multiverse
+    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)-proposed main restricted universe multiverse
+    EOF
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys ECDCAD72428D7C01
+    sudo apt-get update
+    sudo apt-get install linux-image-$(uname -r)-dbgsym
+fi
+
+echo "Testing crash on live kernel"
+sudo crash -st /usr/lib/debug/boot/vmlinux-$(uname -r)

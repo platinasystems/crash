@@ -5,6 +5,7 @@ Maintainer: Troy Heber <troyh@debian.org>
 Uploaders:
 Build-Depends: debhelper (>= 9), dpkg-dev (>= 1.16.1), quilt (>= 0.47), binutils, binutils-dev, bison, gawk, flex, zlib1g-dev, libncurses5-dev
 Standards-Version: 3.9.4.0
+XS-Testsuite: autopkgtest
 
 Package: crash
 Architecture: i386 ia64 alpha powerpc amd64 armel s390x
