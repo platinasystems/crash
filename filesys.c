@@ -1539,12 +1539,12 @@ static ulong *
 get_mount_list(int *cntptr, struct task_context *namespace_context)
 {
 	struct list_data list_data, *ld;
-	int mount_cnt;
-	ulong *mntlist, namespace, root, nsproxy, mnt_ns;
+	ulong namespace, root, nsproxy, mnt_ns;
 	struct task_context *tc;
 	
         ld = &list_data;
         BZERO(ld, sizeof(struct list_data));
+	ld->flags |= LIST_ALLOCATE;
 
 	if (symbol_exists("vfsmntlist")) {
         	get_symbol_data("vfsmntlist", sizeof(void *), &ld->start);
@@ -1594,14 +1594,8 @@ get_mount_list(int *cntptr, struct task_context *namespace_context)
 	else
                 ld->member_offset = OFFSET(vfsmount_mnt_next);
         
-        hq_open();
-        mount_cnt = do_list(ld);
-        mntlist = (ulong *)GETBUF(mount_cnt * sizeof(ulong));
-        mount_cnt = retrieve_list(mntlist, mount_cnt);
-        hq_close();
-
-	*cntptr = mount_cnt;
-	return mntlist;
+        *cntptr = do_list(ld);
+        return(ld->list_ptr);
 }
 
 

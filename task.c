@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -56,12 +56,12 @@ static void dump_runq(void);
 static void dump_on_rq_timestamp(void);
 static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
-static void dump_task_runq_entry(struct task_context *);
+static void dump_task_runq_entry(struct task_context *, int);
 static void print_group_header_fair(int, ulong, void *);
 static void print_parent_task_group_fair(void *, int);
-static int dump_tasks_in_lower_dequeued_cfs_rq(int, ulong, int);
+static int dump_tasks_in_lower_dequeued_cfs_rq(int, ulong, int, struct task_context *);
 static int dump_tasks_in_cfs_rq(ulong);
-static int dump_tasks_in_task_group_cfs_rq(int, ulong, int);
+static int dump_tasks_in_task_group_cfs_rq(int, ulong, int, struct task_context *);
 static void dump_on_rq_tasks(void);
 static void cfs_rq_offset_init(void);
 static void task_group_offset_init(void);
@@ -348,6 +348,11 @@ task_init(void)
 	if (VALID_MEMBER(runqueue_arrays)) 
 		MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
 			"run_list");
+
+	MEMBER_OFFSET_INIT(task_struct_rss_stat, "task_struct",
+		"rss_stat");
+	MEMBER_OFFSET_INIT(task_rss_stat_count, "task_rss_stat",
+		"count");
 
         if ((tt->task_struct = (char *)malloc(SIZE(task_struct))) == NULL)
         	error(FATAL, "cannot malloc task_struct space.");
@@ -3753,11 +3758,9 @@ static void
 parent_list(ulong task)
 {
 	int i, j;
-	int cnt, errflag;
+	int cnt;
         struct list_data list_data, *ld;
-	ulong *tlist;
         struct task_context *tc;
-	char buf[BUFSIZE];
 
 	ld = &list_data;
 	BZERO(ld, sizeof(struct list_data));
@@ -3766,35 +3769,16 @@ parent_list(ulong task)
         	ld->member_offset = OFFSET(task_struct_p_pptr);
 	else
 		ld->member_offset = OFFSET(task_struct_parent);
-	ld->flags |= VERBOSE;
 
-	open_tmpfile();
+	ld->flags |= LIST_ALLOCATE;
 	cnt = do_list(ld);
-	tlist = (ulong *)GETBUF(cnt * sizeof(ulong));
- 	rewind(pc->tmpfile);
-
-        for (i = errflag = 0; fgets(buf, BUFSIZE, pc->tmpfile); i++) {
-		if (i == cnt) {
-                	error(INFO, "task list count mismatch?\n");
-			errflag++;
-		}
-		if (sscanf(buf, "%lx", &tlist[i]) != 1) { 
-			error(INFO, "task list parse error\n");
-			errflag++;
-		}
-        }
-	close_tmpfile();
-
-	if (!errflag) {
-		for (i = cnt-1, j = 0; i >= 0; i--, j++) {
-			INDENT(j);
-			tc = task_to_context(tlist[i]);
-			if (tc)
-				print_task_header(fp, tc, 0);
-		}
+	for (i = cnt-1, j = 0; i >= 0; i--, j++) {
+		INDENT(j);
+		tc = task_to_context(ld->list_ptr[i]);
+		if (tc)
+			print_task_header(fp, tc, 0);
 	}
-	
-	FREEBUF((char *)tlist);
+	FREEBUF(ld->list_ptr);
 }
 
 /*
@@ -5299,7 +5283,10 @@ cmd_foreach(void)
 			break;
 
 		case 'F':
-			fd->flags |= FOREACH_F_FLAG;
+			if (fd->flags & FOREACH_F_FLAG)
+				fd->flags |= FOREACH_F_FLAG2;
+			else
+				fd->flags |= FOREACH_F_FLAG;
 			break;
 
 		case 'a':
@@ -5854,6 +5841,8 @@ foreach(struct foreach_data *fd)
                                         bt->flags |= BT_FULL;
                                 if (fd->flags & FOREACH_F_FLAG) 
                                         bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
+                                if (fd->flags & FOREACH_F_FLAG2) 
+                                        bt->flags |= BT_FULL_SYM_SLAB2;
                                 if (fd->flags & FOREACH_x_FLAG) 
 					bt->radix = 16;
                                 if (fd->flags & FOREACH_d_FLAG) 
@@ -7600,31 +7589,34 @@ reuse_task_group_info_array(void)
 }
 
 static void
-dump_task_runq_entry(struct task_context *tc)
+dump_task_runq_entry(struct task_context *tc, int current)
 {
 	int prio;
 
 	readmem(tc->task + OFFSET(task_struct_prio), KVADDR, 
 		&prio, sizeof(int), "task prio", FAULT_ON_ERROR);
 	fprintf(fp, "[%3d] ", prio);
-	fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+	fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"",
 		tc->pid, tc->task, tc->comm);
+	if (current)
+		fprintf(fp, " [CURRENT]\n");
+	else
+		fprintf(fp, "\n");
 }
 
 static void
 print_group_header_fair(int depth, ulong cfs_rq, void *t)
 {
 	int throttled;
-	struct rb_root *root;
 	struct task_group_info *tgi = (struct task_group_info *)t;
 
-	root = (struct rb_root *)(cfs_rq + OFFSET(cfs_rq_tasks_timeline));
 	INDENT(2 + 3 * depth);
-	fprintf(fp, "GROUP CFS RB_ROOT: %lx", (ulong)root);
+	fprintf(fp, "TASK_GROUP: %lx  CFS_RQ: %lx ",
+		tgi->task_group, cfs_rq);
 	if (tgi->name)
 		fprintf(fp, " <%s>", tgi->name);
 
-	if (VALID_MEMBER(task_group_cfs_bandwidth)) {
+	if (VALID_MEMBER(cfs_rq_throttled)) {
 		readmem(cfs_rq + OFFSET(cfs_rq_throttled), KVADDR,
 			&throttled, sizeof(int), "cfs_rq throttled",
 			FAULT_ON_ERROR);
@@ -7657,7 +7649,8 @@ print_parent_task_group_fair(void *t, int cpu)
 }
 
 static int
-dump_tasks_in_lower_dequeued_cfs_rq(int depth, ulong cfs_rq, int cpu)
+dump_tasks_in_lower_dequeued_cfs_rq(int depth, ulong cfs_rq, int cpu,
+	struct task_context *ctc)
 {
 	int i, total, nr_running;
 	ulong group, cfs_rq_c, cfs_rq_p;
@@ -7685,14 +7678,14 @@ dump_tasks_in_lower_dequeued_cfs_rq(int depth, ulong cfs_rq, int cpu)
 			FAULT_ON_ERROR);
 		if (nr_running == 0) {
 			total += dump_tasks_in_lower_dequeued_cfs_rq(depth + 1,
-				cfs_rq_p, cpu);
+				cfs_rq_p, cpu, ctc);
 			continue;
 		}
 
 		print_parent_task_group_fair(tgi_array[i], cpu);
 
 		total++;
-		total += dump_tasks_in_task_group_cfs_rq(depth + 1, cfs_rq_p, cpu);
+		total += dump_tasks_in_task_group_cfs_rq(depth + 1, cfs_rq_p, cpu, ctc);
 	}
 
 	return total;
@@ -7742,7 +7735,7 @@ dump_tasks_in_cfs_rq(ulong cfs_rq)
 			continue;
 		if (hq_enter((ulong)tc)) {
 			INDENT(5);
-			dump_task_runq_entry(tc);
+			dump_task_runq_entry(tc, 0);
 		} else {
 			error(WARNING, "duplicate CFS runqueue node: task %lx\n",
 				tc->task);
@@ -7755,7 +7748,8 @@ dump_tasks_in_cfs_rq(ulong cfs_rq)
 }
 
 static int
-dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu)
+dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu,
+	struct task_context *ctc)
 {
 	struct task_context *tc;
 	struct rb_root *root;
@@ -7789,9 +7783,19 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu)
 			if (curr_my_q) {
 				total++;
 				total += dump_tasks_in_task_group_cfs_rq(depth + 1,
-					curr_my_q, cpu);
+					curr_my_q, cpu, ctc);
 			}
 		}
+	}
+
+	/*
+	 *  check if "curr" is the task that is current running task
+	 */
+	if (!curr_my_q && (curr - OFFSET(task_struct_se)) == ctc->task) {
+		/* curr is not in the rb tree, so let's print it here */
+		total++;
+		INDENT(5 + 3 * depth);
+		dump_task_runq_entry(ctc, 1);
 	}
 
 	readmem(cfs_rq + OFFSET(cfs_rq_rb_leftmost), KVADDR, &leftmost,
@@ -7806,7 +7810,7 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu)
 			if (my_q) {
 				total++;
 				total += dump_tasks_in_task_group_cfs_rq(depth + 1,
-					my_q, cpu);
+					my_q, cpu, ctc);
 				continue;
 			}
 		}
@@ -7817,7 +7821,7 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu)
 			continue;
 		if (hq_enter((ulong)tc)) {
 			INDENT(5 + 3 * depth);
-			dump_task_runq_entry(tc);
+			dump_task_runq_entry(tc, 0);
 		} else {
 			error(WARNING, "duplicate CFS runqueue node: task %lx\n",
 				tc->task);
@@ -7826,7 +7830,7 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu)
 		total++;
 	}
 
-	total += dump_tasks_in_lower_dequeued_cfs_rq(depth, cfs_rq, cpu);
+	total += dump_tasks_in_lower_dequeued_cfs_rq(depth, cfs_rq, cpu, ctc);
 
 	if (!total) {
 		INDENT(5 + 3 * depth);
@@ -7879,7 +7883,7 @@ dump_on_rq_tasks(void)
 				continue;
 
 			INDENT(5);
-			dump_task_runq_entry(tc);
+			dump_task_runq_entry(tc, 0);
 			tot++;
 		}
 
@@ -8051,7 +8055,7 @@ print_group_header_rt(ulong rt_rq, void *t)
 	int throttled;
 	struct task_group_info *tgi = (struct task_group_info *)t;
 
-	fprintf(fp, "GROUP RT PRIO_ARRAY: %lx", rt_rq + OFFSET(rt_rq_active));
+	fprintf(fp, "TASK_GROUP: %lx  RT_RQ: %lx", tgi->task_group, rt_rq);
 	if (tgi->name)
 		fprintf(fp, " <%s>", tgi->name);
 
@@ -8153,7 +8157,6 @@ dump_RT_prio_array(ulong k_prio_array, char *u_prio_array)
 	ulong list_head[2];
         struct list_data list_data, *ld;
 	struct task_context *tc;
-	ulong *tlist;
 	ulong my_q, task_addr;
 	char *rt_rq_buf;
 
@@ -8177,21 +8180,18 @@ dump_RT_prio_array(ulong k_prio_array, char *u_prio_array)
 
 		BZERO(ld, sizeof(struct list_data));
 		ld->start = list_head[0];
+		ld->flags |= LIST_ALLOCATE;
 		if (VALID_MEMBER(task_struct_rt) &&
 		    VALID_MEMBER(sched_rt_entity_run_list))
 			ld->list_head_offset = OFFSET(sched_rt_entity_run_list);
 		else
 			ld->list_head_offset = OFFSET(task_struct_run_list);
 		ld->end = kvaddr;
-		hq_open();
 		cnt = do_list(ld);
-		hq_close();
-		tlist = (ulong *)GETBUF((cnt) * sizeof(ulong));
-		cnt = retrieve_list(tlist, cnt);
 		for (c = 0; c < cnt; c++) {
-			task_addr = tlist[c];
+			task_addr = ld->list_ptr[c];
 			if (VALID_MEMBER(sched_rt_entity_my_q)) {
-				readmem(tlist[c] + OFFSET(sched_rt_entity_my_q),
+				readmem(ld->list_ptr[c] + OFFSET(sched_rt_entity_my_q),
 					KVADDR, &my_q, sizeof(ulong), "my_q",
 					FAULT_ON_ERROR);
 				if (my_q) {
@@ -8217,7 +8217,7 @@ dump_RT_prio_array(ulong k_prio_array, char *u_prio_array)
 				tc->pid, tc->task, tc->comm);
 			tot++;
 		}
-		FREEBUF(tlist);
+		FREEBUF(ld->list_ptr);
 	}
 
 	return tot;
@@ -8231,7 +8231,6 @@ dump_tasks_in_task_group_rt_rq(int depth, ulong rt_rq, int cpu)
 	ulong list_head[2];
         struct list_data list_data, *ld;
 	struct task_context *tc;
-	ulong *tlist;
 	ulong my_q, task_addr, tg, k_prio_array;
 	char *rt_rq_buf, *u_prio_array;
 
@@ -8273,23 +8272,20 @@ dump_tasks_in_task_group_rt_rq(int depth, ulong rt_rq, int cpu)
 
 		BZERO(ld, sizeof(struct list_data));
 		ld->start = list_head[0];
+		ld->flags |= LIST_ALLOCATE;
 		if (VALID_MEMBER(task_struct_rt) &&
 		    VALID_MEMBER(sched_rt_entity_run_list))
 			ld->list_head_offset = OFFSET(sched_rt_entity_run_list);
 		else
 			ld->list_head_offset = OFFSET(task_struct_run_list);
 		ld->end = kvaddr;
-		hq_open();
 		cnt = do_list(ld);
-		hq_close();
-		tlist = (ulong *)GETBUF((cnt) * sizeof(ulong));
-		cnt = retrieve_list(tlist, cnt);
 		for (c = 0; c < cnt; c++) {
-			task_addr = tlist[c];
+			task_addr = ld->list_ptr[c];
 			if (INVALID_MEMBER(sched_rt_entity_my_q))
 				goto is_task;
 
-			readmem(tlist[c] + OFFSET(sched_rt_entity_my_q),
+			readmem(ld->list_ptr[c] + OFFSET(sched_rt_entity_my_q),
 				KVADDR, &my_q, sizeof(ulong), "my_q",
 				FAULT_ON_ERROR);
 			if (!my_q) {
@@ -8313,7 +8309,7 @@ is_task:
 				tc->pid, tc->task, tc->comm);
 			tot++;
 		}
-		FREEBUF(tlist);
+		FREEBUF(ld->list_ptr);
 	}
 
 	tot += dump_tasks_in_lower_dequeued_rt_rq(depth, rt_rq, cpu);
@@ -8416,18 +8412,21 @@ dump_tasks_by_task_group(void)
 	ulong root_task_group, cfs_rq, cfs_rq_p;
 	ulong rt_rq, rt_rq_p;
 	char *buf;
-	struct rb_root *root;
 	struct task_context *tc;
+	char *task_group_name;
 
 	cfs_rq_offset_init();
 	task_group_offset_init();
 
 	root_task_group = 0;
-	if (symbol_exists("init_task_group"))
+	task_group_name = NULL;
+	if (symbol_exists("init_task_group")) {
 		root_task_group = symbol_value("init_task_group");
-	else if (symbol_exists("root_task_group"))
+		task_group_name = "INIT";
+	} else if (symbol_exists("root_task_group")) {
 		root_task_group = symbol_value("root_task_group");
-	else
+		task_group_name = "ROOT";
+	} else
 		error(FATAL, "cannot determine root task_group\n");
 
 	tgi_p_max = MAX_GROUP_NUM;
@@ -8459,17 +8458,15 @@ dump_tasks_by_task_group(void)
 		else
 			fprintf(fp, "%lx\n", tt->active_set[cpu]);
 
-		fprintf(fp, "  TASK_GROUP RT_RQ: %lx\n", rt_rq_p);
-		fprintf(fp, "  RT PRIO_ARRAY: %lx\n",
-			rt_rq_p + OFFSET(rt_rq_active));
+		fprintf(fp, "  %s_TASK_GROUP: %lx  RT_RQ: %lx\n", 
+			task_group_name, root_task_group, rt_rq_p);
 		reuse_task_group_info_array();
 		dump_tasks_in_task_group_rt_rq(0, rt_rq_p, cpu);
 
-		root = (struct rb_root *)(cfs_rq_p + OFFSET(cfs_rq_tasks_timeline));
-		fprintf(fp, "  TASK_GROUP CFS_RQ: %lx\n", cfs_rq_p);
-		fprintf(fp, "  CFS RB_ROOT: %lx\n", (ulong)root);
+		fprintf(fp, "  %s_TASK_GROUP: %lx  CFS_RQ: %lx\n", 
+			task_group_name, root_task_group, cfs_rq_p);
 		reuse_task_group_info_array();
-		dump_tasks_in_task_group_cfs_rq(0, cfs_rq_p, cpu);
+		dump_tasks_in_task_group_cfs_rq(0, cfs_rq_p, cpu, tc);
 	}
 
 	FREEBUF(buf);

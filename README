@@ -3,9 +3,11 @@
                          CORE ANALYSIS SUITE
 
   The core analysis suite is a self-contained tool that can be used to
-  investigate either live systems, kernel core dumps created from the
-  netdump and diskdump packages offered by Red Hat, the LKCD kernel patch
-  or the mcore kernel patch available from Mission Critical Linux.
+  investigate either live systems, kernel core dumps created from dump
+  creation facilities such as kdump, kvmdump, xendump, the netdump and
+  diskdump packages offered by Red Hat, the LKCD kernel patch, the mcore
+  kernel patch created by Mission Critical Linux, as well as other formats
+  created by manufacturer-specific firmware.
 
   o  The tool is loosely based on the SVR4 crash command, but has been
      completely integrated with gdb in order to be able to display 
@@ -34,14 +36,19 @@
  
   These are the current prerequisites: 
 
-  o  At this point, x86, ia64, x86_64, ppc64, arm, alpha, s390 and s390x-based
-     kernels are supported.  Other architectures may be addressed in the future.
+  o  At this point, x86, ia64, x86_64, ppc64, ppc, arm, arm64, alpha, s390
+     and s390x-based kernels are supported.  Other architectures may be
+     addressed in the future.
 
-  o  One size fits all -- the utility can be run on any Linux kernel version 
-     from 2.2.5-15 through 2.6.*.
+  o  One size fits all -- the utility can be run on any Linux kernel version
+     version dating back to 2.2.5-15.  A primary design goal is to always
+     maintain backwards-compatibility.
 
   o  In order to contain debugging data, the top-level kernel Makefile's CFLAGS
-     definition must contain the -g flag.  If not, the kernel must be rebuilt.
+     definition must contain the -g flag.  Typically distributions will contain
+     a package containing a vmlinux file with full debuginfo data.  If not, the
+     kernel must be rebuilt:
+
      For 2.2 kernels that are not built with -g, change the following line:
 
         CFLAGS = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer
@@ -58,40 +65,68 @@
 
         CFLAGS := -g $(CPPFLAGS) -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -fno-strict-aliasing
 
-     For 2.6 kernels that are not built with -g, change the following line:
- 
-        CFLAGS          := -Wall -Wstrict-prototypes -Wno-trigraphs \ 
- 
-     to:
- 
-        CFLAGS          := -g -Wall -Wstrict-prototypes -Wno-trigraphs \ 
+     For 2.6 and later kernels that are not built with -g, the kernel should
+     be configured with CONFIG_DEBUG_INFO enabled, which in turn will add
+     the -g flag to the CFLAGS setting in the kernel Makefile.
  
      After the kernel is re-compiled, the uncompressed "vmlinux" kernel
      that is created in the top-level kernel build directory must be saved.
 
-  To build this utility, simply uncompress the tar file, enter the crash-7.0.3
-  subdirectory, and type "make".  The initial build will take several minutes 
-  because the gdb module must be configured and and built.  Alternatively, the
-  crash source RPM file may be installed and built, and the resultant crash
-  binary RPM file installed.  To build a 32-bit x86 binary that can be used to 
-  analyze an arm dumpfile, type "make target=ARM".
+  To build the crash utility: 
 
-  If the tool is run against a crash dumpfile, two arguments are required, the
-  uncompressed kernel name and the core dumpfile name.  
+    $ tar -xf crash-7.0.5.tar.gz
+    $ cd crash-7.0.5
+    $ make
+
+  The initial build will take several minutes  because the embedded gdb module
+  must be configured and and built.  Alternatively, the crash source RPM file
+  may be installed and built, and the resultant crash binary RPM file installed.
+
+  The crash binary can only be used on systems of the same architecture as
+  the host build system.  There are a few optional manners of building the
+  crash binary:
+
+  o  On an x86_64 host, a 32-bit x86 binary that can be used to analyze
+     32-bit x86 dumpfiles may be built by typing "make target=X86".
+  o  On an x86 or x86_64 host, a 32-bit x86 binary that can be used to analyze
+     32-bit arm dumpfiles may be built by typing "make target=ARM".
+  o  On an ppc64 host, a 32-bit ppc binary that can be used to analyze
+     32-bit ppc dumpfiles may be built by typing "make target=PPC".
+  o  On an x86_64 host, an x86_64 binary that can be used to analyze
+     arm64 dumpfiles may be built by typing "make target=ARM64".
+
+  Traditionally when vmcores are compressed via the makedumpfile(8) facility
+  the libz compression library is used, and by default the crash utility
+  only supports libz.  Recently makedumpfile has been enhanced to optionally
+  use either the LZO or snappy compression libraries.  To build crash with
+  either or both of those libraries, type "make lzo" or "make snappy".
+
+  All of the alternate build commands above are "sticky" in that the
+  special "make" targets only have to be entered one time; all subsequent
+  builds will follow suit.
+
+  If the tool is run against a kernel dumpfile, two arguments are required, the
+  uncompressed kernel name and the kernel dumpfile name.  
 
   If run on a live system, only the kernel name is required, because /dev/mem 
-  will be used as the "dumpfile".  If the kernel file is stored in /boot, /,
-  /boot/efi, or in any /usr/src subdirectory, then no command line arguments
+  will be used as the "dumpfile".  On Red Hat or Fedora kernels where the
+  /dev/mem device is restricted, the /dev/crash memory driver will be used.
+  If neither /dev/mem or /dev/crash are available, then /proc/kcore will be
+  be used as the live memory source.  If /proc/kcore is also restricted, then
+  the Red Hat /dev/crash driver may be compiled and installed; its source
+  is included in the crash-7.0.5/memory_driver subdirectory.
+
+  If the kernel file is stored in /boot, /, /boot/efi, or in any /usr/src
+  or /usr/lib/debug/lib/modules subdirectory, then no command line arguments
   are required -- the first kernel found that matches /proc/version will be
   used as the namelist.
   
-  For example, if the command name "crash" is kept intact in the Makefile,
-  invoking it on a live system would look like this:
+  For example, invoking crash on a live system would look like this:
 
     $ crash
     
-    crash 7.0.3
-    Copyright (C) 2002-2013  Red Hat, Inc.
+    crash 7.0.5
+    Copyright (C) 2002-2014  Red Hat, Inc.
     Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
     Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
@@ -105,17 +140,17 @@
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
     GNU gdb 7.6
-    Copyright 2003 Free Software Foundation, Inc.
-    GDB is free software, covered by the GNU General Public License, and you are
-    welcome to change it and/or distribute copies of it under certain conditions
-    Type "show copying" to see the conditions.
-    There is absolutely no warranty for GDB.  Type "show warranty" for details.
-    This GDB was configured as "i686-pc-linux-gnu"..
+    Copyright 2013 Free Software Foundation, Inc.
+    License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+    This is free software: you are free to change and redistribute it.
+    There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+    and "show warranty" for details.
+    This GDB was configured as "i686-pc-linux-gnu"...
      
           KERNEL: /boot/vmlinux
         DUMPFILE: /dev/mem
             CPUS: 1
-            DATE: Fri Oct 25 15:27:33 2013
+            DATE: Fri Feb 14 11:18:48 2014
           UPTIME: 10 days, 22:55:18
     LOAD AVERAGE: 0.08, 0.03, 0.01
            TASKS: 42
@@ -143,7 +178,7 @@
     exit           list           ptov           sys            q              
     extend         log            rd             task           
     
-    crash version: 7.0.3    gdb version: 7.6
+    crash version: 7.0.5    gdb version: 7.6
     For help on any command above, enter "help <command>".
     For help on input options, enter "help input".
     For help on output options, enter "help output".
@@ -156,8 +191,8 @@
 
     $ crash vmlinux vmcore
  
-    crash 7.0.3
-    Copyright (C) 2002-2013  Red Hat, Inc.
+    crash 7.0.5
+    Copyright (C) 2002-2014  Red Hat, Inc.
     Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
     Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
@@ -171,11 +206,11 @@
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
     GNU gdb 7.6
-    Copyright 2003 Free Software Foundation, Inc.
-    GDB is free software, covered by the GNU General Public License, and you are
-    welcome to change it and/or distribute copies of it under certain conditions.
-    Type "show copying" to see the conditions.
-    There is absolutely no warranty for GDB.  Type "show warranty" for details.
+    Copyright 2013 Free Software Foundation, Inc.
+    License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+    This is free software: you are free to change and redistribute it.
+    There is NO WARRANTY, to the extent permitted by law.  Type "show copying"
+    and "show warranty" for details.
     This GDB was configured as "i686-pc-linux-gnu"...
     
           KERNEL: vmlinux
@@ -198,57 +233,6 @@
            STATE: TASK_RUNNING (PANIC)
     
     crash> 
- 
-  When run on a core dump created by the MCLX mcore patch:
-
-    $ crash vmlinux.17 lcore.cr.17
-
-    crash 7.0.3
-    Copyright (C) 2002-2013  Red Hat, Inc.
-    Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
-    Copyright (C) 1999-2006  Hewlett-Packard Co
-    Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
-    Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
-    Copyright (C) 2005, 2011  NEC Corporation
-    Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
-    Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
-    This program is free software, covered by the GNU General Public License,
-    and you are welcome to change it and/or distribute copies of it under
-    certain conditions.  Enter "help copying" to see the conditions.
-    This program has absolutely no warranty.  Enter "help warranty" for details.
-     
-    GNU gdb 7.6
-    Copyright 2003 Free Software Foundation, Inc.
-    GDB is free software, covered by the GNU General Public License, and you are
-    welcome to change it and/or distribute copies of it under certain conditions
-    Type "show copying" to see the conditions.
-    There is absolutely no warranty for GDB.  Type "show warranty" for details.
-    This GDB was configured as "i686-pc-linux-gnu"...
-    
-          KERNEL: vmlinux.17                        
-        DUMPFILE: lcore.cr.17
-            CPUS: 1
-            DATE: Wed Nov 10 19:54:47 1999
-          UPTIME: 00:02:02
-    LOAD AVERAGE: 0.82, 0.34, 0.12
-           TASKS: 43
-        NODENAME: ha3.mclinux.com
-         RELEASE: 2.2.5-15
-         VERSION: #39 Wed Nov 10 17:43:16 CST 1999
-         MACHINE: i686  (501 MHz)
-          MEMORY: 96 MB
-           PANIC: "tulip_interrupt"
-             PID: 286
-         COMMAND: "in.rlogind"
-            TASK: c0b3a000  
-             CPU: 0
-           STATE: TASK_RUNNING (PANIC)
-    
-    crash>
-
-  When run on an LKCD core dump, the command line would be like so:
-
-    $ crash vmlinux vmdump.0
 
   The tool's environment is context-specific.  On a live system, the default
   context is the command itself; on a dump the default context will be the

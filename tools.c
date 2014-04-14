@@ -3405,7 +3405,7 @@ do_list(struct list_data *ld)
 {
 	ulong next, last, first;
 	ulong searchfor, readflag;
-	int i, count, others;
+	int i, count, others, close_hq_on_return;
 	unsigned int radix;
 
 	if (CRASHDEBUG(1)) {
@@ -3431,6 +3431,8 @@ do_list(struct list_data *ld)
 			console("%sLIST_STRUCT_RADIX_10", others++ ? "|" : "");
 		if (ld->flags & LIST_STRUCT_RADIX_16)
 			console("%sLIST_STRUCT_RADIX_16", others++ ? "|" : "");
+		if (ld->flags & LIST_ALLOCATE)
+			console("%sLIST_ALLOCATE", others++ ? "|" : "");
 		console(")\n");
 		console("           start: %lx\n", ld->start);
 		console("   member_offset: %ld\n", ld->member_offset);
@@ -3443,6 +3445,7 @@ do_list(struct list_data *ld)
 		for (i = 0; i < ld->structname_args; i++)	
 			console("   structname[%d]: %s\n", i, ld->structname[i]);
 		console("          header: %s\n", ld->header);
+		console("        list_ptr: %lx\n", (ulong)ld->list_ptr);
 	}
 
 	count = 0;
@@ -3456,12 +3459,26 @@ do_list(struct list_data *ld)
 		radix = 0;
 	next = ld->start;
 
+	close_hq_on_return = FALSE;
+	if (ld->flags & LIST_ALLOCATE) {
+		if (!hq_is_open()) {
+			hq_open();
+			close_hq_on_return = TRUE;
+		} else if (hq_is_inuse()) {
+			error(ld->flags & RETURN_ON_LIST_ERROR ? INFO : FATAL,
+				"\ndo_list: hash queue is in use?\n");
+			return -1;
+		}
+	}
+
 	readflag = ld->flags & RETURN_ON_LIST_ERROR ? 
 		(RETURN_ON_ERROR|QUIET) : FAULT_ON_ERROR;
 
 	if (!readmem(next + ld->member_offset, KVADDR, &first, sizeof(void *),
             "first list entry", readflag)) {
                 error(INFO, "\ninvalid list entry: %lx\n", next);
+		if (close_hq_on_return)
+			hq_close();
 		return -1;
 	}
 
@@ -3497,6 +3514,8 @@ do_list(struct list_data *ld)
 			    (RETURN_ON_DUPLICATE|RETURN_ON_LIST_ERROR)) {
                         	error(INFO, "\nduplicate list entry: %lx\n", 
 					next);
+				if (close_hq_on_return)
+					hq_close();
 				return -1;
 			}
                         error(FATAL, "\nduplicate list entry: %lx\n", next);
@@ -3512,6 +3531,8 @@ do_list(struct list_data *ld)
                 if (!readmem(next + ld->member_offset, KVADDR, &next, 
 		    sizeof(void *), "list entry", readflag)) {
 			error(INFO, "\ninvalid list entry: %lx\n", next);
+			if (close_hq_on_return)
+				hq_close();
 			return -1;
 		}
 
@@ -3552,6 +3573,13 @@ do_list(struct list_data *ld)
 
 	if (CRASHDEBUG(1))
 		console("do_list count: %d\n", count);
+
+	if (ld->flags & LIST_ALLOCATE) {
+		ld->list_ptr = (ulong *)GETBUF(count * sizeof(void *));
+		count = retrieve_list(ld->list_ptr, count);
+		if (close_hq_on_return)
+			hq_close();
+	}
 
 	return count;
 }
@@ -4221,6 +4249,28 @@ hq_open(void)
 
 	return TRUE;
 }
+
+int
+hq_is_open(void)
+{
+	struct hash_table *ht;
+
+	ht = &hash_table;
+	return (ht->flags & HASH_QUEUE_OPEN ? TRUE : FALSE);
+}
+
+int
+hq_is_inuse(void)
+{
+	struct hash_table *ht;
+
+	if (!hq_is_open())
+		return FALSE;
+
+	ht = &hash_table;
+	return (ht->index ? TRUE : FALSE);
+}
+
 
 /*
  *  Close the hash table, returning the number of items hashed in this session.

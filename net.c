@@ -457,7 +457,6 @@ show_net_devices_v2(void)
 	struct list_data list_data, *ld;
 	char *net_device_buf;
 	char buf[BUFSIZE];
-	ulong *ndevlist;
 	int ndevcnt, i;
 	long flen;
 
@@ -474,33 +473,30 @@ show_net_devices_v2(void)
 
 	ld =  &list_data;
 	BZERO(ld, sizeof(struct list_data));
+	ld->flags |= LIST_ALLOCATE;
 	get_symbol_data("dev_base_head", sizeof(void *), &ld->start);
 	ld->end = symbol_value("dev_base_head");
 	ld->list_head_offset = OFFSET(net_device_dev_list);
 
-	hq_open();
 	ndevcnt = do_list(ld);
-	ndevlist = (ulong *)GETBUF(ndevcnt * sizeof(ulong));
-	ndevcnt = retrieve_list(ndevlist, ndevcnt);
-	hq_close();
 
 	for (i = 0; i < ndevcnt; ++i) {
-		readmem(ndevlist[i], KVADDR, net_device_buf,
+		readmem(ld->list_ptr[i], KVADDR, net_device_buf,
 			SIZE(net_device), "net_device buffer",
 			FAULT_ON_ERROR);
 
                 fprintf(fp, "%s  ",
 			mkstring(buf, flen, CENTER|RJUST|LONG_HEX,
-			MKSTR(ndevlist[i])));
+			MKSTR(ld->list_ptr[i])));
 
-		get_device_name(ndevlist[i], buf);
+		get_device_name(ld->list_ptr[i], buf);
 		fprintf(fp, "%-6s ", buf);
 
-		get_device_address(ndevlist[i], buf);
+		get_device_address(ld->list_ptr[i], buf);
 		fprintf(fp, "%s\n", buf);
 	}
 	
-	FREEBUF(ndevlist);
+	FREEBUF(ld->list_ptr);
 	FREEBUF(net_device_buf);
 }
 
@@ -510,7 +506,6 @@ show_net_devices_v3(void)
 	struct list_data list_data, *ld;
 	char *net_device_buf;
 	char buf[BUFSIZE];
-	ulong *ndevlist;
 	int ndevcnt, i;
 	long flen;
 
@@ -527,36 +522,33 @@ show_net_devices_v3(void)
 
 	ld =  &list_data;
 	BZERO(ld, sizeof(struct list_data));
+	ld->flags |= LIST_ALLOCATE;
 	ld->start = ld->end =
 		 symbol_value("init_net") + OFFSET(net_dev_base_head);
 	ld->list_head_offset = OFFSET(net_device_dev_list);
 
-	hq_open();
 	ndevcnt = do_list(ld);
-	ndevlist = (ulong *)GETBUF(ndevcnt * sizeof(ulong));
-	ndevcnt = retrieve_list(ndevlist, ndevcnt);
-	hq_close();
 
 	/*
 	 *  Skip the first entry (init_net).
 	 */
 	for (i = 1; i < ndevcnt; ++i) {
-		readmem(ndevlist[i], KVADDR, net_device_buf,
+		readmem(ld->list_ptr[i], KVADDR, net_device_buf,
 			SIZE(net_device), "net_device buffer",
 			FAULT_ON_ERROR);
 
                 fprintf(fp, "%s  ",
 			mkstring(buf, flen, CENTER|RJUST|LONG_HEX,
-			MKSTR(ndevlist[i])));
+			MKSTR(ld->list_ptr[i])));
 
-		get_device_name(ndevlist[i], buf);
+		get_device_name(ld->list_ptr[i], buf);
 		fprintf(fp, "%-6s ", buf);
 
-		get_device_address(ndevlist[i], buf);
+		get_device_address(ld->list_ptr[i], buf);
 		fprintf(fp, "%s\n", buf);
 	}
 	
-	FREEBUF(ndevlist);
+	FREEBUF(ld->list_ptr);
 	FREEBUF(net_device_buf);
 }
 

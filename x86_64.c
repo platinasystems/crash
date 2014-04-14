@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004-2013 David Anderson
- * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2014 David Anderson
+ * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -107,6 +107,7 @@ static ulong x86_64_get_stacktop_hyper(ulong);
 static int x86_64_framesize_cache_resize(void);
 static int x86_64_framesize_cache_func(int, ulong, int *, int);
 static ulong x86_64_get_framepointer(struct bt_info *, ulong);
+int search_for_eframe_target_caller(struct bt_info *, ulong, int *);
 static int x86_64_get_framesize(struct bt_info *, ulong, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
 static void x86_64_get_active_set(void);
@@ -2565,6 +2566,7 @@ static const char *exception_functions[] = {
 	"xen_hypervisor_callback",
 	"xen_debug",
 	"xen_int3",
+	"async_page_fault",
 	NULL,
 };
 
@@ -3279,9 +3281,11 @@ in_exception_stack:
 				level++;
 			rsp += SIZE(pt_regs);
 			irq_eframe = 0;
+			bt->flags |= BT_EFRAME_TARGET;
 			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
 			    bt->eframe_ip, rsp)) >= 0))
 				rsp += framesize;
+			bt->flags &= ~BT_EFRAME_TARGET;
 		}
 		level++;
         }
@@ -4111,6 +4115,8 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 	long rip, long rsp, long rflags)
 {
 	int estack;
+	struct syment *sp;
+	ulong offset, exception;
 
 	if ((rflags & RAZ_MASK) || !(rflags & 0x2))
 		return FALSE;
@@ -4144,7 +4150,18 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
 		 */
 		if (STREQ(closest_symbol(rip), "ia32_sysenter_target"))
 			return TRUE;
-        }
+
+		if ((rip == 0) && INSTACK(rsp, bt) &&
+		    STREQ(bt->call_target, "ret_from_fork"))
+			return TRUE;
+
+		if (readmem(kvaddr - 8, KVADDR, &exception, sizeof(ulong), 
+		    "exception type", RETURN_ON_ERROR|QUIET) &&
+		    (sp = value_search(exception, &offset)) &&
+		    STREQ(sp->name, "page_fault"))
+			return TRUE;
+			
+	}
 
         if ((cs == 0x10) && kvaddr) {
                 if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
@@ -4216,7 +4233,7 @@ static void
 x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp) 
 {
 	int panic_task;
-        int i, j, estack, panic, stage;
+        int i, j, estack, panic, stage, in_nmi_stack;
         char *sym;
 	struct syment *sp;
         ulong *up, *up2;
@@ -4228,6 +4245,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	ulong crash_kexec_rip, crash_kexec_rsp;
 	ulong call_function_rip, call_function_rsp;
 	ulong sysrq_c_rip, sysrq_c_rsp;
+	ulong notify_die_rip, notify_die_rsp;
 
 #define STACKTOP_INDEX(BT) (((BT)->stacktop - (BT)->stackbase)/sizeof(ulong))
 
@@ -4238,8 +4256,9 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	halt_rip = halt_rsp = 0;
 	crash_kexec_rip = crash_kexec_rsp = 0;
 	call_function_rip = call_function_rsp = 0;
+	notify_die_rsp = notify_die_rip = 0;
 	sysrq_c_rip = sysrq_c_rsp = 0;
-	stage = 0;
+	in_nmi_stack = stage = 0;
 	estack = -1;
 	panic = FALSE;
 
@@ -4384,6 +4403,12 @@ next_sysrq:
                         return;
                 }
 
+		if (!panic_task && in_nmi_stack && 
+		    (pc->flags2 & VMCOREINFO) && STREQ(sym, "notify_die")) { 
+                        notify_die_rip = *up;
+                        notify_die_rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+		}
+
 		if (XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) &&
 		    (stage == 0) && STREQ(sym, "safe_halt")) {
 			halt_rip = *up;
@@ -4444,6 +4469,7 @@ skip_stage:
 			goto skip_stage;
 		bt->stackbuf = ms->irqstack;
 		alter_stackbuf(bt);
+		in_nmi_stack = STREQ(x86_64_exception_stacks[estack], "NMI");
 		goto next_stack;
 
 	}
@@ -4451,6 +4477,12 @@ skip_stage:
 	if (sysrq_c_rip) {
 		*rip = sysrq_c_rip;
 		*rsp = sysrq_c_rsp;
+		return;
+	}
+
+	if (notify_die_rip) {
+		*rip = notify_die_rip;
+		*rsp = notify_die_rsp;
 		return;
 	}
 
@@ -5838,6 +5870,18 @@ x86_64_calc_phys_base(void)
 			return;
 		else
 			text_start = symbol_value("_text");
+		if (REMOTE()) {
+			phys_base = get_remote_phys_base(text_start, symbol_value("phys_base"));
+			if (phys_base) {
+				machdep->machspec->phys_base = phys_base;
+				if (CRASHDEBUG(1)) {
+					fprintf(fp, "_text: %lx  ", text_start);
+					fprintf(fp, "phys_base: %lx\n\n",
+						machdep->machspec->phys_base);
+				}
+				return;
+			}
+		}
 	}
 
 	if (ACTIVE()) {
@@ -7157,6 +7201,57 @@ x86_64_get_framepointer(struct bt_info *bt, ulong rsp)
 	return framepointer;
 }
 
+int
+search_for_eframe_target_caller(struct bt_info *bt, ulong stkptr, int *framesize)
+{
+	int i;
+	ulong *up, offset, rsp;
+	struct syment *sp1, *sp2;
+	char *called_function;
+
+	if ((sp1 = value_search(bt->eframe_ip, &offset)))
+		called_function = sp1->name;
+	else
+		return FALSE;
+
+	rsp = stkptr;
+
+	for (i = (rsp - bt->stackbase)/sizeof(ulong);
+	    rsp < bt->stacktop; i++, rsp += sizeof(ulong)) {
+
+		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+
+		if (!is_kernel_text(*up))
+			continue;
+
+		if (!(sp1 = value_search(*up, &offset)))
+			continue;
+
+		if (!offset && !(bt->flags & BT_FRAMESIZE_DISABLE))
+			continue;
+
+		/*
+		 *  Get the syment of the function that the text 
+		 *  routine above called before leaving its return 
+		 *  address on the stack -- if it can be determined.
+		 */
+		if ((sp2 = x86_64_function_called_by((*up)-5))) {
+			if (STREQ(sp2->name, called_function)) {
+				if (CRASHDEBUG(1)) {
+					fprintf(fp, 
+					    "< %lx/%s rsp: %lx caller: %s >\n", 
+						bt->eframe_ip, called_function, 
+						stkptr, sp1->name);
+				}
+				*framesize = rsp - stkptr;
+				return TRUE;
+			}
+		}
+	}
+
+	return FALSE;
+}
+
 #define BT_FRAMESIZE_IGNORE_MASK \
 	(BT_OLD_BACK_TRACE|BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL|BT_FRAMESIZE_DISABLE)
  
@@ -7189,6 +7284,10 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 	}
 
 	exception = bt->eframe_ip == textaddr ? TRUE : FALSE;
+
+	if ((bt->flags & BT_EFRAME_TARGET) &&
+	    search_for_eframe_target_caller(bt, rsp, &framesize))
+		return framesize;
 
 	if (!(bt->flags & BT_FRAMESIZE_DEBUG) &&
 	    x86_64_framesize_cache_func(FRAMESIZE_QUERY, textaddr, &framesize,

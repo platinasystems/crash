@@ -46,6 +46,8 @@
  *   -q  Don't print configuration
  *
  *   -s  Create crash.spec file
+ *
+ *   -x  Add extra libraries/flags to build
  */
 
 #include <stdio.h>
@@ -87,6 +89,7 @@ void set_initial_target(struct supported_gdb_version *);
 char *target_to_name(int);
 int name_to_target(char *);
 char *get_extra_flags(char *, char *);
+void add_extra_lib(char *);
 
 #define TRUE 1
 #define FALSE 0
@@ -256,7 +259,7 @@ main(int argc, char **argv)
 
 	sp = setup_gdb_defaults();
 
-	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:t:")) > 0) {
+	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:t:x:")) > 0) {
 		switch (c) {
 		case 'q':
 			target_data.flags |= QUIET;
@@ -291,6 +294,9 @@ main(int argc, char **argv)
 			break;
 		case 't':
 			target_data.target_as_param = optarg;
+			break;
+		case 'x':
+			add_extra_lib(optarg);
 			break;
 		}
 	}
@@ -1592,4 +1598,89 @@ get_extra_flags(char *filename, char *initial)
 		return strdup(buf);
 	else 
 		return NULL;
+}
+
+/*
+ *  Add extra compression libraries.  If not already there, create
+ *  a CFLAGS.extra file and an LDFLAGS.extra file.
+
+ *  For lzo: 
+ *    - enter -DSNAPPY in the CFLAGS.extra file
+ *    - enter -lsnappy in the LDFLAGS.extra file
+ *
+ *  For snappy:
+ *    - enter -DLZO in the CFLAGS.extra file
+ *    - enter -llzo2 in the LDFLAGS.extra file.
+ */
+void
+add_extra_lib(char *option)
+{
+	int lzo, add_DLZO, add_llzo2; 
+	int snappy, add_DSNAPPY, add_lsnappy;
+	char *cflags, *ldflags;
+	FILE *fp_cflags, *fp_ldflags;
+	char *mode;
+	char inbuf[512];
+
+	lzo = add_DLZO = add_llzo2 = 0;
+	snappy = add_DSNAPPY = add_lsnappy = 0;
+
+	ldflags = get_extra_flags("LDFLAGS.extra", NULL);
+	cflags = get_extra_flags("CFLAGS.extra", NULL);
+
+	if (strcmp(option, "lzo") == 0) {
+		lzo++;
+		if (!cflags || !strstr(cflags, "-DLZO"))
+			add_DLZO++;
+		if (!ldflags || !strstr(ldflags, "-llzo2"))
+			add_llzo2++;
+	}
+
+	if (strcmp(option, "snappy") == 0) {
+		snappy++;
+		if (!cflags || !strstr(cflags, "-DSNAPPY"))
+			add_DSNAPPY++;
+		if (!ldflags || !strstr(ldflags, "-lsnappy"))
+			add_lsnappy++;
+	}
+
+	if ((lzo || snappy) &&
+	    file_exists("diskdump.o") && (unlink("diskdump.o") < 0)) {
+		perror("diskdump.o");
+		return;
+	} 
+
+	mode = file_exists("CFLAGS.extra") ? "r+" : "w+";
+	if ((fp_cflags = fopen("CFLAGS.extra", mode)) == NULL) {
+		perror("CFLAGS.extra");
+		return;
+	}
+
+	mode = file_exists("LDFLAGS.extra") ? "r+" : "w+";
+	if ((fp_ldflags = fopen("LDFLAGS.extra", mode)) == NULL) {
+		perror("LDFLAGS.extra");
+		fclose(fp_cflags);
+		return;
+	}
+
+	if (add_DLZO || add_DSNAPPY) {
+		while (fgets(inbuf, 512, fp_cflags))
+			;
+		if (add_DLZO)
+			fputs("-DLZO\n", fp_cflags);
+		if (add_DSNAPPY)
+			fputs("-DSNAPPY\n", fp_cflags);
+	}
+
+	if (add_llzo2 || add_lsnappy) {
+		while (fgets(inbuf, 512, fp_ldflags))
+			;
+		if (add_llzo2)
+			fputs("-llzo2\n", fp_ldflags);
+		if (add_lsnappy)
+			fputs("-lsnappy\n", fp_ldflags);
+	}
+
+	fclose(fp_cflags);
+	fclose(fp_ldflags);
 }

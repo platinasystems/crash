@@ -1797,6 +1797,7 @@ static void copy_to_local_namelist(struct remote_file *);
 static char *create_local_namelist(struct remote_file *);
 static int remote_find_booted_kernel(struct remote_file *);
 static int remote_proc_version(char *);
+static int validate_phys_base(physaddr_t, physaddr_t, physaddr_t);
 static int remote_file_open(struct remote_file *);
 static int remote_file_close(struct remote_file *);
 static int identical_namelist(char *, struct remote_file *);
@@ -1808,6 +1809,23 @@ static int remote_file_type(char *);
 static int remote_lkcd_dump_init(void);
 static int remote_s390_dump_init(void);
 static int remote_netdump_init(void);
+static int remote_tcp_read(int, const char *, size_t);
+static int remote_tcp_read_string(int, const char *, size_t, int);
+static int remote_tcp_write(int, const void *, size_t);
+static int remote_tcp_write_string(int, const char *);
+
+struct _remote_context {
+        uint flags;
+        int n_cpus;
+        int vfd;
+        char remote_type[10];
+} remote_context;
+
+#define NIL_FLAG       (0x01U)
+
+#define NIL_MODE() (rc->flags & NIL_FLAG)
+
+struct _remote_context *rc = &remote_context;
 
 /*
  *  Parse, verify and establish a connection with the network daemon
@@ -1844,7 +1862,7 @@ is_remote_daemon(char *dp)
 
 	pc->port = 0;
 	pc->server = pc->server_memsrc = NULL;
-	pc->rmfd = pc->rkfd = -1;
+	rc->vfd = pc->rmfd = pc->rkfd = -1;
 	file1 = file2 = NULL;
 
 	if ((filep = strstr(dp, ","))) {
@@ -1921,6 +1939,21 @@ is_remote_daemon(char *dp)
 
 	remote_socket_options(pc->sockfd);
 
+	/*
+	 * Try and use NIL mode.
+	 */
+	BZERO(sendbuf, BUFSIZE);
+	BZERO(recvbuf, BUFSIZE);
+	sprintf(sendbuf, "NIL");
+	remote_tcp_write_string(pc->sockfd, sendbuf);
+	remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+	if (!strstr(recvbuf, "<FAIL>")) {
+		rc->flags |= NIL_FLAG;
+		p1 = strtok(recvbuf, " ");  /* NIL */
+		p1 = strtok(NULL, " ");     /* remote type */
+		if (p1 && p1[0] != 'L')
+			pc->flags2 |= REM_PAUSED_F;
+	}
         /*
          *  Get the remote machine type and verify a match.  The daemon pid
          *  is also used as a live system initial context.
@@ -1928,8 +1961,8 @@ is_remote_daemon(char *dp)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "MACHINE_PID");
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         p1 = strtok(recvbuf, " ");  /* MACHINE */
         p1 = strtok(NULL, " ");     /* machine type */
 	if (CRASHDEBUG(1))
@@ -2032,8 +2065,8 @@ remote_file_type(char *file)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "TYPE %s", file);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
 
         if (strstr(recvbuf, "<FAIL>"))
                 error(FATAL, "invalid remote file name: %s\n", file);
@@ -2112,6 +2145,84 @@ remote_socket_options(int sockfd)
 }
 
 /*
+ * Wrapper around recv to read full length packet.
+ */
+static int
+remote_tcp_read(int sock, const char *pv_buffer, size_t cb_buffer)
+{
+	size_t cb_total = 0;
+
+	do
+	{
+		ssize_t cb_read = recv(sock, (void*)pv_buffer, cb_buffer, MSG_NOSIGNAL);
+
+		if (cb_read <= 0)
+			return cb_read;
+		cb_total += cb_read;
+		cb_buffer -= cb_read;
+		pv_buffer = (char *)pv_buffer + cb_read;
+	} while (cb_buffer);
+
+	return cb_total;
+}
+
+/*
+ * Wrapper around recv to read full string packet.
+ */
+static int
+remote_tcp_read_string(int sock, const char *pv_buffer, size_t cb_buffer, int nil_mode)
+{
+	size_t cb_total = 0;
+
+	do
+	{
+		ssize_t cb_read = recv(sock, (void*)pv_buffer, cb_buffer, MSG_NOSIGNAL);
+
+		if (cb_read <= 0)
+			return cb_read;
+		cb_total += cb_read;
+		if (!nil_mode && cb_total >= 4)
+			return cb_total;
+		if (!pv_buffer[cb_read - 1])
+			return cb_total;
+		cb_buffer -= cb_read;
+		pv_buffer = (char *)pv_buffer + cb_read;
+	} while (cb_buffer);
+
+	return cb_total;
+}
+
+/*
+ * Wrapper around send to send full packet.
+ */
+static int
+remote_tcp_write(int sock, const void *pv_buffer, size_t cb_buffer)
+{
+	do
+	{
+		size_t cb_now = cb_buffer;
+		ssize_t cb_written = send(sock, (const char *)pv_buffer, cb_now, MSG_NOSIGNAL);
+
+		if (cb_written < 0)
+			return 1;
+		cb_buffer -= cb_written;
+		pv_buffer = (char *)pv_buffer + cb_written;
+	} while (cb_buffer);
+
+	return 0;
+}
+
+/*
+ * Wrapper around tcp_write to send a string
+ */
+static int
+remote_tcp_write_string(int sock, const char *pv_buffer)
+{
+	return remote_tcp_write(sock, pv_buffer, strlen(pv_buffer) + 1);
+}
+
+
+/*
  *  Request that the daemon open a file.
  */
 static int
@@ -2124,8 +2235,8 @@ remote_file_open(struct remote_file *rfp)
 	BZERO(sendbuf, BUFSIZE);
 	BZERO(recvbuf, BUFSIZE);
        	sprintf(sendbuf, "OPEN %s", rfp->filename);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
 
         if (CRASHDEBUG(1))
                 fprintf(fp, "remote_file_open: [%s]\n", recvbuf);
@@ -2159,8 +2270,8 @@ remote_file_close(struct remote_file *rfp)
 	BZERO(sendbuf, BUFSIZE);
 	BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "CLOSE %d", rfp->fd);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
 
 	return (strstr(recvbuf, "OK") ? TRUE : FALSE);
 }
@@ -2177,13 +2288,206 @@ remote_proc_version(char *buf)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "PROC_VERSION");
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
-        if (STREQ(recvbuf, "<FAIL>"))
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
+        if (STREQ(recvbuf, "<FAIL>")) {
+		buf[0] = 0;
                 return FALSE;
+	}
         strcpy(buf, recvbuf);
 	return TRUE;
 }
+
+/*
+ *  Check that virt_phys_base when accessed via
+ *  phys_base - text_start is phys_base.
+ */
+static int
+validate_phys_base(physaddr_t phys_base, physaddr_t text_start, physaddr_t virt_phys_base)
+{
+        ulong value;
+
+        if (CRASHDEBUG(3))
+                fprintf(fp, "validate_phys_base: virt_phys_base=0x%llx phys_base=0x%llx text_start=0x%llx calc=0x%llx\n",
+                        (long long unsigned int)virt_phys_base,
+			(long long unsigned int)phys_base,
+			(long long unsigned int)text_start,
+			(long long unsigned int)virt_phys_base + phys_base - text_start);
+
+        if (READMEM(pc->rmfd, (void*)&value, sizeof(value),
+		    virt_phys_base, virt_phys_base + phys_base - text_start)
+	    == sizeof(value)) {
+                if (value == phys_base)
+                        return 1;
+        }
+        return 0;
+}
+
+/*
+ *  Get remote phys_base based on virtual address of "phys_base".
+ */
+physaddr_t
+get_remote_phys_base(physaddr_t text_start, physaddr_t virt_phys_base)
+{
+        int vcpu;
+        ulong value;
+
+	if (rc->vfd < 0) {
+		struct remote_file remote_file, *rfp;
+
+		rfp = &remote_file;
+		BZERO(rfp, sizeof(struct remote_file));
+		rfp->filename = "/dev/vmem";
+		if (remote_file_open(rfp)) {
+			rc->vfd = rfp->fd;
+		} else
+			return 0;
+	}
+
+        for (vcpu = 0; vcpu < rc->n_cpus; vcpu++)
+                if (remote_memory_read(rc->vfd, (void*)&value, sizeof(value),
+				       virt_phys_base, vcpu) == sizeof(value)) {
+                        if (validate_phys_base(value, text_start, virt_phys_base))
+                                return value;
+                }
+
+        return 0;
+}
+
+/*
+ *  Do a remote VTOP if supported.
+ */
+physaddr_t
+remote_vtop(int cpu, physaddr_t virt_addr)
+{
+	char sendbuf[BUFSIZE];
+	char recvbuf[BUFSIZE];
+	char *p1;
+	int errflag;
+	ulong value;
+
+	if (!rc->remote_type[0])
+		return 0;       /* Not a special remote. */
+
+	BZERO(sendbuf, BUFSIZE);
+	BZERO(recvbuf, BUFSIZE);
+	sprintf(sendbuf, "VTOP %d %llx", cpu, (long long unsigned int)virt_addr);
+	remote_tcp_write_string(pc->sockfd, sendbuf);
+	remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
+
+	if (CRASHDEBUG(2))
+		fprintf(fp, "remote_vtop: [%s]\n", recvbuf);
+
+	if (strstr(recvbuf, "<FAIL>"))
+		error(FATAL, "remote_vtop for CPU %d\n", cpu);
+	p1 = strtok(recvbuf, " ");  /* VTOP */
+	p1 = strtok(NULL, " ");     /* cpu */
+	p1 = strtok(NULL, " ");     /* vaddr */
+	p1 = strtok(NULL, " ");     /* paddr */
+
+	errflag = 0;
+	value = htol(p1, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag) {
+		return value;
+	}
+	return 0;
+}
+
+/*
+ *  Get a copy of the daemon machine cpu regs.
+ */
+int
+get_remote_regs(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	char sendbuf[BUFSIZE];
+	char recvbuf[BUFSIZE];
+	char *p1, *p2;
+	int errflag;
+	ulong value;
+
+	if (!rc->remote_type[0])
+		return 0;       /* Not a special remote. */
+
+	*eip = 0;
+	*esp = 0;
+
+	BZERO(sendbuf, BUFSIZE);
+	BZERO(recvbuf, BUFSIZE);
+	sprintf(sendbuf, "FETCH_LIVE_IP_SP_BP %d", bt->tc->processor);
+	if (remote_tcp_write_string(pc->sockfd, sendbuf))
+		return 0;
+	errflag = remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
+	if (errflag <= 0)
+		return 0;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "get_remote_regs(cpu=%d): [%s]\n",
+			bt->tc->processor, recvbuf);
+
+	if (strstr(recvbuf, "<FAIL>")) {
+		error(INFO, "get_remote_regs for CPU %d\n", bt->tc->processor);
+		return 0;
+	}
+	p1 = strtok(recvbuf, " ");  /* FETCH_LIVE_IP_SP_BP */
+	p1 = strtok(NULL, " ");     /* cpu */
+	p1 = strtok(NULL, ":");     /* cs */
+	p1 = strtok(NULL, " ");     /* ip */
+	p2 = strtok(NULL, ":");     /* ss */
+	p2 = strtok(NULL, " ");     /* sp */
+	/* p2 = strtok(NULL, " ");     bp */
+
+	errflag = 0;
+	value = htol(p1, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag) {
+		*eip = value;
+	}
+
+	errflag = 0;
+	value = htol(p2, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag) {
+		*esp = value;
+	}
+	return 1;
+}
+
+/*
+ *  Get a remote cr3 if supported.
+ */
+physaddr_t
+get_remote_cr3(int cpu)
+{
+	char sendbuf[BUFSIZE];
+	char recvbuf[BUFSIZE];
+	char *p1;
+	int errflag;
+	ulong value;
+
+	if (!rc->remote_type[0])
+		return 0;       /* Not a special remote. */
+
+	BZERO(sendbuf, BUFSIZE);
+	BZERO(recvbuf, BUFSIZE);
+	sprintf(sendbuf, "FETCH_LIVE_CR3 %d", cpu);
+	if (remote_tcp_write_string(pc->sockfd, sendbuf))
+		return 0;
+	remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "get_remote_cr3: [%s]\n", recvbuf);
+
+	if (strstr(recvbuf, "<FAIL>"))
+		error(FATAL, "get_remote_cr3 for CPU %d\n", cpu);
+	p1 = strtok(recvbuf, " ");  /* FETCH_LIVE_CR3 */
+	p1 = strtok(NULL, " ");     /* cpu */
+	p1 = strtok(NULL, " ");     /* cr3 */
+
+	errflag = 0;
+	value = htol(p1, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag)
+		return value;
+	return 0;
+}
+
 
 /*
  *
@@ -2359,8 +2663,8 @@ copy_to_local_namelist(struct remote_file *rfp)
         	BZERO(sendbuf, BUFSIZE);
         	BZERO(recvbuf, BUFSIZE);
         	sprintf(sendbuf, "DEBUGGING_SYMBOLS %s", rfp->filename);
-        	send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        	recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+		remote_tcp_write_string(pc->sockfd, sendbuf);
+		remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
 		if (strstr(recvbuf, "NO_DEBUG")) {
 			sprintf(readbuf, "%s@%s", rfp->filename, pc->server);
 			pc->namelist = readbuf;
@@ -2472,8 +2776,8 @@ identical_namelist(char *file, struct remote_file *rfp)
         BZERO(readbuf, BUFSIZE);
 
         sprintf(sendbuf, "LINUX_VERSION %s", rfp->filename);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "<FAIL>")) 
 		return FALSE;
 
@@ -2515,8 +2819,8 @@ remote_file_checksum(struct remote_file *rfp)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "SUM %s", rfp->filename);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "<FAIL>")) {
                 error(INFO, "%s: does not exist on server %s\n",
                         rfp->filename, pc->server);
@@ -2785,8 +3089,8 @@ remote_find_booted_kernel(struct remote_file *rfp)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "FIND_BOOTED_KERNEL");
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         strtok(recvbuf, " ");           /* FIND_BOOTED_KERNEL */
         p1 = strtok(NULL, " ");         /* filename */
         if (STREQ(p1, "<FAIL>"))
@@ -2806,8 +3110,8 @@ remote_lkcd_dump_init(void)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "LKCD_DUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "<FAIL>"))
                 return FALSE;
 
@@ -2844,8 +3148,8 @@ remote_s390_dump_init(void)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "S390_DUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "<FAIL>"))
                 return FALSE;
 
@@ -2880,8 +3184,8 @@ remote_netdump_init(void)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "NETDUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "<FAIL>"))
                 return FALSE;
 
@@ -2905,7 +3209,7 @@ remote_page_size(void)
 {
         char sendbuf[BUFSIZE];
         char recvbuf[BUFSIZE];
-        char *p1;
+        char *p1, *p2, *p3;
 	uint psz;
 
         BZERO(sendbuf, BUFSIZE);
@@ -2913,6 +3217,8 @@ remote_page_size(void)
 
 	if (REMOTE_ACTIVE())
         	sprintf(sendbuf, "PAGESIZE LIVE");
+	else if (REMOTE_PAUSED())
+		sprintf(sendbuf, "PAGESIZE NIL");
 	else if (pc->flags & REM_NETDUMP)
         	sprintf(sendbuf, "PAGESIZE NETDUMP");
 	else if (pc->flags & REM_MCLXCD)
@@ -2925,18 +3231,27 @@ remote_page_size(void)
                 error(FATAL, 
 		 "cannot determine remote page size (unknown memory source)\n");
 
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         if (strstr(recvbuf, "FAIL"))
                 error(FATAL, "cannot determine remote page size\n");
         strtok(recvbuf, " ");           /* PAGESIZE */
         p1 = strtok(NULL, " ");         /* LIVE, MCLXCD or LKCD */
         p1 = strtok(NULL, " ");         /* page size */
+        p2 = strtok(NULL, " ");         /* remote type */
+        p3 = strtok(NULL, " ");         /* number of Cpus */
 	psz = atoi(p1);
 
 	if (psz > MAXRECVBUFSIZE)
 		error(FATAL, 
 		   "remote page size %d is larger than MAXRECVBUFSIZE!\n", psz);
+
+        if (p2) {
+                strncpy(rc->remote_type, p2, sizeof(rc->remote_type) - 1);
+                rc->remote_type[sizeof(rc->remote_type) - 1] = 0;
+        }
+        if (p3)
+                rc->n_cpus = atoi(p3);
 
 	return psz;
 }
@@ -2968,7 +3283,7 @@ copy_remote_file(struct remote_file *rfp, int fd, char *file, char *ttystr)
 		
 		BZERO(sendbuf, BUFSIZE);
         	sprintf(sendbuf, "READ %d %lx %ld", rfp->fd, offset, size);
-        	bytes = write(pc->sockfd, sendbuf, strlen(sendbuf));
+		bytes = write(pc->sockfd, sendbuf, strlen(sendbuf) + 1);
 
         	bzero(readbuf, READBUFSIZE);
 
@@ -3059,7 +3374,7 @@ copy_remote_gzip_file(struct remote_file *rfp, char *file, char *ttystr)
 
         BZERO(sendbuf, BUFSIZE);
         sprintf(sendbuf, "READ_GZIP %ld %s", pc->rcvbufsize, rfp->filename);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
 
        	bzero(readbuf, READBUFSIZE);
 
@@ -3170,8 +3485,8 @@ find_remote_module_objfile(struct load_module *lm, char *module, char *retbuf)
 	        BZERO(recvbuf, BUFSIZE);
 	        sprintf(sendbuf, "FIND_MODULE %s %s",
 	                kt->utsname.release, module);
-	        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-	        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+	        remote_tcp_write_string(pc->sockfd, sendbuf);
+	        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
 	        if (strstr(recvbuf, "<FAIL>")) {
 			fprintf(fp, "find_remote_module_objfile: [%s]\n", 
 				recvbuf);
@@ -3231,8 +3546,8 @@ remote_free_memory(void)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "MEMORY FREE %s", type);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         p1 = strtok(recvbuf, " ");      /* MEMORY */
         p1 = strtok(NULL, " ");         /* FREE */
         p1 = strtok(NULL, " ");         /* MCLXCD, LKCD etc. */
@@ -3267,8 +3582,8 @@ remote_memory_used(void)
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
         sprintf(sendbuf, "MEMORY USED %s", type);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
+        remote_tcp_read_string(pc->sockfd, recvbuf, BUFSIZE-1, NIL_MODE());
         p1 = strtok(recvbuf, " ");          /* MEMORY */
         p1 = strtok(NULL, " ");             /* FREE */
         p1 = strtok(NULL, " ");             /* MCLXCD, LKCD, etc. */
@@ -3308,7 +3623,7 @@ remote_memory_dump(int verbose)
         BZERO(sendbuf, BUFSIZE);
         sprintf(sendbuf, "MEMORY_DUMP %ld %s%s", pc->rcvbufsize, type,
 		verbose ? "_VERBOSE" : "");
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
 
        	bzero(readbuf, READBUFSIZE);
 	done = total = 0;
@@ -3368,13 +3683,12 @@ remote_memory_dump(int verbose)
  *  a page in length.
  */
 int 
-remote_memory_read(int rfd, char *buffer, int cnt, physaddr_t address)
+remote_memory_read(int rfd, char *buffer, int cnt, physaddr_t address, int vcpu)
 {
         char sendbuf[BUFSIZE];
-        char readbuf[READBUFSIZE];
 	char datahdr[DATA_HDRSIZE];
-        char *bufptr, *p1;
-	int ret, req, tot;
+	char *p1;
+	int ret, tot;
 	ulong addr;
 
 	addr = (ulong)address;  /* may be virtual */
@@ -3388,51 +3702,54 @@ remote_memory_read(int rfd, char *buffer, int cnt, physaddr_t address)
                 sprintf(sendbuf, "READ_LKCD %d %lx %d", rfd, addr, cnt);
         else if (pc->flags & REM_S390D)
                 sprintf(sendbuf, "READ_S390D %d %lx %d", rfd, addr, cnt);
+        else if (vcpu >= 0)
+                sprintf(sendbuf, "READ_LIVE %d %lx %d %d", rfd, addr, cnt, vcpu);
         else
                 sprintf(sendbuf, "READ_LIVE %d %lx %d", rfd, addr, cnt);
 
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-
-       	bzero(readbuf, READBUFSIZE);
+	if (remote_tcp_write_string(pc->sockfd, sendbuf))
+		return -1;
 
 	/*
 	 *  Read request will come back with a singular header 
 	 *  followed by the data.
          */
-	req = cnt+DATA_HDRSIZE;
-	tot = 0;
-	errno = 0;
-	bufptr = readbuf;
-
-        while (req) {
-                if ((ret = recv(pc->sockfd, bufptr, req, 0)) == -1) 
-			return -1;
-                req -= ret;
-                bufptr += ret;
-		tot += ret;
-		if ((tot >= DATA_HDRSIZE) && STRNEQ(readbuf, FAILMSG)) {
-                       	p1 = strtok(readbuf, " ");   /* FAIL */
-                       	p1 = strtok(NULL, " ");      /* errno */
-			errno = atoi(p1);
-			return -1;
-		}
+        BZERO(datahdr, DATA_HDRSIZE);
+	ret = remote_tcp_read_string(pc->sockfd, datahdr, DATA_HDRSIZE, 1);
+	if (ret <= 0)
+		return -1;
+	if (CRASHDEBUG(3))
+		fprintf(fp, "remote_memory_read: [%s]\n", datahdr);
+	if (STRNEQ(datahdr, FAILMSG)) {
+		p1 = strtok(datahdr, " ");  /* FAIL  */
+		p1 = strtok(NULL, " ");     /* errno */
+		errno = atoi(p1);
+		return -1;
 	}
-        
 
-	if (!STRNEQ(readbuf, DONEMSG) && !STRNEQ(readbuf, DATAMSG)) {
+	if (!STRNEQ(datahdr, DONEMSG) && !STRNEQ(datahdr, DATAMSG)) {
 		error(INFO, "out of sync with remote memory source\n");
 		return -1;
 	}
 
-	strncpy(datahdr, readbuf, DATA_HDRSIZE);
-	if (CRASHDEBUG(3))
-		fprintf(fp, "remote_memory_read: [%s]\n", datahdr);
-        p1 = strtok(datahdr, " ");  /* DONE */
-        p1 = strtok(NULL, " ");     /* count */
+	p1 = strtok(datahdr, " ");  /* DONE */
+	p1 = strtok(NULL, " ");     /* count */
 	tot = atol(p1);
 
-	BCOPY(readbuf+DATA_HDRSIZE, buffer, tot);
+	if (cnt != tot) {
+		error(FATAL,
+		      "requested %d bytes remote memory return %d bytes\n",
+		      cnt, tot);
+		return -1;
+	}
 
+	ret = remote_tcp_read(pc->sockfd, buffer, tot);
+	if (ret != tot) {
+		error(FATAL,
+		      "requested %d bytes remote memory return %d bytes\n",
+		      ret, tot);
+		return -1;
+	}
 	return tot;
 }
 
@@ -3492,7 +3809,7 @@ remote_execute(void)
 
         BZERO(sendbuf, BUFSIZE);
         sprintf(sendbuf, "EXECUTE %ld %s", pc->rcvbufsize, command);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
+        remote_tcp_write_string(pc->sockfd, sendbuf);
 
        	bzero(readbuf, READBUFSIZE);
 	done = total = 0;
@@ -3561,12 +3878,11 @@ remote_exit(void)
 
         BZERO(buf, BUFSIZE);
         sprintf(buf, "EXIT");
-        send(pc->sockfd, buf, strlen(buf), 0);
+        remote_tcp_write_string(pc->sockfd, buf);
 	/* 
 	 *  Read but ignore the return status -- we don't really care... 
 	 */
-        recv(pc->sockfd, buf, BUFSIZE-1, 0);
+        remote_tcp_read_string(pc->sockfd, buf, BUFSIZE-1, NIL_MODE());
 
 }
 #endif /* !DAEMON */
-

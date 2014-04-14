@@ -1,8 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -912,7 +912,7 @@ set_command_prompt(char *new_prompt)
  *  Signal number 0 is sent for a generic restart.
  */
 #define MAX_RECURSIVE_SIGNALS (10)
-#define MAX_SIGINTS_ACCEPTED  (3)
+#define MAX_SIGINTS_ACCEPTED  (1)
 
 void
 restart(int sig)
@@ -956,6 +956,10 @@ restart(int sig)
 		pc->flags &= ~IN_RESTART;
 		if (pc->sigint_cnt == MAX_SIGINTS_ACCEPTED) {
 			restore_sanity();
+			if (pc->ifile_in_progress) {
+				pc->ifile_in_progress = 0;
+				pc->ifile_offset = 0;
+			}
 			break;
 		}
 		return;
@@ -968,7 +972,7 @@ restart(int sig)
 		break;
 	}
 
-	fprintf(fp, "\n");
+	fprintf(stderr, "\n");
 
 	pc->flags &= ~(IN_FOREACH|IN_GDB|IN_RESTART);
 	longjmp(pc->main_loop_env, 1);
@@ -1405,6 +1409,9 @@ exec_input_file(void)
                 }
 
                 exec_command();
+
+		if (received_SIGINT())
+			goto done_input;
         }
 
 done_input:
@@ -2501,6 +2508,9 @@ exec_args_input_file(struct command_table_entry *ct, struct args_input_file *aif
 			pc->cmd_cleanup(pc->cmd_cleanup_arg);
 
 		free_all_bufs();
+
+		if (received_SIGINT())
+			break;		
 	}
 
 	fclose(pc->args_ifile);
