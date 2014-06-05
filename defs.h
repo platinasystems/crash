@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "7.0.5"
+#define BASELEVEL_REVISION  "7.0.6"
 
 #undef TRUE
 #undef FALSE
@@ -513,6 +513,7 @@ struct program_context {
         void (*cmd_cleanup)(void *);    /* per-command cleanup function */
 	void *cmd_cleanup_arg;          /* optional cleanup function argument */
 	ulong scope;			/* optional text context address */
+	ulong nr_hash_queues;		/* hash queue head count */
 };
 
 #define READMEM  pc->readmem
@@ -602,6 +603,10 @@ struct new_utsname {
 #define IRQ_DESC_TREE       (0x80000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
+
+/* flags2 */
+#define RELOC_AUTO                  (0x1ULL)
+#define KASLR                       (0x2ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
@@ -705,6 +710,7 @@ struct kernel_table {                   /* kernel data */
 		ulong phys_base_SYMBOL;
 		ulong _stext_SYMBOL;
 	} vmcoreinfo;
+	ulonglong flags2;
 };
 
 /*
@@ -2268,6 +2274,8 @@ struct list_data {             /* generic structure used by do_list() to walk */
 	int structname_args;
 	char *header;
 	ulong *list_ptr;
+	int (*callback_func)(void *, void *); 
+	void *callback_data;
 };
 #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
 #define LIST_START_ENTERED   (VERBOSE << 2)
@@ -2279,6 +2287,8 @@ struct list_data {             /* generic structure used by do_list() to walk */
 #define LIST_STRUCT_RADIX_16 (VERBOSE << 8)
 #define LIST_HEAD_REVERSE    (VERBOSE << 9)
 #define LIST_ALLOCATE       (VERBOSE << 10)
+#define LIST_CALLBACK       (VERBOSE << 11)
+#define CALLBACK_RETURN     (VERBOSE << 12)
 
 struct tree_data {
 	ulong flags;
@@ -2417,6 +2427,8 @@ struct symbol_table_data {
 	ulong __per_cpu_end;
 	off_t dwarf_debug_frame_file_offset;
 	ulong dwarf_debug_frame_size;
+	ulong first_section_start;
+	ulong last_section_end;
 };
 
 /* flags for st */
@@ -2439,6 +2451,8 @@ struct symbol_table_data {
 #define MODSECT_V3      (0x8000)
 #define MODSECT_VMASK   (MODSECT_V1|MODSECT_V2|MODSECT_V3)
 #define NO_STRIP       (0x10000)
+
+#define NO_LINE_NUMBERS() ((st->flags & GDB_SYMS_PATCHED) && !(kt->flags2 & KASLR))
 
 #endif /* !GDB_COMMON */
 
@@ -2633,9 +2647,9 @@ struct load_module {
 #define MACHINE_TYPE       "ARM64"    
 
 #define PTOV(X) \
-	((unsigned long)(X)-(machdep->machspec->phys_offset)+(machdep->kvbase))
+	((unsigned long)(X)-(machdep->machspec->phys_offset)+(machdep->machspec->page_offset))
 #define VTOP(X) \
-	((unsigned long)(X)-(machdep->kvbase)+(machdep->machspec->phys_offset))
+	((unsigned long)(X)-(machdep->machspec->page_offset)+(machdep->machspec->phys_offset))
 
 #define USERSPACE_TOP   (machdep->machspec->userspace_top)
 #define PAGE_OFFSET     (machdep->machspec->page_offset)
@@ -2651,9 +2665,9 @@ struct load_module {
 #define PAGEBASE(X)     (((ulong)(X)) & (ulong)machdep->pagemask)
 
 /*
- * 40-bit physical address supported.  (512GB)
+ * 48-bit physical address supported. 
  */
-#define PHYS_MASK_SHIFT   (40)
+#define PHYS_MASK_SHIFT   (48)
 #define PHYS_MASK         (((1UL) << PHYS_MASK_SHIFT) - 1)
 
 typedef signed int s32;
@@ -2674,7 +2688,7 @@ typedef signed int s32;
 /*
  * 2-levels / 64K pages
  */
-#define PTRS_PER_PGD_L2_64K  (1024)
+#define PTRS_PER_PGD_L2_64K  (8192)
 #define PTRS_PER_PTE_L2_64K  (8192)
 #define PGDIR_SHIFT_L2_64K   (29)
 #define PGDIR_SIZE_L2_64K    ((1UL) << PGDIR_SHIFT_L2_64K)
@@ -2745,16 +2759,25 @@ typedef signed int s32;
 /* 
  * source: Documentation/arm64/memory.txt 
  */
-#define ARM64_USERSPACE_TOP  (0x0000007fffffffffUL)
-#define ARM64_VMALLOC_START  (0xffffff8000000000UL)
-#define ARM64_VMALLOC_END    (0xffffffbbfffeffffUL)
-#define ARM64_VMEMMAP_VADDR  (0xffffffbc00000000UL)
-#define ARM64_VMEMMAP_END    (0xffffffbffbbfffffUL)
-#define ARM64_MODULES_VADDR  (0xffffffbffc000000UL)
-#define ARM64_MODULES_END    (0xffffffbfffffffffUL)
-#define ARM64_PAGE_OFFSET    (0xffffffc000000000UL)
+#define ARM64_USERSPACE_TOP_4K  (0x0000007fffffffffUL)
+#define ARM64_VMALLOC_START_4K  (0xffffff8000000000UL)
+#define ARM64_VMALLOC_END_4K    (0xffffffbbfffeffffUL)
+#define ARM64_VMEMMAP_VADDR_4K  (0xffffffbc00000000UL)
+#define ARM64_VMEMMAP_END_4K    (0xffffffbdffffffffUL)
+#define ARM64_MODULES_VADDR_4K  (0xffffffbffc000000UL)
+#define ARM64_MODULES_END_4K    (0xffffffbfffffffffUL)
+#define ARM64_PAGE_OFFSET_4K    (0xffffffc000000000UL)
 
-#define ARM64_STACK_SIZE   (8192)
+#define ARM64_USERSPACE_TOP_64K  (0x000003ffffffffffUL)
+#define ARM64_VMALLOC_START_64K  (0xfffffc0000000000UL)
+#define ARM64_VMALLOC_END_64K    (0xfffffdfbfffeffffUL)
+#define ARM64_VMEMMAP_VADDR_64K  (0xfffffdfc00000000UL)
+#define ARM64_VMEMMAP_END_64K    (0xfffffdfdffffffffUL)
+#define ARM64_MODULES_VADDR_64K  (0xfffffdfffc000000UL)
+#define ARM64_MODULES_END_64K    (0xfffffdffffffffffUL)
+#define ARM64_PAGE_OFFSET_64K    (0xfffffe0000000000UL)
+
+#define ARM64_STACK_SIZE   (16384)
 
 #define _SECTION_SIZE_BITS      30
 #define _MAX_PHYSMEM_BITS       40
@@ -2782,6 +2805,9 @@ struct arm64_pt_regs {
         u64 orig_x0;
         u64 syscallno;
 };
+
+/* AArch32 CPSR bits */
+#define PSR_MODE32_BIT          0x00000010
 
 #define TIF_SIGPENDING  (0)
 #define display_idt_table() \

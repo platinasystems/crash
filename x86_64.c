@@ -3816,8 +3816,10 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	char *pt_regs_buf;
 	long verified;
 	long err;
+	char buf[BUFSIZE];
 
-        ms = machdep->machspec;
+	ms = machdep->machspec;
+	sp = NULL;
 
 	if (!(machdep->flags & PT_REGS_INIT) || (flags == EFRAME_INIT)) {
 		err = 0;
@@ -3998,6 +4000,12 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 			r13, r14, r15);
 		fprintf(ofp, "    ORIG_RAX: %016lx  CS: %04lx  SS: %04lx\n", 
 			orig_rax, cs, ss);
+
+		if (!(cs & 3) && sp && (bt->flags & BT_LINE_NUMBERS)) {
+			get_line_number(rip, buf, FALSE);
+			if (strlen(buf))
+				fprintf(ofp, "    %s\n", buf);
+		}
 
 		if (!verified && CRASHDEBUG((pc->flags & RUNTIME) ? 0 : 1))
 			error(WARNING, "possibly bogus exception frame\n");
@@ -4762,7 +4770,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
  *  (on alpha -- not necessarily seen on x86_64) so this routine both fixes the 
  *  references as well as imposing the current output radix on the translations.
  */
-	console("IN: %s", inbuf);
+	console(" IN: %s", inbuf);
 
 	colon = strstr(inbuf, ":");
 
@@ -4814,7 +4822,14 @@ x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
                 }
         }
 
-	console("    %s", inbuf);
+	if (value_symbol(vaddr) &&
+	    (strstr(inbuf, "nopl   0x0(%rax,%rax,1)") ||
+	     strstr(inbuf, "data32 data32 data32 xchg %ax,%ax"))) {
+		strip_line_end(inbuf);
+		strcat(inbuf, " [FTRACE NOP]\n");
+	}
+
+	console("OUT: %s", inbuf);
 
 	return TRUE;
 }
@@ -5414,16 +5429,22 @@ search_for_switch_to(ulong start, ulong end)
 {
 	ulong max_instructions, address;
 	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
+	char search_string1[BUFSIZE];
+	char search_string2[BUFSIZE];
 	int found;
 
 	max_instructions = end - start;
 	found = FALSE;
 	sprintf(buf1, "x/%ldi 0x%lx", max_instructions, start);
-	if (symbol_exists("__switch_to"))
-		sprintf(buf2, "callq  0x%lx", symbol_value("__switch_to"));
-	else
-		buf2[0] = NULLCHAR;
+	if (symbol_exists("__switch_to")) {
+		sprintf(search_string1,
+			"callq  0x%lx", symbol_value("__switch_to"));
+		sprintf(search_string2,
+			"call   0x%lx", symbol_value("__switch_to"));
+	} else {
+		search_string1[0] = NULLCHAR;
+		search_string2[0] = NULLCHAR;
+	}
 
 	open_tmpfile();
 
@@ -5436,7 +5457,9 @@ search_for_switch_to(ulong start, ulong end)
 			break;
 		if (strstr(buf1, "<__switch_to>"))
 			found = TRUE;
-		if (strlen(buf2) && strstr(buf1, buf2))
+		if (strlen(search_string1) && strstr(buf1, search_string1))
+			found = TRUE;
+		if (strlen(search_string2) && strstr(buf1, search_string2))
 			found = TRUE;
 	}
 	close_tmpfile();
@@ -5990,6 +6013,12 @@ x86_64_calc_phys_base(void)
 				break;
 			}
 		}
+
+		if ((pc->flags2 & QEMU_MEM_DUMP) && !x86_64_virt_phys_base())
+			error(WARNING,
+			    "cannot determine physical base address:"
+			    " defaulting to %lx\n\n",
+			      	machdep->machspec->phys_base);
 
 		return;
 	}

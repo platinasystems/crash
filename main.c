@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -57,6 +57,7 @@ static struct option long_options[] = {
         {"CRASHPAGER", 0, 0, 0},
         {"no_scroll", 0, 0, 0},
         {"reloc", required_argument, 0, 0},
+	{"kaslr", required_argument, 0, 0},
 	{"active", 0, 0, 0},
 	{"minimal", 0, 0, 0},
 	{"mod", required_argument, 0, 0},
@@ -68,6 +69,7 @@ static struct option long_options[] = {
 	{"hex", 0, 0, 0},
 	{"dec", 0, 0, 0},
 	{"no_strip", 0, 0, 0},
+	{"hash", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -216,12 +218,36 @@ main(int argc, char **argv)
 		        else if (STREQ(long_options[option_index].name, "mod"))
 				kt->module_tree = optarg;
 
-		        else if (STREQ(long_options[option_index].name, "reloc")) {
+		        else if (STREQ(long_options[option_index].name, "hash")) {
+				if (!calculate(optarg, &pc->nr_hash_queues, NULL, 0)) {
+					error(INFO, "invalid --hash argument: %s\n",
+						optarg);
+				}
+			} else if (STREQ(long_options[option_index].name, "kaslr")) {
+				if (!machine_type("X86_64"))
+					error(INFO, "--kaslr only valid "
+						"with X86_64 machine type.\n");
+				else if (STREQ(optarg, "auto"))
+					kt->flags2 |= (RELOC_AUTO|KASLR);
+				else {
+					if (!calculate(optarg, &kt->relocate,
+							NULL, 0)) {
+						error(INFO,
+						    "invalid --kaslr argument: %s\n",
+						    optarg);
+						program_usage(SHORT_FORM);
+					}
+					kt->relocate *= -1;
+					kt->flags |= RELOC_SET;
+					kt->flags2 |= KASLR;
+				}
+
+			} else if (STREQ(long_options[option_index].name, "reloc")) {
 				if (!calculate(optarg, &kt->relocate, NULL, 0)) {
 					error(INFO, "invalid --reloc argument: %s\n",
 						optarg);
 					program_usage(SHORT_FORM);
-				} 
+				}
 				kt->flags |= RELOC_SET;
 			}
 
@@ -1574,6 +1600,7 @@ dump_program_context(void)
 	fprintf(fp, "          cleanup: %s\n", pc->cleanup);
 	fprintf(fp, "            scope: %lx %s\n", pc->scope,
 		pc->scope ? "" : "(not set)");
+	fprintf(fp, "   nr_hash_queues: %ld\n", pc->nr_hash_queues);
 }
 
 char *

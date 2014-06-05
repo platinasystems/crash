@@ -239,7 +239,7 @@ required in very rare circumstances:
 .P
 .nf
 X86_64:
-  physbase=<physical-address>
+  phys_base=<physical-address>
   irq_eframe_link=<value>
   max_physmem_bits=<value>
   vm=orig       (pre-2.6.11 virtual memory address ranges)
@@ -254,7 +254,9 @@ IA64:
   init_stack_size=<size>
   vm=4l         (4-level page tables)
 ARM:  
-  physbase=<physical-address>
+  phys_base=<physical-address>
+ARM64:  
+  phys_offset=<physical-address>
 .fi
 .RE
 .TP
@@ -297,7 +299,7 @@ or
 .I /proc/kcore
 devices.
 .TP
-.B --log dumpfile
+.BI --log \ dumpfile
 Dump the contents of the kernel log buffer.  A kernel namelist
 argument is not necessary, but the dumpfile must contain the
 VMCOREINFO data taken from the original /proc/vmcore ELF header.
@@ -399,7 +401,8 @@ or
 .TP
 .B --less
 Use 
-.I /usr/bin/less as the command output scroller, overriding 
+.I /usr/bin/less 
+as the command output scroller, overriding 
 any settings in either 
 .I ./.crashrc 
 or 
@@ -447,6 +450,13 @@ command, search for their object files in
 .I directory
 instead of in the standard location.
 .TP
+.BI --kaslr \ offset | auto
+If an x86_64 kernel was configured with 
+.B CONFIG_RANDOMIZE_BASE,
+the offset value is equal to the difference between the symbol values 
+compiled into the vmlinux file and their relocated KASLR values.  If set to
+auto, the KASLR offset value will be automatically calculated.
+.TP
 .BI --reloc \ size
 When analyzing live x86 kernels that were configured with a
 .B CONFIG_PHYSICAL_START
@@ -454,6 +464,10 @@ value that is larger than its
 .B CONFIG_PHYSICAL_ALIGN
 value, then it will be necessary to enter
 a relocation size equal to the difference between the two values.
+.TP
+.BI --hash \ count
+Set the number of internal hash queue heads used for list gathering
+and verification.  The default count is 32768.
 .TP
 .B --minimal
 Bring up a session that is restricted to the 

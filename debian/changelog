@@ -1,3 +1,146 @@
+crash (7.0.6-1) unstable; urgency=low
+
+  * Fix for custom X86_64 kernels that change the declaration of the
+    context_switch() function so that it is not an inline function.  Without
+    the patch, the message "crash: cannot determine thread return address" is
+    displayed during invocation, and backtraces of blocked tasks may have
+    missing or invalid frames.
+  * Fix to prevent a possible invocation-time error on Linux 3.7 and later
+    kernels configured with CONFIG_SLAB, running against vmcore files filtered
+    with the makedumpfile(8) facility.  Without the patch, the message "crash:
+    page excluded: kernel virtual address: <address>  type: kmem_cache buffer"
+    is immediately followed by the message "crash: unable to initialize kmem
+    slab cache subsystem".  Because of a kernel data structure name change
+    from "cache_cache" to "kmem_cache_boot", the crash utility failed to
+    properly downsize the stored size of the kernel's kmem_cache data
+    structure from the size indicated by the vmlinux debuginfo data.  This in
+    turn could lead to reading beyond the end of a kmem_cache data structure
+    into a page of memory that had been excluded from the vmcore.  The fix was
+    also applied to kernels configured with CONFIG_SLUB.
+  * Added a new "--kaslr <offset>" command line option for X86_64 kernels that
+    are configured with CONFIG_RANDOMIZE_BASE.  The offset value must be equal
+    to the difference between the symbol values compiled into the vmlinux file
+    and their relocated KASLR values.
+  * Added a new "--kaslr=auto" command line option for X86_64 kernels that
+    that are configured with CONFIG_RANDOMIZE_BASE.  When set to "auto", the
+    KASLR relocation value will be determined automatically by comparing the
+    "_stext" symbol value compiled into the vmlinux file with the _stext
+    symbol value stored in kdump vmcoreinfo data; on live systems the
+    comparison will be made with the "_stext" symbol value that is found in
+    /proc/kallsyms.
+  * Enable kernel text line number capability for the "dis -l", "bt -l", "sys
+    -c", and "sym" commands for kernels that are configured with
+    CONFIG_RANDOMIZE_BASE.
+  * Fix for the "crash --log vmcore" command to account for the kernel data
+    structure and VMCOREINFO string name changes from "log" to "printk_log" in
+    Linux 3.11-rc4 and later kernels.  Without the patch, the command fails
+    with the error message "crash: VMCOREINFO: no log buffer data".
+  * Adjustment to the internal symbol-handling to prevent the usage of kernel
+    system call alias/wrapper names, for examples, "SyS_read" and
+    "compat_SyS_futex" instead of "sys_read" and "compat_sys_futex".  Without
+    the patch, commands such as "dis", "sym <address>", and "sys -c" display
+    the alias/wrapper name instead of the real system call name in Linux 3.10
+    and later kernels.
+  * Increase the internal hash queue head count from 128 to 32768.  The hash
+    queue is used for gathering and verifying lists, and the original count of
+    128 may be overwhelmed if a list is extremely large.  For example, on a
+    256GB system with 192GB of free pages, the "kmem -f" command takes hours
+    to complete; with this patch, the time is reduced to a few minutes.  In
+    addition, a new command line option "--hash <count>" has been added to
+    allow a user to override the default hash queue head count of 32768.
+  * Fix for the "kmem -F" display and the "kmem -f <address>" or "kmem
+    <address>" options.  Without the patch, "kmem -F" does not display the
+    first page in a list of free page blocks on its own line, but rather at
+    the end of the previous line that shows the area number, block size, and
+    free_area struct address that the page is linked to.  Due to this error,
+    both "kmem -f <address>" and "kmem -f address>" would not find the
+    associated page or page block if it happened to be the first page or page
+    block in the list.
+  * Created a new feature for the internal do_list() function if it is
+    necessary to immediately perform a function for each entry in a list while
+    the list is being traversed.  A callback function, and an option callback
+    data pointer, can be registered in the list_data structure.  The address
+    of each entry in the list along with the optional callback data pointer
+    will be passed to the callback function.  If desired, the callback
+    function may also dictate that do_list() should stop the list traversal
+    and return immediately to its caller.
+  * Made the "kmem -f <address>" and "kmem <address>" options more efficient
+    by using the new do_list() callback function feature above as well as
+    restricting the search to only the NUMA node that contains the address.
+  * If the first assembly language instruction in an X86_64 function is "nopl
+    0x0(%rax,%rax,1)" or "data32 data32 data32 xchg %ax,%ax", which are
+    generated when the ftrace facility is configured, the X86_64 "dis" command
+    will append "[FTRACE NOP]" to the line.
+  * Correction for the "crash -h" and crash.8 man page documentation of the
+    "--machdep phys_base=<physical-address>" command line option.  In both
+    places the parameter mistakenly indicated "physbase".
+  * If a host build system does not have /usr/bin/wget installed, and the
+    crash package is built from a directory that was git-cloned from
+    github.com/crash-utility/crash.git, the error message has been clarified
+    to indicate "/usr/bin/wget is required to download gdb-7.6.tar.gz".
+    Without the patch, the message indicates "tar (child): gdb-7.6.tar.gz:
+    Cannot open: No such file or directory".
+  * Updated the ARM64 implementation to support Linux 3.13 and later kernels
+    that expand to a 42-bit address space when 64K pages are configured.  This
+    is also the first crash version that has been tested on a live ARM64
+    system with 4K pages, where it cleanly make it to the "crash>" prompt.
+    However, it should be noted that some commands (most notably "bt") still
+    do not work as of yet.
+  * Document the "--machdep phys_offset=<physical-address>" command line
+    option for the ARM64 architecture in the crash.8 man page and the "crash
+    -h" output.
+  * Fix for KVM dumpfiles created with "virsh dump --memory-only" if an X86_64
+    kernel was loaded with a non-zero "phys_base".  Without the patch, the
+    crash session fails with the warning message "WARNING: cannot read
+    linux_banner string" followed by the fatal error message "crash: vmlinux
+    and <dumpfile name> do not match!".
+  * Initial working implementation of the basic ARM64 "bt" command, with
+    several command options still under development.  In-kernel exception
+    frames are only dumped if the exception handler function is contained
+    within the symbol boundaries from "__exception_text_start" to
+    "__exception_text_end"; when ARM64 kdump is eventually implemented,
+    further exception-related work will be resumed.
+  * Cleaned up the exception frame displays of 64-bit in-kernel and both
+    32-bit and 64-bit user-mode exceptions.
+  * Implemented support for the ARM64 "bt -e" option.
+  * Implemented support for the ARM64 "bt -l" option.
+  * Update for the X86_64 "bt -l" option such that it also displays the
+    available file and line number information for functions indicated as the
+    "exception RIP" in kernel exception frames.  The line number information
+    will follow the exception frame register dump.
+  * Fix for the ARM64 virtual-to-physical translation of vmemmap page
+    structure addresses for kernels configured with 4K pages.  Without the
+    patch, any command that required the contents of a page structure would
+    fail with a readmem error.
+  * Added support for the ARM64 architecture in the extensions/snap.c
+    extension module.  Also fixed the progress percentage display to correct
+    for systems which have non-zero starting physical addresses.
+  * Implemented support for the ARM64 "bt -f" and "bt -F[F]" options.
+  * Increase the ARM64 PTRS_PER_PGD_L2_64K from 1024 to 9182 to account for
+    the Linux 3.13 increase of the ARM64 virtual address space size from 39 to
+    42 bits when 64K pages are configured.  Without the patch, the warning
+    message "WARNING: cannot access vmalloc'd module memory" is displayed
+    during session initialization.
+  * Fix for the "vm -p" option on ARM64 so that file-backed pages are properly
+    translated to the filename and offset.  Without the patch, file-backed
+    pages are erroneously shown as being backed on a swap device.
+  * Increment maximum ARM64 physical address from 40 to 48 bits to match
+    upstream kernel commit 87366d8cf7b3f6dc34633938aa8766e5a390ce33.
+  * Fix for a segmentation violation generated by the "crash -g vmlinux"
+    command on ARM64.
+  * Fix for the ARM64 "vtop <address>" command on kernels configured with 64K
+    pages if the address argument is located in the kernel logical memory map
+    region, which uses 512MB hugepage mappings.  Without the patch, the
+    verbose page table walk mistakenly continues to the PTE level.
+  * Fix for ARM64 /proc/kcore support.  Without the patch, the crash session
+    fails with the warning message "WARNING: cannot read linux_banner string"
+    followed by the fatal error message "crash: vmlinux and <dumpfile name> do
+    not match!".  At this point in time, the kernel requires a patch to the
+    ARM64 kern_addr_valid() function to properly allow memory to be read from
+    the kernel logical memory map region.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 05 Jun 2014 09:26:32 -0600
+
 crash (7.0.5-1) unstable; urgency=low
 
   * New upstream version 7.0.5
