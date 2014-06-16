@@ -36,7 +36,7 @@ static void parent_list(ulong);
 static void child_list(ulong);
 static void initialize_task_state(void);
 static void dump_task_states(void);
-static void show_ps_data(ulong, struct task_context *);
+static void show_ps_data(ulong, struct task_context *, struct psinfo *);
 static void show_task_times(struct task_context *, ulong);
 static void show_task_args(struct task_context *);
 static void show_task_rlimit(struct task_context *);
@@ -54,6 +54,7 @@ static long rq_idx(int);
 static long cpu_idx(int);
 static void dump_runq(void);
 static void dump_on_rq_timestamp(void);
+static void dump_on_rq_milliseconds(void);
 static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
 static void dump_task_runq_entry(struct task_context *, int);
@@ -98,9 +99,12 @@ static void foreach_cleanup(void *);
 static void ps_cleanup(void *);
 static char *task_pointer_string(struct task_context *, ulong, char *);
 static int panic_context_adjusted(struct task_context *tc);
-static void show_last_run(struct task_context *);
+static void show_last_run(struct task_context *, struct psinfo *);
+static void show_milliseconds(struct task_context *, struct psinfo *);
+static char *translate_nanoseconds(ulonglong, char *);
 static int sort_by_last_run(const void *arg1, const void *arg2);
 static void sort_context_array_by_last_run(void);
+static void show_ps_summary(ulong);
 static void irqstacks_init(void);
 
 /*
@@ -2774,7 +2778,14 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 }
 
 static char *ps_exclusive = 
-    "-a, -t, -c, -p, -g, -l and -r flags are all mutually-exclusive\n";
+    "-a, -t, -c, -p, -g, -l, -m, -L, -S and -r flags are all mutually-exclusive\n";
+
+static void
+check_ps_exclusive(ulong flag, ulong thisflag)
+{
+	if (flag & (PS_EXCLUSIVE & ~thisflag))
+		error(FATAL, ps_exclusive);
+} 
 
 /*
  *  Display ps-like data for all tasks, or as specified by pid, task, or
@@ -2788,12 +2799,13 @@ cmd_ps(void)
 	ulong value;
 	static struct psinfo psinfo;
 	struct task_context *tc;
-	char *p;
+	char *cpuspec, *p;
 
 	BZERO(&psinfo, sizeof(struct psinfo));
+	cpuspec = NULL;
 	flag = 0;
 
-        while ((c = getopt(argcnt, args, "gstcpkuGlar")) != EOF) {
+        while ((c = getopt(argcnt, args, "SgstcpkuGlmarC:")) != EOF) {
                 switch(c)
 		{
 		case 'k':
@@ -2822,33 +2834,43 @@ cmd_ps(void)
 		 *  The a, t, c, p, g, l and r flags are all mutually-exclusive.
 		 */
 		case 'g':
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_TGID_LIST);
 			flag |= PS_TGID_LIST;
 			break;
 
 		case 'a':
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_ARGV_ENVP);
 			flag |= PS_ARGV_ENVP;
 			break;
 
 		case 't':
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_TIMES);
 			flag |= PS_TIMES;
 			break;
 
 		case 'c': 
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_CHILD_LIST);
 			flag |= PS_CHILD_LIST;
 			break;
 
 		case 'p':
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_PPID_LIST);
 			flag |= PS_PPID_LIST;
+			break;
+
+		case 'm':
+			if (INVALID_MEMBER(task_struct_last_run) &&
+			    INVALID_MEMBER(task_struct_timestamp) &&
+			    INVALID_MEMBER(sched_info_last_arrival)) {
+				error(INFO, 
+                            "last-run timestamps do not exist in this kernel\n");
+				argerrs++;
+				break;
+			}
+			if (INVALID_MEMBER(rq_timestamp))
+				option_not_supported(c);
+			check_ps_exclusive(flag, PS_MSECS);
+			flag |= PS_MSECS;
 			break;
 			
 		case 'l':
@@ -2860,8 +2882,7 @@ cmd_ps(void)
 				argerrs++;
 				break;
 			}
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_LAST_RUN);
 			flag |= PS_LAST_RUN;
 			break;
 
@@ -2870,9 +2891,19 @@ cmd_ps(void)
 			break;
 
 		case 'r':
-			if (flag & PS_EXCLUSIVE)
-				error(FATAL, ps_exclusive);
+			check_ps_exclusive(flag, PS_RLIMIT);
 			flag |= PS_RLIMIT;
+			break;
+
+		case 'S':
+			check_ps_exclusive(flag, PS_SUMMARY);
+			flag |= PS_SUMMARY;
+			break;
+
+		case 'C':
+			cpuspec = optarg;
+			psinfo.cpus = get_cpumask_buf();
+			make_cpumask(cpuspec, psinfo.cpus, FAULT_ON_ERROR, NULL);
 			break;
 
 		default:
@@ -2884,14 +2915,24 @@ cmd_ps(void)
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (flag & PS_LAST_RUN)
+	if (flag & (PS_LAST_RUN|PS_MSECS))
 		sort_context_array_by_last_run();
+	else if (psinfo.cpus) {
+		error(INFO, "-C option is only applicable with -l and -m\n");
+		goto bailout;
+	}
 	
 	if (!args[optind]) {
-		show_ps(PS_SHOW_ALL|flag, NULL);
+		show_ps(PS_SHOW_ALL|flag, &psinfo);
 		return;
 	}
 
+	if (flag & PS_SUMMARY)
+		error(FATAL, "-S option takes no arguments\n");
+
+	if (psinfo.cpus)
+		error(INFO, 
+			"-C option is not applicable with specified tasks\n");
 	ac = 0;
 	while (args[optind]) {
 		if (IS_A_NUMBER(args[optind])) {
@@ -2986,13 +3027,16 @@ ps_cleanup(void *arg)
 		regfree(&ps->regex_data[i].regex);
 		free(ps->regex_data[i].pattern);
 	}
+
+	if (ps->cpus)
+		FREEBUF(ps->cpus);
 }
 
 /*
  *  Do the work requested by cmd_ps().
  */
 static void 
-show_ps_data(ulong flag, struct task_context *tc)
+show_ps_data(ulong flag, struct task_context *tc, struct psinfo *psi)
 {
 	struct task_mem_usage task_mem_usage, *tm;
 	char buf1[BUFSIZE];
@@ -3005,6 +3049,10 @@ show_ps_data(ulong flag, struct task_context *tc)
 	if ((flag & PS_KERNEL) && !is_kernel_thread(tc->task))
 		return;
 	if (flag & PS_GROUP) {
+		if (flag & (PS_LAST_RUN|PS_MSECS))
+			error(FATAL, "-G not supported with -%c option\n",
+				flag & PS_LAST_RUN ? 'l' : 'm');
+
 		tgid = task_tgid(tc->task);
 		if (tc->pid != tgid) {
 			if (pc->curcmd_flags & TASK_SPECIFIED) {
@@ -3032,8 +3080,12 @@ show_ps_data(ulong flag, struct task_context *tc)
 		fprintf(fp, "\n");
 		return;
 	}
-	if (flag & PS_LAST_RUN) {
-		show_last_run(tc);
+	if (flag & (PS_LAST_RUN)) {
+		show_last_run(tc, psi);
+		return;
+	}
+	if (flag & (PS_MSECS)) {
+		show_milliseconds(tc, psi);
 		return;
 	}
 	if (flag & PS_ARGV_ENVP) {
@@ -3092,9 +3144,19 @@ show_ps(ulong flag, struct psinfo *psi)
 			return;
 		}
 
+		if (flag & PS_SUMMARY) {
+			show_ps_summary(flag);
+			return;
+		}
+
+		if (psi->cpus) {
+			show_ps_data(flag, NULL, psi);
+			return;
+		}
+
 		tc = FIRST_CONTEXT();
 		for (i = 0; i < RUNNING_TASKS(); i++, tc++)
-			show_ps_data(flag, tc);
+			show_ps_data(flag, tc, NULL);
 		
 		return;
 	}
@@ -3149,40 +3211,225 @@ show_ps(ulong flag, struct psinfo *psi)
 				if (flag & PS_TIMES) 
 					show_task_times(tc, flag);
 				else
-					show_ps_data(flag, tc);
+					show_ps_data(flag, tc, NULL);
 			}
 		}
 	}
 }
 
+static void 
+show_ps_summary(ulong flag)
+{
+	int i, s;
+	struct task_context *tc;
+	char buf[BUFSIZE];
+#define MAX_STATES 20
+	struct ps_state {
+		long cnt;
+		char string[3];
+	} ps_state[MAX_STATES];
+
+	if (flag & (PS_USER|PS_KERNEL|PS_GROUP))
+		error(FATAL, "-S option cannot be used with other options\n");
+
+	for (s = 0; s < MAX_STATES; s++)
+		ps_state[s].cnt = 0;
+
+	tc = FIRST_CONTEXT();
+	for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+		task_state_string(tc->task, buf, !VERBOSE);
+		for (s = 0; s < MAX_STATES; s++) {
+			if (ps_state[s].cnt && 
+			    STREQ(ps_state[s].string, buf)) {
+				ps_state[s].cnt++;
+				break;
+			}
+			if (ps_state[s].cnt == 0) {
+				strcpy(ps_state[s].string, buf); 
+				ps_state[s].cnt++;
+				break;
+			}
+		}
+	}
+	for (s = 0; s < MAX_STATES; s++) {
+		if (ps_state[s].cnt)
+			fprintf(fp, 
+			    "  %s: %ld\n", ps_state[s].string, ps_state[s].cnt);
+	}
+}
+
+
 /*
- *  Display the task preceded by the last_run stamp and it
+ *  Display the task preceded by the last_run stamp and its
  *  current state.
  */
 static void
-show_last_run(struct task_context *tc)
+show_last_run(struct task_context *tc, struct psinfo *psi)
 {
-	int i, c;
+	int i, c, others;
 	struct task_context *tcp;
 	char format[15];
 	char buf[BUFSIZE];
 
-       	tcp = FIRST_CONTEXT();
+	tcp = FIRST_CONTEXT();
 	sprintf(buf, pc->output_radix == 10 ? "%lld" : "%llx", 
 		task_last_run(tcp->task));
 	c = strlen(buf);
 	sprintf(format, "[%c%dll%c] ", '%', c, 
 		pc->output_radix == 10 ? 'u' : 'x');
 
-	if (tc) {
+	if (psi) {
+		for (c = others = 0; c < kt->cpus; c++) {
+			if (!NUM_IN_BITMAP(psi->cpus, c))
+				continue;
+			fprintf(fp, "%sCPU: %d\n", 
+				others++ ? "\n" : "", c);
+			tcp = FIRST_CONTEXT();
+			for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
+				if (tcp->processor != c)
+					continue;
+				fprintf(fp, format, task_last_run(tcp->task));
+				fprintf(fp, "[%s]  ", 
+					task_state_string(tcp->task, buf, !VERBOSE));
+				print_task_header(fp, tcp, FALSE);
+			}
+		}
+	} else if (tc) {
 		fprintf(fp, format, task_last_run(tc->task));
 		fprintf(fp, "[%s]  ", task_state_string(tc->task, buf, !VERBOSE));
 		print_task_header(fp, tc, FALSE);
 	} else {
-        	tcp = FIRST_CONTEXT();
-        	for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
+		tcp = FIRST_CONTEXT();
+		for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
 			fprintf(fp, format, task_last_run(tcp->task));
-			fprintf(fp, "[%s]  ", task_state_string(tc->task, buf, !VERBOSE));
+			fprintf(fp, "[%s]  ", task_state_string(tcp->task, buf, !VERBOSE));
+			print_task_header(fp, tcp, FALSE);
+		}
+	}
+}
+
+/*
+ *  Translate a value in nanoseconds into a string showing days, 
+ *  hours, minutes, seconds and milliseconds.
+ */ 
+static char *
+translate_nanoseconds(ulonglong value, char *buf)
+{
+	ulong days, hours, mins, secs, ms;
+
+	value = value / 1000000L;
+	ms = value % 1000L;
+	value = value / 1000L;	
+	secs = value % 60L;
+	value = value / 60L;
+	mins = value % 60L;
+	value = value / 60L;
+	hours = value % 24L;
+	value = value / 24L;
+	days = value;
+
+	sprintf(buf, "%ld %02ld:%02ld:%02ld.%03ld", 
+		days, hours, mins, secs, ms);
+
+	return buf;
+}
+
+/*
+ *  Display the task preceded by a per-rq translation of the
+ *  sched_info.last_arrival and its current state.
+ */
+static void
+show_milliseconds(struct task_context *tc, struct psinfo *psi)
+{
+	int i, c, others, days, max_days;
+	struct task_context *tcp;
+	char format[15];
+	char buf[BUFSIZE];
+	struct syment *rq_sp;
+	ulong runq;
+	ulonglong rq_clock;
+	long long delta;
+
+	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
+		error(FATAL, "cannot determine per-cpu runqueue address\n");
+
+	tcp = FIRST_CONTEXT();
+	sprintf(buf, pc->output_radix == 10 ? "%lld" : "%llx", 
+		task_last_run(tcp->task));
+	c = strlen(buf);
+	sprintf(format, "[%c%dll%c] ", '%', c, 
+		pc->output_radix == 10 ? 'u' : 'x');
+
+	if (psi) {
+		for (c = others = 0; c < kt->cpus; c++) {
+			if (!NUM_IN_BITMAP(psi->cpus, c))
+				continue;
+
+			fprintf(fp, "%sCPU: %d\n", 
+				others++ ? "\n" : "", c);
+
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				runq = rq_sp->value + kt->__per_cpu_offset[c];
+			else
+				runq = rq_sp->value;
+			readmem(runq + OFFSET(rq_timestamp), KVADDR, &rq_clock,
+				sizeof(ulonglong), "per-cpu rq clock",
+				FAULT_ON_ERROR);
+
+			translate_nanoseconds(rq_clock, buf);
+			max_days = first_space(buf) - buf;
+
+			tcp = FIRST_CONTEXT();
+			for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
+				if (tcp->processor != c)
+					continue;
+				delta = rq_clock - task_last_run(tcp->task);
+				if (delta < 0)
+					delta = 0;
+				translate_nanoseconds(delta, buf);
+				days = first_space(buf) - buf;
+				fprintf(fp, "[%s%s] ", space(max_days - days), 
+					buf);
+				fprintf(fp, "[%s]  ", 
+					task_state_string(tcp->task, 
+						buf, !VERBOSE));
+				print_task_header(fp, tcp, FALSE);
+			}
+		}
+	} else if (tc) {
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+			runq = rq_sp->value + kt->__per_cpu_offset[tc->processor];
+		else
+			runq = rq_sp->value;
+		readmem(runq + OFFSET(rq_timestamp), KVADDR, &rq_clock,
+			sizeof(ulonglong), "per-cpu rq clock",
+			FAULT_ON_ERROR);
+		translate_nanoseconds(rq_clock, buf);
+		max_days = first_space(buf) - buf;
+		delta = rq_clock - task_last_run(tc->task);
+		if (delta < 0)
+			delta = 0;
+		translate_nanoseconds(delta, buf);
+		days = first_space(buf) - buf;
+		fprintf(fp, "[%s%s] ", space(max_days - days), buf);
+		fprintf(fp, "[%s]  ", task_state_string(tc->task, buf, !VERBOSE));
+		print_task_header(fp, tc, FALSE);
+	} else {
+		tcp = FIRST_CONTEXT();
+		for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				runq = rq_sp->value + 
+					kt->__per_cpu_offset[tcp->processor];
+			else
+				runq = rq_sp->value;
+			readmem(runq + OFFSET(rq_timestamp), KVADDR, &rq_clock,
+				sizeof(ulonglong), "per-cpu rq clock",
+				FAULT_ON_ERROR);
+			delta = rq_clock - task_last_run(tcp->task);
+			if (delta < 0)
+				delta = 0;
+			fprintf(fp, "[%s] ", translate_nanoseconds(delta, buf));
+			fprintf(fp, "[%s]  ", task_state_string(tcp->task, buf, !VERBOSE));
 			print_task_header(fp, tcp, FALSE);
 		}
 	}
@@ -5705,6 +5952,11 @@ foreach(struct foreach_data *fd)
                 case FOREACH_PS:
 			if (count_bits_long(fd->flags & FOREACH_PS_EXCLUSIVE) > 1)
 				error(FATAL, ps_exclusive);
+			if ((fd->flags & (FOREACH_l_FLAG|FOREACH_m_FLAG)) &&
+			    (fd->flags & FOREACH_G_FLAG))
+				error(FATAL, "-G not supported with -%c option\n",
+					fd->flags & FOREACH_l_FLAG ? 'l' : 'm');
+
 			BZERO(&psinfo, sizeof(struct psinfo));
 			if (fd->flags & FOREACH_G_FLAG) {
 				if (!hq_open()) {
@@ -5713,8 +5965,12 @@ foreach(struct foreach_data *fd)
 					fd->flags &= ~FOREACH_G_FLAG;
 				}
 			}
-			if (fd->flags & FOREACH_l_FLAG)
+			if (fd->flags & (FOREACH_l_FLAG|FOREACH_m_FLAG))
 				sort_context_array_by_last_run();
+			if ((fd->flags & FOREACH_m_FLAG) && 
+			    INVALID_MEMBER(rq_timestamp))
+				option_not_supported('m');
+
 			print_header = FALSE;
 			break;
 
@@ -5933,6 +6189,8 @@ foreach(struct foreach_data *fd)
 					cmdflags |= PS_TIMES;
 				else if (fd->flags & FOREACH_l_FLAG)
 					cmdflags |= PS_LAST_RUN;
+				else if (fd->flags & FOREACH_m_FLAG)
+					cmdflags |= PS_MSECS;
 				else if (fd->flags & FOREACH_r_FLAG)
 					cmdflags |= PS_RLIMIT;
 				else if (fd->flags & FOREACH_g_FLAG)
@@ -7196,8 +7454,9 @@ cmd_runq(void)
 	int sched_debug = 0;
 	int dump_timestamp_flag = 0;
 	int dump_task_group_flag = 0;
+	int dump_milliseconds_flag = 0;
 
-        while ((c = getopt(argcnt, args, "dtg")) != EOF) {
+        while ((c = getopt(argcnt, args, "dtgm")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -7205,6 +7464,9 @@ cmd_runq(void)
 			break;
 		case 't':
 			dump_timestamp_flag = 1;
+			break;
+		case 'm':
+			dump_milliseconds_flag = 1;
 			break;
 		case 'g':
 			if (INVALID_MEMBER(task_group_cfs_rq) ||
@@ -7225,6 +7487,11 @@ cmd_runq(void)
 
 	if (dump_timestamp_flag) {
                 dump_on_rq_timestamp();
+                return;
+        }
+
+	if (dump_milliseconds_flag) {
+                dump_on_rq_milliseconds();
                 return;
         }
 
@@ -7259,6 +7526,8 @@ dump_on_rq_timestamp(void)
 
 	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
 		error(FATAL, "per-cpu runqueues do not exist\n");
+	if (INVALID_MEMBER(rq_timestamp))
+		option_not_supported('t');
 
 	for (cpu = 0; cpu < kt->cpus; cpu++) {
 		if ((kt->flags & SMP) && (kt->flags &PER_CPU_OFF))
@@ -7295,6 +7564,80 @@ dump_on_rq_timestamp(void)
 		} else
 			fprintf(fp, "\n"); 
 
+	}
+}
+
+/*
+ *  Displays the runqueue and active task timestamps of each cpu.
+ */
+static void
+dump_on_rq_milliseconds(void)
+{
+	ulong runq;
+	char buf[BUFSIZE];
+	struct syment *rq_sp;
+	struct task_context *tc;
+	int cpu, max_indent, indent, max_days, days;
+	long long delta;
+	ulonglong task_timestamp, rq_timestamp;
+
+	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
+		error(FATAL, "per-cpu runqueues do not exist\n");
+	if (INVALID_MEMBER(rq_timestamp))
+		option_not_supported('m');
+
+	if (kt->cpus < 10)
+		max_indent = 1;
+	else if (kt->cpus < 100)
+		max_indent = 2;
+	else if (kt->cpus < 1000)
+		max_indent = 3;
+	else
+		max_indent = 4;
+
+	max_days = days = 0;
+
+	for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if ((kt->flags & SMP) && (kt->flags &PER_CPU_OFF))
+			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
+		else
+			runq = rq_sp->value;
+
+		readmem(runq + OFFSET(rq_timestamp), KVADDR, &rq_timestamp,
+			sizeof(ulonglong), "per-cpu rq timestamp",
+			FAULT_ON_ERROR);
+
+		if (!max_days) {
+			translate_nanoseconds(rq_timestamp, buf);
+			max_days = first_space(buf) - buf;
+		}
+
+		if (cpu < 10)
+			indent = max_indent;
+		else if (cpu < 100)
+			indent = max_indent - 1;
+		else if (cpu < 1000)
+			indent = max_indent - 2;
+		else
+			indent = max_indent - 4;
+
+		if ((tc = task_to_context(tt->active_set[cpu])))
+			task_timestamp = task_last_run(tc->task);
+		else { 
+			fprintf(fp, "%sCPU %d: [unknown]\n", space(indent), cpu);
+			continue;
+		}
+
+		delta = rq_timestamp - task_timestamp;
+		if (delta < 0)
+			delta = 0;
+		translate_nanoseconds(delta, buf);
+		days = first_space(buf) - buf;
+
+		fprintf(fp, 
+		    "%sCPU %d: [%s%s]  PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+			space(indent), cpu, space(max_days - days), buf, tc->pid,
+			tc->task, tc->comm);
 	}
 }
 
@@ -7791,7 +8134,7 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu,
 	/*
 	 *  check if "curr" is the task that is current running task
 	 */
-	if (!curr_my_q && (curr - OFFSET(task_struct_se)) == ctc->task) {
+	if (!curr_my_q && ctc && (curr - OFFSET(task_struct_se)) == ctc->task) {
 		/* curr is not in the rb tree, so let's print it here */
 		total++;
 		INDENT(5 + 3 * depth);
@@ -7943,7 +8286,11 @@ task_group_offset_init(void)
 		MEMBER_OFFSET_INIT(task_group_css, "task_group", "css");
 		MEMBER_OFFSET_INIT(cgroup_subsys_state_cgroup,
 			"cgroup_subsys_state", "cgroup");
+
 		MEMBER_OFFSET_INIT(cgroup_dentry, "cgroup", "dentry");
+		MEMBER_OFFSET_INIT(cgroup_kn, "cgroup", "kn");
+		MEMBER_OFFSET_INIT(kernfs_node_name, "kernfs_node", "name");
+		MEMBER_OFFSET_INIT(kernfs_node_parent, "kernfs_node", "parent");
 
 		MEMBER_OFFSET_INIT(task_group_siblings, "task_group", "siblings");
 		MEMBER_OFFSET_INIT(task_group_children, "task_group", "children");
@@ -8324,8 +8671,9 @@ is_task:
 static char *
 get_task_group_name(ulong group)
 {
-	ulong cgroup, dentry, name;
+	ulong cgroup, dentry, kernfs_node, parent, name;
 	char *dentry_buf, *tmp;
+	char buf[BUFSIZE];
 	int len;
 
 	tmp = NULL;
@@ -8335,20 +8683,52 @@ get_task_group_name(ulong group)
 	if (cgroup == 0)
 		return NULL;
 
-	readmem(cgroup + OFFSET(cgroup_dentry), KVADDR, &dentry, sizeof(ulong),
-		"cgroup dentry", FAULT_ON_ERROR);
-	if (dentry == 0)
+	if (VALID_MEMBER(cgroup_dentry)) {
+		readmem(cgroup + OFFSET(cgroup_dentry), KVADDR, &dentry, sizeof(ulong),
+			"cgroup dentry", FAULT_ON_ERROR);
+		if (dentry == 0)
+			return NULL;
+	
+		dentry_buf = GETBUF(SIZE(dentry));
+		readmem(dentry, KVADDR, dentry_buf, SIZE(dentry),
+			"dentry", FAULT_ON_ERROR);
+		len = UINT(dentry_buf + OFFSET(dentry_d_name) + OFFSET(qstr_len));
+		tmp = GETBUF(len + 1);
+		name = ULONG(dentry_buf + OFFSET(dentry_d_name) + OFFSET(qstr_name));
+		readmem(name, KVADDR, tmp, len, "qstr name", FAULT_ON_ERROR);
+	
+		FREEBUF(dentry_buf);
+		return tmp;
+	}
+
+	/*
+	 *  Emulate kernfs_name() and kernfs_name_locked()
+	 */
+	if (INVALID_MEMBER(cgroup_kn) || INVALID_MEMBER(kernfs_node_name) ||
+	    INVALID_MEMBER(kernfs_node_parent))
 		return NULL;
 
-	dentry_buf = GETBUF(SIZE(dentry));
-	readmem(dentry, KVADDR, dentry_buf, SIZE(dentry),
-		"dentry", FAULT_ON_ERROR);
-	len = UINT(dentry_buf + OFFSET(dentry_d_name) + OFFSET(qstr_len));
-	tmp = GETBUF(len + 1);
-	name = ULONG(dentry_buf + OFFSET(dentry_d_name) + OFFSET(qstr_name));
-	readmem(name, KVADDR, tmp, len, "qstr name", FAULT_ON_ERROR);
+	readmem(cgroup + OFFSET(cgroup_kn), KVADDR, &kernfs_node, sizeof(ulong),
+		"cgroup kn", FAULT_ON_ERROR);
+	if (kernfs_node == 0)
+		return NULL;
 
-	FREEBUF(dentry_buf);
+	readmem(kernfs_node + OFFSET(kernfs_node_parent), KVADDR, &parent, 
+		sizeof(ulong), "kernfs_node parent", FAULT_ON_ERROR);
+	if (!parent) {
+		tmp = GETBUF(2);
+		strcpy(tmp, "/");
+		return tmp;
+	}
+
+	readmem(kernfs_node + OFFSET(kernfs_node_name), KVADDR, &name, 
+		sizeof(ulong), "kernfs_node name", FAULT_ON_ERROR);
+	if (!name || !read_string(name, buf, BUFSIZE-1))
+		return NULL;
+
+	tmp = GETBUF(strlen(buf)+1);
+	strcpy(tmp, buf);
+
 	return tmp;
 }
 

@@ -92,7 +92,7 @@ map_cpus_to_prstatus(void)
 	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
 
 	for (i = 0, j = 0; i < nrcpus; i++) {
-		if (in_cpu_map(ONLINE, i))
+		if (in_cpu_map(ONLINE_MAP, i))
 			nd->nt_prstatus_percpu[i] = nt_ptr[j++];
 	}
 
@@ -118,7 +118,6 @@ is_netdump(char *file, ulong source_query)
         Elf64_Off offset64;
 	ulong tmp_flags;
 	char *tmp_elf_header;
-	char *tmpstring;
 
 	if ((fd = open(file, O_RDWR)) < 0) {
         	if ((fd = open(file, O_RDONLY)) < 0) {
@@ -399,6 +398,8 @@ is_netdump(char *file, ulong source_query)
 	if (CRASHDEBUG(1))
 		netdump_memory_dump(fp);
 
+	pc->read_vmcoreinfo = vmcoreinfo_read_string;
+
 	if ((source_query == KDUMP_LOCAL) && 
 	    (pc->flags2 & GET_OSRELEASE))
 		kdump_get_osrelease();
@@ -409,19 +410,7 @@ is_netdump(char *file, ulong source_query)
 		pc->readmem = read_kdump;
 		nd->flags |= KDUMP_LOCAL;
 		pc->flags |= KDUMP;
-		get_log_from_vmcoreinfo(file, vmcoreinfo_read_string);
-	}
-
-	/*
-	 * We may need the _stext_SYMBOL from the vmcore_info to adjust for
-	 * kaslr and we may not have gotten it elsewhere.
-	 */
-	if (source_query == KDUMP_LOCAL) {
-		if ((tmpstring = vmcoreinfo_read_string("SYMBOL(_stext)"))) {
-			kt->vmcoreinfo._stext_SYMBOL =
-				htol(tmpstring, RETURN_ON_ERROR, NULL);
-			free(tmpstring);
-		}
+		get_log_from_vmcoreinfo(file);
 	}
 
 	return nd->header_size;
@@ -780,7 +769,7 @@ get_netdump_panic_task(void)
 		crashing_cpu = -1;
 		if (kernel_symbol_exists("crashing_cpu")) {
 			get_symbol_data("crashing_cpu", sizeof(int), &i);
-			if ((i >= 0) && in_cpu_map(ONLINE, i)) {
+			if ((i >= 0) && in_cpu_map(ONLINE_MAP, i)) {
 				crashing_cpu = i;
 				if (CRASHDEBUG(1))
 					error(INFO, 

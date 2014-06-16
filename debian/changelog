@@ -1,3 +1,122 @@
+crash (7.0.7-1) unstable; urgency=low
+
+  * Export the static ELF and compressed kdump vmcoreinfo_read_string()
+    functions from netdump.c and kdump.c via a new read_vmcoreinfo() method in
+    the global program_context structure.  The function
+    get_log_from_vmcoreinfo() will access vmcoreinfo data via the new pointer
+    instead of requiring its callers to pass pointers to their
+    dumpfile-specific function.
+  * Linux 3.15 and later kernels configured with CONFIG_RANDOMIZE_BASE can be
+    now be readily identified because of new kernel symbols that have been
+    added.  For those kernels, the new "--kaslr=<offset>" and/or
+    "--kaslr=auto" options are not necessary for ELF or compressed kdump
+    vmcores, or for live systems that have /proc/kallsyms showing the
+    relocated symbol values.  A new KASLR initialization function called
+    kaslr_init() is now called by symtab_init() prior to the initial
+    symbol-sorting operation.  If kaslr_init() determines that KASLR may be in
+    effect, it will trigger a search for the relevant vmlinux symbols during
+    the sorting operation, which in turn will cause the relocation value to be
+    automatically calculated.
+  * Implemented a new "bt -c cpu(s)" option to display the backtrace of the
+    active task on one or more cpus.  The cpus must be specified in a comma-
+    and/or dash-separated list; for examples ""3", "1,8,9", "1-23", or
+    "1,8,9-14".  Similar to "bt -a", the option is only applicable with crash
+    dumps.
+  * Fix for Linux 3.11 and later ARM kernels, in which all non-panicking cpus
+    offline themselves during a kdump procedure.  This causes an invalid cpu
+    count determination during crash session initialization from an ARM
+    vmcore.  The patch utilizes the cpu count found in the cpu_active_map if
+    it is greater than the count in the cpu_online_map.  In addition, the
+    maximum NR_CPUS value for the ARM architecture has been raised from 4 to
+    32.
+  * Fix for the X86_64 "bt" command on Linux 3.3 and later kernels to properly
+    display exception frame register contents on NMI stacks.  Kernel commit
+    3f3c8b8c4b2a34776c3470142a7c8baafcda6eb0 added 12 more values to the NMI
+    exception stack to handle nested NMIs caused by page faults or breakpoints
+    that could occur while handling an NMI exception.
+  * Kernel commit 28696f434fef0efa97534b59986ad33b9c4df7f8 changed the stack
+    layout again, swapping the location of the "saved" and "copied" registers.
+    This can be detected automatically, because the "copied" registers contain
+    either a copy of the "saved" registers, or point to "repeat_nmi". So, if
+    "repeat_nmi" is found as the return address, assume that this is the old
+    layout, and adjust the stack pointer again.  Without the patch, incorrect
+    register values are displayed in the exception frame dump in the NMI stack
+    backtrace.
+  * Fix for the built-in "g" alias, which apparently has not worked correctly
+    since crash-5.1.4.  Without the patch, if the "g" alias and the first
+    argument are separated by one space, then the first first character of
+    that argument would get stripped prior to being passed to the embedded gdb
+    module.
+  * Removed the BASELEVEL_REVISION string from defs.h, which serves no purpose
+    since the deprecation of the remote daemon, and typically has been out of
+    sync with the crash version.
+  * Fix for the "p", "irq", "struct", "union" and "*" commands if a cpu
+    specification contains an invalid cpu number.  Without the patch, a
+    segmentation violation may be generated.
+  * Implemented a new capability for the "ptov" command that takes a per-cpu
+    offset and cpu specification argument and translates it into the kernel
+    virtual addresses for the cpus specified.
+  * Implemented a new "ps -m" option that is a similar, complementary option
+    to "ps -l", but which translates the task timestamp value from a decimal
+    or hexadecimal nanoseconds value into a more human-readable string
+    consisting of the number of days, hours, minutes, seconds and milliseconds
+    that have elapsed since the task started executing on a cpu.  More
+    accurately described, it is the time difference between the timestamp
+    copied from the per-cpu runqueue clock when the task last started
+    executing compared to the most current value of the per-cpu runqueue
+    clock.
+  * In addition, a new "ps -C <cpu-specifier>" option has been added that can
+    only be used with "ps -l" and "ps -m", which sorts the global task list
+    into per-cpu blocks; the cpu-specifier uses the standard comma or dash
+    separated list, expressed as "-C 1,3,5", "-C 1-3", "-C 1,3,5-7,10", or
+    "-Call" or "-Ca" for all cpus.
+  * Implemented a new "runq -m" option that is a simliar, complementary option
+    to "runq -t", but which displays the amount of time that the active task
+    on each cpu has been running, expressed in a format consisting of days,
+    hours, minutes, seconds and milliseconds.
+  * Implemented a new "kmem -h" option that displays the address of each
+    hugepage hstate array entry, its hugepage size, its free and total counts,
+    and name string.
+  * Implemented a new "ps -S" option that displays a summary consisting of the
+    number of tasks in a task state.
+  * Fix for the "arguments-input-file" feature to protect against a called
+    command modifying an argument string.  For example, the "struct" command
+    modifies "-l struct_name.member" argument strings, and so without the
+    patch, all iterative calls after the first one will fail.
+  * Fix failure to build from source when compiling the crash utility with
+    gcc-4.9 (closes: #746835)
+  * Fix for displaying enum values that are greater than 32-bits in size.
+    Without the patch, the upper 32-bits are clipped off and displayed as
+    integer-sized value.
+  * If the kernel (live or dumpfile) has the "kpatch" module installed, the
+    tag "[KPATCH]" will be displayed next to the kernel name in the initial
+    system banner and by the "sys" command.
+  * Fix for the "DEBUG KERNEL:" display in the initial system banner and by
+    the "sys" command when using a System.map file with a Linux 3.0 and later
+    debug kernel.  Without the patch, the kernel version is not displayed in
+    parentheses following the debug kernel name.
+  * If the gdb-<version>.patch file has changed and a rebuild is being done
+    from within a previously-existing build tree, "patch -N" the gdb sources,
+    and start the rebuild from the gdb-<version> directory instead of the
+    gdb-<version>/gdb directory.
+  * Fix to prevent a possible segmentation violation generated by the "runq
+    -g" command when run on a very active live system due to an active task on
+    a cpu exiting while the command is running.
+  * Fix for the "runq -g" command on Linux 3.15 and later kernels, where the
+    cgroup_name() function now utilizes kernfs_name().  Without the patch, the
+    command fails with the error message "runq: invalid structure member
+    offset: cgroup_dentry".
+  * Fix for the "extend" command when running with an x86_64 crash binary that
+    was built with "make target=ARM64" in order to analyze ARM64 dumpfiles on
+    an x86_64 host.  Without the patch, if the extend command is used with an
+    extension module built in the same manner, it fails with the message
+    "extend: <module>.so: not an ELF format object file".
+  * Introduce support for 32-bit ARM kernels that are configured with
+    CONFIG_ARM_LPAE.  The patch implements the virtual-to-physical address
+    translation of 64-bit PTEs used by ARM LPAE kernels.
+
+ -- Troy Heber <troyh@debian.org>  Mon, 16 Jun 2014 10:24:39 -0600
+
 crash (7.0.6-1) unstable; urgency=low
 
   * Fix for custom X86_64 kernels that change the declaration of the

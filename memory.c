@@ -278,6 +278,7 @@ static int verify_pfn(ulong);
 static void dump_per_cpu_offsets(void);
 static void dump_page_flags(ulonglong);
 static ulong kmem_cache_nodelists(ulong);
+static void dump_hstates(void);
 
 /*
  *  Memory display modes specific to this file.
@@ -3126,17 +3127,20 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 }
 
 /*
- *  Runs PTOV() on the physical address argument.
+ *  Runs PTOV() on the physical address argument or translates
+ *  a per-cpu offset and cpu specifier.
  */
 void
 cmd_ptov(void)
 {
-	int c, unknown;
+	int c, len, unknown;
 	ulong vaddr;
 	physaddr_t paddr, paddr_test;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	int others;
+	char *cpuspec;
+	ulong *cpus;
 
         while ((c = getopt(argcnt, args, "")) != EOF) {
                 switch(c)
@@ -3151,21 +3155,56 @@ cmd_ptov(void)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
 	others = 0;
+	cpuspec = NULL;
+	cpus = NULL;
+
         while (args[optind]) {
+		cpuspec = strchr(args[optind], ':');
+		if (cpuspec) {
+			*cpuspec++ = NULLCHAR;
+			cpus = get_cpumask_buf();
+			if (STREQ(cpuspec, ""))
+				SET_BIT(cpus, CURRENT_CONTEXT()->processor);
+			else
+				make_cpumask(cpuspec, cpus, FAULT_ON_ERROR, NULL);
+		}
+
 		paddr = htoll(args[optind], FAULT_ON_ERROR, NULL);
-		vaddr = PTOV(paddr);
 
-		unknown = BITS32() && (!kvtop(0, vaddr, &paddr_test, 0) || 
-		    (paddr_test != paddr));
-
-		fprintf(fp, "%s%s  %s\n", others++ ? "\n" : "", 
-		    mkstring(buf1, VADDR_PRLEN, LJUST, "VIRTUAL"),
-		    mkstring(buf2, VADDR_PRLEN, LJUST, "PHYSICAL"));
-		fprintf(fp, "%s  %s\n", unknown ? 
-		    mkstring(buf1, VADDR_PRLEN, LJUST, "unknown") :
-		    mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX, MKSTR(vaddr)),
-                    mkstring(buf2, VADDR_PRLEN, LJUST|LONGLONG_HEX, 
-			MKSTR(&paddr)));
+		if (cpuspec) {
+			sprintf(buf1, "[%d]", kt->cpus-1);
+			len = strlen(buf1) + 2;
+	
+			fprintf(fp, "%sPER-CPU OFFSET: %llx\n", 
+				others++ ? "\n" : "", (ulonglong)paddr);
+			fprintf(fp, "  %s  %s\n",
+		    		mkstring(buf1, len, LJUST, "CPU"),
+		    		mkstring(buf2, VADDR_PRLEN, LJUST, "VIRTUAL"));
+			for (c = 0; c < kt->cpus; c++) {
+				if (!NUM_IN_BITMAP(cpus, c))
+					continue;
+				vaddr = paddr + kt->__per_cpu_offset[c];
+				sprintf(buf1, "[%d]", c);
+				fprintf(fp, "  %s%lx\n", 
+			    		mkstring(buf2, len, LJUST, buf1),
+					vaddr);
+			}
+			FREEBUF(cpus);
+		} else {
+			vaddr = PTOV(paddr);
+	
+			unknown = BITS32() && (!kvtop(0, vaddr, &paddr_test, 0) || 
+			    (paddr_test != paddr));
+	
+			fprintf(fp, "%s%s  %s\n", others++ ? "\n" : "", 
+			    mkstring(buf1, VADDR_PRLEN, LJUST, "VIRTUAL"),
+			    mkstring(buf2, VADDR_PRLEN, LJUST, "PHYSICAL"));
+			fprintf(fp, "%s  %s\n", unknown ? 
+			    mkstring(buf1, VADDR_PRLEN, LJUST, "unknown") :
+			    mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX, MKSTR(vaddr)),
+			    mkstring(buf2, VADDR_PRLEN, LJUST|LONGLONG_HEX, 
+				MKSTR(&paddr)));
+		}
 
 		optind++;
 	}
@@ -4162,6 +4201,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
  *      -c  displays the number of pages in the page_hash_table.
  *      -C  displays all entries in the page_hash_table.
  *      -i  displays informational data shown by /proc/meminfo.
+ *      -h  hugepage information from hstates[] array
  *
  *      -P  forces address to be defined as a physical address
  * address  when used with -f, the address can be either a page pointer
@@ -4210,7 +4250,7 @@ cmd_kmem(void)
 	int i;
 	int c;
 	int sflag, Sflag, pflag, fflag, Fflag, vflag, zflag, oflag, gflag; 
-	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag, Vflag;
+	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag, Vflag, hflag;
 	struct meminfo meminfo;
 	ulonglong value[MAXARGS];
 	char buf[BUFSIZE];
@@ -4220,12 +4260,12 @@ cmd_kmem(void)
 	spec_addr = 0;
         sflag =	Sflag = pflag = fflag = Fflag = Pflag = zflag = oflag = 0;
 	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = Vflag = 0;
-	gflag = 0;
+	gflag = hflag = 0;
 	escape = FALSE;
 	BZERO(&meminfo, sizeof(struct meminfo));
 	BZERO(&value[0], sizeof(ulonglong)*MAXARGS);
 
-        while ((c = getopt(argcnt, args, "gI:sSFfpvczCinl:L:PVo")) != EOF) {
+        while ((c = getopt(argcnt, args, "gI:sSFfpvczCinl:L:PVoh")) != EOF) {
                 switch(c)
 		{
 		case 'V':
@@ -4242,6 +4282,10 @@ cmd_kmem(void)
 
 		case 'i': 
 			iflag = 1;
+			break;
+
+		case 'h': 
+			hflag = 1;
 			break;
 
 		case 'C':
@@ -4336,7 +4380,7 @@ cmd_kmem(void)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
         if ((sflag + Sflag + pflag + fflag + Fflag + Vflag + oflag +
-            vflag + Cflag + cflag + iflag + lflag + Lflag + gflag) > 1) {
+            vflag + Cflag + cflag + iflag + lflag + Lflag + gflag + hflag) > 1) {
 		error(INFO, "only one flag allowed!\n");
 		cmd_usage(pc->curcmd, SYNOPSIS);
 	} 
@@ -4471,7 +4515,7 @@ cmd_kmem(void)
                  * no value arguments allowed! 
                  */
                 if (zflag || nflag || iflag || Fflag || Cflag || Lflag || 
-		    Vflag || oflag) {
+		    Vflag || oflag || hflag) {
 			error(INFO, 
 			    "no address arguments allowed with this option\n");
                         cmd_usage(pc->curcmd, SYNOPSIS);
@@ -4503,6 +4547,9 @@ cmd_kmem(void)
 		meminfo.flags = VERBOSE;
 		vt->dump_free_pages(&meminfo);
 	}
+
+	if (hflag == 1) 
+		dump_hstates();
 
 	if (sflag == 1) {
 		if (!escape && STREQ(meminfo.reqname, "list"))
@@ -4566,7 +4613,7 @@ cmd_kmem(void)
 
 	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + 
 	      Vflag + zflag + oflag + cflag + Cflag + iflag + 
-	      nflag + lflag + Lflag + gflag + meminfo.calls))
+	      nflag + lflag + Lflag + gflag + hflag + meminfo.calls))
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
 }
@@ -5698,6 +5745,75 @@ fill_mem_map_cache(ulong pp, ulong ppend, char *page_cache)
                 size -= cnt;
         }
 }
+
+static void
+dump_hstates()
+{
+	char *hstate;
+	int i, len, order;
+	long nr, free;
+	ulong vaddr;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+
+	if (!kernel_symbol_exists("hstates")) {
+		error(INFO, "hstates[] array does not exist\n");
+		option_not_supported('h');
+	}
+
+	if (INVALID_MEMBER(hstate_name)) {
+		STRUCT_SIZE_INIT(hstate, "hstate");
+		MEMBER_OFFSET_INIT(hstate_order, "hstate", "order");
+		MEMBER_OFFSET_INIT(hstate_nr_huge_pages, "hstate", "nr_huge_pages");
+		MEMBER_OFFSET_INIT(hstate_free_huge_pages, "hstate", "free_huge_pages");
+		MEMBER_OFFSET_INIT(hstate_name, "hstate", "name");
+		if (INVALID_SIZE(hstate) ||
+		    INVALID_MEMBER(hstate_order) ||
+		    INVALID_MEMBER(hstate_name) ||
+		    INVALID_MEMBER(hstate_nr_huge_pages) ||
+		    INVALID_MEMBER(hstate_free_huge_pages)) {
+			error(INFO, "hstate structure or members have changed\n");
+			option_not_supported('h');
+		}
+	}
+
+	fprintf(fp, "%s", 
+		mkstring(buf1, VADDR_PRLEN, CENTER, "HSTATE"));
+	fprintf(fp, "   SIZE    FREE   TOTAL  NAME\n");
+
+	len = get_array_length("hstates", NULL, 0);
+	hstate = GETBUF(SIZE(hstate));
+
+	for (i = 0; i < len; i++) {
+		vaddr = symbol_value("hstates") + (SIZE(hstate) * i);
+		if (!readmem(vaddr, KVADDR, hstate,
+            	    SIZE(hstate), "hstate", RETURN_ON_ERROR))
+			break;
+
+		order = INT(hstate + OFFSET(hstate_order));
+		if (!order)
+			continue;
+
+		fprintf(fp, "%lx  ", vaddr);
+
+		pages_to_size(1 << order, buf1);
+		shift_string_left(first_space(buf1), 1);
+		fprintf(fp, "%s  ", mkstring(buf2, 5, RJUST, buf1));
+
+		free = LONG(hstate + OFFSET(hstate_free_huge_pages));
+		sprintf(buf1, "%ld", free);
+		fprintf(fp, "%s  ", mkstring(buf2, 6, RJUST, buf1));
+
+		nr = LONG(hstate + OFFSET(hstate_nr_huge_pages));
+		sprintf(buf1, "%ld", nr);
+		fprintf(fp, "%s  ", mkstring(buf2, 6, RJUST, buf1));
+
+		fprintf(fp, "%s\n", hstate + OFFSET(hstate_name));
+	}
+
+	FREEBUF(hstate);
+}
+
 
 static void
 page_flags_init(void)
