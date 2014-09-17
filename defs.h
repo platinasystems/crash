@@ -503,6 +503,7 @@ struct program_context {
 #define VMCOREINFO    (0x400ULL)
 #define ALLOW_FP      (0x800ULL)
 #define REM_PAUSED_F (0x1000ULL)
+#define RAMDUMP	(0x2000ULL)
 #define REMOTE_PAUSED() (pc->flags2 & REM_PAUSED_F)
 	char *cleanup;
 	char *namelist_orig;
@@ -761,6 +762,11 @@ struct task_context {                     /* context stored for each task */
 	struct task_context *tc_next;
 };
 
+struct tgid_context {               /* tgid and task stored for each task */
+	ulong tgid;
+	ulong task;
+};
+
 struct task_table {                      /* kernel/local task table data */
 	struct task_context *current;
 	struct task_context *context_array;
@@ -794,6 +800,12 @@ struct task_table {                      /* kernel/local task table data */
 	char *thread_info;
 	char *mm_struct;
 	ulong init_pid_ns;
+	struct tgid_context *tgid_array;
+	struct tgid_context *last_tgid;
+	ulong tgid_searches;
+	ulong tgid_cache_hits;
+	long filepages;
+	long anonpages;
 };
 
 #define TASK_INIT_DONE       (0x1)
@@ -1903,6 +1915,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long cgroup_kn;
 	long kernfs_node_name;
 	long kernfs_node_parent;
+	long kmem_cache_cpu_partial;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2842,25 +2855,19 @@ typedef signed int s32;
 #define VM_L3_4K      (0x8)
 
 /* 
- * source: Documentation/arm64/memory.txt 
+ * sources: Documentation/arm64/memory.txt 
+ *          arch/arm64/include/asm/memory.h 
+ *          arch/arm64/include/asm/pgtable.h
  */
-#define ARM64_USERSPACE_TOP_4K  (0x0000007fffffffffUL)
-#define ARM64_VMALLOC_START_4K  (0xffffff8000000000UL)
-#define ARM64_VMALLOC_END_4K    (0xffffffbbfffeffffUL)
-#define ARM64_VMEMMAP_VADDR_4K  (0xffffffbc00000000UL)
-#define ARM64_VMEMMAP_END_4K    (0xffffffbdffffffffUL)
-#define ARM64_MODULES_VADDR_4K  (0xffffffbffc000000UL)
-#define ARM64_MODULES_END_4K    (0xffffffbfffffffffUL)
-#define ARM64_PAGE_OFFSET_4K    (0xffffffc000000000UL)
 
-#define ARM64_USERSPACE_TOP_64K  (0x000003ffffffffffUL)
-#define ARM64_VMALLOC_START_64K  (0xfffffc0000000000UL)
-#define ARM64_VMALLOC_END_64K    (0xfffffdfbfffeffffUL)
-#define ARM64_VMEMMAP_VADDR_64K  (0xfffffdfc00000000UL)
-#define ARM64_VMEMMAP_END_64K    (0xfffffdfdffffffffUL)
-#define ARM64_MODULES_VADDR_64K  (0xfffffdfffc000000UL)
-#define ARM64_MODULES_END_64K    (0xfffffdffffffffffUL)
-#define ARM64_PAGE_OFFSET_64K    (0xfffffe0000000000UL)
+#define ARM64_PAGE_OFFSET    ((0xffffffffffffffffUL) << (machdep->machspec->VA_BITS - 1))
+#define ARM64_USERSPACE_TOP  ((1UL) << machdep->machspec->VA_BITS)
+#define ARM64_MODULES_VADDR  (ARM64_PAGE_OFFSET - MEGABYTES(64))
+#define ARM64_MODULES_END    (ARM64_PAGE_OFFSET - 1)
+#define ARM64_VMALLOC_START  ((0xffffffffffffffffUL) << machdep->machspec->VA_BITS)
+#define ARM64_VMALLOC_END    (ARM64_PAGE_OFFSET - 0x400000000UL - KILOBYTES(64) - 1)
+#define ARM64_VMEMMAP_VADDR  ((ARM64_VMALLOC_END+1) + KILOBYTES(64))
+#define ARM64_VMEMMAP_END    (ARM64_VMEMMAP_VADDR + GIGABYTES(8UL) - 1)
 
 #define ARM64_STACK_SIZE   (16384)
 
@@ -2914,6 +2921,7 @@ struct machine_specific {
 	struct arm64_pt_regs *panic_task_regs;
 	ulong pte_protnone;
 	ulong pte_file;
+	ulong VA_BITS;
 };
 
 struct arm64_stackframe {
@@ -4834,6 +4842,8 @@ ulong generic_get_stackbase(ulong);
 ulong generic_get_stacktop(ulong);
 void dump_task_table(int);
 void sort_context_array(void);
+void sort_tgid_array(void);
+int sort_by_tgid(const void *, const void *);
 int in_irq_ctx(ulonglong, int, ulong);
 
 /*
@@ -5526,6 +5536,18 @@ int write_proc_kcore(int, void *, int, ulong, physaddr_t);
 int kcore_memory_dump(FILE *);
 void dump_registers_for_qemu_mem_dump(void);
 void kdump_backup_region_init(void);
+
+/*
+ * ramdump.c
+ */
+int is_ramdump(char *pattern);
+char *ramdump_to_elf(void);
+void ramdump_elf_output_file(char *opt);
+void ramdump_cleanup(void);
+int read_ramdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr);
+void show_ramdump_files(void);
+void dump_ramdump_data(void);
+int is_ramdump_image(void);
 
 /*
  *  diskdump.c

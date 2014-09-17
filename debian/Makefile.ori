@@ -37,7 +37,7 @@ endif
 GDB=gdb-7.6
 GDB_FILES=${GDB_7.6_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-7.6.patch
+GDB_PATCH_FILES=gdb-7.6.patch gdb-7.6-ppc64le-support.patch
 
 #
 # Default installation directory
@@ -68,7 +68,8 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	netdump.c diskdump.c makedumpfile.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c unwind_arm.c \
 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
-	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c ipcs.c
+	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c ipcs.c \
+	ramdump.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
@@ -85,7 +86,8 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o unwind_arm.o \
 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
-	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o ipcs.o
+	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o ipcs.o \
+	ramdump.o
 
 MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/README
 
@@ -258,6 +260,9 @@ gdb_unzip:
 gdb_patch:
 	if [ -f ${GDB}.patch ] && [ -s ${GDB}.patch ]; then \
 		patch -p0 < ${GDB}.patch; cp ${GDB}.patch ${GDB}; fi
+	if [ "${ARCH}" = "ppc64le" ] && [ -f ${GDB}-ppc64le-support.patch ]; then \
+		patch -d ${GDB} -p1 -F0 < ${GDB}-ppc64le-support.patch ; \
+	fi
 
 library: make_build_data ${OBJECT_FILES}
 	ar -rs ${PROGRAM}lib.a ${OBJECT_FILES}
@@ -485,6 +490,9 @@ xen_hyper_global_data.o: ${GENERIC_HFILES} xen_hyper_global_data.c
 xen_hyper_dump_tables.o: ${GENERIC_HFILES} xen_hyper_dump_tables.c
 	${CC} -c ${CRASH_CFLAGS} xen_hyper_dump_tables.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+ramdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ramdump.c
+	${CC} -c ${CRASH_CFLAGS} ramdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 ${PROGRAM}: force
 	@make --no-print-directory all
 
@@ -528,7 +536,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.0.7
+VERSION=7.0.8
 RELEASE=0
 
 release: make_configure

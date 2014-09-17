@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1372,12 +1372,22 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 	if (flags == 0)
 		fprintf(fp, "%s", mount_hdr);
 
-	if ((flags & MOUNT_PRINT_FILES) &&
-	    (sb_s_files = OFFSET(super_block_s_files)) == INVALID_OFFSET) {
+	sb_s_files = VALID_MEMBER(super_block_s_files) ?
+		OFFSET(super_block_s_files) : INVALID_OFFSET;
+
+	if ((flags & MOUNT_PRINT_FILES) && (sb_s_files == INVALID_OFFSET)) {
 		/*
-		 * No open files list in super_block (2.2).  
-		 * Use inuse_filps list instead.
+		 *  super_block.s_files deprecated
 		 */
+		if (!kernel_symbol_exists("inuse_filps")) {
+			error(INFO, "the super_block.s_files linked list does "
+                                    "not exist in this kernel\n");
+			option_not_supported('f');
+		}
+		/*
+	  	 * No open files list in super_block (2.2).  
+	  	 * Use inuse_filps list instead.
+	  	 */
 		dentry_list = create_dentry_array(symbol_value("inuse_filps"), 
 			&cnt);
 	}
@@ -3500,6 +3510,11 @@ get_live_memory_source(void)
 					utsname.release, modname2);
 				if (file_exists(buf, &stat1))
 					use_module = TRUE;
+				else {
+					strcat(buf, ".xz");
+					if (file_exists(buf, &stat1))
+						use_module = TRUE;
+				}
 				break;
 			}
 			name = basename(strip_linefeeds(buf));

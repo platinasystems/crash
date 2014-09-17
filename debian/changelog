@@ -1,3 +1,132 @@
+crash (7.0.8-1) unstable; urgency=medium
+
+  * Fix for the handling of 32-bit ELF xendump dumpfiles if the guest was
+    configured with more than 4GB of memory.  Without the patch, the crash
+    session may fail during initialization with the error message "crash:
+    vmlinux and <dumpfile> do not match!".
+  * Fix for file-handling errors when a compressed vmlinux.debug file is
+    followed by a vmlinux file on the crash command line.  When the crash
+    session ends, two errors will occur: (1) the vmlinux file will be deleted
+    (2) the temporary uncompressed version of the vmlinux.debug file will
+    remain in /var/tmp This problem also occurs in the highly unlikely case
+    where a compressed vmlinux file is followed by a vmlinux.debug file on the
+    command line, and the uncompressed temporary version of the vmlinux file
+    is larger than the vmlinux.debug file.  In that case: (1) the
+    vmlinux.debug file will be deleted (2) the temporary uncompressed version
+    of the vmlinux file will remain in /var/tmp
+  * Fix for the "search -t" option if the system has 2064 or more tasks.
+    Without the patch, the command fails with a dump of the crash utility
+    memory allocation statistics, ending with "search: cannot allocate any
+    more memory!".
+  * Fix for the "mod -S" command to find the debuginfo data for Red Hat
+    "kpatch" modules.  Without the patch, the command would display "mod:
+    cannot find or load object file for <kpatch-module> module".
+  * Deprecated the "mount -f" option for Linux 3.13 and later kernels
+    containing commit eee5cc2702929fd41cce28058dc6d6717f723f87, which removed
+    the super_block.s_files list_head member and the open files list that it
+    contained.  Without the patch, the command option fails with the error
+    message "mount: invalid structure member offset: super_block_s_files"
+  * If a compressed kdump is damaged/truncated such that the bitmap data in
+    the dumpfile header is not contained within the file, attempts to analyze
+    it with a vmlinux file, or using the "crash --osrelease" or "crash --log"
+    options with just the vmcore, will result in the crash utility spinning
+    forever, endlessly performing reads of 0 bytes from the file without
+    recognizing the EOF condition.
+  * Fix for an ARM64 compilation failure of the embedded gdb file
+    "aarch-linux-nat.c" in the Fedora fc21 rawhide environment, which uses
+    glibc-headers-2.19.90-24.fc21.
+  * Document the reason behind the deprecation of the "mount -f" option for
+    Linux 3.13 and later kernels if the option is attempted, and in the "help
+    mount" output, similar to the deprecated "mount -d" option.
+  * During initialization, reject useless ARM64 "(A)" absolute symbols that
+    begin with "__crc_".  Without the patch, several thousand of them may be
+    displayed by "sym -l" prior to the first kernel virtual address symbol.
+  * When running against an ARM64 dumpfile created with the "snap.so"
+    extension module, do not attempt to read the crash_notes.  Since the
+    dumpfile was taken while running on a live system, the crash_notes, if
+    configured into the kernel, would not contain valid data.  Without the
+    patch, the message "WARNING: could not retrieve crash_notes" is displayed
+    during session initialization.
+  * Determine the various ARM64 kernel virtual address ranges using the
+    kernel's VA_BITS value.  It currently is hardwired in the kernel to one of
+    two values depending upon whether 4K or 64K pages are configured.
+    However, there are plans to support 16K paqes, to make VA_BITS a
+    configurable value, and to make the number of page-table levels
+    configurable.  Towards that end, the crash utility has been changed to
+    determine the VA_BITS value based upon known kernel virtual addresses, and
+    to then calculate the relevant kernel virtual address ranges on that value
+    instead of hardwiring them based upon the page size.
+  * Enhancement to the "kmem -S" option for Linux 3.2 and later kernels
+    configured with CONFIG_SLUB to display the address of each per-cpu
+    kmem_cache_cpu address and the contents of its per-cpu partial list.
+  * If an ARM or ARM64 dumpfile does not contain the register sets of the
+    active tasks in the kernel's per-cpu crash_notes, there is an
+    initialization-time warning message indicating "could not retrieve
+    crash_notes".  It has been changed to a more meaningful warning message
+    indicating "cannot retrieve registers for active tasks".
+  * Implement support for ARM and ARM64 raw RAM dumpfiles.  One or more
+    "ramdump" files may be entered on the crash command line in an ordered
+    pair format consisting of the RAM dump filename and the starting physical
+    address expressed in hexadecimal, connected with an ampersand:
+
+    $ crash vmlinux ramdump@address [ramdump@address]
+
+    A temporary ELF header will be created in /var/tmp, and the combination of
+    the header and the ramdump file(s) will be handled like a normal ELF
+    vmcore.  The ELF header will only exist during the crash session.  If
+    desired, an optional "-o <filename>" may be entered to create a permanent
+    ELF vmcore file from the ramdump file(s).
+  * Fix for the "help -[nD]" ELF header translation to recognize the EM_ARM
+    and EM_AARCH values as "e_machine" types, and ELFOSABI_LINUX as an
+    "e_ident[EI_OSABI]" type.  Without the patch, the e_machine translation
+    would show "40 (unsupported)" for 32-bit ARM, or "183 (unsupported)" on
+    ARM64; and the ELFOSABI_LINUX type would be translated as "3 (?)".
+  * Re-run a command in the history list by entering an "!" followed by the
+    number identifying the command.  However, unlike the similar "r"
+    pseudo-command, if the number is a command name in the user's PATH,
+    maintain the current behavior and execute that command.
+  * Fix to recognize that the live system "crash.ko" memory driver may be
+    compressed and named "crash.ko.xz".  Without the patch, the driver is not
+    recognized and loaded, and as a result the /dev/mem driver  and/or
+    /proc/kcore will be tried as the live memory source.
+  * On a live system during session initialization, delay the first read error
+    message (typically when reading the "cpu_possible_mask") until it is
+    confirmed that all of the following are true: (1) /dev/crash does not
+    exist, and (2) /dev/mem is restricted via CONFIG_STRICT_DEVMEM, and (3)
+    /proc/kcore cannot be read/accessed.  The "kernel may be configured with
+    CONFIG_STRICT_DEVMEM" and the "trying /proc/kcore as an alternative"
+    messages will still be displayed when appropriate.  The read error message
+    be displayed only if all three live memory read options fail.
+  * Fortify the validity verification of the data structures traversed by the
+    "kmem [-sS]" options for kernels configured with CONFIG_SLUB.  Without the
+    patch, the contents of several structure members are not validated, and
+    may generate bogus or never-ending output, typically seen when running the
+    commands on a "live dump" where the dumpfile was taken while the kernel
+    was still running.  The patch aborts the relevant parts of per-kmem_cache
+    output when invalid data is encountered or if an object list contains
+    duplicate entries, and error messages have been enhanced to more
+    accurately describe the issues encountered.
+  * Implement support for the ppc64le PPC64 little-endian architecture.  Since
+    this required a large number of patches to be applied to
+    architecture-neutral files in the gdb-7.6 tree, the changes are only
+    applied if the host build system is a ppc64le.
+  * Fix for SMP active task register-gathering from "kvmdump" dumpfiles that
+    were created with a cpu version id of 12 or greater that contain
+    additional XSAVE related fields in their cpu device headers.  Without the
+    patch, active tasks running on cpus above 0 may have truncated backtraces.
+  * Maintain backwards-compatibility for "kvmdump" dumpfiles that were created
+    by older development versions of KVM tools in which the cpu version id was
+    12, but the cpu device headers did not contain the additional XSAVE
+    related fields.
+  * Address a "ps" command performance degradation that was introduced by a
+    crash-7.0.4 patch which added per-thread task_struct.rss_stat page counts
+    to the task's mm_struct.rss_stat page counts in order to show an
+    accurate/synchronized RSS value.  Without the patch, the "ps" command
+    performance would degrade as the number of tasks increased, most notably
+    when there were thousands of tasks.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 17 Sep 2014 08:30:13 -0600
+
 crash (7.0.7-1) unstable; urgency=low
 
   * Export the static ELF and compressed kdump vmcoreinfo_read_string()
