@@ -116,6 +116,7 @@ void add_extra_lib(char *);
 #define X86_64  8
 #define ARM	9
 #define ARM64   10
+#define MIPS    11
 
 #define TARGET_X86    "TARGET=X86"
 #define TARGET_ALPHA  "TARGET=ALPHA"
@@ -127,6 +128,7 @@ void add_extra_lib(char *);
 #define TARGET_X86_64 "TARGET=X86_64"
 #define TARGET_ARM    "TARGET=ARM"
 #define TARGET_ARM64  "TARGET=ARM64"
+#define TARGET_MIPS   "TARGET=MIPS"
 
 #define TARGET_CFLAGS_X86    "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_ALPHA  "TARGET_CFLAGS="
@@ -143,6 +145,10 @@ void add_extra_lib(char *);
 #define TARGET_CFLAGS_PPC_ON_PPC64   "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64 -fPIC"
 #define TARGET_CFLAGS_ARM64            "TARGET_CFLAGS="
 #define TARGET_CFLAGS_ARM64_ON_X86_64  "TARGET_CFLAGS="
+#define TARGET_CFLAGS_PPC64_ON_X86_64  "TARGET_CFLAGS="
+#define TARGET_CFLAGS_MIPS            "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_MIPS_ON_X86     "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
+#define TARGET_CFLAGS_MIPS_ON_X86_64  "TARGET_CFLAGS=-m32 -D_FILE_OFFSET_BITS=64"
 
 #define GDB_TARGET_DEFAULT        "GDB_CONF_FLAGS="
 #define GDB_TARGET_ARM_ON_X86     "GDB_CONF_FLAGS=--target=arm-elf-linux"
@@ -150,7 +156,10 @@ void add_extra_lib(char *);
 #define GDB_TARGET_X86_ON_X86_64  "GDB_CONF_FLAGS=--target=i686-pc-linux-gnu CFLAGS=-m32"
 #define GDB_TARGET_PPC_ON_PPC64   "GDB_CONF_FLAGS=--target=ppc-elf-linux CFLAGS=-m32"
 #define GDB_TARGET_ARM64_ON_X86_64  "GDB_CONF_FLAGS=--target=aarch64-elf-linux"   /* TBD */
-
+#define GDB_TARGET_PPC64_ON_X86_64  "GDB_CONF_FLAGS=--target=powerpc64le-unknown-linux-gnu"
+#define GDB_TARGET_MIPS_ON_X86     "GDB_CONF_FLAGS=--target=mipsel-elf-linux"
+#define GDB_TARGET_MIPS_ON_X86_64  "GDB_CONF_FLAGS=--target=mipsel-elf-linux CFLAGS=-m32"
+     
 /*
  *  The original plan was to allow the use of a particular version
  *  of gdb for a given architecture.  But for practical purposes,
@@ -366,6 +375,9 @@ get_current_configuration(struct supported_gdb_version *sp)
 #ifdef __aarch64__
         target_data.target = ARM64;
 #endif
+#ifdef __mips__
+        target_data.target = MIPS;
+#endif
 
 	set_initial_target(sp);
 
@@ -382,6 +394,14 @@ get_current_configuration(struct supported_gdb_version *sp)
 			 *  X86_64 when built as a 32-bit executable.
 			 */
 			target_data.target = ARM;
+		} else if ((target_data.target == X86 || target_data.target == X86_64) &&
+			   (name_to_target((char *)target_data.target_as_param) == MIPS)) {
+			/*
+			 *  Debugging of MIPS little-endian core files
+			 *  supported on X86, and on X86_64 when built as a
+			 *  32-bit executable.
+			 */
+			target_data.target = MIPS;
 		} else if ((target_data.target == X86_64) &&
 			(name_to_target((char *)target_data.target_as_param) == X86)) {
 			/*
@@ -394,6 +414,12 @@ get_current_configuration(struct supported_gdb_version *sp)
 			 *  Build an ARM64 crash binary on an X86_64 host.
 			 */
 			target_data.target = ARM64;
+		} else if ((target_data.target == X86_64) &&
+			(name_to_target((char *)target_data.target_as_param) == PPC64)) {
+			/*
+			 *  Build a PPC64 little-endian crash binary on an X86_64 host.
+			 */
+			target_data.target = PPC64;
 		} else if ((target_data.target == PPC64) &&
 			(name_to_target((char *)target_data.target_as_param) == PPC)) {
 			/*
@@ -432,6 +458,15 @@ get_current_configuration(struct supported_gdb_version *sp)
 		    (target_data.initial_gdb_target != ARM))
 			arch_mismatch(sp);
 
+		if ((target_data.initial_gdb_target == MIPS) &&
+		    (target_data.target != MIPS)) {
+			if ((target_data.target == X86) ||
+			    (target_data.target == X86_64))
+				target_data.target = MIPS;
+			else
+				arch_mismatch(sp);
+		}
+
 		if ((target_data.initial_gdb_target == X86) &&
 		    (target_data.target != X86)) {
 			if (target_data.target == X86_64) 
@@ -452,6 +487,17 @@ get_current_configuration(struct supported_gdb_version *sp)
 		}
 		if ((target_data.target == ARM64) &&
 		    (target_data.initial_gdb_target != ARM64))
+			arch_mismatch(sp);
+
+		if ((target_data.initial_gdb_target == PPC64) &&
+		    (target_data.target != PPC64)) {
+			if (target_data.target == X86_64) 
+				target_data.target = PPC64;
+			else
+				arch_mismatch(sp);
+		}
+		if ((target_data.target == PPC64) &&
+		    (target_data.initial_gdb_target != PPC64))
 			arch_mismatch(sp);
 
 		if ((target_data.initial_gdb_target == PPC) &&
@@ -571,6 +617,9 @@ show_configuration(void)
 	case ARM64:
 		printf("TARGET: ARM64\n");
 		break;
+	case MIPS:
+		printf("TARGET: MIPS\n");
+		break;
 	}
 
 	if (strlen(target_data.program)) {
@@ -640,7 +689,11 @@ build_configure(struct supported_gdb_version *sp)
 		break;
 	case PPC64:
                 target = TARGET_PPC64;
-                target_CFLAGS = TARGET_CFLAGS_PPC64;
+		if (target_data.host == X86_64) {
+			target_CFLAGS = TARGET_CFLAGS_PPC64_ON_X86_64;
+			gdb_conf_flags = GDB_TARGET_PPC64_ON_X86_64;
+		} else
+			target_CFLAGS = TARGET_CFLAGS_PPC64;
                 break;
 	case X86_64:
                 target = TARGET_X86_64;
@@ -665,6 +718,17 @@ build_configure(struct supported_gdb_version *sp)
 		} else
 			target_CFLAGS = TARGET_CFLAGS_ARM64;
 		break;
+	case MIPS:
+                target = TARGET_MIPS;
+                if (target_data.host == X86) {
+                        target_CFLAGS = TARGET_CFLAGS_MIPS_ON_X86;
+			gdb_conf_flags = GDB_TARGET_MIPS_ON_X86;
+                } else if (target_data.host == X86_64) {
+                        target_CFLAGS = TARGET_CFLAGS_MIPS_ON_X86_64;
+			gdb_conf_flags = GDB_TARGET_MIPS_ON_X86_64;
+		} else
+                        target_CFLAGS = TARGET_CFLAGS_MIPS;
+                break;
 	}
 
 	ldflags = get_extra_flags("LDFLAGS.extra", NULL);
@@ -1261,7 +1325,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("Vendor: Red Hat, Inc.\n");
 	printf("Packager: Dave Anderson <anderson@redhat.com>\n");
 	printf("ExclusiveOS: Linux\n");
-	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm aarch64 ppc64le\n");
+	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm aarch64 ppc64le mips mipsel\n");
 	printf("Buildroot: %%{_tmppath}/%%{name}-root\n");
 	printf("BuildRequires: ncurses-devel zlib-devel bison\n");
 	printf("Requires: binutils\n");
@@ -1488,6 +1552,8 @@ set_initial_target(struct supported_gdb_version *sp)
 		target_data.initial_gdb_target = ARM64;
 	else if (strncmp(buf, "ARM", strlen("ARM")) == 0)
 		target_data.initial_gdb_target = ARM;
+	else if (strncmp(buf, "MIPS", strlen("MIPS")) == 0)
+		target_data.initial_gdb_target = MIPS;
 }
 
 char *
@@ -1505,6 +1571,7 @@ target_to_name(int target)
 	case X86_64: return("X86_64");
 	case ARM:    return("ARM"); 
 	case ARM64:  return("ARM64");
+	case MIPS:   return("MIPS");
 	}
 
 	return "UNKNOWN";
@@ -1528,6 +1595,10 @@ name_to_target(char *name)
         else if (strncmp(name, "PPC64", strlen("PPC64")) == 0)
                 return PPC64;
         else if (strncmp(name, "ppc64", strlen("ppc64")) == 0)
+                return PPC64;
+        else if (strncmp(name, "ppc64le", strlen("ppc64le")) == 0)
+                return PPC64;
+	else if (strncmp(name, "PPC64LE", strlen("PPC64LE")) == 0)
                 return PPC64;
         else if (strncmp(name, "PPC", strlen("PPC")) == 0)
                 return PPC;
@@ -1555,6 +1626,10 @@ name_to_target(char *name)
                 return ARM;
         else if (strncmp(name, "arm", strlen("arm")) == 0)
                 return ARM;
+        else if (strncmp(name, "mips", strlen("mips")) == 0)
+                return MIPS;
+        else if (strncmp(name, "MIPS", strlen("MIPS")) == 0)
+                return MIPS;
 
 	return UNKNOWN;
 }

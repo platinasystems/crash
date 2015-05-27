@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@ static void check_xen_hyper(void);
 static void show_untrusted_files(void);
 static void get_osrelease(char *);
 static void get_log(char *);
+static char *no_vmcoreinfo(const char *);
 
 static struct option long_options[] = {
         {"memory_module", required_argument, 0, 0},
@@ -70,6 +71,7 @@ static struct option long_options[] = {
 	{"dec", 0, 0, 0},
 	{"no_strip", 0, 0, 0},
 	{"hash", required_argument, 0, 0},
+	{"offline", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -279,7 +281,17 @@ main(int argc, char **argv)
 				pc->flags2 |= RADIX_OVERRIDE;
 				pc->output_radix = 10;
 			}
-			
+
+			else if (STREQ(long_options[option_index].name, "offline")) {
+				if (STREQ(optarg, "show"))
+					pc->flags2 &= ~OFFLINE_HIDE;
+				else if (STREQ(optarg, "hide"))
+					pc->flags2 |= OFFLINE_HIDE;
+				else {
+					error(INFO, "invalid --offline argument: %s\n", optarg);
+					program_usage(SHORT_FORM);
+				}
+			}
 
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
@@ -325,7 +337,7 @@ main(int argc, char **argv)
 			break;
 
 		case 't':
-			pc->flags |= GET_TIMESTAMP;
+			kt->flags2 |= GET_TIMESTAMP;
 			break;
 
 		case 'i':
@@ -629,6 +641,17 @@ main(int argc, char **argv)
 				pc->readmem = read_sadump;
 				pc->writemem = write_sadump;
 
+			} else if (is_vmware_vmss(argv[optind])) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+				pc->flags |= VMWARE_VMSS;
+				pc->dumpfile = argv[optind];
+				pc->readmem = read_vmware_vmss;
+				pc->writemem = write_vmware_vmss;
+
 			} else { 
 				error(INFO, 
 				    "%s: not a supported file format\n",
@@ -683,7 +706,14 @@ main_loop(void)
 		    "Kernel data has been erased from this dumpfile.  This may "
 		    "cause\n         the crash session to fail entirely, may "
                     "cause commands to fail,\n         or may result in "
-		    "unpredictable runtime behavior.\n",
+		    "unpredictable\n         runtime behavior.\n",
+			pc->dumpfile);
+
+	if (pc->flags2 & INCOMPLETE_DUMP)
+		error(WARNING, "\n%s:\n         "
+		    "This dumpfile is incomplete.  This may cause the crash session"
+		    "\n         to fail entirely, may cause commands to fail, or may"
+		    " result in\n         unpredictable runtime behavior.\n",
 			pc->dumpfile);
 
         if (!(pc->flags & GDB_INIT)) {
@@ -1037,6 +1067,7 @@ setup_environment(int argc, char **argv)
 	pc->machine_type = MACHINE_TYPE;
 	pc->readmem = read_dev_mem;      /* defaults until argv[] is parsed */
 	pc->writemem = write_dev_mem;
+	pc->read_vmcoreinfo = no_vmcoreinfo;
 	pc->memory_module = NULL;
 	pc->memory_device = MEMORY_DRIVER_DEVICE;
 	machdep->bits = sizeof(long) * 8;
@@ -1383,8 +1414,10 @@ dump_program_context(void)
 		fprintf(fp, "%sLIVE_DUMP", others++ ? "|" : "");
 	if (pc->flags2 & RADIX_OVERRIDE)
 		fprintf(fp, "%sRADIX_OVERRIDE", others++ ? "|" : "");
-	if (pc->flags2 & QEMU_MEM_DUMP)
-		fprintf(fp, "%sQEMU_MEM_DUMP", others++ ? "|" : "");
+	if (pc->flags2 & QEMU_MEM_DUMP_ELF)
+		fprintf(fp, "%sQEMU_MEM_DUMP_ELF", others++ ? "|" : "");
+	if (pc->flags2 & QEMU_MEM_DUMP_COMPRESSED)
+		fprintf(fp, "%sQEMU_MEM_DUMP_COMPRESSED", others++ ? "|" : "");
 	if (pc->flags2 & GET_LOG)
 		fprintf(fp, "%sGET_LOG", others++ ? "|" : "");
 	if (pc->flags2 & VMCOREINFO)
@@ -1393,6 +1426,10 @@ dump_program_context(void)
 		fprintf(fp, "%sALLOW_FP", others++ ? "|" : "");
 	if (pc->flags2 & RAMDUMP)
 		fprintf(fp, "%sRAMDUMP", others++ ? "|" : "");
+	if (pc->flags2 & OFFLINE_HIDE)
+		fprintf(fp, "%sOFFLINE_HIDE", others++ ? "|" : "");
+	if (pc->flags2 & INCOMPLETE_DUMP)
+		fprintf(fp, "%sINCOMPLETE_DUMP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
@@ -1582,6 +1619,10 @@ dump_program_context(void)
 		fprintf(fp, "%sMOD_SECTIONS", others ? "|" : "");
         if (pc->curcmd_flags & MOD_READNOW)
 		fprintf(fp, "%sMOD_READNOW", others ? "|" : "");
+        if (pc->curcmd_flags & MM_STRUCT_FORCE)
+		fprintf(fp, "%sMM_STRUCT_FORCE", others ? "|" : "");
+        if (pc->curcmd_flags & CPUMASK)
+		fprintf(fp, "%sCPUMASK", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "      cmd_cleanup: %lx\n", (ulong)pc->cmd_cleanup);
@@ -1665,6 +1706,8 @@ readmem_function_name(void)
 		return("read_s390_dumpfile");
 	else if (pc->readmem == read_ramdump)
 		return("read_ramdump");
+	else if (pc->readmem == read_vmware_vmss)
+		return("read_vmware_vmss");
 	else
 		return NULL;
 }
@@ -1698,6 +1741,8 @@ writemem_function_name(void)
 		return("write_sadump");
 	else if (pc->writemem == write_s390_dumpfile)
 		return("write_s390_dumpfile");
+	else if (pc->writemem == write_vmware_vmss)
+		return("write_vmware_vmss");
 	else
 		return NULL;
 }
@@ -1850,4 +1895,11 @@ get_log(char *dumpfile)
 		fprintf(fp, "%s: no VMCOREINFO data\n", dumpfile);
 
 	clean_exit(retval);
+}
+
+
+static char *
+no_vmcoreinfo(const char *unused)
+{
+	return NULL;
 }

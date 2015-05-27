@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@ static void refresh_hlist_task_table_v3(void);
 static void refresh_active_task_table(void);
 static struct task_context *store_context(struct task_context *, ulong, char *);
 static void refresh_context(ulong, ulong);
+static ulong parent_of(ulong);
 static void parent_list(ulong);
 static void child_list(ulong);
 static void initialize_task_state(void);
@@ -106,6 +107,7 @@ static int sort_by_last_run(const void *arg1, const void *arg2);
 static void sort_context_array_by_last_run(void);
 static void show_ps_summary(ulong);
 static void irqstacks_init(void);
+static void parse_task_thread(int argcnt, char *arglist[], struct task_context *);
 
 /*
  *  Figure out how much space will be required to hold the task context
@@ -483,7 +485,7 @@ task_init(void)
 		tt->this_task = pid_to_task(active_pid);
 	}
 	else {
-		if (KDUMP_DUMPFILE() && !(pc->flags2 & QEMU_MEM_DUMP))
+		if (KDUMP_DUMPFILE())
 			map_cpus_to_prstatus();
 		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
 			map_cpus_to_prstatus_kdump_cmprs();
@@ -2017,7 +2019,7 @@ retry_pid_hash:
 do_chained:
         	if (!readmem(upid, KVADDR, nodebuf, SIZE(upid), 
 		    "pid_hash upid", RETURN_ON_ERROR|QUIET)) { 
-			error(INFO, "\ncannot read pid_hash upid\n");
+			error(INFO, "\npid_hash[%d]: cannot read pid_hash upid\n", i);
                         if (DUMPFILE())
                                 continue;
                         hq_close();
@@ -2032,14 +2034,22 @@ do_chained:
 		/*
 		 *  Use init_pid_ns level 0 (PIDTYPE_PID).
 		 */
-		if (upid_ns != tt->init_pid_ns)
-			continue;
+		if (upid_ns != tt->init_pid_ns) {
+			if (!accessible(upid_ns)) {
+				error(INFO, 
+				    "%spid_hash[%d]: invalid upid.ns: %lx\n",
+					DUMPFILE() ? "\n" : "",
+					i, upid_ns);
+                             	continue;
+			}
+			goto chain_next;
+		}
 
 		pid = upid - OFFSET(pid_numbers);
 
 		if (!readmem(pid + OFFSET(pid_tasks), KVADDR, &pid_tasks_0, 
 		    sizeof(void *), "pid tasks", RETURN_ON_ERROR|QUIET)) {
-                        error(INFO, "\ncannot read pid.tasks[0]\n");
+                        error(INFO, "\npid_hash[%d]: cannot read pid.tasks[0]\n", i);
                         if (DUMPFILE())
                                 continue;
                         hq_close();
@@ -2064,18 +2074,18 @@ do_chained:
 		}
 
 		if (!IS_TASK_ADDR(next)) {
- 			error(INFO, "%sinvalid task address in pid_hash: %lx\n",
-                        	DUMPFILE() ? "\n" : "", next);
-			 if (DUMPFILE())
-                                        break;
+			error(INFO, "%spid_hash[%d]: invalid task address: %lx\n",
+				DUMPFILE() ? "\n" : "", i, next);
+			if (DUMPFILE())
+				break;
  			hq_close();
  			retries++;
  			goto retry_pid_hash;
 		}
 
 		if (!is_idle_thread(next) && !hq_enter(next)) {
-			error(INFO, "%sduplicate task in pid_hash: %lx\n",
-				DUMPFILE() ? "\n" : "", next);
+			error(INFO, "%spid_hash[%d]: duplicate task: %lx\n",
+				DUMPFILE() ? "\n" : "", i, next);
 			if (DUMPFILE())
 				break;
 			hq_close();
@@ -2086,6 +2096,12 @@ do_chained:
 		cnt++;
 chain_next:
 		if (pnext) {
+			if (chained >= tt->max_tasks) {
+				error(INFO, 
+				    "%spid_hash[%d]: corrupt/invalid upid chain\n",
+					DUMPFILE() ? "\n" : "", i);
+				continue;
+			}
 			kpp = pnext;
 			upid = pnext - OFFSET(upid_pid_chain);
 			chained++;
@@ -2695,6 +2711,10 @@ cmd_task(void)
 			if (strlen(ref->str))
 				strcat(ref->str, ",");
 			strcat(ref->str, args[optind]);
+		} else if (strstr(args[optind], ".") || strstr(args[optind], "[")) {
+			if (strlen(ref->str))
+				strcat(ref->str, ",");
+			strcat(ref->str, args[optind]);
 		} else
                         error(INFO, 
 			    "invalid task, pid, or task_struct member: %s\n\n",
@@ -2720,9 +2740,10 @@ do_task(ulong task, ulong flags, struct reference *ref, unsigned int radix)
 
 	tc = task_to_context(task);
 
-	if (ref) 
+	if (ref) {
+		print_task_header(fp, tc, 0);
 		task_struct_member(tc, radix, ref);
-	else { 
+	} else { 
 		if (!(flags & FOREACH_TASK))
 			print_task_header(fp, tc, 0);
 		dump_struct("task_struct", task, radix);
@@ -2745,13 +2766,7 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 	int argcnt;
 	char *arglist[MAXARGS];
 	char *refcopy;
-	char buf[BUFSIZE];
-	char lookfor1[BUFSIZE];
-	char lookfor2[BUFSIZE];
-	char lookfor3[BUFSIZE];
-	int header_printed;
-
-	header_printed = FALSE;
+	struct datatype_member dm;
 
 	if ((count_chars(ref->str, ',')+1) > MAXARGS) {
 		error(INFO, 
@@ -2764,16 +2779,40 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 	replace_string(refcopy, ",", ' ');
 
 	argcnt = parse_line(refcopy, arglist);
-	for (i = 0; i < argcnt; i++)
-		if (!MEMBER_EXISTS("task_struct", arglist[i]) &&
-		    !MEMBER_EXISTS("thread_info", arglist[i]))
-			error(INFO, "%s: not a task_struct or thread_info member\n", 
-				arglist[i]);
 
         open_tmpfile();
         dump_struct("task_struct", tc->task, radix);
 	if (tt->flags & THREAD_INFO)
 		dump_struct("thread_info", tc->thread_info, radix);
+
+	for (i = 0; i < argcnt; i++) {
+		if (count_chars(arglist[i], '.') || count_chars(arglist[i], '[')) {
+			dm.member = arglist[i];
+			parse_for_member_extended(&dm, 0);
+		} else {
+			if (!MEMBER_EXISTS("task_struct", arglist[i]) &&
+				!MEMBER_EXISTS("thread_info", arglist[i]))
+				error(INFO, "%s: not a task_struct or "
+					"thread_info member\n", arglist[i]);
+
+			parse_task_thread(1, &arglist[i], tc);
+		}
+	}
+
+	close_tmpfile();
+
+	FREEBUF(refcopy);
+
+}
+
+static void 
+parse_task_thread(int argcnt, char *arglist[], struct task_context *tc) {
+	char buf[BUFSIZE];
+	char lookfor1[BUFSIZE];
+	char lookfor2[BUFSIZE];
+	char lookfor3[BUFSIZE];
+	int i;
+
         rewind(pc->tmpfile);
 
 	BZERO(lookfor1, BUFSIZE);
@@ -2782,10 +2821,6 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
 		if (strlen(lookfor2)) {
-			if (!header_printed) {
-				print_task_header(pc->saved_fp, tc, 0);
-				header_printed = TRUE;
-			}
 			fprintf(pc->saved_fp, "%s", buf);
 			if (STRNEQ(buf, lookfor2))
 				BZERO(lookfor2, BUFSIZE);
@@ -2793,10 +2828,6 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 		}
 
 		if (strlen(lookfor3)) {
-                        if (!header_printed) {
-                                print_task_header(pc->saved_fp, tc, 0);
-                                header_printed = TRUE;
-                        }
 			fprintf(pc->saved_fp, "%s", buf);
 			if (strstr(buf, lookfor3))
 				BZERO(lookfor3, BUFSIZE);
@@ -2809,10 +2840,6 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 			BZERO(lookfor3, BUFSIZE);
 			sprintf(lookfor1, "  %s = ", arglist[i]);
 			if (STRNEQ(buf, lookfor1)) {
-                        	if (!header_printed) {
-                                	print_task_header(pc->saved_fp, tc, 0);
-                                	header_printed = TRUE;
-                        	}
 				fprintf(pc->saved_fp, "%s", buf);
                         	if (strstr(buf, "{{\n")) 
                                 	sprintf(lookfor2, "    }},");
@@ -2824,11 +2851,10 @@ task_struct_member(struct task_context *tc, unsigned int radix, struct reference
 			}
 		}
 	}
-	close_tmpfile();
 }
 
 static char *ps_exclusive = 
-    "-a, -t, -c, -p, -g, -l, -m, -L, -S and -r flags are all mutually-exclusive\n";
+    "-a, -t, -c, -p, -g, -l, -m, -S and -r flags are all mutually-exclusive\n";
 
 static void
 check_ps_exclusive(ulong flag, ulong thisflag)
@@ -3093,6 +3119,7 @@ show_ps_data(ulong flag, struct task_context *tc, struct psinfo *psi)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 	ulong tgid;
+	int task_active;
 
 	if ((flag & PS_USER) && is_kernel_thread(tc->task))
 		return;
@@ -3153,7 +3180,17 @@ show_ps_data(ulong flag, struct task_context *tc, struct psinfo *psi)
 
 	tm = &task_mem_usage;
 	get_task_mem_usage(tc->task, tm);
-	fprintf(fp, "%s", is_task_active(tc->task) ? "> " : "  ");
+
+	task_active = is_task_active(tc->task);
+
+	if (task_active) {
+		if (hide_offline_cpu(tc->processor))
+			fprintf(fp, "- ");
+		else
+			fprintf(fp, "> ");
+	} else
+		fprintf(fp, "  ");
+
 	fprintf(fp, "%5ld  %5ld  %2s  %s %3s",
 		tc->pid, task_to_pid(tc->ptask),
 		task_cpu(tc->processor, buf2, !VERBOSE),
@@ -3332,8 +3369,14 @@ show_last_run(struct task_context *tc, struct psinfo *psi)
 		for (c = others = 0; c < kt->cpus; c++) {
 			if (!NUM_IN_BITMAP(psi->cpus, c))
 				continue;
-			fprintf(fp, "%sCPU: %d\n", 
+			fprintf(fp, "%sCPU: %d",
 				others++ ? "\n" : "", c);
+			if (hide_offline_cpu(c)) {
+				fprintf(fp, " [OFFLINE]\n");
+				continue;
+			} else
+				fprintf(fp, "\n");
+
 			tcp = FIRST_CONTEXT();
 			for (i = 0; i < RUNNING_TASKS(); i++, tcp++) {
 				if (tcp->processor != c)
@@ -3415,8 +3458,14 @@ show_milliseconds(struct task_context *tc, struct psinfo *psi)
 			if (!NUM_IN_BITMAP(psi->cpus, c))
 				continue;
 
-			fprintf(fp, "%sCPU: %d\n", 
+			fprintf(fp, "%sCPU: %d",
 				others++ ? "\n" : "", c);
+
+			if (hide_offline_cpu(c)) {
+				fprintf(fp, " [OFFLINE]\n");
+				continue;
+			} else
+				fprintf(fp, "\n");
 
 			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
 				runq = rq_sp->value + kt->__per_cpu_offset[c];
@@ -4048,34 +4097,60 @@ compare_start_time(const void *v1, const void *v2)
 		t1->start_time == t2->start_time ? 0 : 1);
 }
 
+static ulong
+parent_of(ulong task)
+{
+	long offset;
+	ulong parent;
+
+        if (VALID_MEMBER(task_struct_parent))
+                offset = OFFSET(task_struct_parent);
+	else
+                offset = OFFSET(task_struct_p_pptr);
+
+	readmem(task+offset, KVADDR, &parent,
+	    sizeof(void *), "task parent", FAULT_ON_ERROR);
+
+	return parent;
+}
+
 /*
  *  Dump the parental hierarchy of a task.
  */
 static void
 parent_list(ulong task)
 {
-	int i, j;
-	int cnt;
-        struct list_data list_data, *ld;
+	int i, j, cnt;
         struct task_context *tc;
+	char *buffer;
+	long reserved;
+	ulong *task_list, child, parent;
 
-	ld = &list_data;
-	BZERO(ld, sizeof(struct list_data));
-        ld->start = task;
-	if (VALID_MEMBER(task_struct_p_pptr))
-        	ld->member_offset = OFFSET(task_struct_p_pptr);
-	else
-		ld->member_offset = OFFSET(task_struct_parent);
+	reserved = 100 * sizeof(ulong);
+	buffer = GETBUF(reserved);
+	task_list = (ulong *)buffer;
+	child = task_list[0] = task;
+	parent = parent_of(child);
+	cnt = 1;
 
-	ld->flags |= LIST_ALLOCATE;
-	cnt = do_list(ld);
+	while (child != parent) {
+		child = task_list[cnt++] = parent;
+		parent = parent_of(child);
+		if (cnt == reserved) {
+			RESIZEBUF(buffer, reserved, reserved * 2);
+			reserved *= 2;
+			task_list = (ulong *)buffer;
+		}
+	}
+
 	for (i = cnt-1, j = 0; i >= 0; i--, j++) {
 		INDENT(j);
-		tc = task_to_context(ld->list_ptr[i]);
+		tc = task_to_context(task_list[i]);
 		if (tc)
 			print_task_header(fp, tc, 0);
 	}
-	FREEBUF(ld->list_ptr);
+
+	FREEBUF(task_list);
 }
 
 /*
@@ -4728,6 +4803,7 @@ static long _EXCLUSIVE_ = TASK_STATE_UNINITIALIZED;
 static long _WAKEKILL_ = TASK_STATE_UNINITIALIZED;
 static long _WAKING_ = TASK_STATE_UNINITIALIZED;
 static long _NONINTERACTIVE_ = TASK_STATE_UNINITIALIZED;
+static long _PARKED_ = TASK_STATE_UNINITIALIZED;
 
 #define valid_task_state(X) ((X) != TASK_STATE_UNINITIALIZED)
 
@@ -4797,6 +4873,10 @@ dump_task_states(void)
 				_WAKEKILL_, _WAKEKILL_);
 		}
 	}
+
+	if (valid_task_state(_PARKED_))
+		fprintf(fp, "            PARKED: %3ld (0x%lx)\n", 
+			_PARKED_, _PARKED_);
 }
 
 
@@ -4864,6 +4944,8 @@ old_defaults:
 			_WAKEKILL_ = bitpos;
 		else if (strstr(buf, "(waking)"))
 			_WAKING_ = bitpos;
+		else if (strstr(buf, "(parked)"))
+			_PARKED_ = bitpos;
 
 		if (!bitpos)
 			bitpos = 1;
@@ -4969,6 +5051,11 @@ task_state_string_verbose(ulong task, char *buf)
 		sprintf(&buf[strlen(buf)], "%sTASK_NONINTERACTIVE",
 			count++ ? "|" : "");
 
+	if (state == _PARKED_) {
+		sprintf(buf, "TASK_PARKED");
+		return buf;
+	}
+
 	return buf;
 }
 
@@ -5042,6 +5129,11 @@ task_state_string(ulong task, char *buf, int verbose)
 		sprintf(buf, "DE"); 
 		valid++; 
 		set++;
+	}
+
+	if (state == _PARKED_) {
+		sprintf(buf, "PA"); 
+		valid++;
 	}
 
 	if (valid && exclusive) 
@@ -5429,43 +5521,64 @@ get_panicmsg(char *buf)
         rewind(pc->tmpfile);
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
                 if (strstr(buf, "SysRq : Crash") ||
-		    strstr(buf, "SysRq : Trigger a crashdump")) {
+		    strstr(buf, "SysRq : Trigger a crash")) {
 			pc->flags |= SYSRQ;
 			break;
 		}
 	}
-
 	rewind(pc->tmpfile);
 	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-		if (strstr(buf, "Kernel panic: ")) 
+		if (strstr(buf, "general protection fault: ") ||
+		    strstr(buf, "double fault: ") ||
+		    strstr(buf, "divide error: ") ||
+		    strstr(buf, "stack segment: ")) {
 			msg_found = TRUE;
-	}
-	rewind(pc->tmpfile);
-	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-	        if (strstr(buf, "Oops: ") || 
-		    strstr(buf, "kernel BUG at")) 
-	        	msg_found = TRUE;
+			break;
+		}
 	}
         rewind(pc->tmpfile);
         while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
                 if (strstr(buf, "SysRq : Netdump") ||
-		    strstr(buf, "SysRq : Trigger a crashdump") ||
-		    strstr(buf, "SysRq : Crash")) {
+		    strstr(buf, "SysRq : Crash") ||
+		    strstr(buf, "SysRq : Trigger a crash")) {
 			pc->flags |= SYSRQ;
                         msg_found = TRUE;
+			break;
 		}
-        }
-        rewind(pc->tmpfile);
-        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-                if (strstr(buf, "sysrq") && 
-		    symbol_exists("sysrq_pressed")) 
-			get_symbol_data("sysrq_pressed", sizeof(int), 
-				&msg_found);
         }
 	rewind(pc->tmpfile);
 	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-		if (strstr(buf, "Kernel panic - ")) 
+	        if (strstr(buf, "Oops: ") ||
+		    strstr(buf, "Kernel BUG at") ||
+		    strstr(buf, "kernel BUG at") ||
+		    strstr(buf, "Unable to handle kernel paging request") ||
+		    strstr(buf, "Unable to handle kernel NULL pointer dereference") ||
+		    strstr(buf, "BUG: unable to handle kernel "))
+	        	msg_found = TRUE;
+	}
+        rewind(pc->tmpfile);
+        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "sysrq") && 
+		    symbol_exists("sysrq_pressed")) { 
+			get_symbol_data("sysrq_pressed", sizeof(int), 
+				&msg_found);
+			break;
+		}
+        }
+	rewind(pc->tmpfile);
+	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "Kernel panic: ") ||
+		    strstr(buf, "Kernel panic - ")) { 
 			msg_found = TRUE;
+			break;
+		}
+	}
+	rewind(pc->tmpfile);
+	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "[Hardware Error]: ")) {
+			msg_found = TRUE;
+			break;
+		}
 	}
 
         close_tmpfile();
@@ -5680,6 +5793,7 @@ cmd_foreach(void)
 		    STREQ(args[optind], "TR") ||
 		    STREQ(args[optind], "ZO") ||
 		    STREQ(args[optind], "DE") ||
+		    STREQ(args[optind], "PA") ||
 		    STREQ(args[optind], "SW")) {
 
 			if (fd->flags & FOREACH_STATE)
@@ -5700,6 +5814,8 @@ cmd_foreach(void)
 				fd->state = _DEAD_;
 			else if (STREQ(args[optind], "SW"))
 				fd->state = _SWAPPING_;
+			else if (STREQ(args[optind], "PA"))
+				fd->state = _PARKED_;
 			fd->flags |= FOREACH_STATE;
 
 			optind++;
@@ -7517,12 +7633,14 @@ void
 cmd_runq(void)
 {
         int c;
+	char arg_buf[BUFSIZE];
+	ulong *cpus = NULL;
 	int sched_debug = 0;
 	int dump_timestamp_flag = 0;
 	int dump_task_group_flag = 0;
 	int dump_milliseconds_flag = 0;
 
-        while ((c = getopt(argcnt, args, "dtgm")) != EOF) {
+        while ((c = getopt(argcnt, args, "dtgmc:")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -7541,6 +7659,19 @@ cmd_runq(void)
 				option_not_supported(c);
 			dump_task_group_flag = 1;
 			break;
+		case 'c':
+			if (pc->curcmd_flags & CPUMASK) {
+				error(INFO, "only one -c option allowed\n");
+				argerrs++;
+			} else {
+				pc->curcmd_flags |= CPUMASK;
+				BZERO(arg_buf, BUFSIZE);
+				strncpy(arg_buf, optarg, strlen(optarg));
+				cpus = get_cpumask_buf();
+				make_cpumask(arg_buf, cpus, FAULT_ON_ERROR, NULL);
+				pc->curcmd_private = (ulong)cpus;
+			}
+			break;
                 default:
                         argerrs++;
                         break;
@@ -7551,27 +7682,19 @@ cmd_runq(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (dump_timestamp_flag) {
+	if (dump_timestamp_flag)
                 dump_on_rq_timestamp();
-                return;
-        }
-
-	if (dump_milliseconds_flag) {
+	else if (dump_milliseconds_flag)
                 dump_on_rq_milliseconds();
-                return;
-        }
-
-	if (sched_debug) {
+	else if (sched_debug)
 		dump_on_rq_tasks();
-		return;
-	}
-
-	if (dump_task_group_flag) {
+	else if (dump_task_group_flag)
 		dump_tasks_by_task_group();
-		return;
-	}
+	else
+		dump_runq();
 
-	dump_runq();
+	if (cpus)
+		FREEBUF(cpus);
 }
 
 /*
@@ -7587,8 +7710,11 @@ dump_on_rq_timestamp(void)
 	struct task_context *tc;
 	int cpu, len, indent;
 	ulonglong timestamp;
+	ulong *cpus;
 
 	indent = runq = 0;
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
 
 	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
 		error(FATAL, "per-cpu runqueues do not exist\n");
@@ -7596,6 +7722,9 @@ dump_on_rq_timestamp(void)
 		option_not_supported('t');
 
 	for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+
 		if ((kt->flags & SMP) && (kt->flags &PER_CPU_OFF))
 			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
 		else
@@ -7607,8 +7736,14 @@ dump_on_rq_timestamp(void)
 
                 sprintf(buf, pc->output_radix == 10 ? "%llu" : "%llx",
 			timestamp);
-		fprintf(fp, "%sCPU %d: %s\n", cpu < 10 ? " " : "", 
-			cpu, buf);
+		fprintf(fp, "%sCPU %d: ", cpu < 10 ? " " : "", cpu);
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, "[OFFLINE]\n");
+			continue;
+		} else
+			fprintf(fp, "%s\n", buf);
+
 		len = strlen(buf);
 
 		if ((tc = task_to_context(tt->active_set[cpu]))){
@@ -7646,6 +7781,7 @@ dump_on_rq_milliseconds(void)
 	int cpu, max_indent, indent, max_days, days;
 	long long delta;
 	ulonglong task_timestamp, rq_timestamp;
+	ulong *cpus;
 
 	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
 		error(FATAL, "per-cpu runqueues do not exist\n");
@@ -7662,8 +7798,13 @@ dump_on_rq_milliseconds(void)
 		max_indent = 4;
 
 	max_days = days = 0;
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
 
 	for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+
 		if ((kt->flags & SMP) && (kt->flags &PER_CPU_OFF))
 			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
 		else
@@ -7686,6 +7827,11 @@ dump_on_rq_milliseconds(void)
 			indent = max_indent - 2;
 		else
 			indent = max_indent - 4;
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, "%sCPU %d: [OFFLINE]\n", space(indent), cpu);
+			continue;
+		}
 
 		if ((tc = task_to_context(tt->active_set[cpu])))
 			task_timestamp = task_last_run(tc->task);
@@ -7786,12 +7932,13 @@ start_again:
 static void
 dump_runqueues(void)
 {
-	int cpu;
+	int cpu, displayed;
 	ulong runq, offset;
 	char *runqbuf;
 	ulong active, expired, arrays;
 	struct task_context *tc;
 	struct syment *rq_sp;
+	ulong *cpus;
 
 	runq = 0;
 
@@ -7805,8 +7952,13 @@ dump_runqueues(void)
 
 	get_active_set();
         runqbuf = GETBUF(SIZE(runqueue));
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
 
-	for (cpu = 0; cpu < kt->cpus; cpu++, runq += SIZE(runqueue)) {
+	for (cpu = displayed = 0; cpu < kt->cpus; cpu++, runq += SIZE(runqueue)) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+
 		if (rq_sp) {
 			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
 				runq = rq_sp->value + kt->__per_cpu_offset[cpu];
@@ -7814,8 +7966,13 @@ dump_runqueues(void)
 				runq = rq_sp->value;
 		}
 
-		fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "", 
-			cpu, runq);
+		fprintf(fp, "%sCPU %d ", displayed++ ? "\n" : "", cpu);
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, "[OFFLINE]\n");
+			continue;
+		} else
+			fprintf(fp, "RUNQUEUE: %lx\n", runq);
 
 		fprintf(fp, "  CURRENT: ");
 		if ((tc = task_to_context(tt->active_set[cpu])))
@@ -8167,6 +8324,7 @@ dump_tasks_in_task_group_cfs_rq(int depth, ulong cfs_rq, int cpu,
 	int total, i;
 
 	total = 0;
+	curr_my_q = curr = 0;
 
 	if (depth) {
 		readmem(cfs_rq + OFFSET(cfs_rq_tg), KVADDR,
@@ -8254,6 +8412,7 @@ dump_on_rq_tasks(void)
 	char buf[BUFSIZE];
 	struct task_context *tc;
 	int i, cpu, on_rq, tot;
+	ulong *cpus;
 
 	if (!VALID_MEMBER(task_struct_on_rq)) {
 		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
@@ -8268,9 +8427,20 @@ dump_on_rq_tasks(void)
 		}
 	}
 
-	for (cpu = 0; cpu < kt->cpus; cpu++) {
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
 
-                fprintf(fp, "%sCPU %d\n", cpu ? "\n" : "", cpu);
+	for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+
+                fprintf(fp, "%sCPU %d", cpu ? "\n" : "", cpu);
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, " [OFFLINE]\n");
+			continue;
+		} else
+			fprintf(fp, "\n");
 
 		tc = FIRST_CONTEXT();
 		tot = 0;
@@ -8376,13 +8546,14 @@ task_group_offset_init(void)
 static void
 dump_CFS_runqueues(void)
 {
-	int cpu, tot;
+	int cpu, tot, displayed;
 	ulong runq, cfs_rq, prio_array;
 	char *runqbuf, *cfs_rq_buf;
 	ulong tasks_timeline ATTRIBUTE_UNUSED;
 	struct task_context *tc;
 	struct rb_root *root;
 	struct syment *rq_sp, *init_sp;
+	ulong *cpus;
 
 	cfs_rq_offset_init();
 
@@ -8396,15 +8567,25 @@ dump_CFS_runqueues(void)
 		cfs_rq_buf = NULL;
 
 	get_active_set();
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
 
-        for (cpu = 0; cpu < kt->cpus; cpu++) {
+        for (cpu = displayed = 0; cpu < kt->cpus; cpu++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+		
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
 			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
 		else
 			runq = rq_sp->value;
 
-                fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "",
-			cpu, runq);
+                fprintf(fp, "%sCPU %d ", displayed++ ? "\n" : "", cpu);
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, "[OFFLINE]\n");
+			continue;
+		} else
+			fprintf(fp, "RUNQUEUE: %lx\n", runq);
 
 		fprintf(fp, "  CURRENT: ");
 		if ((tc = task_to_context(tt->active_set[cpu])))
@@ -8618,9 +8799,13 @@ dump_RT_prio_array(ulong k_prio_array, char *u_prio_array)
 						&rt_rq_buf[OFFSET(rt_rq_active)]);
 					FREEBUF(rt_rq_buf);
 					continue;
-				} else
-					task_addr -= OFFSET(task_struct_rt);
+				}
 			}
+			if (VALID_MEMBER(task_struct_rt))
+				task_addr -= OFFSET(task_struct_rt);
+			else
+				task_addr -= OFFSET(task_struct_run_list);
+
 			if (!(tc = task_to_context(task_addr)))
 				continue;
 
@@ -8854,12 +9039,13 @@ fill_task_group_info_array(int depth, ulong group, char *group_buf, int i)
 static void
 dump_tasks_by_task_group(void)
 {
-	int cpu;
+	int cpu, displayed;
 	ulong root_task_group, cfs_rq, cfs_rq_p;
 	ulong rt_rq, rt_rq_p;
 	char *buf;
 	struct task_context *tc;
 	char *task_group_name;
+	ulong *cpus;
 
 	cfs_rq_offset_init();
 	task_group_offset_init();
@@ -8891,12 +9077,25 @@ dump_tasks_by_task_group(void)
 
 	get_active_set();
 
-	for (cpu = 0; cpu < kt->cpus; cpu++) {
+	cpus = pc->curcmd_flags & CPUMASK ? 
+		(ulong *)(ulong)pc->curcmd_private : NULL;
+
+	for (cpu = displayed = 0; cpu < kt->cpus; cpu++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
+			continue;
+
 		readmem(rt_rq + cpu * sizeof(ulong), KVADDR, &rt_rq_p,
 			sizeof(ulong), "task_group rt_rq", FAULT_ON_ERROR);
 		readmem(cfs_rq + cpu * sizeof(ulong), KVADDR, &cfs_rq_p,
 			sizeof(ulong), "task_group cfs_rq", FAULT_ON_ERROR);
-		fprintf(fp, "%sCPU %d\n", cpu ? "\n" : "", cpu);
+		fprintf(fp, "%sCPU %d", displayed++ ? "\n" : "", cpu);
+
+		if (hide_offline_cpu(cpu)) {
+			fprintf(fp, " [OFFLINE]\n");
+			continue;
+		} else
+			fprintf(fp, "\n");
+
 		fprintf(fp, "  CURRENT: ");
 		if ((tc = task_to_context(tt->active_set[cpu])))
 			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",

@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -71,15 +71,19 @@
 
 #if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
     !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
-    !defined(ARM) && !defined(ARM64)
+    !defined(ARM) && !defined(ARM64) && !defined(MIPS)
 #ifdef __alpha__
 #define ALPHA
 #endif
 #ifdef __i386__
 #define X86
 #endif
+#ifdef __powerpc64__
+#define PPC64
+#else
 #ifdef __powerpc__
 #define PPC
+#endif
 #endif
 #ifdef __ia64__
 #define IA64
@@ -90,9 +94,6 @@
 #ifdef __s390x__
 #define S390X
 #endif
-#ifdef __powerpc64__
-#define PPC64
-#endif
 #ifdef __x86_64__
 #define X86_64
 #endif
@@ -101,6 +102,9 @@
 #endif
 #ifdef __aarch64__
 #define ARM64
+#endif
+#ifdef __mipsel__
+#define MIPS
 #endif
 #endif
 
@@ -133,6 +137,9 @@
 #endif
 #ifdef ARM64
 #define NR_CPUS  (4096)   /* TBD */
+#endif
+#ifdef MIPS
+#define NR_CPUS  (32)
 #endif
 
 #define BUFSIZE  (1500)
@@ -197,7 +204,7 @@ struct number_option {
 #define IN_GDB                  (0x20000ULL)
 #define RCLOCAL_IFILE           (0x40000ULL)
 #define RCHOME_IFILE            (0x80000ULL)
-#define GET_TIMESTAMP          (0x100000ULL)
+#define VMWARE_VMSS            (0x100000ULL)
 #define READLINE               (0x200000ULL) 
 #define _SIGINT_               (0x400000ULL)
 #define IN_RESTART             (0x800000ULL)
@@ -246,8 +253,8 @@ struct number_option {
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
 #define LIVE()              (pc->flags2 & LIVE_DUMP || pc->flags & LIVE_SYSTEM)
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP|VMWARE_VMSS)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP|VMWARE_VMSS)
 #define REMOTE()            (pc->flags2 & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
@@ -463,6 +470,8 @@ struct program_context {
 #define MEMTYPE_KVADDR   (0x2000)
 #define MOD_SECTIONS     (0x4000)
 #define MOD_READNOW      (0x8000)
+#define MM_STRUCT_FORCE (0x10000)
+#define CPUMASK         (0x20000)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -498,13 +507,17 @@ struct program_context {
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 #define RADIX_OVERRIDE (0x80ULL)
-#define QEMU_MEM_DUMP (0x100ULL)
+#define QEMU_MEM_DUMP_ELF (0x100ULL)
 #define GET_LOG       (0x200ULL)
 #define VMCOREINFO    (0x400ULL)
 #define ALLOW_FP      (0x800ULL)
 #define REM_PAUSED_F (0x1000ULL)
-#define RAMDUMP	(0x2000ULL)
+#define RAMDUMP	     (0x2000ULL)
 #define REMOTE_PAUSED() (pc->flags2 & REM_PAUSED_F)
+#define OFFLINE_HIDE     (0x4000ULL)
+#define INCOMPLETE_DUMP  (0x8000ULL)
+#define is_incomplete_dump() (pc->flags2 & INCOMPLETE_DUMP)
+#define QEMU_MEM_DUMP_COMPRESSED (0x10000ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -608,6 +621,7 @@ struct new_utsname {
 #define RELOC_AUTO                  (0x1ULL)
 #define KASLR                       (0x2ULL)
 #define KASLR_CHECK                 (0x4ULL)
+#define GET_TIMESTAMP               (0x8ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
@@ -888,6 +902,7 @@ struct bt_info {
         ulong debug;
 	ulong eframe_ip;
 	ulong radix;
+	ulong *cpumask;
 };
 
 #define STACK_OFFSET_TYPE(OFF) \
@@ -1916,6 +1931,15 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long kernfs_node_name;
 	long kernfs_node_parent;
 	long kmem_cache_cpu_partial;
+	long kmem_cache_cpu_cache;
+	long nsproxy_net_ns;
+	long atomic_t_counter;
+	long percpu_counter_count;
+	long mm_struct_mm_count;
+	long task_struct_thread_reg29;
+	long task_struct_thread_reg31;
+	long pt_regs_regs;
+	long pt_regs_cp0_badvaddr;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2261,6 +2285,7 @@ struct vm_table {                /* kernel VM-related data */
 #define USE_VMAP_AREA         (0x2000000)
 #define PAGEFLAGS             (0x4000000)
 #define SLAB_OVERLOAD_PAGE    (0x8000000)
+#define SLAB_CPU_CACHE       (0x10000000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2797,17 +2822,8 @@ typedef signed int s32;
  * (arch/arm64/include/asm/pgtable.h)
  */
 #define PTE_VALID       (1UL << 0)
-#define PTE_PROT_NONE   (1UL << 1) /* only when !PTE_VALID */
-#define PTE_FILE        (1UL << 2) /* only when !pte_present() */
 #define PTE_DIRTY       (1UL << 55)
 #define PTE_SPECIAL     (1UL << 56)
-
-/*
- * HugeTLB/THP 3.10 support proposal swaps PTE_PROT_NONE
- * and PTE_FILE bit positions:
- */
-#define PTE_FILE_3_10       (1UL << 1)
-#define PTE_PROT_NONE_3_10  (1UL << 2)
 
 /*
  * Level 3 descriptor (PTE).
@@ -2824,30 +2840,10 @@ typedef signed int s32;
 #define PTE_PXN         (1UL << 53)        /* Privileged XN */
 #define PTE_UXN         (1UL << 54)        /* User XN */
 
-/*
- * swap entry:
- *      bits 0-1:       present (must be zero)
- *      bit  2:         PTE_FILE
- *      bits 3-8:       swap type
- *      bits 9-63:      swap offset
- *
- * HugeTLB/THP 3.10 support proposal swaps PTE_PROT_NONE 
- * and PTE_FILE bit positions:
- *
- *      bits 0, 2:	present (must both be zero)
- *	bit  1:		PTE_FILE
- *      bits 3-8:       swap type
- *      bits 9-63:      swap offset
- */
-#define __SWP_TYPE_SHIFT    3
-#define __SWP_TYPE_BITS     6
-#define __SWP_TYPE_MASK     ((1 << __SWP_TYPE_BITS) - 1)
-#define __SWP_OFFSET_SHIFT  (__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
-
-#define __swp_type(x)       (((x) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
-#define __swp_offset(x)     ((x) >> __SWP_OFFSET_SHIFT)
-#define SWP_TYPE(x)         __swp_type(x)
-#define SWP_OFFSET(x)       __swp_offset(x)
+#define __swp_type(x)     arm64_swp_type(x)
+#define __swp_offset(x)   arm64_swp_offset(x)
+#define SWP_TYPE(x)       __swp_type(x)
+#define SWP_OFFSET(x)     __swp_offset(x)
 
 #define KSYMS_START   (0x1)
 #define PHYS_OFFSET   (0x2)
@@ -2865,6 +2861,13 @@ typedef signed int s32;
 #define ARM64_MODULES_VADDR  (ARM64_PAGE_OFFSET - MEGABYTES(64))
 #define ARM64_MODULES_END    (ARM64_PAGE_OFFSET - 1)
 #define ARM64_VMALLOC_START  ((0xffffffffffffffffUL) << machdep->machspec->VA_BITS)
+/*
+ * The following 3 definitions are the original values, but are obsolete
+ * for 3.17 and later kernels because they are now build-time calculations.
+ * They all depend on the kernel's new VMEMMAP_SIZE value, which is dependent
+ * upon the size of struct page.  Accordingly, arm64_calc_virtual_memory_ranges()
+ * determines their values at POST_GDB time.
+ */
 #define ARM64_VMALLOC_END    (ARM64_PAGE_OFFSET - 0x400000000UL - KILOBYTES(64) - 1)
 #define ARM64_VMEMMAP_VADDR  ((ARM64_VMALLOC_END+1) + KILOBYTES(64))
 #define ARM64_VMEMMAP_END    (ARM64_VMEMMAP_VADDR + GIGABYTES(8UL) - 1)
@@ -2919,9 +2922,15 @@ struct machine_specific {
 	ulong __exception_text_start;
 	ulong __exception_text_end;
 	struct arm64_pt_regs *panic_task_regs;
-	ulong pte_protnone;
-	ulong pte_file;
+	ulong PTE_PROT_NONE;
+	ulong PTE_FILE;
 	ulong VA_BITS;
+	ulong __SWP_TYPE_BITS;
+	ulong __SWP_TYPE_SHIFT;
+	ulong __SWP_TYPE_MASK;
+	ulong __SWP_OFFSET_BITS;
+	ulong __SWP_OFFSET_SHIFT;
+	ulong __SWP_OFFSET_MASK;
 };
 
 struct arm64_stackframe {
@@ -2931,6 +2940,37 @@ struct arm64_stackframe {
 };
 
 #endif  /* ARM64 */
+
+#ifdef MIPS
+#define _32BIT_
+#define MACHINE_TYPE		"MIPS"
+
+#define PAGEBASE(X)		(((ulong)(X)) & (ulong)machdep->pagemask)
+
+#define PTOV(X)            ((unsigned long)(X) + 0x80000000lu)
+#define VTOP(X)            ((unsigned long)(X) & 0x1ffffffflu)
+
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
+
+#define DEFAULT_MODULES_VADDR	(machdep->kvbase - 16 * 1024 * 1024)
+#define MODULES_VADDR   	(machdep->machspec->modules_vaddr)
+#define MODULES_END     	(machdep->machspec->modules_end)
+#define VMALLOC_START   	(machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END     	(machdep->machspec->vmalloc_end)
+
+#define __SWP_TYPE_SHIFT	3
+#define __SWP_TYPE_BITS		6
+#define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
+#define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+
+#define SWP_TYPE(entry)		(((entry) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
+#define SWP_OFFSET(entry)	((entry) >> __SWP_OFFSET_SHIFT)
+
+#define __swp_type(entry)	SWP_TYPE(entry)
+#define __swp_offset(entry)	SWP_OFFSET(entry)
+
+#define TIF_SIGPENDING		(2)
+#endif  /* MIPS */
 
 #ifdef X86
 #define _32BIT_
@@ -3789,6 +3829,10 @@ struct efi_memory_desc_t {
 #define MAX_HEXADDR_STRLEN (16)
 #define UVADDR_PRLEN       (10)
 #endif
+#ifdef MIPS
+#define MAX_HEXADDR_STRLEN (8)
+#define UVADDR_PRLEN       (8)
+#endif
 
 #define BADADDR  ((ulong)(-1))
 #define BADVAL   ((ulong)(-1))
@@ -4134,6 +4178,7 @@ enum type_code {
   /* 
    *  NOTE: the remainder of the type codes are not list or used here...
    */
+  TYPE_CODE_BOOL = 20,
 #endif
 };
 
@@ -4325,6 +4370,9 @@ void dump_build_data(void);
 #ifdef PPC64
 #define machdep_init(X) ppc64_init(X)
 #endif
+#ifdef MIPS
+#define machdep_init(X) mips_init(X)
+#endif
 int clean_exit(int);
 int untrusted_file(FILE *, char *);
 char *readmem_function_name(void);
@@ -4447,9 +4495,11 @@ void free_all_bufs(void);
 char *getbuf(long);
 void freebuf(char *);
 char *resizebuf(char *, long, long);
+char *strdupbuf(char *);
 #define GETBUF(X)   getbuf((long)(X))
 #define FREEBUF(X)  freebuf((char *)(X))
 #define RESIZEBUF(X,Y,Z) (X) = resizebuf((char *)(X), (long)(Y), (long)(Z));
+#define STRDUPBUF(X) strdupbuf((char *)(X))
 void sigsetup(int, void *, struct sigaction *, struct sigaction *);
 #define SIGACTION(s, h, a, o) sigsetup(s, h, a, o)
 char *convert_time(ulonglong, char *);
@@ -4581,6 +4631,18 @@ void dump_trace(void **);
 int enumerator_value(char *, long *);
 int dump_enumerator_list(char *);
 struct load_module *init_module_function(ulong);
+struct struct_member_data {
+	char *structure;
+	char *member;
+	long type;
+	long unsigned_type;
+	long length;
+	long offset;
+	long bitpos;
+	long bitsize;
+};
+int fill_struct_member_data(struct struct_member_data *);
+void parse_for_member_extended(struct datatype_member *, ulong);
 
 /*  
  *  memory.c 
@@ -4731,6 +4793,9 @@ void display_help_screen(char *);
 #endif
 #ifdef PPC64
 #define dump_machdep_table(X) ppc64_dump_machdep_table(X)
+#endif
+#ifdef MIPS
+#define dump_machdep_table(X) mips_dump_machdep_table(X)
 #endif
 extern char *help_pointer[];
 extern char *help_alias[];
@@ -4893,6 +4958,8 @@ int get_cpus_online(void);
 int get_cpus_active(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
+int check_offline_cpu(int);
+int hide_offline_cpu(int);
 int get_highest_cpu_online(void);
 int get_highest_cpu_present(void);
 int get_cpus_to_display(void);
@@ -4955,6 +5022,8 @@ ulong cpu_map_addr(const char *type);
 #define BT_KERNEL_SPACE    (0x200000000000ULL)
 #define BT_FULL_SYM_SLAB2  (0x400000000000ULL)
 #define BT_EFRAME_TARGET   (0x800000000000ULL)
+#define BT_CPUMASK        (0x1000000000000ULL)
+#define BT_SHOW_ALL_REGS  (0x2000000000000ULL)
 #define BT_SYMBOL_OFFSET   (BT_SYMBOLIC_ARGS)
 
 #define BT_REF_HEXVAL         (0x1)
@@ -5081,6 +5150,8 @@ void unwind_backtrace(struct bt_info *);
 void arm64_init(int);
 void arm64_dump_machdep_table(ulong);
 int arm64_IS_VMALLOC_ADDR(ulong);
+ulong arm64_swp_type(ulong);
+ulong arm64_swp_offset(ulong);
 #endif
 
 /*
@@ -5169,14 +5240,15 @@ struct x86_64_pt_regs_offsets {
 };
 
 #define MAX_EXCEPTION_STACKS 7
-#define NMI_STACK 2    /* ebase[] index to NMI exception stack */
-#define DEBUG_STACK 3  /* ebase[] index to DEBUG exception stack */
+#define NMI_STACK (machdep->machspec->stkinfo.NMI_stack_index)
 
 struct x86_64_stkinfo {
 	ulong ebase[NR_CPUS][MAX_EXCEPTION_STACKS];
 	int esize[MAX_EXCEPTION_STACKS];
 	ulong ibase[NR_CPUS];
 	int isize;
+	int NMI_stack_index;
+	char *exception_stacks[MAX_EXCEPTION_STACKS];
 };
 
 struct machine_specific {
@@ -5241,7 +5313,7 @@ int dwarf_print_stack_entry(struct bt_info *, int);
 /*
  * ppc64.c
  */
-#ifdef PPC64
+
 /*
  *  This structure was copied from kernel source
  *  in include/asm-ppc/ptrace.h
@@ -5262,6 +5334,31 @@ struct ppc64_pt_regs {
         long dsisr;
         long result;         /* Result of a system call */
 };
+
+struct ppc64_elf_siginfo {
+    int si_signo;
+    int si_code;
+    int si_errno;
+};
+
+struct ppc64_elf_prstatus {
+    struct ppc64_elf_siginfo pr_info;
+    short pr_cursig;
+    unsigned long pr_sigpend;
+    unsigned long pr_sighold;
+    pid_t pr_pid;
+    pid_t pr_ppid;
+    pid_t pr_pgrp;
+    pid_t pr_sid;
+    struct timeval pr_utime;
+    struct timeval pr_stime;
+    struct timeval pr_cutime;
+    struct timeval pr_cstime;
+    struct ppc64_pt_regs pr_reg;
+    int pr_fpvalid;
+};
+
+#ifdef PPC64
 
 struct ppc64_vmemmap {
         unsigned long phys;
@@ -5487,6 +5584,68 @@ void s390x_dump_machdep_table(ulong);
 #define KSYMS_START (0x1)
 #endif
 
+#ifdef MIPS
+void mips_init(int);
+void mips_dump_machdep_table(ulong);
+
+#define display_idt_table() \
+        error(FATAL, "-d option is not applicable to MIPS architecture\n")
+
+struct mips_regset {
+	ulong regs[45];
+};
+
+struct mips_pt_regs_main {
+        ulong regs[32];
+        ulong cp0_status;
+        ulong hi;
+        ulong lo;
+};
+
+struct mips_pt_regs_cp0 {
+        ulong cp0_badvaddr;
+        ulong cp0_cause;
+        ulong cp0_epc;
+};
+
+#define KSYMS_START	(0x1)
+#define PHYS_BASE	(0x2)
+
+#define KVBASE_MASK	(0x1ffffff)
+
+struct machine_specific {
+	ulong phys_base;
+	ulong vmalloc_start_addr;
+	ulong modules_vaddr;
+	ulong modules_end;
+
+	ulong _page_present;
+	ulong _page_read;
+	ulong _page_write;
+	ulong _page_accessed;
+	ulong _page_modified;
+	ulong _page_global;
+	ulong _page_valid;
+	ulong _page_no_read;
+	ulong _page_no_exec;
+	ulong _page_dirty;
+
+	ulong _pfn_shift;
+
+#define _PAGE_PRESENT   (machdep->machspec->_page_present)
+#define _PAGE_READ      (machdep->machspec->_page_read)
+#define _PAGE_WRITE     (machdep->machspec->_page_write)
+#define _PAGE_ACCESSED  (machdep->machspec->_page_accessed)
+#define _PAGE_MODIFIED  (machdep->machspec->_page_modified)
+#define _PAGE_GLOBAL    (machdep->machspec->_page_global)
+#define _PAGE_VALID     (machdep->machspec->_page_valid)
+#define _PAGE_NO_READ   (machdep->machspec->_page_no_read)
+#define _PAGE_NO_EXEC   (machdep->machspec->_page_no_exec)
+#define _PAGE_DIRTY     (machdep->machspec->_page_dirty)
+#define _PFN_SHIFT      (machdep->machspec->_pfn_shift)
+};
+#endif /* MIPS */
+
 /*
  *  netdump.c 
  */
@@ -5536,6 +5695,10 @@ int write_proc_kcore(int, void *, int, ulong, physaddr_t);
 int kcore_memory_dump(FILE *);
 void dump_registers_for_qemu_mem_dump(void);
 void kdump_backup_region_init(void);
+void display_regs_from_elf_notes(int, FILE *);
+void display_ELF_note(int, int, void *, FILE *);
+#define PRSTATUS_NOTE (1)
+#define QEMU_NOTE     (2)
 
 /*
  * ramdump.c
@@ -5698,6 +5861,15 @@ void remote_exit(void);
 int remote_execute(void);
 void remote_clear_pipeline(void);
 int remote_memory_read(int, char *, int, physaddr_t, int);
+
+/*
+ * vmware_vmss.c
+ */
+int is_vmware_vmss(char *filename);
+int vmware_vmss_init(char *filename, FILE *ofp);
+uint vmware_vmss_page_size(void);
+int read_vmware_vmss(int, void *, int, ulong, physaddr_t);
+int write_vmware_vmss(int, void *, int, ulong, physaddr_t);
 
 /*
  *  gnu_binutils.c

@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004-2014 David Anderson
- * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2015 David Anderson
+ * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -162,8 +162,16 @@ struct machine_specific book3e_machine_specific = {
 void
 ppc64_init(int when)
 {
+#if defined(__x86_64__)
+        if (ACTIVE())
+                error(FATAL, "compiled for the PPC64 architecture\n");
+#endif
 	switch (when)
 	{
+	case SETUP_ENV:
+		machdep->process_elf_notes = process_elf64_notes;
+		break;
+
 	case PRE_SYMTAB:
 		machdep->machspec = &ppc64_machine_specific;
 		machdep->verify_symbol = ppc64_verify_symbol;
@@ -414,7 +422,7 @@ ppc64_init(int when)
 		break;
 
 	case LOG_ONLY:
-		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL;
+		machdep->identity_map_base = kt->vmcoreinfo._stext_SYMBOL;
 		break;
 	}
 }
@@ -1385,6 +1393,9 @@ ppc64_eframe_search(struct bt_info *bt_in)
 
         	for (c = 0; c < NR_CPUS; c++) {
                 	if (tt->hardirq_ctx[c]) {
+				if ((bt->flags & BT_CPUMASK) && 
+				    !(NUM_IN_BITMAP(bt->cpumask, c)))
+					continue;
 				bt->hp->esp = tt->hardirq_ctx[c];
 				fprintf(fp, "CPU %d HARD IRQ STACK:\n", c);
 				if ((cnt = ppc64_eframe_search(bt)))
@@ -1395,6 +1406,9 @@ ppc64_eframe_search(struct bt_info *bt_in)
 		}
         	for (c = 0; c < NR_CPUS; c++) {
 			if (tt->softirq_ctx[c]) {
+				if ((bt->flags & BT_CPUMASK) && 
+				    !(NUM_IN_BITMAP(bt->cpumask, c)))
+					continue;
 				bt->hp->esp = tt->softirq_ctx[c];
 				fprintf(fp, "CPU %d SOFT IRQ STACK:\n", c);
 				if ((cnt = ppc64_eframe_search(bt)))
@@ -1892,8 +1906,8 @@ ppc64_print_regs(struct ppc64_pt_regs *regs)
 	int i;
 
         /* print out the gprs... */
-        for(i=0; i<32; i++) {
-                if(!(i % 3))
+        for (i=0; i<32; i++) {
+                if (i && !(i % 3))
                         fprintf(fp, "\n");
 
                 fprintf(fp, " R%d:%s %016lx   ", i,
@@ -1934,9 +1948,8 @@ ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
 	if (BT_REFERENCE_CHECK(bt))
 		return;
 
-	fprintf(fp, " %s  [%lx] exception frame:", efrm_str, regs->trap);
+	fprintf(fp, " %s  [%lx] exception frame:\n", efrm_str, regs->trap);
 	ppc64_print_regs(regs);
-	fprintf(fp, "\n");
 }
 
 /*
@@ -1990,8 +2003,6 @@ ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 		fprintf(fp, " LR  [%016lx] %s\n", pt_regs->link,
 			closest_symbol(pt_regs->link));
 
-	fprintf(fp, "\n");
-
 	return TRUE;
 }
 
@@ -2002,7 +2013,7 @@ static int
 ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 {
 	int panic_task;
-	int i, panic;
+	int i;
 	char *sym;
 	ulong *up;
 	struct bt_info bt_local, *bt;
@@ -2086,10 +2097,8 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 			fprintf(fp, "Could not find SP for task %0lx\n",
 				bt->task);
 		}
-		return TRUE;
 	}
 
-	panic = FALSE;
 	/*
 	 * Check the process stack first. We are scanning stack for only
 	 * panic task. Even though we have dumping CPU's regs, we will be
@@ -2106,8 +2115,12 @@ retry:
                 if (STREQ(sym, ".netconsole_netdump") || 
 			STREQ(sym, ".netpoll_start_netdump") ||
 		 	STREQ(sym, ".start_disk_dump") ||
+		 	STREQ(sym, "crash_kexec") ||
+			STREQ(sym, "crash_fadump") ||
+		 	STREQ(sym, "crash_ipi_callback") ||
 		 	STREQ(sym, ".crash_kexec") ||
 			STREQ(sym, ".crash_fadump") ||
+		 	STREQ(sym, ".crash_ipi_callback") ||
 			STREQ(sym, ".disk_dump")) {
                         *nip = *up;
                         *ksp = bt->stackbase + 
@@ -2116,9 +2129,6 @@ retry:
                 }
 	}
 
-	if (panic) 
-		return TRUE;
-	
 	bt->flags &= ~(BT_HARDIRQ|BT_SOFTIRQ);
 
 	if (check_hardirq &&

@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -73,7 +73,8 @@ static void dump_variable_length_record_log(int);
 static void hypervisor_init(void);
 static void dump_log_legacy(void);
 static void dump_variable_length_record(void);
-static int is_kpatch(void);
+static int is_livepatch(void);
+static void show_kernel_taints(char *, int);
 
 
 /*
@@ -200,8 +201,8 @@ kernel_init()
 	MEMBER_OFFSET_INIT(timekeeper_xtime_sec, "timekeeper", "xtime_sec");
 	get_xtime(&kt->date);
 	
-	if (pc->flags & GET_TIMESTAMP) {
-        	fprintf(fp, "%s\n\n", 
+	if (kt->flags2 & GET_TIMESTAMP) {
+		fprintf(fp, "%s\n\n", 
 			strip_linefeeds(ctime(&kt->date.tv_sec)));
 		clean_exit(0);
 	}
@@ -263,6 +264,9 @@ kernel_init()
 			&kt->__per_cpu_offset[0]);
                 kt->flags |= PER_CPU_OFF;
 	}
+
+	MEMBER_OFFSET_INIT(percpu_counter_count, "percpu_counter", "count");
+
 	if (STRUCT_EXISTS("runqueue")) {
 		rqstruct = "runqueue";
 		rq_timestamp_name = "timestamp_last_tick";
@@ -381,6 +385,11 @@ kernel_init()
 
 	STRUCT_SIZE_INIT(spinlock_t, "spinlock_t");
 	verify_spinlock();
+
+	if (STRUCT_EXISTS("atomic_t"))
+		if (MEMBER_EXISTS("atomic_t", "counter"))
+			MEMBER_OFFSET_INIT(atomic_t_counter,
+					"atomic_t", "counter");
 
 	STRUCT_SIZE_INIT(list_head, "list_head"); 
 	MEMBER_OFFSET_INIT(list_head_next, "list_head", "next"); 
@@ -1202,7 +1211,9 @@ verify_namelist()
 	sprintf(buffer3, "(unknown)");
         while (fgets(buffer, BUFSIZE-1, pipe)) {
 		if (!strstr(buffer, "Linux version 2.") &&
-		    !strstr(buffer, "Linux version 3."))
+		    !strstr(buffer, "Linux version 3.") &&
+		    !strstr(buffer, "Linux version 4.") &&
+		    !strstr(buffer, "Linux version 5."))
 			continue;
 
                 if (strstr(buffer, kt->proc_version)) {
@@ -1983,7 +1994,7 @@ cmd_bt(void)
 	int i, c;
 	ulong value, *cpus;
         struct task_context *tc;
-	int subsequent, active, choose_cpu;
+	int subsequent, active;
 	struct stack_hook hook;
 	struct bt_info bt_info, bt_setup, *bt;
 	struct reference reference;
@@ -1993,7 +2004,7 @@ cmd_bt(void)
 
 	tc = NULL;
 	cpus = NULL;
-	subsequent = active = choose_cpu = 0;
+	subsequent = active = 0;
 	hook.eip = hook.esp = 0;
 	refptr = 0;
 	bt = &bt_info;
@@ -2002,7 +2013,7 @@ cmd_bt(void)
 	if (kt->flags & USE_OLD_BT)
 		bt->flags |= BT_OLD_BACK_TRACE;
 
-        while ((c = getopt(argcnt, args, "D:fFI:S:c:aloreEgstTdxR:O")) != EOF) {
+	while ((c = getopt(argcnt, args, "D:fFI:S:c:aAloreEgstTdxR:O")) != EOF) {
                 switch (c)
 		{
 		case 'f':
@@ -2146,17 +2157,21 @@ cmd_bt(void)
 			break;
 
 		case 'c':
-			if (choose_cpu) {
+			if (bt->flags & BT_CPUMASK) {
 				error(INFO, "only one -c option allowed\n");
 				argerrs++;
 			} else {
-				choose_cpu = 1;
+				bt->flags |= BT_CPUMASK;				
 				BZERO(arg_buf, BUFSIZE);
 				strncpy(arg_buf, optarg, strlen(optarg));
 				cpus = get_cpumask_buf();
 			}
 			break;
 
+		case 'A':
+			if (!machine_type("S390X"))
+				option_not_supported(c);
+			bt->flags |= BT_SHOW_ALL_REGS; /* FALLTHROUGH */
 		case 'a':
 			active++;
 			break;
@@ -2212,6 +2227,10 @@ cmd_bt(void)
 	if (bt->flags & BT_EFRAME_SEARCH2) {
                	tc = CURRENT_CONTEXT();  /* borrow stack */
                 BT_SETUP(tc);
+		if (bt->flags & BT_CPUMASK) {
+			make_cpumask(arg_buf, cpus, FAULT_ON_ERROR, NULL);
+			bt->cpumask = cpus;
+		}
                 back_trace(bt);
                 return;
 	}
@@ -2248,7 +2267,7 @@ cmd_bt(void)
 #endif
 	}
 
-	if (choose_cpu) {
+	if (bt->flags & BT_CPUMASK) {
 		if (LIVE())
 			error(FATAL, 
 			    "-c option not supported on a live system or live dump\n");
@@ -2261,6 +2280,12 @@ cmd_bt(void)
 
 		for (i = 0; i < kt->cpus; i++) {
 			if (NUM_IN_BITMAP(cpus, i)) {
+				if (hide_offline_cpu(i)) {
+					error(INFO, "%sCPU %d is OFFLINE.\n",
+					      subsequent++ ? "\n" : "", i);
+					continue;
+				}
+
 				if ((task = get_active_task(i)))
 					tc = task_to_context(task);
 				else
@@ -2275,7 +2300,8 @@ cmd_bt(void)
 	if (active) {
 		if (LIVE())
 			error(FATAL, 
-			    "-a option not supported on a live system or live dump\n");
+			    "-%c option not supported on a live system or live dump\n",
+				bt->flags & BT_SHOW_ALL_REGS ? 'A' : 'a');
 
 		if (bt->flags & BT_THREAD_GROUP)
 			error(FATAL, 
@@ -2825,6 +2851,7 @@ dump_bt_info(struct bt_info *bt, char *where)
 	fprintf(fp, "   eframe_ip: %lx\n", bt->eframe_ip);
 	fprintf(fp, "       debug: %lx\n", bt->debug);
 	fprintf(fp, "       radix: %ld\n", bt->radix);
+	fprintf(fp, "     cpumask: %lx\n", (ulong)bt->cpumask);
 }
 
 /*
@@ -4115,7 +4142,7 @@ module_objfile_search(char *modref, char *filename, char *tree)
 		free(namelist);
 	}
 
-	if (!retbuf && is_kpatch()) {
+	if (!retbuf && is_livepatch()) {
 		sprintf(file, "%s.ko", modref);
 		sprintf(dir, "/usr/lib/kpatch/%s", kt->utsname.release);
 		if (!(retbuf = search_directory_tree(dir, file, 0))) {
@@ -4606,10 +4633,11 @@ cmd_sys(void)
 {
         int c, cnt;
 	ulong sflag;
+	char buf[BUFSIZE];
 
 	sflag = FALSE;
 
-        while ((c = getopt(argcnt, args, "cp:")) != EOF) {
+        while ((c = getopt(argcnt, args, "ctp:")) != EOF) {
                 switch(c)
                 {
 		case 'p':
@@ -4622,6 +4650,10 @@ cmd_sys(void)
 		case 'c':
 			sflag = TRUE;
 			break;
+
+		case 't':
+			show_kernel_taints(buf, VERBOSE);
+			return;
 
                 default:
                         argerrs++;
@@ -4653,10 +4685,15 @@ cmd_sys(void)
 }
 
 static int
-is_kpatch(void)
+is_livepatch(void)
 {
 	int i;
 	struct load_module *lm;
+	char buf[BUFSIZE];
+
+	show_kernel_taints(buf, !VERBOSE);
+	if (strstr(buf, "K"))  /* TAINT_LIVEPATCH */
+		return TRUE;
 
 	for (i = 0; i < st->mods_installed; i++) {
 		lm = &st->load_modules[i];
@@ -4711,7 +4748,7 @@ display_sys_stats(void)
 	} else {
         	if (pc->system_map) {
                 	fprintf(fp, "  SYSTEM MAP: %s%s\n", pc->system_map,
-				is_kpatch() ? "  [KPATCH]" : "");
+				is_livepatch() ? "  [LIVEPATCH]" : "");
 			fprintf(fp, "DEBUG KERNEL: %s %s\n", 
 					pc->namelist_orig ?
 					pc->namelist_orig : pc->namelist,
@@ -4719,7 +4756,7 @@ display_sys_stats(void)
 		} else
 			fprintf(fp, "      KERNEL: %s%s\n", pc->namelist_orig ? 
 				pc->namelist_orig : pc->namelist,
-				is_kpatch() ? "  [KPATCH]" : "");
+				is_livepatch() ? "  [LIVEPATCH]" : "");
 	}
 
 	if (pc->debuginfo_file) { 
@@ -4779,9 +4816,17 @@ display_sys_stats(void)
 		if (NETDUMP_DUMPFILE() && is_partial_netdump())
 			fprintf(fp, "  [PARTIAL DUMP]");
 
+		if (KDUMP_DUMPFILE() && is_incomplete_dump())
+			fprintf(fp, "  [INCOMPLETE]");
+
 		if (DISKDUMP_DUMPFILE() && !dumpfile_is_split() &&
-		     is_partial_diskdump())
-			fprintf(fp, "  [PARTIAL DUMP]");
+		    (is_partial_diskdump() || is_incomplete_dump())) {
+			fprintf(fp, " %s%s",
+				is_partial_diskdump() ? 
+				" [PARTIAL DUMP]" : "",
+				is_incomplete_dump() ? 
+				" [INCOMPLETE]" : "");
+		}
 
 		fprintf(fp, "\n");
 
@@ -4790,8 +4835,16 @@ display_sys_stats(void)
 				pc->kvmdump_mapfile);
 	}
 	
-	fprintf(fp, "        CPUS: %d\n",
-		machine_type("PPC64") ? get_cpus_to_display() : kt->cpus);
+	if (machine_type("PPC64"))
+		fprintf(fp, "        CPUS: %d\n", get_cpus_to_display());
+	else {
+		fprintf(fp, "        CPUS: %d", kt->cpus);
+		if (kt->cpus - get_cpus_to_display())
+			fprintf(fp, " [OFFLINE: %d]", 
+				kt->cpus - get_cpus_to_display());
+		fprintf(fp, "\n");
+	}
+
 	if (ACTIVE())
 		get_xtime(&kt->date);
         fprintf(fp, "        DATE: %s\n", 
@@ -4858,7 +4911,9 @@ debug_kernel_version(char *namelist)
 	argc = 0;
         while (fgets(buf, BUFSIZE-1, pipe)) {
                 if (!strstr(buf, "Linux version 2.") &&
-		    !strstr(buf, "Linux version 3."))
+		    !strstr(buf, "Linux version 3.") &&
+		    !strstr(buf, "Linux version 4.") &&
+		    !strstr(buf, "Linux version 5."))
                         continue;
 
 		argc = parse_line(buf, arglist); 
@@ -5477,6 +5532,10 @@ set_cpu(int cpu)
 	if (cpu >= kt->cpus)
 		error(FATAL, "invalid cpu number: system has only %d cpu%s\n", 
 			kt->cpus, kt->cpus > 1 ? "s" : "");
+
+	if (hide_offline_cpu(cpu))
+		error(FATAL, "invalid cpu number: cpu %d is OFFLINE\n", cpu);
+
 	if ((task = get_active_task(cpu))) 
 		set_context(task, NO_PID);
 	else
@@ -5539,9 +5598,6 @@ cmd_irq(void)
 			return;
 
 		case 'u':
-			if (machine_type("S390") || machine_type("S390X"))
-				command_not_supported();
-
 			pc->curcmd_flags |= IRQ_IN_USE;
 			if (kernel_symbol_exists("no_irq_chip"))
 				pc->curcmd_private = (ulonglong)symbol_value("no_irq_chip");
@@ -5597,9 +5653,6 @@ cmd_irq(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (machine_type("S390") || machine_type("S390X"))
-		command_not_supported();
-
 	if ((nr_irqs = machdep->nr_irqs) == 0)
 		error(FATAL, "cannot determine number of IRQs\n");
 
@@ -5613,9 +5666,18 @@ cmd_irq(void)
 				SET_BIT(cpus, i);
 		}
 
+		for (i = 0; i < kt->cpus; i++) {
+			if (NUM_IN_BITMAP(cpus, i) && hide_offline_cpu(i))
+				error(INFO, "CPU%d is OFFLINE.\n", i);
+		}
+
 		fprintf(fp, "     ");
 		BZERO(buf, 10);
+
 		for (i = 0; i < kt->cpus; i++) {
+			if (hide_offline_cpu(i))
+				continue;
+
 			if (NUM_IN_BITMAP(cpus, i)) {
 				sprintf(buf, "CPU%d", i);
 				fprintf(fp, "%10s ", buf);
@@ -5630,6 +5692,8 @@ cmd_irq(void)
 			FREEBUF(cpus);
 		return;
 	}
+
+	pc->curcmd_flags &= ~HEADER_PRINTED;
 
 	if (!args[optind]) {
 		for (i = 0; i < nr_irqs; i++)
@@ -6413,6 +6477,9 @@ generic_show_interrupts(int irq, ulong *cpus)
 	fprintf(fp, "%3d: ", irq);
 
 	for (i = 0; i < kt->cpus; i++) {
+		if (hide_offline_cpu(i))
+			continue;
+
 		if (NUM_IN_BITMAP(cpus, i))
 			fprintf(fp, "%10u ", kstat_irqs[i]);
 	}
@@ -6736,9 +6803,16 @@ dump_hrtimer_data(void)
 		option_not_supported('r');
 
 	hrtimer_bases = per_cpu_symbol_search("hrtimer_bases");
+
 	for (i = 0; i < kt->cpus; i++) {
 		if (i)
 			fprintf(fp, "\n");
+
+		if (hide_offline_cpu(i)) {
+			fprintf(fp, "CPU: %d  [OFFLINE]\n", i);
+			continue;
+		}
+
 		fprintf(fp, "CPU: %d  ", i);
 		if (VALID_STRUCT(hrtimer_clock_base)) {
 			fprintf(fp, "HRTIMER_CPU_BASE: %lx\n",
@@ -7399,6 +7473,16 @@ dump_timer_data_tvec_bases_v2(void)
 	cpu = 0;
 
 next_cpu:
+	/*
+	 * hide data of offline cpu and goto next cpu
+	 */
+
+	if (hide_offline_cpu(cpu)) {
+	        fprintf(fp, "TVEC_BASES[%d]: [OFFLINE]\n", cpu);
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+	}
+
 
 	count = 0;
 	td = (struct timer_data *)NULL;
@@ -7929,7 +8013,8 @@ dump_waitq(ulong wq, char *wq_name)
 		readmem(wq_list[i] + task_offset, KVADDR, &task,
 			sizeof(void *), "wait_queue_t.task", FAULT_ON_ERROR);
 
-		if ((tc = task_to_context(task))) {
+		if ((tc = task_to_context(task)) || 
+		    (tc = task_to_context(stkptr_to_task(task)))) {
 			print_task_header(fp, tc, 0);
 		} else {
 			break;
@@ -7986,6 +8071,33 @@ get_cpus_online()
 	FREEBUF(buf);
 
 	return online;
+}
+
+/*
+ *  Check whether a cpu is offline
+ */
+int
+check_offline_cpu(int cpu)
+{
+	if (!cpu_map_addr("online"))
+		return FALSE;
+
+	if (in_cpu_map(ONLINE_MAP, cpu))
+		return FALSE;
+
+	return TRUE;
+}
+
+/*
+ *  Check whether the data related to the specified cpu should be hidden.
+ */
+int
+hide_offline_cpu(int cpu)
+{
+	if (!(pc->flags2 & OFFLINE_HIDE))
+		return FALSE;
+
+	return check_offline_cpu(cpu);
 }
 
 /*
@@ -8644,6 +8756,7 @@ static char *ikconfig[] = {
         "CONFIG_PGTABLE_4",
         "CONFIG_HZ",
 	"CONFIG_DEBUG_BUGVERBOSE",
+	"CONFIG_DEBUG_INFO_REDUCED",
         NULL,
 };
 
@@ -8811,6 +8924,9 @@ again:
 				if (strstr(ln, "CONFIG_DEBUG_BUGVERBOSE") &&
 				    strstr(ln, "not set"))
 					kt->flags |= BUGVERBOSE_OFF;
+				if (strstr(ln, "CONFIG_DEBUG_INFO_REDUCED"))
+					if (CRASHDEBUG(1))
+						error(INFO, "%s\n", ln);
 				continue;
 			}
 
@@ -8858,6 +8974,13 @@ again:
 							error(INFO, 
 							    "CONFIG_HZ: %d\n",
 								machdep->hz);
+
+					} else if (STREQ(ln, "CONFIG_DEBUG_INFO_REDUCED")) {
+						if (STREQ(val, "y")) {
+							error(WARNING, 
+							    "CONFIG_DEBUG_INFO_REDUCED=y\n");
+							no_debugging_data(INFO);
+						}
 					}
 				}
 			}
@@ -8959,6 +9082,12 @@ get_xtime(struct timespec *date)
                 readmem(sp->value + OFFSET(timekeeper_xtime_sec), KVADDR, 
 			&xtime_sec, sizeof(uint64_t),
                         "timekeeper xtime_sec", RETURN_ON_ERROR);
+		date->tv_sec = (__time_t)xtime_sec;
+	} else if (VALID_MEMBER(timekeeper_xtime_sec) &&
+	    (sp = kernel_symbol_search("shadow_timekeeper"))) {
+                readmem(sp->value + OFFSET(timekeeper_xtime_sec), KVADDR, 
+			&xtime_sec, sizeof(uint64_t),
+                        "shadow_timekeeper xtime_sec", RETURN_ON_ERROR);
 		date->tv_sec = (__time_t)xtime_sec;
 	} else if (kernel_symbol_exists("xtime"))
 		get_symbol_data("xtime", sizeof(struct timespec), date);
@@ -9393,3 +9522,71 @@ dump_variable_length_record(void)
 
 	hq_close();
 }
+
+static void
+show_kernel_taints(char *buf, int verbose)
+{
+	int i, bx;
+	uint8_t tnt_bit;
+	char tnt_true, tnt_false;
+	int tnts_len;
+	ulong tnts_addr;
+	ulong tainted_mask, *tainted_mask_ptr;
+	int tainted;
+	struct syment *sp;
+
+	if (!VALID_STRUCT(tnt)) { 
+                STRUCT_SIZE_INIT(tnt, "tnt");
+                MEMBER_OFFSET_INIT(tnt_bit, "tnt", "bit");
+                MEMBER_OFFSET_INIT(tnt_true, "tnt", "true");
+                MEMBER_OFFSET_INIT(tnt_false, "tnt", "false");
+        }
+
+	if (VALID_STRUCT(tnt) && (sp = symbol_search("tnts"))) {
+		tnts_len = get_array_length("tnts", NULL, 0);
+		tnts_addr = sp->value;
+	} else
+		tnts_addr = tnts_len = 0;
+
+	bx = 0;
+	buf[0] = '\0';
+
+	tainted_mask = tainted = 0;
+
+	if (kernel_symbol_exists("tainted_mask")) {
+		get_symbol_data("tainted_mask", sizeof(ulong), &tainted_mask);
+		tainted_mask_ptr = &tainted_mask;
+	} else if (kernel_symbol_exists("tainted")) {
+		get_symbol_data("tainted", sizeof(int), &tainted);
+		if (verbose)
+			fprintf(fp, "TAINTED: %x\n", tainted);
+		return;
+	} else if (verbose)
+		option_not_supported('t');
+
+	for (i = 0; i < (tnts_len * SIZE(tnt)); i += SIZE(tnt)) {
+		readmem((tnts_addr + i) + OFFSET(tnt_bit),
+			KVADDR, &tnt_bit, sizeof(uint8_t), 
+			"tnt bit", FAULT_ON_ERROR);
+
+		if (NUM_IN_BITMAP(tainted_mask_ptr, tnt_bit)) {
+			readmem((tnts_addr + i) + OFFSET(tnt_true),
+				KVADDR, &tnt_true, sizeof(char), 
+				"tnt true", FAULT_ON_ERROR);
+				buf[bx++] = tnt_true;
+		} else {
+			readmem((tnts_addr + i) + OFFSET(tnt_false),
+				KVADDR, &tnt_false, sizeof(char), 
+				"tnt false", FAULT_ON_ERROR);
+			if (tnt_false != ' ' && tnt_false != '-' &&
+			    tnt_false != 'G')
+				buf[bx++] = tnt_false;
+		}
+	}
+
+	buf[bx++] = '\0';
+
+	if (verbose)
+		fprintf(fp, "TAINTED_MASK: %lx  %s\n", tainted_mask, buf);
+}
+

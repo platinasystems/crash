@@ -1,3 +1,3 @@
 Tests: live
 Restrictions: needs-root
-Depends: @, lsb-release
+Depends: @, lsb-release, sudo

@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2365,6 +2365,26 @@ cmd_set(void)
 					"on" : "off");
 			return;
 
+                } else if (STREQ(args[optind], "offline")) {
+
+                        if (args[optind+1]) {
+                                optind++;
+				if (from_rc_file)
+					already_done();
+                                else if (STREQ(args[optind], "show"))
+                                        pc->flags2 &= ~OFFLINE_HIDE;
+                                else if(STREQ(args[optind], "hide"))
+                                        pc->flags2 |= OFFLINE_HIDE;
+                                else
+                                        goto invalid_set_command;
+                        }
+
+			if (runtime)
+				fprintf(fp, "      offline: %s\n",
+					pc->flags2 & OFFLINE_HIDE ? "hide" : "show");
+
+			return;
+
 		} else if (XEN_HYPER_MODE()) {
 			error(FATAL, "invalid argument for the Xen hypervisor\n");
 		} else if (pc->flags & MINIMAL_MODE) {
@@ -2467,6 +2487,7 @@ show_options(void)
 		fprintf(fp, "(%s)\n", value_to_symstr(pc->scope, buf, 0));
 	else
 		fprintf(fp, "(not set)\n");
+	fprintf(fp, "       offline: %s\n", pc->flags2 & OFFLINE_HIDE ? "hide" : "show");
 }
 
 
@@ -3505,13 +3526,9 @@ do_list(struct list_data *ld)
 						dump_struct(ld->structname[i], 
 							next - ld->list_head_offset, radix);
 						break;
-					case 1:
+					default:
 						dump_struct_members(ld, i, next);
 						break;
-					default:
-						error(FATAL, 
-						    "invalid structure reference: %s\n",
-							ld->structname[i]);
 					}
 				}
 			}
@@ -3979,14 +3996,10 @@ rdtree_iteration(ulong node_p, struct tree_data *td, char *ppos, ulong indexnum,
 						dump_struct(td->structname[i],
 							slot, print_radix);
 						break;
-					case 1:
+                                        default:
 						dump_struct_members_for_tree(td, i,
 							slot);
 						break;
-					default:
-						error(FATAL,
-						  "invalid struct reference: %s\n",
-							td->structname[i]);
 					}
 				}
 			}
@@ -4057,12 +4070,9 @@ rbtree_iteration(ulong node_p, struct tree_data *td, char *pos)
 			case 0:
 				dump_struct(td->structname[i], struct_p, print_radix);
 				break;
-			case 1:
+                        default:
 				dump_struct_members_for_tree(td, i, struct_p);
 				break;
-			default:
-				error(FATAL, "invalid struct reference: %s\n",
-					td->structname[i]);
 			}
 		}
 	}
@@ -5064,6 +5074,19 @@ resizebuf(char *oldbuf, long oldsize, long newsize)
 }
 
 /*
+ *  Duplicate a string into a buffer allocated with GETBUF().
+ */
+char *
+strdupbuf(char *oldstring)
+{
+	char *newstring;
+
+	newstring = GETBUF(strlen(oldstring)+1);
+	strcpy(newstring, oldstring);
+	return newstring;
+}
+
+/*
  *  Return the number of bits set in an int or long.
  */
 
@@ -5517,12 +5540,12 @@ endian_mismatch(char *file, char dumpfile_endian, ulong query)
 	case ELFDATA2LSB:
 		if (__BYTE_ORDER == __LITTLE_ENDIAN)
 			return FALSE;
-		endian = "big-endian";
+		endian = "little-endian";
 		break;
 	case ELFDATA2MSB:
 		if (__BYTE_ORDER == __BIG_ENDIAN)	
 			return FALSE;
-		endian = "little-endian";
+		endian = "big-endian";
 		break;
 	default:
 		endian = "unknown";	
