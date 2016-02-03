@@ -25,6 +25,7 @@
 
 #include "defs.h"
 #include "diskdump.h"
+#include "xen_dom0.h"
 
 #define BITMAP_SECT_LEN	4096
 
@@ -70,6 +71,7 @@ struct diskdump_data {
 	ulong	cached_reads;
 	ulong  *valid_pages;
 	ulong   accesses;
+	ulong	snapshot_task;
 };
 
 static struct diskdump_data diskdump_data = { 0 };
@@ -284,6 +286,13 @@ process_elf32_notes(void *note_buf, unsigned long size_note)
 			dd->nt_qemu_percpu[qemu_num] = nt;
 			qemu_num++;
 		}
+		if (nt->n_type == NT_XEN_KDUMP_CR3 ||
+		    nt->n_type == XEN_ELFNOTE_CRASH_INFO) {
+			void *data = (char*)(nt + 1) +
+				roundup(nt->n_namesz, 4);
+			process_xen_note(nt->n_type, data, nt->n_descsz);
+		}
+
 		len = roundup(len + nt->n_namesz, 4);
 		len = roundup(len + nt->n_descsz, 4);
 	}
@@ -315,10 +324,22 @@ process_elf64_notes(void *note_buf, unsigned long size_note)
 			dd->nt_prstatus_percpu[num] = nt;
 			num++;
 		}
+		if ((nt->n_type == NT_TASKSTRUCT) && 
+		    (STRNEQ((char *)nt + sizeof(Elf64_Nhdr), "SNAP"))) {
+			pc->flags2 |= (LIVE_DUMP|SNAP);
+			dd->snapshot_task = 
+			    *((ulong *)((char *)nt + sizeof(Elf64_Nhdr) + nt->n_namesz));
+		}
 		len = sizeof(Elf64_Nhdr);
 		if (STRNEQ((char *)nt + len, "QEMU")) {
 			dd->nt_qemu_percpu[qemu_num] = nt;
 			qemu_num++;
+		}
+		if (nt->n_type == NT_XEN_KDUMP_CR3 ||
+		    nt->n_type == XEN_ELFNOTE_CRASH_INFO) {
+			void *data = (char*)(nt + 1) +
+				roundup(nt->n_namesz, 4);
+			process_xen_note(nt->n_type, data, nt->n_descsz);
 		}
 
 		len = roundup(len + nt->n_namesz, 4);
@@ -527,7 +548,7 @@ restart:
 	else if (STREQ(header->utsname.machine, "ppc") &&
 	    machine_type_mismatch(file, "PPC", NULL, 0))
 		goto err;
-	else if (STREQ(header->utsname.machine, "ppc64") &&
+	else if (STRNEQ(header->utsname.machine, "ppc64") &&
 	    machine_type_mismatch(file, "PPC64", NULL, 0))
 		goto err;
 	else if (STRNEQ(header->utsname.machine, "arm") &&
@@ -771,6 +792,10 @@ restart:
 	if (KDUMP_CMPRS_VALID() && 
 	    (dd->header->status & DUMP_DH_COMPRESSED_INCOMPLETE))
 		pc->flags2 |= INCOMPLETE_DUMP;
+
+	if (KDUMP_CMPRS_VALID() && 
+	    (dd->header->status & DUMP_DH_EXCLUDED_VMEMMAP))
+		pc->flags2 |= EXCLUDED_VMEMMAP;
 
 	/* For split dumpfile */
 	if (KDUMP_CMPRS_VALID()) {
@@ -1158,6 +1183,19 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	int ret;
 	physaddr_t curpaddr;
 	ulong pfn, page_offset;
+	physaddr_t paddr_in = paddr;
+
+	if (XEN_CORE_DUMPFILE() && !XEN_HYPER_MODE()) {
+		if ((paddr = xen_kdump_p2m(paddr)) == P2M_FAILURE) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_diskdump: xen_kdump_p2m(%llx): "
+					"P2M_FAILURE\n", (ulonglong)paddr_in);
+			return READ_ERROR;
+		}
+		if (CRASHDEBUG(8))
+			fprintf(fp, "read_diskdump: xen_kdump_p2m(%llx): %llx\n",
+				(ulonglong)paddr_in, (ulonglong)paddr);
+	}
 
 	pfn = paddr_to_pfn(paddr);
 
@@ -1261,6 +1299,9 @@ get_diskdump_panic_task(void)
 	if ((!DISKDUMP_VALID() && !KDUMP_CMPRS_VALID())
 	    || !get_active_set())
 		return NO_TASK;
+
+	if (pc->flags2 & SNAP)
+		return (task_exists(dd->snapshot_task) ? dd->snapshot_task : NO_TASK);
 
 	if (DISKDUMP_VALID())
 		return (ulong)dd->header->tasks[dd->header->current_cpu];
@@ -1685,6 +1726,8 @@ __diskdump_memory_dump(FILE *fp)
 			fprintf(fp, "DUMP_DH_COMPRESSED_SNAPPY");
 		if (dh->status & DUMP_DH_COMPRESSED_INCOMPLETE)
 			fprintf(fp, "DUMP_DH_COMPRESSED_INCOMPLETE");
+		if (dh->status & DUMP_DH_EXCLUDED_VMEMMAP)
+			fprintf(fp, "DUMP_DH_EXCLUDED_VMEMMAP");
 		break;
 	}
 	fprintf(fp, ")\n");
@@ -1826,6 +1869,8 @@ __diskdump_memory_dump(FILE *fp)
 				display_ELF_note(dd->machine_type, PRSTATUS_NOTE,
 					 dd->nt_prstatus_percpu[i], fp);
 			}
+			fprintf(fp, "       snapshot_task: %lx %s\n", dd->snapshot_task, 
+				dd->snapshot_task ? "(NT_TASKSTRUCT)" : "");
 			fprintf(fp, "      num_qemu_notes: %d\n",
 				dd->num_qemu_notes);
 			for (i = 0; i < dd->num_qemu_notes; i++) {
@@ -1984,12 +2029,14 @@ show_split_dumpfiles(void)
         for (i = 0; i < num_dumpfiles; i++) {
         	ddp = dd_list[i];
 		dh = ddp->header;
-		fprintf(fp, "%s%s%s%s", 
+		fprintf(fp, "%s%s%s%s%s", 
 			i ? "              " : "", 
 			ddp->filename, 
 			is_partial_diskdump() ? " [PARTIAL DUMP]" : "",
 			dh->status & DUMP_DH_COMPRESSED_INCOMPLETE ? 
-			" [INCOMPLETE]" : "");
+			" [INCOMPLETE]" : "",
+			dh->status & DUMP_DH_EXCLUDED_VMEMMAP ? 
+			" [EXCLUDED VMEMMAP]" : "");
 		if ((i+1) < num_dumpfiles)
 			fprintf(fp, "\n");
 	}

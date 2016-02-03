@@ -19,6 +19,7 @@
 
 #include "defs.h"
 #include <elf.h>
+#include <endian.h>
 
 #define NOT_IMPLEMENTED(X) error((X), "%s: function not implemented\n", __func__)
 
@@ -37,15 +38,19 @@ static int arm64_vtop_3level_4k(ulong, ulong, physaddr_t *, int);
 static ulong arm64_get_task_pgd(ulong);
 static void arm64_stackframe_init(void);
 static int arm64_eframe_search(struct bt_info *);
+static int arm64_is_kernel_exception_frame(struct bt_info *, ulong);
 static int arm64_in_exception_text(ulong);
 static void arm64_back_trace_cmd(struct bt_info *);
-static int arm64_print_stackframe_entry(struct bt_info *, int, struct arm64_stackframe *);
+static void arm64_print_text_symbols(struct bt_info *, struct arm64_stackframe *, FILE *);
+static int arm64_print_stackframe_entry(struct bt_info *, int, struct arm64_stackframe *, FILE *);
 static void arm64_display_full_frame(struct bt_info *, ulong);
 static int arm64_unwind_frame(struct bt_info *, struct arm64_stackframe *);
 static int arm64_get_dumpfile_stackframe(struct bt_info *, struct arm64_stackframe *);
+static int arm64_in_kdump_text(struct bt_info *, struct arm64_stackframe *);
 static int arm64_get_stackframe(struct bt_info *, struct arm64_stackframe *);
 static void arm64_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static void arm64_print_exception_frame(struct bt_info *, ulong, int);
+static void arm64_print_exception_frame(struct bt_info *, ulong, int, FILE *ofp);
+static void arm64_do_bt_reference_check(struct bt_info *, ulong, char *);
 static int arm64_translate_pte(ulong, void *, ulonglong);
 static ulong arm64_vmalloc_start(void);
 static int arm64_is_task_addr(ulong);
@@ -89,9 +94,36 @@ arm64_init(int when)
 		machdep->verify_paddr = generic_verify_paddr;
 		if (machdep->cmdline_args[0])
 			arm64_parse_cmdline_args();
+		machdep->flags |= MACHDEP_BT_TEXT;
 		break;
 
 	case PRE_GDB:
+		if (!machdep->pagesize) {
+			/*
+			 * Kerneldoc Documentation/arm64/booting.txt describes
+			 * the kernel image header flags field.
+			 */
+			value = machdep->machspec->kernel_flags;
+			value = (value >> 1) & 3;
+
+			switch(value)
+			{
+			case 0:
+				break;
+			case 1:
+				machdep->pagesize = 4096;
+				break;
+			case 2:
+				/* TODO: machdep->pagesize = 16384; */
+				error(FATAL, "16K pages not supported.");
+				break;
+			case 3:
+				machdep->pagesize = 65536;
+				break;
+			}
+
+		}
+
 		if (!machdep->pagesize &&
 		    kernel_symbol_exists("swapper_pg_dir") &&
 		    kernel_symbol_exists("idmap_pg_dir")) {
@@ -284,9 +316,9 @@ arm64_init(int when)
 
 	case LOG_ONLY:
 		machdep->machspec = &arm64_machine_specific;
-		error(FATAL, "crash --log not implemented on ARM64: TBD\n");
-		/* machdep->identity_map_base = ARM64_PAGE_OFFSET; */
+		arm64_calc_VA_BITS();
 		arm64_calc_phys_offset();
+		machdep->machspec->page_offset = ARM64_PAGE_OFFSET;
 		break;
 	}
 }
@@ -299,6 +331,9 @@ arm64_verify_symbol(const char *name, ulong value, char type)
 {
 	if (!name || !strlen(name))
 		return FALSE;
+
+	if ((type == 'A') && STREQ(name, "_kernel_flags_le"))
+		machdep->machspec->kernel_flags = le64toh(value);
 
 	if (((type == 'A') || (type == 'a')) && (highest_bit_long(value) != 63))
 		return FALSE;
@@ -338,6 +373,10 @@ arm64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_L3_4K", others++ ? "|" : "");
 	if (machdep->flags & VMEMMAP)
 		fprintf(fp, "%sVMEMMAP", others++ ? "|" : "");
+	if (machdep->flags & KDUMP_ENABLED)
+		fprintf(fp, "%sKDUMP_ENABLED", others++ ? "|" : "");
+	if (machdep->flags & MACHDEP_BT_TEXT)
+		fprintf(fp, "%sMACHDEP_BT_TEXT", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "              kvbase: %lx\n", machdep->kvbase);
@@ -452,6 +491,11 @@ arm64_dump_machdep_table(ulong arg)
         	fprintf(fp, "%lx\n", ms->__SWP_OFFSET_MASK);
 	else
 		fprintf(fp, "(unused)\n");
+	fprintf(fp, "     crash_kexec_start: %lx\n", ms->crash_kexec_start);
+	fprintf(fp, "       crash_kexec_end: %lx\n", ms->crash_kexec_end);
+	fprintf(fp, "  crash_save_cpu_start: %lx\n", ms->crash_save_cpu_start);
+	fprintf(fp, "    crash_save_cpu_end: %lx\n", ms->crash_save_cpu_end);
+        fprintf(fp, "          kernel_flags: %lx\n", ms->kernel_flags);
 }
 
 
@@ -689,8 +733,8 @@ arm64_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbos
 #define PMD_TYPE_MASK   3
 #define PMD_TYPE_SECT   1
 #define PMD_TYPE_TABLE  2
-#define SECTION_PAGE_MASK_2MB    (~((MEGABYTES(2))-1))
-#define SECTION_PAGE_MASK_512MB  (~((MEGABYTES(512))-1))
+#define SECTION_PAGE_MASK_2MB    ((long)(~((MEGABYTES(2))-1)))
+#define SECTION_PAGE_MASK_512MB  ((long)(~((MEGABYTES(512))-1)))
 
 static int 
 arm64_vtop_2level_64k(ulong pgd, ulong vaddr, physaddr_t *paddr, int verbose)
@@ -716,7 +760,7 @@ arm64_vtop_2level_64k(ulong pgd, ulong vaddr, physaddr_t *paddr, int verbose)
 	 */
 
 	if ((pgd_val & PMD_TYPE_MASK) == PMD_TYPE_SECT) {
-		ulong sectionbase = pgd_val & SECTION_PAGE_MASK_512MB;
+		ulong sectionbase = (pgd_val & SECTION_PAGE_MASK_512MB) & PHYS_MASK;
 		if (verbose) {
 			fprintf(fp, "  PAGE: %lx  (512MB)\n\n", sectionbase);
 			arm64_translate_pte(pgd_val, 0, 0);
@@ -788,7 +832,7 @@ arm64_vtop_3level_4k(ulong pgd, ulong vaddr, physaddr_t *paddr, int verbose)
 		goto no_page;
 
 	if ((pmd_val & PMD_TYPE_MASK) == PMD_TYPE_SECT) {
-		ulong sectionbase = pmd_val & SECTION_PAGE_MASK_2MB;
+		ulong sectionbase = (pmd_val & SECTION_PAGE_MASK_2MB) & PHYS_MASK;
 		if (verbose) {
 			fprintf(fp, "  PAGE: %lx  (2MB)\n\n", sectionbase);
 			arm64_translate_pte(pmd_val, 0, 0);
@@ -857,6 +901,7 @@ arm64_stackframe_init(void)
 	long task_struct_thread;
 	long thread_struct_cpu_context;
 	long context_sp, context_pc, context_fp;
+	struct syment *sp1, *sp1n, *sp2, *sp2n;
 
 	STRUCT_SIZE_INIT(note_buf, "note_buf_t");
 	STRUCT_SIZE_INIT(elf_prstatus, "elf_prstatus");
@@ -867,6 +912,17 @@ arm64_stackframe_init(void)
 		symbol_value("__exception_text_start");
 	machdep->machspec->__exception_text_end = 
 		symbol_value("__exception_text_end");
+
+	if ((sp1 = kernel_symbol_search("crash_kexec")) &&
+	    (sp1n = next_symbol(NULL, sp1)) && 
+	    (sp2 = kernel_symbol_search("crash_save_cpu")) &&
+	    (sp2n = next_symbol(NULL, sp2))) {
+		machdep->machspec->crash_kexec_start = sp1->value;
+		machdep->machspec->crash_kexec_end = sp1n->value;
+		machdep->machspec->crash_save_cpu_start = sp2->value;
+		machdep->machspec->crash_save_cpu_end = sp2n->value;
+		machdep->flags |= KDUMP_ENABLED;
+	}
 
 	task_struct_thread = MEMBER_OFFSET("task_struct", "thread");
 	thread_struct_cpu_context = MEMBER_OFFSET("thread_struct", "cpu_context");
@@ -937,29 +993,39 @@ arm64_stackframe_init(void)
 #define PSR_MODE_EL3h   0x0000000d
 #define PSR_MODE_MASK   0x0000000f
 
-static int arm64_eframe_search(struct bt_info *bt)
+static int
+arm64_is_kernel_exception_frame(struct bt_info *bt, ulong stkptr)
+{
+        struct arm64_pt_regs *regs;
+
+        regs = (struct arm64_pt_regs *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(stkptr))];
+
+	if (INSTACK(regs->sp, bt) && INSTACK(regs->regs[29], bt) && 
+	    !(regs->pstate & (0xffffffff00000000ULL | PSR_MODE32_BIT)) &&
+	    is_kernel_text(regs->pc) &&
+	    is_kernel_text(regs->regs[30])) {
+		switch (regs->pstate & PSR_MODE_MASK)
+		{
+		case PSR_MODE_EL1t:
+		case PSR_MODE_EL1h:
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+static int 
+arm64_eframe_search(struct bt_info *bt)
 {
 	ulong ptr, count;
-        struct arm64_pt_regs *regs;
 
 	count = 0;
 	for (ptr = bt->stackbase; ptr < bt->stacktop - SIZE(pt_regs); ptr++) {
-        	regs = (struct arm64_pt_regs *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(ptr))];
-
-		if (INSTACK(regs->sp, bt) && INSTACK(regs->regs[29], bt) && 
-		    !(regs->pstate & (0xffffffff00000000ULL | PSR_MODE32_BIT)) &&
-		    is_kernel_text(regs->pc) &&
-		    is_kernel_text(regs->regs[30])) {
-			switch (regs->pstate & PSR_MODE_MASK)
-			{
-			case PSR_MODE_EL1t:
-			case PSR_MODE_EL1h:
-				fprintf(fp, 
-				    "\nKERNEL-MODE EXCEPTION FRAME AT: %lx\n", ptr); 
-				arm64_print_exception_frame(bt, ptr, KERNEL_MODE);
-				count++;
-				break;
-			}
+		if (arm64_is_kernel_exception_frame(bt, ptr)) {
+			fprintf(fp, "\nKERNEL-MODE EXCEPTION FRAME AT: %lx\n", ptr); 
+			arm64_print_exception_frame(bt, ptr, KERNEL_MODE, fp);
+			count++;
 		}
 	}
 
@@ -969,7 +1035,7 @@ static int arm64_eframe_search(struct bt_info *bt)
 	ptr = bt->stacktop - USER_EFRAME_OFFSET;
 	fprintf(fp, "%sUSER-MODE EXCEPTION FRAME AT: %lx\n", 
 		count++ ? "\n" : "", ptr); 
-	arm64_print_exception_frame(bt, ptr, USER_MODE);
+	arm64_print_exception_frame(bt, ptr, USER_MODE, fp);
 
 	return count;
 }
@@ -988,7 +1054,7 @@ arm64_in_exception_text(ulong ptr)
 #define BACKTRACE_COMPLETE_USER   (3)
 
 static int 
-arm64_print_stackframe_entry(struct bt_info *bt, int level, struct arm64_stackframe *frame)
+arm64_print_stackframe_entry(struct bt_info *bt, int level, struct arm64_stackframe *frame, FILE *ofp)
 {
 	char *name, *name_plus_offset;
 	ulong symbol_offset;
@@ -1011,18 +1077,21 @@ arm64_print_stackframe_entry(struct bt_info *bt, int level, struct arm64_stackfr
 		bt->frameptr = frame->sp;
 	}
 
-        fprintf(fp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
+        fprintf(ofp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
                 frame->sp, name_plus_offset ? name_plus_offset : name, frame->pc);
 
-	if (module_symbol(frame->pc, NULL, &lm, NULL, 0))
-		fprintf(fp, " [%s]", lm->mod_name);
+	if (BT_REFERENCE_CHECK(bt))
+		arm64_do_bt_reference_check(bt, frame->pc, name);
 
-	fprintf(fp, "\n");
+	if (module_symbol(frame->pc, NULL, &lm, NULL, 0))
+		fprintf(ofp, " [%s]", lm->mod_name);
+
+	fprintf(ofp, "\n");
 
 	if (bt->flags & BT_LINE_NUMBERS) {
 		get_line_number(frame->pc, buf, FALSE);
 		if (strlen(buf))
-			fprintf(fp, "    %s\n", buf);
+			fprintf(ofp, "    %s\n", buf);
 	}
 
 	if (STREQ(name, "start_kernel") || STREQ(name, "secondary_start_kernel") ||
@@ -1062,7 +1131,8 @@ arm64_display_full_frame(struct bt_info *bt, ulong sp)
 	fprintf(fp, "\n");
 }
 
-static int arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
+static int 
+arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
 {
 	unsigned long high, low, fp;
 	unsigned long stack_mask;
@@ -1083,29 +1153,71 @@ static int arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame
 	return TRUE;
 }
 
-static void arm64_back_trace_cmd(struct bt_info *bt)
+static void 
+arm64_back_trace_cmd(struct bt_info *bt)
 {
 	struct arm64_stackframe stackframe;
 	int level;
 	ulong exception_frame;
+	FILE *ofp;
 
-	if (BT_REFERENCE_CHECK(bt))
-		option_not_supported('R');
+	ofp = BT_REFERENCE_CHECK(bt) ? pc->nullfp : fp;
 
-	if (bt->flags & BT_USER_SPACE) {
-		fprintf(fp, "#0 [user space]\n");
-		return;
+	/*
+	 *  stackframes are created from 3 contiguous stack addresses:
+	 *
+	 *     x: contains stackframe.fp -- points to next triplet
+	 *   x+8: contains stackframe.pc -- text return address
+	 *  x+16: is the stackframe.sp address 
+	 */
+
+	if (bt->flags & BT_KDUMP_ADJUST) {
+		stackframe.fp = GET_STACK_ULONG(bt->bptr - 8);
+		stackframe.pc = GET_STACK_ULONG(bt->bptr);
+		stackframe.sp = bt->bptr + 8;
+		bt->frameptr = stackframe.sp;
+	} else if (bt->hp && bt->hp->esp) {
+		stackframe.fp = GET_STACK_ULONG(bt->hp->esp - 8);
+		stackframe.pc = bt->hp->eip ? 
+			bt->hp->eip : GET_STACK_ULONG(bt->hp->esp);
+		stackframe.sp = bt->hp->esp + 8;
+		bt->flags &= ~BT_REGS_NOT_FOUND;
+	} else {
+		stackframe.sp = bt->stkptr;
+		stackframe.pc = bt->instptr;
+		stackframe.fp = bt->frameptr;
 	}
 
-	stackframe.sp = bt->stkptr;
-	stackframe.pc = bt->instptr;
-	stackframe.fp = bt->frameptr;
+	if (bt->flags & BT_TEXT_SYMBOLS) {
+		arm64_print_text_symbols(bt, &stackframe, ofp);
+                if (BT_REFERENCE_FOUND(bt)) {
+                        print_task_header(fp, task_to_context(bt->task), 0);
+			arm64_print_text_symbols(bt, &stackframe, fp);
+                        fprintf(fp, "\n");
+                }
+		return;
+        }
+
+	if (bt->flags & BT_REGS_NOT_FOUND)
+		return;
+
+	if (!(bt->flags & BT_KDUMP_ADJUST)) {
+		if (bt->flags & BT_USER_SPACE)
+			goto complete_user;
+
+		if (DUMPFILE() && is_task_active(bt->task)) {
+			exception_frame = stackframe.fp - SIZE(pt_regs);
+			if (arm64_is_kernel_exception_frame(bt, exception_frame))
+				arm64_print_exception_frame(bt, exception_frame, 
+					KERNEL_MODE, ofp);
+		}
+	}
 
 	level = exception_frame = 0;
-        while (1) {
+	while (1) {
 		bt->instptr = stackframe.pc;
 
-		switch (arm64_print_stackframe_entry(bt, level, &stackframe))
+		switch (arm64_print_stackframe_entry(bt, level, &stackframe, ofp))
 		{
 		case BACKTRACE_COMPLETE_KERNEL:
 			return;
@@ -1116,28 +1228,110 @@ static void arm64_back_trace_cmd(struct bt_info *bt)
 		}
 
 		if (exception_frame) {
-			arm64_print_exception_frame(bt, exception_frame, 
-				KERNEL_MODE);
+			arm64_print_exception_frame(bt, exception_frame, KERNEL_MODE, ofp);
 			exception_frame = 0;
 		}
 
-                if (!arm64_unwind_frame(bt, &stackframe))
-                        break;
+		if (!arm64_unwind_frame(bt, &stackframe))
+			break;
 
-        	if (arm64_in_exception_text(bt->instptr)) {
-			if (stackframe.fp)
-				exception_frame = stackframe.fp - SIZE(pt_regs);
-		}
+		if (arm64_in_exception_text(bt->instptr) && INSTACK(stackframe.fp, bt))
+			exception_frame = stackframe.fp - SIZE(pt_regs);
 
 		level++;
-        }
+	}
 
 	if (is_kernel_thread(bt->tc->task)) 
 		return;
 
 complete_user:
 	exception_frame = bt->stacktop - USER_EFRAME_OFFSET;
-	arm64_print_exception_frame(bt, exception_frame, USER_MODE);
+	arm64_print_exception_frame(bt, exception_frame, USER_MODE, ofp);
+	if ((bt->flags & (BT_USER_SPACE|BT_KDUMP_ADJUST)) == BT_USER_SPACE)
+		fprintf(ofp, " #0 [user space]\n");
+}
+
+static void
+arm64_print_text_symbols(struct bt_info *bt, struct arm64_stackframe *frame, FILE *ofp)
+{
+	int i;
+	ulong *up;
+	struct load_module *lm;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char *name;
+	ulong start;
+
+	if (bt->flags & BT_TEXT_SYMBOLS_ALL)
+		start = bt->stackbase;
+	else {
+		start = frame->sp - 8;
+		fprintf(ofp, "%sSTART: %s at %lx\n",
+			space(VADDR_PRLEN > 8 ? 14 : 6),
+			bt->flags & BT_SYMBOL_OFFSET ?
+			value_to_symstr(frame->pc, buf2, bt->radix) :
+			closest_symbol(frame->pc), frame->pc);
+	}
+
+	for (i = (start - bt->stackbase)/sizeof(ulong); i < LONGS_PER_STACK; i++) {
+		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+		if (is_kernel_text(*up)) {
+			name = closest_symbol(*up);
+			fprintf(ofp, "  %s[%s] %s at %lx",
+				bt->flags & BT_ERROR_MASK ?
+				"  " : "",
+				mkstring(buf1, VADDR_PRLEN, 
+				RJUST|LONG_HEX,
+				MKSTR(bt->stackbase + 
+				(i * sizeof(long)))),
+				bt->flags & BT_SYMBOL_OFFSET ?
+				value_to_symstr(*up, buf2, bt->radix) :
+				name, *up);
+			if (module_symbol(*up, NULL, &lm, NULL, 0))
+				fprintf(ofp, " [%s]", lm->mod_name);
+			fprintf(ofp, "\n");
+			if (BT_REFERENCE_CHECK(bt))
+				arm64_do_bt_reference_check(bt, *up, name);
+		}
+	}
+}
+
+static int
+arm64_in_kdump_text(struct bt_info *bt, struct arm64_stackframe *frame)
+{
+	ulong *ptr, *start, *base;
+	struct machine_specific *ms;
+
+	if (!(machdep->flags & KDUMP_ENABLED))
+		return FALSE;
+
+	base = (ulong *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(bt->stackbase))];
+	if (bt->flags & BT_USER_SPACE)
+		start = (ulong *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(bt->stacktop))];
+	else {
+		if (INSTACK(frame->fp, bt))
+			start = (ulong *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(frame->fp))];
+		else 
+			start = (ulong *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(bt->stacktop))];
+	}
+
+	ms = machdep->machspec;
+	for (ptr = start - 8; ptr >= base; ptr--) {
+		if ((*ptr >= ms->crash_kexec_start) && (*ptr < ms->crash_kexec_end)) {
+			bt->bptr = ((ulong)ptr - (ulong)base) + bt->tc->thread_info;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "%lx: %lx (crash_kexec)\n", bt->bptr, *ptr);
+			return TRUE;
+		}
+		if ((*ptr >= ms->crash_save_cpu_start) && (*ptr < ms->crash_save_cpu_end)) {
+			bt->bptr = ((ulong)ptr - (ulong)base) + bt->tc->thread_info;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "%lx: %lx (crash_save_cpu)\n", bt->bptr, *ptr);
+			return TRUE;
+		}
+	} 
+
+	return FALSE;
 }
 
 static int
@@ -1146,8 +1340,12 @@ arm64_get_dumpfile_stackframe(struct bt_info *bt, struct arm64_stackframe *frame
 	struct machine_specific *ms = machdep->machspec;
 	struct arm64_pt_regs *ptregs;
 
-	if (!ms->panic_task_regs)
+	if (!ms->panic_task_regs ||
+	    (!ms->panic_task_regs[bt->tc->processor].sp && 
+	     !ms->panic_task_regs[bt->tc->processor].pc)) {
+		bt->flags |= BT_REGS_NOT_FOUND;
 		return FALSE;
+	}
 
 	ptregs = &ms->panic_task_regs[bt->tc->processor];
 	frame->sp = ptregs->sp;
@@ -1157,6 +1355,9 @@ arm64_get_dumpfile_stackframe(struct bt_info *bt, struct arm64_stackframe *frame
 	if (!is_kernel_text(frame->pc) && 
 	    in_user_stack(bt->tc->task, frame->sp))
 		bt->flags |= BT_USER_SPACE;
+
+	if (arm64_in_kdump_text(bt, frame))
+		bt->flags |= BT_KDUMP_ADJUST;
 
 	return TRUE;
 }
@@ -1178,19 +1379,17 @@ static void
 arm64_get_stack_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 {
 	int ret;
-	struct arm64_stackframe stackframe;
+	struct arm64_stackframe stackframe = { 0 };
 
 	if (DUMPFILE() && is_task_active(bt->task))
 		ret = arm64_get_dumpfile_stackframe(bt, &stackframe);
 	else
 		ret = arm64_get_stackframe(bt, &stackframe);
 
-	if (!ret) {
+	if (!ret)
 		error(WARNING, 
 			"cannot determine starting stack frame for task %lx\n",
 				bt->task);
-		return;
-	}
 
 	bt->frameptr = stackframe.fp;
 	if (pcp)
@@ -1200,7 +1399,7 @@ arm64_get_stack_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 }
 
 static void
-arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode)
+arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode, FILE *ofp)
 {
 	int i, r, rows, top_reg, is_64_bit;
 	struct arm64_pt_regs *regs;
@@ -1209,7 +1408,7 @@ arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode)
 	char buf[BUFSIZE];
 
 	if (CRASHDEBUG(1))
-		fprintf(fp, "pt_regs: %lx\n", pt_regs);
+		fprintf(ofp, "pt_regs: %lx\n", pt_regs);
 
 	regs = (struct arm64_pt_regs *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(pt_regs))];
 
@@ -1230,71 +1429,121 @@ arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode)
 	switch (mode) {
 	case USER_MODE: 
 		if (is_64_bit)
-			fprintf(fp, 
+			fprintf(ofp, 
 			    "     PC: %016lx   LR: %016lx   SP: %016lx\n    ",
 				(ulong)regs->pc, LR, SP);
 		else
-			fprintf(fp, 
+			fprintf(ofp, 
 			    "     PC: %08lx  LR: %08lx  SP: %08lx  PSTATE: %08lx\n    ",
 				(ulong)regs->pc, LR, SP, (ulong)regs->pstate);
 		break;
 
 	case KERNEL_MODE:
-		fprintf(fp, "     PC: %016lx  ", (ulong)regs->pc);
+		fprintf(ofp, "     PC: %016lx  ", (ulong)regs->pc);
 		if (is_kernel_text(regs->pc) &&
 		    (sp = value_search(regs->pc, &offset))) {
-			fprintf(fp, "[%s", sp->name);
+			fprintf(ofp, "[%s", sp->name);
 			if (offset)
-				fprintf(fp, (*gdb_output_radix == 16) ?
+				fprintf(ofp, (*gdb_output_radix == 16) ?
 				    "+0x%lx" : "+%ld", 
 					offset);
-			fprintf(fp, "]\n");
+			fprintf(ofp, "]\n");
 		} else
-			fprintf(fp, "[unknown or invalid address]\n");
+			fprintf(ofp, "[unknown or invalid address]\n");
 
-		fprintf(fp, "     LR: %016lx  ", LR);
+		fprintf(ofp, "     LR: %016lx  ", LR);
 		if (is_kernel_text(LR) &&
 		    (sp = value_search(LR, &offset))) {
-			fprintf(fp, "[%s", sp->name);
+			fprintf(ofp, "[%s", sp->name);
 			if (offset)
-				fprintf(fp, (*gdb_output_radix == 16) ?
+				fprintf(ofp, (*gdb_output_radix == 16) ?
 				    "+0x%lx" : "+%ld", 
 					offset);
-			fprintf(fp, "]\n");
+			fprintf(ofp, "]\n");
 		} else
-			fprintf(fp, "[unknown or invalid address]\n");
+			fprintf(ofp, "[unknown or invalid address]\n");
 
-		fprintf(fp, "     SP: %016lx  PSTATE: %08lx\n    ", 
+		fprintf(ofp, "     SP: %016lx  PSTATE: %08lx\n    ", 
 			SP, (ulong)regs->pstate);
 		break;
 	}
 
 	for (i = top_reg, r = 1; i >= 0; r++, i--) {
-		fprintf(fp, "%sX%d: ", 
+		fprintf(ofp, "%sX%d: ", 
 			i < 10 ? " " : "", i);
-		fprintf(fp, is_64_bit ? "%016lx" : "%08lx",
+		fprintf(ofp, is_64_bit ? "%016lx" : "%08lx",
 			(ulong)regs->regs[i]);
 		if ((i == 0) || ((r % rows) == 0))
-			fprintf(fp, "\n    ");
+			fprintf(ofp, "\n    ");
 		else
-			fprintf(fp, "%s", is_64_bit ? "  " : " "); 
+			fprintf(ofp, "%s", is_64_bit ? "  " : " "); 
 	}
 
 	if (is_64_bit) {
-		fprintf(fp, "ORIG_X0: %016lx  SYSCALLNO: %lx",
+		fprintf(ofp, "ORIG_X0: %016lx  SYSCALLNO: %lx",
 			(ulong)regs->orig_x0, (ulong)regs->syscallno);
 		if (mode == USER_MODE)
-			fprintf(fp, "  PSTATE: %08lx", (ulong)regs->pstate);
-		fprintf(fp, "\n");
+			fprintf(ofp, "  PSTATE: %08lx", (ulong)regs->pstate);
+		fprintf(ofp, "\n");
 	}
 
 	if (is_kernel_text(regs->pc) && (bt->flags & BT_LINE_NUMBERS)) {
 		get_line_number(regs->pc, buf, FALSE);
 		if (strlen(buf))
-			fprintf(fp, "    %s\n", buf);
+			fprintf(ofp, "    %s\n", buf);
+	}
+
+	if (BT_REFERENCE_CHECK(bt)) {
+		arm64_do_bt_reference_check(bt, regs->pc, NULL);
+		arm64_do_bt_reference_check(bt, LR, NULL);
+		arm64_do_bt_reference_check(bt, SP, NULL);
+		arm64_do_bt_reference_check(bt, regs->pstate, NULL);
+		for (i = 0; i <= top_reg; i++)
+			arm64_do_bt_reference_check(bt, regs->regs[i], NULL);
+		if (is_64_bit) {
+			arm64_do_bt_reference_check(bt, regs->orig_x0, NULL);
+			arm64_do_bt_reference_check(bt, regs->syscallno, NULL);
+		}
 	}
 }
 
+/*
+ *  Check a frame for a requested reference.
+ */
+static void
+arm64_do_bt_reference_check(struct bt_info *bt, ulong text, char *name)
+{
+	ulong offset;
+	struct syment *sp = NULL;
+
+	if (!name)
+		sp = value_search(text, &offset); 
+	else if (!text)
+		sp = symbol_search(name);
+
+        switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
+        {
+        case BT_REF_SYMBOL:
+                if (name) {
+			if (STREQ(name, bt->ref->str))
+                        	bt->ref->cmdflags |= BT_REF_FOUND;
+		} else {
+			if (sp && !offset && STREQ(sp->name, bt->ref->str))
+                        	bt->ref->cmdflags |= BT_REF_FOUND;
+		}
+                break;
+
+        case BT_REF_HEXVAL:
+                if (text) {
+			if (bt->ref->hexval == text) 
+                        	bt->ref->cmdflags |= BT_REF_FOUND;
+		} else if (sp && (bt->ref->hexval == sp->value))
+                       	bt->ref->cmdflags |= BT_REF_FOUND;
+		else if (!name && !text && (bt->ref->hexval == 0))
+			bt->ref->cmdflags |= BT_REF_FOUND;
+                break;
+        }
+}
 
 /*
  *  Translate a PTE, returning TRUE if the page is present.
@@ -1443,10 +1692,10 @@ arm64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 	if ((FIRSTCHAR(argv[argc-1]) == '<') &&
 	    (LASTCHAR(argv[argc-1]) == '>')) {
 		p1 = rindex(inbuf, '<');
-		while ((p1 > inbuf) && !STRNEQ(p1, " 0x"))
+		while ((p1 > inbuf) && !(STRNEQ(p1, " 0x") || STRNEQ(p1, "\t0x")))
 			p1--;
 
-		if (!STRNEQ(p1, " 0x"))
+		if (!(STRNEQ(p1, " 0x") || STRNEQ(p1, "\t0x")))
 			return FALSE;
 		p1++;
 
@@ -1568,8 +1817,8 @@ arm64_get_crash_notes(void)
 
 	buf = GETBUF(SIZE(note_buf));
 
-	if (!(ms->panic_task_regs = malloc(kt->cpus * sizeof(struct arm64_pt_regs))))
-		error(FATAL, "cannot malloc panic_task_regs space\n");
+	if (!(ms->panic_task_regs = calloc((size_t)kt->cpus, sizeof(struct arm64_pt_regs))))
+		error(FATAL, "cannot calloc panic_task_regs space\n");
 	
 	for  (i = 0; i < kt->cpus; i++) {
 
@@ -1584,6 +1833,33 @@ arm64_get_crash_notes(void)
 		 */
 		note = (Elf64_Nhdr *)buf;
 		p = buf + sizeof(Elf64_Nhdr);
+
+		/*
+		 * dumpfiles created with qemu won't have crash_notes, but there will
+		 * be elf notes; dumpfiles created by kdump do not create notes for
+		 * offline cpus.
+		 */
+		if (note->n_namesz == 0 && (DISKDUMP_DUMPFILE() || KDUMP_DUMPFILE())) {
+			if (DISKDUMP_DUMPFILE())
+				note = diskdump_get_prstatus_percpu(i);
+			else if (KDUMP_DUMPFILE())
+				note = netdump_get_prstatus_percpu(i);
+			if (note) {
+				/*
+				 * SIZE(note_buf) accounts for a "final note", which is a
+				 * trailing empty elf note header.
+				 */
+				long notesz = SIZE(note_buf) - sizeof(Elf64_Nhdr);
+
+				if (sizeof(Elf64_Nhdr) + roundup(note->n_namesz, 4) +
+				    note->n_descsz == notesz)
+					BCOPY((char *)note, buf, notesz);
+			} else {
+				error(WARNING,
+					"cannot find NT_PRSTATUS note for cpu: %d\n", i);
+				continue;
+			}
+		}
 
 		if (note->n_type != NT_PRSTATUS) {
 			error(WARNING, "invalid note (n_type != NT_PRSTATUS)\n");
@@ -1699,6 +1975,7 @@ arm64_calc_VA_BITS(void)
 {
 	int bitval;
 	struct syment *sp;
+	ulong value;
 
 	if (!(sp = symbol_search("swapper_pg_dir")) &&
 	    !(sp = symbol_search("idmap_pg_dir")) &&
@@ -1710,8 +1987,13 @@ arm64_calc_VA_BITS(void)
 		}
 	}
 
-	for (bitval = highest_bit_long(sp->value); bitval; bitval--) {
-		if ((sp->value & (1UL << bitval)) == 0) {
+	if (sp) 
+		value = sp->value;
+	else
+		value = kt->vmcoreinfo.log_buf_SYMBOL;  /* crash --log */
+
+	for (bitval = highest_bit_long(value); bitval; bitval--) {
+		if ((value & (1UL << bitval)) == 0) {
 			machdep->machspec->VA_BITS = bitval + 2;
 			break;
 		}

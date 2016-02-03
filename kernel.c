@@ -45,9 +45,11 @@ static ulonglong ktime_to_ns(const void *);
 static void dump_timer_data(void);
 static void dump_timer_data_tvec_bases_v1(void);
 static void dump_timer_data_tvec_bases_v2(void);
+static void dump_timer_data_tvec_bases_v3(void);
 struct tv_range;
 static void init_tv_ranges(struct tv_range *, int, int, int);
 static int do_timer_list(ulong,int, ulong *, void *,ulong *,struct tv_range *);
+static int do_timer_list_v3(ulong,int, ulong *, void *,ulong *);
 static int compare_timer_data(const void *, const void *);
 static void panic_this_kernel(void);
 static void dump_waitq(ulong, char *);
@@ -75,6 +77,9 @@ static void dump_log_legacy(void);
 static void dump_variable_length_record(void);
 static int is_livepatch(void);
 static void show_kernel_taints(char *, int);
+static void dump_dmi_info(void);
+static void list_source_code(struct gnu_request *, int);
+static void source_tree_init(void);
 
 
 /*
@@ -200,7 +205,9 @@ kernel_init()
 	MEMBER_OFFSET_INIT(timekeeper_xtime, "timekeeper", "xtime");
 	MEMBER_OFFSET_INIT(timekeeper_xtime_sec, "timekeeper", "xtime_sec");
 	get_xtime(&kt->date);
-	
+	if (CRASHDEBUG(1))
+		fprintf(fp, "xtime timespec.tv_sec: %lx: %s\n", 
+			kt->date.tv_sec, strip_linefeeds(ctime(&kt->date.tv_sec)));
 	if (kt->flags2 & GET_TIMESTAMP) {
 		fprintf(fp, "%s\n\n", 
 			strip_linefeeds(ctime(&kt->date.tv_sec)));
@@ -217,6 +224,22 @@ kernel_init()
 			"init_uts_ns", RETURN_ON_ERROR);
 	else
 		error(INFO, "cannot access utsname information\n\n");
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "utsname:\n");
+		fprintf(fp, "     sysname: %s\n", printable_string(kt->utsname.sysname) ? 
+			kt->utsname.sysname : "(not printable)");
+		fprintf(fp, "    nodename: %s\n", printable_string(kt->utsname.nodename) ? 
+			kt->utsname.nodename : "(not printable)");
+		fprintf(fp, "     release: %s\n", printable_string(kt->utsname.release) ? 
+			kt->utsname.release : "(not printable)");
+		fprintf(fp, "     version: %s\n", printable_string(kt->utsname.version) ? 
+			kt->utsname.version : "(not printable)");
+		fprintf(fp, "     machine: %s\n", printable_string(kt->utsname.machine) ? 
+			kt->utsname.machine : "(not printable)");
+		fprintf(fp, "  domainname: %s\n", printable_string(kt->utsname.domainname) ? 
+			kt->utsname.domainname : "(not printable)");
+	}
 
 	strncpy(buf, kt->utsname.release, MIN(strlen(kt->utsname.release), 65));
 	if (ascii_string(kt->utsname.release)) {
@@ -538,6 +561,15 @@ kernel_init()
 	        	MEMBER_OFFSET_INIT(tvec_s_vec, "tvec", "vec");
 		}
 	}
+
+	if (per_cpu_symbol_search("per_cpu__tvec_bases")) {
+		if (MEMBER_EXISTS("tvec_base", "migration_enabled"))
+			kt->flags2 |= TVEC_BASES_V3;
+		else
+			kt->flags |= TVEC_BASES_V2;
+	} else if (symbol_exists("tvec_bases"))
+		kt->flags |= TVEC_BASES_V1;
+
         STRUCT_SIZE_INIT(__wait_queue, "__wait_queue");
         if (VALID_STRUCT(__wait_queue)) {
 		if (MEMBER_EXISTS("__wait_queue", "task"))
@@ -716,6 +748,9 @@ kernel_init()
 	if (INVALID_MEMBER(ktime_t_nsec))
 		MEMBER_OFFSET_INIT(ktime_t_nsec, "ktime_t", "nsec");
 
+	if (kt->source_tree)
+		source_tree_init();
+
 	kt->flags &= ~PRE_KERNEL_INIT;
 }
 
@@ -848,13 +883,16 @@ cpu_maps_init(void)
 		}
 
 		if (CRASHDEBUG(1)) {
-			fprintf(fp, "cpu_%s_%s: ", mapinfo[m].name,
-				cpu_map_type(mapinfo[m].name));
-			for (i = 0; i < NR_CPUS; i++) {
-				if (kt->cpu_flags[i] & mapinfo[m].cpu_flag)
+			fprintf(fp, "%scpu_%s_%s: cpus: ", 
+				space(strlen("possible")-strlen(mapinfo[m].name)),
+				mapinfo[m].name, cpu_map_type(mapinfo[m].name));
+			for (i = c = 0; i < NR_CPUS; i++) {
+				if (kt->cpu_flags[i] & mapinfo[m].cpu_flag) {
 					fprintf(fp, "%d ", i);
+					c++;
+				}
 			}
-			fprintf(fp, "\n");
+			fprintf(fp, "%s\n", c ? "" : "(none)");
 		}
 
 	}
@@ -1306,8 +1344,285 @@ verify_namelist()
         program_usage(SHORT_FORM);
 }
 
+/*
+ *  Set up the gdb source code path.
+ */
+static void
+source_tree_init(void)
+{
+	FILE *pipe;
+	char command[BUFSIZE];
+	char buf[BUFSIZE];
+
+	if (!is_directory(kt->source_tree)) {
+		error(INFO, "invalid --src argument: %s\n\n", 
+			kt->source_tree);
+		kt->source_tree = NULL;
+		return;
+	}
+
+	sprintf(command, "/usr/bin/ls -d %s/arch/*/include/asm 2>/dev/null", 
+		kt->source_tree);
+	if ((pipe = popen(command, "r"))) {
+		if (fgets(buf, BUFSIZE-1, pipe)) {
+			sprintf(command, "directory %s", buf);
+			gdb_pass_through(command, NULL, GNU_RETURN_ON_ERROR);
+		} 
+		pclose(pipe);
+	} else
+		error(INFO, "%s: %s\n", command, strerror(errno));
+
+	sprintf(command, "directory %s", kt->source_tree);
+	gdb_pass_through(command, NULL, GNU_RETURN_ON_ERROR);
+
+}
 
 
+static void
+list_source_code(struct gnu_request *req, int count_entered)
+{
+	int argc, line, last, done, assembly;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char file[BUFSIZE];
+        char *argv[MAXARGS];
+	struct syment *sp;
+	ulong remaining, offset;
+	char *p1;
+
+	sp = value_search(req->addr, &offset);
+	if (!sp || !is_symbol_text(sp))
+		error(FATAL, "%lx: not a kernel text address\n", req->addr);
+
+	sprintf(buf1, "list *0x%lx", req->addr);
+	open_tmpfile();
+	if (!gdb_pass_through(buf1, pc->tmpfile, GNU_RETURN_ON_ERROR)) {
+		close_tmpfile();
+		error(FATAL, "gdb command failed: %s\n", buf1);
+	}
+
+	done = FALSE;
+	last = line = assembly = file[0] = 0;
+	remaining = count_entered ? req->count : 0;
+
+	rewind(pc->tmpfile);
+	while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+		strcpy(buf2, buf1);
+		argc = parse_line(buf2, argv);
+		if (!line && hexadecimal(argv[0], 0) && 
+		    STREQ(argv[1], "is") && 
+		    (STREQ(argv[2], "in") || STREQ(argv[2], "at"))) {
+			/*
+			 *  Don't bother continuing beyond the initial
+			 *  list command if it's assembly language.
+			 */
+			if (STREQ(argv[2], "at"))
+				assembly = TRUE;
+
+			strip_beginning_char(argv[argc-1], '(');
+			strip_ending_char(argv[argc-1], '.');
+			strip_ending_char(argv[argc-1], ')');
+			p1 = strstr_rightmost(argv[argc-1], ":");
+			*p1 = NULLCHAR;
+			strcpy(file, argv[argc-1]);
+			line = atoi(p1+1);
+
+			fprintf(pc->saved_fp, "FILE: %s\nLINE: %d\n\n", file, line);
+
+			continue;
+		} 
+
+		/*
+		 *  Check for 2 possible results of unavailable source.
+		 */
+		if ((argc == 3) &&
+		    decimal(argv[0], 0) &&
+		    STREQ(argv[1], "in") &&
+		    STREQ(argv[2], file))
+			error(FATAL, 
+			    "%s: source code is not available\n\n", req->buf);
+
+		sprintf(buf3, "%s: No such file or directory.", file);
+		if (decimal(argv[0], 0) && strstr(buf1, buf3))
+			error(FATAL, 
+			    "%s: source code is not available\n\n", req->buf);
+
+		if (decimal(argv[0], 0)) {
+			if (count_entered && (last >= line)) {
+				if (!remaining--) {
+					done = TRUE;
+					break;
+				}
+			}
+			last = atoi(argv[0]);
+			fprintf(pc->saved_fp, "%s%s", 
+				last == line ? "* " : "  ", buf1);
+		} else
+			continue;
+
+		if (!count_entered && (last > line) && 
+		    STREQ(first_space(buf1), "\t}\n")) {
+			done = TRUE;
+			break;
+		}
+	}
+	close_tmpfile();
+
+	if (!line) {
+		fprintf(fp, "FILE: (unknown)\nLINE: (unknown)\n\n");
+		error(FATAL, "%s: source code is not available\n\n", req->buf);
+	}
+
+	if ((count_entered && !remaining) || (!count_entered && assembly)) {
+		fprintf(fp, "\n");
+		return;
+	}
+
+	/*
+	 *  If the end of the containing function or a specified count
+	 *  has not been reached, continue the listing until it has.
+	 */
+	while (!done) {
+		open_tmpfile();
+		if (!gdb_pass_through("list", fp, GNU_RETURN_ON_ERROR)) {
+			close_tmpfile();
+			return;
+		}
+		rewind(pc->tmpfile);
+		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+			strcpy(buf2, buf1);
+			argc = parse_line(buf2, argv);
+
+			if (decimal(argv[0], 0))
+				line = atoi(argv[0]);
+			else
+				continue;
+
+			if (count_entered) {
+				if (!remaining--) {
+					done = TRUE;
+					break;
+				}
+			}
+
+			if (line == last) {
+				done = TRUE;
+				break;
+			}
+			last = line;
+
+			fprintf(pc->saved_fp, "  %s", buf1);
+
+			if (!count_entered && 
+			    STREQ(first_space(buf1), "\t}\n")) {
+				done = TRUE;
+				break;
+			}
+		}
+		close_tmpfile();
+	}
+
+	fprintf(fp, "\n");
+}
+
+/*
+ *  From either a syment pointer, or a virtual address evaluated
+ *  from a symbol name plus an offset value, determine whether 
+ *  there are multiple symbols with the same name.  
+
+ *  If there are multiple text symbols with the same name, then 
+ *  display a "duplicate text symbols found" message followed by
+ *  a list of each symbol's information, and return FALSE.
+ * 
+ *  If there is one text symbol and one or more data symbols with
+ *  the same name, reset the incoming address based upon the 
+ *  single text symbol, and return TRUE.
+ *
+ *  All of the remaining possibilities return TRUE without changing
+ *  the incoming address:
+ * 
+ *   (1) if an evaluated address cannot be resolved to any symbol.
+ *   (2) if an evaluated address argument did not contain a symbol name.
+ *   (3) if there is only one possible symbol resolution.
+ *   (4) if there are multiple data symbols.
+ */
+static int
+resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, int radix)
+{
+	int text_symbols;
+	struct syment *sp, *sp_orig, *first_text_sp;
+	ulong offset, radix_flag;
+
+	if (sp_in) {
+		sp_orig = sp_in;
+		offset = 0;
+	} else if ((sp_orig = value_search(req->addr, &offset))) {
+		if (!strstr(arg, sp_orig->name))
+			return TRUE;
+	} else {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: no text symbol found\n", arg);
+		return TRUE;
+	}
+
+	if (symbol_name_count(sp_orig->name) <= 1)
+		return TRUE;
+
+	text_symbols = 0;
+	first_text_sp = NULL;
+	sp = sp_orig;
+
+	do {
+		if (is_symbol_text(sp)) {
+			if (!first_text_sp)
+				first_text_sp = sp;
+			text_symbols++;
+		} 
+	} while ((sp = symbol_search_next(sp->name, sp)));
+
+	/*
+	 *  If no text symbols for a symbol name exist, let it be...
+	 */
+	if (!text_symbols) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: no text symbol found\n", arg);
+		return TRUE;
+	}
+
+	/*
+	 *  If only one symbol with the specified name is text,
+	 *  reset the req->addr as appropriate in case a
+	 *  lower-value data symbol was originally selected.
+	 */
+	if (text_symbols == 1) { 
+		if (sp_in)
+			req->addr = first_text_sp->value;
+		else
+			req->addr = first_text_sp->value + offset;
+		return TRUE;
+	}
+
+	/*
+	 *  Multiple text symbols with the same name exist.
+	 *  Display them all and return FALSE.
+	 */
+	error(INFO, "%s: duplicate text symbols found:\n", arg);
+
+	radix_flag = radix == 10 ? SHOW_DEC_OFFS : SHOW_HEX_OFFS;
+	sp = sp_orig;
+
+	do {
+		if (is_symbol_text(sp)) {
+			if (module_symbol(sp->value, NULL, NULL, NULL, 0))
+				show_symbol(sp, offset, SHOW_LINENUM|SHOW_MODULE|radix_flag);
+			else
+				show_symbol(sp, offset, SHOW_LINENUM|radix_flag);
+		}
+	} while ((sp = symbol_search_next(sp->name, sp)));
+
+	return FALSE;
+}
 
 /*
  *  This routine disassembles text in one of four manners.  A starting
@@ -1332,13 +1647,14 @@ void
 cmd_dis(void)
 {
 	int c;
-	int do_load_module_filter, do_machdep_filter, reverse; 
-	int unfiltered, user_mode, count_entered, bug_bytes_entered;
+	int do_load_module_filter, do_machdep_filter, reverse, forward;
+	int unfiltered, user_mode, count_entered, bug_bytes_entered, sources;
 	unsigned int radix;
 	ulong curaddr;
-	ulong revtarget;
+	ulong target;
 	ulong count;
 	ulong offset;
+	ulong low, high;
 	struct syment *sp;
 	struct gnu_request *req;
 	char *savename; 
@@ -1358,17 +1674,17 @@ cmd_dis(void)
 		return;
 	}
 
-	reverse = count_entered = bug_bytes_entered = FALSE;
+	reverse = forward = count_entered = bug_bytes_entered = sources = FALSE;
 	sp = NULL;
 	unfiltered = user_mode = do_machdep_filter = do_load_module_filter = 0;
 	radix = 0;
+	target = 0;
 
-	req = (struct gnu_request *)getbuf(sizeof(struct gnu_request));
-	req->buf = GETBUF(BUFSIZE);
+	req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
 	req->flags |= GNU_FROM_TTY_OFF|GNU_RETURN_ON_ERROR;
 	req->count = 1;
 
-        while ((c = getopt(argcnt, args, "dxhulrUb:B:")) != EOF) {
+        while ((c = getopt(argcnt, args, "dxhulsrfUb:B:")) != EOF) {
                 switch(c)
 		{
 		case 'd':
@@ -1391,11 +1707,30 @@ cmd_dis(void)
 			break;
 
 		case 'u':
+			if (sources)
+				error(FATAL, 
+					"-s can only be used with kernel addresses\n");
 			user_mode = TRUE;
 			break;
 
 		case 'r':
+			if (forward)
+				error(FATAL, 
+					"-r and -f are mutually exclusive\n");
+			if (sources)
+				error(FATAL, 
+					"-r and -s are mutually exclusive\n");
 			reverse = TRUE;
+			break;
+
+		case 'f':
+			if (reverse)
+				error(FATAL, 
+					"-r and -f are mutually exclusive\n");
+			if (sources)
+				error(FATAL, 
+					"-f and -s are mutually exclusive\n");
+			forward = TRUE;
 			break;
 
 		case 'l':
@@ -1404,6 +1739,21 @@ cmd_dis(void)
 			else
 				req->flags |= GNU_PRINT_LINE_NUMBERS;
 			BZERO(buf4, BUFSIZE);
+			break;
+
+		case 's':
+			if (reverse)
+				error(FATAL, 
+					"-r and -s are mutually exclusive\n");
+			if (forward)
+				error(FATAL, 
+					"-f and -s are mutually exclusive\n");
+			if (user_mode)
+				error(FATAL, 
+					"-s can only be used with kernel addresses\n");
+			if (NO_LINE_NUMBERS())
+				error(INFO, "line numbers are not available\n");
+			sources = TRUE;
 			break;
 
 		case 'B':
@@ -1425,40 +1775,60 @@ cmd_dis(void)
 		radix = pc->output_radix;
 
         if (args[optind]) {
-                if (can_eval(args[optind])) 
+                if (can_eval(args[optind])) {
+			req->buf = args[optind];
                         req->addr = eval(args[optind], FAULT_ON_ERROR, NULL);
-                else if (hexadecimal(args[optind], 0)) {
+			if (!user_mode &&
+			    !resolve_text_symbol(args[optind], NULL, req, radix)) {
+				FREEBUF(req);
+				return;
+			}
+                } else if (hexadecimal(args[optind], 0)) {
+			req->buf = args[optind];
                         req->addr = htol(args[optind], FAULT_ON_ERROR, NULL);
-			if (!user_mode && 
-			    !(sp = value_search(req->addr, &offset))) {
+			sp = value_search(req->addr, &offset);
+			if (!user_mode && !sp) {
 				error(WARNING, 
 				    "%lx: no associated kernel symbol found\n",
 					req->addr);
 				unfiltered = TRUE;
 			}
+			if (!offset && sp && is_symbol_text(sp))
+				req->flags |= GNU_FUNCTION_ONLY;
                 } else if ((sp = symbol_search(args[optind]))) {
+			req->buf = args[optind];
                         req->addr = sp->value;
-			req->flags |= GNU_FUNCTION_ONLY;
+			if (!resolve_text_symbol(args[optind], sp, req, radix)) {
+				FREEBUF(req);
+				return;
+			}
+			if (is_symbol_text(sp))
+				req->flags |= GNU_FUNCTION_ONLY;
 		} else {
                         fprintf(fp, "symbol not found: %s\n", args[optind]);
                         fprintf(fp, "possible alternatives:\n");
                         if (!symbol_query(args[optind], "  ", NULL))
                                 fprintf(fp, "  (none found)\n");
-			FREEBUF(req->buf);
 			FREEBUF(req);
                         return;
                 }
 
                 if (args[++optind]) {
-			if (reverse) {
+			if (reverse || forward) {
 				error(INFO, 
-			            "count argument ignored with -r option\n");
+			            "count argument ignored with -%s option\n",
+				    	reverse ? "r" : "f");
 			} else {
                         	req->count = stol(args[optind], 
 					FAULT_ON_ERROR, NULL);
 				req->flags &= ~GNU_FUNCTION_ONLY;
 				count_entered++;
 			}
+		}
+
+		if (sources) {
+			list_source_code(req, count_entered);
+			return;
 		}
 
 		if (unfiltered) {
@@ -1480,212 +1850,130 @@ cmd_dis(void)
 			return;
 		}
 
+		req->command = GNU_RESOLVE_TEXT_ADDR;
+		gdb_interface(req);
+		req->flags &= ~GNU_COMMAND_FAILED;
+
+		if (reverse || forward || req->flags & GNU_FUNCTION_ONLY) {
+			if (get_text_function_range(sp ? sp->value : req->addr,
+			    &low, &high))
+				req->addr2 = high;
+			else if (sp) {
+				savename = sp->name;
+				if ((sp = next_symbol(NULL, sp)))
+					req->addr2 = sp->value;
+				else
+					error(FATAL, 
+				"unable to determine symbol after %s\n",
+						savename);
+			} else {
+				if ((sp = value_search(req->addr, NULL))
+				     && (sp = next_symbol(NULL, sp)))
+					req->addr2 = sp->value;	
+				else 
+					error(FATAL, dis_err, req->addr);
+			}
+		}
+
+		if (reverse || forward) {
+			target = req->addr;
+			if ((sp = value_search(target, NULL)) == NULL)
+				error(FATAL, "cannot resolve address: %lx\n", target);
+
+			req->addr = sp->value;
+		} else
+			count = 0;
 		do_load_module_filter = module_symbol(req->addr, NULL, NULL, 
 			NULL, *gdb_output_radix);
 
-		if (!reverse) {
-			req->command = GNU_RESOLVE_TEXT_ADDR;
-			gdb_interface(req);
-                        if ((req->flags & GNU_COMMAND_FAILED) ||
-			    do_load_module_filter ||
-			    (req->flags & GNU_FUNCTION_ONLY)) {
-				req->flags &= ~GNU_COMMAND_FAILED;
-				if (sp) {
-					savename = sp->name;
-                                        if ((sp = next_symbol(NULL, sp)))
-                                                req->addr2 = sp->value;
-					else
-                                		error(FATAL, 
-				        "unable to determine symbol after %s\n",
-                                        		savename);
-				} else {
-					if ((sp = value_search(req->addr, NULL))
-                                             && (sp = next_symbol(NULL, sp)))
-						req->addr2 = sp->value;	
-					else 
-						error(FATAL, dis_err, req->addr);
-				}
-                        }
+		do_machdep_filter = machdep->dis_filter(req->addr, NULL, radix);
+		open_tmpfile();
 
-			do_machdep_filter = machdep->dis_filter(req->addr, NULL, radix);
-			count = 0;
-			open_tmpfile();
-#ifdef OLDWAY
-			req->command = GNU_DISASSEMBLE;
-			req->fp = pc->tmpfile;
-			gdb_interface(req);
-#else
-			sprintf(buf1, "x/%ldi 0x%lx",
-                                count_entered && req->count ? req->count : 
-				req->flags & GNU_FUNCTION_ONLY ? 
+		if (reverse)
+			sprintf(buf5, "x/%ldi 0x%lx",
+				(target - req->addr) ? target - req->addr : 1, 
+				req->addr);
+		else
+			sprintf(buf5, "x/%ldi 0x%lx",
+				count_entered && req->count ? req->count : 
+				forward || req->flags & GNU_FUNCTION_ONLY ? 
 				req->addr2 - req->addr : 1, 
 				req->addr);
-        		gdb_pass_through(buf1, NULL, GNU_RETURN_ON_ERROR);
-#endif
-			if (req->flags & GNU_COMMAND_FAILED) {
-				close_tmpfile();
-				error(FATAL, dis_err, req->addr);
+		gdb_pass_through(buf5, NULL, GNU_RETURN_ON_ERROR);
+
+		if (req->flags & GNU_COMMAND_FAILED) {
+			close_tmpfile();
+			error(FATAL, dis_err, req->addr);
+		}
+
+		rewind(pc->tmpfile);
+		while (fgets(buf2, BUFSIZE, pc->tmpfile)) {
+			strip_beginning_whitespace(buf2);
+
+			if (do_load_module_filter)
+				load_module_filter(buf2, LM_DIS_FILTER);
+
+			if (STRNEQ(buf2, "0x"))
+				extract_hex(buf2, &curaddr, ':', TRUE);
+
+			if (forward) {
+				if (curaddr < target)
+					continue;
+				else
+					forward = FALSE;
 			}
 
-        		rewind(pc->tmpfile);
-        		while (fgets(buf2, BUFSIZE, pc->tmpfile)) {
-				if (STRNEQ(buf2, "Dump of") ||
-				    STRNEQ(buf2, "End of"))
-					continue;
-
-				strip_beginning_whitespace(buf2);
-
-				if (do_load_module_filter)
-					load_module_filter(buf2, LM_DIS_FILTER);
-
-				if (STRNEQ(buf2, "0x")) 
-					extract_hex(buf2, &curaddr, ':', TRUE);
-
-				if ((req->flags & GNU_FUNCTION_ONLY) &&
+			if (!reverse)
+				if (!count_entered && req->addr2 &&
 				    (curaddr >= req->addr2))
 					break;
 
-				if (do_machdep_filter)
-					machdep->dis_filter(curaddr, buf2, radix);
+			if (do_machdep_filter)
+				machdep->dis_filter(curaddr, buf2, radix);
 
-				if (req->flags & GNU_FUNCTION_ONLY) {
-                                        if (req->flags & 
-                                            GNU_PRINT_LINE_NUMBERS) {
-                                                get_line_number(curaddr, buf3,
-                                                        FALSE);
-                                                if (!STREQ(buf3, buf4)) {
-                                                        print_verbatim(
-                                                            pc->saved_fp, buf3);
-                                                        print_verbatim(
-                                                            pc->saved_fp, "\n");
-                                                        strcpy(buf4, buf3);
-                                                }
-                                        }
-
-                			print_verbatim(pc->saved_fp, buf2); 
-					continue;
-				} else {
-					if (curaddr < req->addr) 
-						continue;
-
-                			if (req->flags & 
-					    GNU_PRINT_LINE_NUMBERS) {
-                        			get_line_number(curaddr, buf3, 
-							FALSE);
-                        			if (!STREQ(buf3, buf4)) {
-                                			print_verbatim(
-							    pc->saved_fp, buf3);
-                                			print_verbatim(
-						            pc->saved_fp, "\n");
-                                			strcpy(buf4, buf3);
-                        			}
-                			} 
-
-                			print_verbatim(pc->saved_fp, buf2);
-
-					if (LASTCHAR(clean_line(buf2)) 
-						!= ':') {
-						if (++count == req->count)
-							break;
-					}
+			if (req->flags & GNU_PRINT_LINE_NUMBERS) {
+				get_line_number(curaddr, buf3,
+					FALSE);
+				if (!STREQ(buf3, buf4)) {
+					print_verbatim(
+					    pc->saved_fp, buf3);
+					print_verbatim(
+					    pc->saved_fp, "\n");
+					strcpy(buf4, buf3);
 				}
-        		}
-			close_tmpfile();
+			}
+
+			print_verbatim(pc->saved_fp, buf2); 
+			if (reverse) {
+				if (curaddr >= target) {
+					if (LASTCHAR(clean_line(buf2)) != ':') 
+						break;
+
+					ret = fgets(buf2, BUFSIZE, pc->tmpfile);
+
+					if (do_load_module_filter)
+						load_module_filter(buf2, LM_DIS_FILTER);
+
+					if (do_machdep_filter) 
+						machdep->dis_filter(curaddr, buf2, radix);
+
+					print_verbatim(pc->saved_fp, buf2);
+					break;
+				}
+			}
+
+			if (count_entered && LASTCHAR(clean_line(buf2)) != ':')
+				if (++count == req->count)
+					break;
 		}
+		close_tmpfile();
         }
         else if (bug_bytes_entered)
 		return;
 	else cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (!reverse) {
-		FREEBUF(req->buf);
-		FREEBUF(req);
-		return;
-	}
-
-        revtarget = req->addr;
-        if ((sp = value_search(revtarget, NULL)) == NULL)
-                error(FATAL, "cannot resolve address: %lx\n", revtarget);
-
-        sprintf(buf1, "0x%lx", revtarget);
-
-        open_tmpfile();
-
-        req->addr = sp->value;
-        req->flags |= GNU_FUNCTION_ONLY;
-        req->command = GNU_RESOLVE_TEXT_ADDR;
-        gdb_interface(req);
-        req->flags &= ~GNU_COMMAND_FAILED;
-	savename = sp->name;
-        if ((sp = next_symbol(NULL, sp)))
-                req->addr2 = sp->value;
-        else {
-		close_tmpfile();
-                error(FATAL, "unable to determine symbol after %s\n", savename);
-	}
-
-	do_machdep_filter = machdep->dis_filter(req->addr, NULL, radix);
-#ifdef OLDWAY
-	req->command = GNU_DISASSEMBLE;
-	req->fp = pc->tmpfile;
-	gdb_interface(req);
-#else
-        sprintf(buf5, "x/%ldi 0x%lx",
-        	(revtarget - req->addr) ? revtarget - req->addr : 1, 
-		req->addr);
-        gdb_pass_through(buf5, NULL, GNU_RETURN_ON_ERROR);
-#endif
-        if (req->flags & GNU_COMMAND_FAILED) {
-		close_tmpfile();
-        	error(FATAL, dis_err, req->addr);
-	}
-
-        rewind(pc->tmpfile);
-        while (fgets(buf2, BUFSIZE, pc->tmpfile)) {
-                if (STRNEQ(buf2, "Dump of") || STRNEQ(buf2, "End of"))
-                	continue;
-
-		strip_beginning_whitespace(buf2);
-
-                if (do_load_module_filter)
-                        load_module_filter(buf2, LM_DIS_FILTER);
-
-                if (STRNEQ(buf2, "0x"))
-                	extract_hex(buf2, &curaddr, ':', TRUE);
-
-		if (do_machdep_filter)
-			machdep->dis_filter(curaddr, buf2, radix);
-
-		if (req->flags & GNU_PRINT_LINE_NUMBERS) {
-			get_line_number(curaddr, buf3, FALSE);
-			if (!STREQ(buf3, buf4)) {
-				print_verbatim(pc->saved_fp, buf3);
-				print_verbatim(pc->saved_fp, "\n");
-				strcpy(buf4, buf3);
-			}
-		}
-
-                print_verbatim(pc->saved_fp, buf2);
-                if (STRNEQ(buf2, buf1)) {
-                	if (LASTCHAR(clean_line(buf2)) != ':') 
-                        	break;
-
-        		ret = fgets(buf2, BUFSIZE, pc->tmpfile);
-
-                	if (do_load_module_filter)
-                        	load_module_filter(buf2, LM_DIS_FILTER);
-
-			if (do_machdep_filter) 
-				machdep->dis_filter(curaddr, buf2, radix);
-
-                	print_verbatim(pc->saved_fp, buf2);
-			break;
-		}
-        }
-
-        close_tmpfile();
-	FREEBUF(req->buf);
 	FREEBUF(req);
+	return;
 }
 
 /*
@@ -4637,7 +4925,7 @@ cmd_sys(void)
 
 	sflag = FALSE;
 
-        while ((c = getopt(argcnt, args, "ctp:")) != EOF) {
+        while ((c = getopt(argcnt, args, "ctip:")) != EOF) {
                 switch(c)
                 {
 		case 'p':
@@ -4653,6 +4941,10 @@ cmd_sys(void)
 
 		case 't':
 			show_kernel_taints(buf, VERBOSE);
+			return;
+
+		case 'i':
+			dump_dmi_info();
 			return;
 
                 default:
@@ -4820,12 +5112,16 @@ display_sys_stats(void)
 			fprintf(fp, "  [INCOMPLETE]");
 
 		if (DISKDUMP_DUMPFILE() && !dumpfile_is_split() &&
-		    (is_partial_diskdump() || is_incomplete_dump())) {
-			fprintf(fp, " %s%s",
+		    (is_partial_diskdump() || is_incomplete_dump() ||
+		     is_excluded_vmemmap())) {
+			fprintf(fp, " %s%s%s",
 				is_partial_diskdump() ? 
 				" [PARTIAL DUMP]" : "",
 				is_incomplete_dump() ? 
-				" [INCOMPLETE]" : "");
+				" [INCOMPLETE]" : "",
+				is_excluded_vmemmap() ? 
+				" [EXCLUDED VMEMMAP]" : "");
+
 		}
 
 		fprintf(fp, "\n");
@@ -5198,7 +5494,7 @@ get_NR_syscalls(int *confirmed)
 void
 dump_kernel_table(int verbose)
 {
-	int i, j, more, nr_cpus;
+	int i, c, j, more, nr_cpus;
         struct new_utsname *uts;
         int others;
 
@@ -5284,6 +5580,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sKASLR", others++ ? "|" : "");
 	if (kt->flags2 & KASLR_CHECK)
 		fprintf(fp, "%sKASLR_CHECK", others++ ? "|" : "");
+	if (kt->flags2 & TVEC_BASES_V3)
+		fprintf(fp, "%sTVEC_BASES_V3", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
         fprintf(fp, "         stext: %lx\n", kt->stext);
@@ -5326,6 +5624,8 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "mods_installed: %d\n", kt->mods_installed);
 	fprintf(fp, "   module_tree: %s\n", kt->module_tree ? 
 		kt->module_tree : "(not used)");
+	fprintf(fp, "   source_tree: %s\n", kt->source_tree ? 
+		kt->source_tree : "(not used)");
 	if (!(pc->flags & KERNEL_DEBUG_QUERY) && ACTIVE()) 
 		get_xtime(&kt->date);
         fprintf(fp, "          date: %s\n",
@@ -5416,42 +5716,50 @@ dump_kernel_table(int verbose)
 		}
 	}
 	fprintf(fp, "\n");
-	fprintf(fp, "       cpu_possible_map: ");
+	fprintf(fp, "        possible cpus: ");
 	if (cpu_map_addr("possible")) {
-		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & POSSIBLE_MAP)
+		for (i = c = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & POSSIBLE_MAP) {
 				fprintf(fp, "%d ", i);
+				c++;
+			}
 		}
-		fprintf(fp, "\n");
+		fprintf(fp, "%s\n", c ? "" : "(none)");
 	} else
-		fprintf(fp, "(does not exist)\n");
-	fprintf(fp, "        cpu_present_map: ");
+		fprintf(fp, "(nonexistent)\n");
+	fprintf(fp, "         present cpus: ");
 	if (cpu_map_addr("present")) {
-		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & PRESENT_MAP)
+		for (i = c = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & PRESENT_MAP) {
 				fprintf(fp, "%d ", i);
+				c++;
+			}
 		}
-		fprintf(fp, "\n");
+		fprintf(fp, "%s\n", c ? "" : "(none)");
 	} else
-		fprintf(fp, "(does not exist)\n");
-	fprintf(fp, "         cpu_online_map: ");
+		fprintf(fp, "(nonexistent)\n");
+	fprintf(fp, "          online cpus: ");
 	if (cpu_map_addr("online")) {
-		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & ONLINE_MAP)
+		for (i = c = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & ONLINE_MAP) {
 				fprintf(fp, "%d ", i);
+				c++;
+			}
 		}
-		fprintf(fp, "\n");
+		fprintf(fp, "%s\n", c ? "" : "(none)");
 	} else
-		fprintf(fp, "(does not exist)\n");
-	fprintf(fp, "         cpu_active_map: ");
+		fprintf(fp, "(nonexistent)\n");
+	fprintf(fp, "          active cpus: ");
 	if (cpu_map_addr("active")) {
-		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & ACTIVE_MAP)
+		for (i = c = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & ACTIVE_MAP) {
 				fprintf(fp, "%d ", i);
+				c++;
+			}
 		}
-		fprintf(fp, "\n");
+		fprintf(fp, "%s\n", c ? "" : "(none)");
 	} else
-		fprintf(fp, "(does not exist)\n");
+		fprintf(fp, "(nonexistent)\n");
 
 no_cpu_flags:
 	fprintf(fp, "    vmcoreinfo: \n");
@@ -7172,14 +7480,17 @@ dump_timer_data(void)
 	int flen, tdx, old_timers_exist;
         struct tv_range tv[TVN];
 
-	if (per_cpu_symbol_search("per_cpu__tvec_bases")) {
+	if (kt->flags2 & TVEC_BASES_V3) {
+		dump_timer_data_tvec_bases_v3();
+		return;
+	} else if (kt->flags & TVEC_BASES_V2) {
 		dump_timer_data_tvec_bases_v2();
 		return;
-	} else if (symbol_exists("tvec_bases")) {
+	} else if (kt->flags & TVEC_BASES_V1) {
 		dump_timer_data_tvec_bases_v1();
 		return;
-	} 
-
+	}
+		
 	BZERO(tv, sizeof(struct tv_range) * TVN);
 
 	vec_root_size = (i = ARRAY_LENGTH(timer_vec_root_vec)) ?
@@ -7330,8 +7641,6 @@ dump_timer_data_tvec_bases_v1(void)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 
-	kt->flags |= TVEC_BASES_V1;
-
 	/*
          */
         vec_root_size = (i = ARRAY_LENGTH(tvec_root_s_vec)) ?
@@ -7449,10 +7758,6 @@ dump_timer_data_tvec_bases_v2(void)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 
-	kt->flags |= TVEC_BASES_V2;
-
-	/*
-         */
         vec_root_size = (i = ARRAY_LENGTH(tvec_root_s_vec)) ?
                 i : get_array_length("tvec_root_s.vec", NULL, SIZE(list_head));
 	if (!vec_root_size && 
@@ -7581,6 +7886,140 @@ next_cpu:
 }
 
 /*
+ *  Linux 4.2 timers use new tvec_root, tvec and timer_list structures
+ */
+static void
+dump_timer_data_tvec_bases_v3(void)
+{
+	int i, cpu, tdx, flen;
+	struct timer_data *td;
+	int vec_root_size, vec_size;
+	struct tv_range tv[TVN];
+	ulong *vec, jiffies, highest, function;
+	ulong tvec_bases;
+	long count, head_size;
+	struct syment *sp;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+
+	vec_root_size = vec_size = 0;
+	head_size = SIZE(hlist_head);
+
+	if ((i = get_array_length("tvec_root.vec", NULL, head_size)))
+		vec_root_size = i;
+	else
+		error(FATAL, "cannot determine tvec_root.vec[] array size\n");
+
+	if ((i = get_array_length("tvec.vec", NULL, head_size)))
+		vec_size = i;
+	else
+		error(FATAL, "cannot determine tvec.vec[] array size\n");
+
+	vec = (ulong *)GETBUF(head_size * MAX(vec_root_size, vec_size));
+	cpu = 0;
+
+next_cpu:
+	/*
+	 * hide data of offline cpu and goto next cpu
+	 */
+	if (hide_offline_cpu(cpu)) {
+	        fprintf(fp, "TVEC_BASES[%d]: [OFFLINE]\n", cpu);
+		if (++cpu < kt->cpus)
+			goto next_cpu;
+	}
+
+	count = 0;
+	td = (struct timer_data *)NULL;
+
+	BZERO(tv, sizeof(struct tv_range) * TVN);
+	init_tv_ranges(tv, vec_root_size, vec_size, cpu);
+
+	count += do_timer_list_v3(tv[1].base + OFFSET(tvec_root_s_vec),
+		vec_root_size, vec, NULL, NULL);
+	count += do_timer_list_v3(tv[2].base + OFFSET(tvec_s_vec),
+		vec_size, vec, NULL, NULL);
+	count += do_timer_list_v3(tv[3].base + OFFSET(tvec_s_vec),
+		vec_size, vec, NULL, NULL);
+	count += do_timer_list_v3(tv[4].base + OFFSET(tvec_s_vec),
+		vec_size, vec, NULL, NULL);
+	count += do_timer_list_v3(tv[5].base + OFFSET(tvec_s_vec),
+		vec_size, vec, NULL, NULL);
+
+	if (count)
+		td = (struct timer_data *)
+			GETBUF((count*2) * sizeof(struct timer_data));
+	tdx = 0;
+	highest = 0;
+	get_symbol_data("jiffies", sizeof(ulong), &jiffies);
+
+	do_timer_list_v3(tv[1].base + OFFSET(tvec_root_s_vec),
+		vec_root_size, vec, (void *)td, &highest);
+	do_timer_list_v3(tv[2].base + OFFSET(tvec_s_vec),
+		vec_size, vec, (void *)td, &highest);
+	do_timer_list_v3(tv[3].base + OFFSET(tvec_s_vec),
+		vec_size, vec, (void *)td, &highest);
+	do_timer_list_v3(tv[4].base + OFFSET(tvec_s_vec),
+		vec_size, vec, (void *)td, &highest);
+	tdx = do_timer_list_v3(tv[5].base + OFFSET(tvec_s_vec),
+		vec_size, vec, (void *)td, &highest);
+
+	qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
+
+	sp = per_cpu_symbol_search("per_cpu__tvec_bases");
+	if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+		tvec_bases = sp->value + kt->__per_cpu_offset[cpu];
+	else
+		tvec_bases =  sp->value;
+
+	fprintf(fp, "TVEC_BASES[%d]: %lx\n", cpu, tvec_bases);
+
+	sprintf(buf1, "%ld", highest);
+	flen = MAX(strlen(buf1), strlen("JIFFIES"));
+	fprintf(fp, "%s\n", mkstring(buf1,flen, CENTER|RJUST, "JIFFIES"));
+	fprintf(fp, "%s\n", mkstring(buf1,flen, 
+		RJUST|LONG_DEC,MKSTR(jiffies)));
+
+	fprintf(fp, "%s  %s  %s\n",
+		mkstring(buf1, flen, CENTER|RJUST, "EXPIRES"),
+		mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "TIMER_LIST"),
+		mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
+
+	for (i = 0; i < tdx; i++) {
+		fprintf(fp, "%s",
+			mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(td[i].expires)));
+
+		fprintf(fp, "  %s  ", mkstring(buf1, 
+			MAX(VADDR_PRLEN, strlen("TIMER_LIST")), 
+			RJUST|CENTER|LONG_HEX, MKSTR(td[i].address)));
+
+		if (is_kernel_text(td[i].function)) {
+			fprintf(fp, "%s  <%s>\n",
+				mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX,
+				MKSTR(td[i].function)),
+				value_to_symstr(td[i].function, buf1, 0));
+		} else {
+			fprintf(fp, "%s  ", mkstring(buf1, VADDR_PRLEN, 
+				RJUST|LONG_HEX, MKSTR(td[i].function)));
+			if (readmem(td[i].function, KVADDR, &function,
+			    sizeof(ulong), "timer function",
+			    RETURN_ON_ERROR|QUIET)) {
+				if (is_kernel_text(function))
+					fprintf(fp, "<%s>",
+						value_to_symstr(function, buf1, 0));
+			}
+			fprintf(fp, "\n");
+		}
+	}
+
+	if (td)
+		FREEBUF(td);
+
+	if (++cpu < kt->cpus)
+		goto next_cpu;
+}
+
+/*
  *  The comparison function must return an integer less  than,
  *  equal  to,  or  greater than zero if the first argument is
  *  considered to be respectively  less  than,  equal  to,  or
@@ -7626,7 +8065,8 @@ init_tv_ranges(struct tv_range *tv, int vec_root_size, int vec_size, int cpu)
 
                 tv[5].base = tv[4].end;
                 tv[5].end = tv[5].base + SIZE(tvec_s);
-	} else if (kt->flags & TVEC_BASES_V2) {
+	} else if ((kt->flags & TVEC_BASES_V2) ||
+		   (kt->flags2 & TVEC_BASES_V3)) {
 		sp = per_cpu_symbol_search("per_cpu__tvec_bases");
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
 			tvec_bases = sp->value + kt->__per_cpu_offset[cpu];
@@ -7744,8 +8184,10 @@ do_timer_list(ulong vec_kvaddr,
 
 			hq_open();
                 	timer_cnt = do_list(ld);
-			if (!timer_cnt)
+			if (!timer_cnt) {
+				hq_close();
 				continue;
+			}
                 	timer_list = (ulong *)GETBUF(timer_cnt * sizeof(ulong));
                 	timer_cnt = retrieve_list(timer_list, timer_cnt);
                 	hq_close();
@@ -7833,6 +8275,91 @@ new_timer_list_format:
                                 tdx++;
                         }
 		}
+		FREEBUF(timer_list);
+	}
+
+	FREEBUF(timer_list_buf);
+
+	return(td ? tdx : count);
+}
+
+static int
+do_timer_list_v3(ulong vec_kvaddr,
+	      int size, 
+	      ulong *vec, 
+	      void *option, 
+	      ulong *highest)
+{
+	int i, t; 
+	int count, tdx;
+	ulong expires, function;
+	struct timer_data *td;
+	char *timer_list_buf;
+	ulong *timer_list;
+	int timer_cnt;
+	struct list_data list_data, *ld;
+
+	tdx = 0;
+	td = option ? (struct timer_data *)option : NULL;
+	if (td) {
+		while (td[tdx].function)
+			tdx++;
+	}
+
+	readmem(vec_kvaddr, KVADDR, vec, SIZE(hlist_head) * size, 
+		"timer_list vec array", FAULT_ON_ERROR);
+
+	ld = &list_data;
+	timer_list_buf = GETBUF(SIZE(timer_list));
+
+	for (i = count = 0; i < size; i++, vec_kvaddr += SIZE(hlist_head)) {
+
+		if (vec[i] == 0)
+			continue;
+
+		BZERO(ld, sizeof(struct list_data));
+		ld->start = vec[i];
+		ld->list_head_offset = OFFSET(timer_list_entry);
+		ld->end = vec_kvaddr;
+		ld->flags = RETURN_ON_LIST_ERROR;
+
+		hq_open();
+		if ((timer_cnt = do_list(ld)) == -1) {
+			/* Ignore chains with errors */
+			error(INFO, 
+		      "ignoring faulty timer list at index %d of timer array\n", i);
+			continue; 
+		}
+		if (!timer_cnt) {
+			hq_close();
+			continue;
+		}
+		timer_list = (ulong *)GETBUF(timer_cnt * sizeof(ulong));
+		timer_cnt = retrieve_list(timer_list, timer_cnt);
+		hq_close();
+
+		for (t = 0; t < timer_cnt; t++) {
+			count++;
+
+			readmem(timer_list[t], KVADDR, timer_list_buf,
+				SIZE(timer_list), "timer_list buffer",
+				FAULT_ON_ERROR);
+
+			expires = ULONG(timer_list_buf + 
+				OFFSET(timer_list_expires));
+			function = ULONG(timer_list_buf +
+				OFFSET(timer_list_function));
+
+			if (td) {
+				td[tdx].address = timer_list[t];
+				td[tdx].expires = expires;
+				td[tdx].function = function;
+				if (highest && (expires > *highest))
+					*highest = expires;
+				tdx++;
+			}
+		}
+		FREEBUF(timer_list);
 	}
 
 	FREEBUF(timer_list_buf);
@@ -9590,3 +10117,67 @@ show_kernel_taints(char *buf, int verbose)
 		fprintf(fp, "TAINTED_MASK: %lx  %s\n", tainted_mask, buf);
 }
 
+static void
+dump_dmi_info(void)
+{
+	int i, array_len, len, maxlen;
+	ulong dmi_ident_p, vaddr;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char *arglist[MAXARGS];
+
+	if (!kernel_symbol_exists("dmi_ident"))
+		error(FATAL, "dmi_ident does not exist in this kernel\n");
+
+	dmi_ident_p = symbol_value("dmi_ident");
+	array_len = get_array_length("dmi_ident", NULL, 0);
+	maxlen = 0;
+
+	open_tmpfile();
+
+	if (dump_enumerator_list("dmi_field")) {
+		rewind(pc->tmpfile);
+		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+			if (!strstr(buf1, " = "))
+				continue;
+			if ((parse_line(buf1, arglist) != 3) ||
+			    (atoi(arglist[2]) >= array_len))
+				break;
+			len = strlen(arglist[0]);
+			if (len > maxlen)
+				maxlen = len;
+		}
+
+		rewind(pc->tmpfile);
+		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+			if (!strstr(buf1, " = "))
+				continue;
+
+			if ((parse_line(buf1, arglist) != 3) ||
+			    ((i = atoi(arglist[2])) >= array_len))
+				break;
+
+			readmem(dmi_ident_p + (sizeof(void *) * i),
+				KVADDR, &vaddr, sizeof(void *),
+				"dmi_ident", FAULT_ON_ERROR);
+			if (!vaddr)
+				continue;
+
+			read_string(vaddr, buf2, BUFSIZE-1);
+			fprintf(pc->saved_fp, "  %s%s: %s\n", 
+				space(maxlen - strlen(arglist[0])), arglist[0], buf2);
+		}
+	} else {
+		for (i = 0; i < array_len; i++) {
+			readmem(dmi_ident_p + (sizeof(void *) * i),
+				KVADDR, &vaddr, sizeof(void *),
+				"dmi_ident", FAULT_ON_ERROR);
+			if (!vaddr)
+				continue;
+			read_string(vaddr, buf1, BUFSIZE-1);
+			fprintf(pc->saved_fp, "  dmi_ident[%d]: %s\n", i, buf1);
+		}
+	} 
+
+	close_tmpfile();
+}

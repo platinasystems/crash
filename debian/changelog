@@ -1,3 +1,507 @@
+crash (7.1.4-1~bpo8+1) jessie-backports; urgency=low
+
+  * Rebuild for jessie-backports.
+
+ -- Sandro Tosi <morph@debian.org>  Wed, 03 Feb 2016 06:17:04 -0500
+
+crash (7.1.4-1) unstable; urgency=medium
+
+  * New upstream version 7.1.4, upstream changelog follows:
+
+  * Fix for the ARM64 "vtop" command when translating kernel virtual addresses
+    within a 2MB or 512MB huge page in which the PGD or PMD contains
+    software-defined PTE bits.  Without the patch, the "PAGE:" address value
+    will show the software-defined bits, the command will not display the
+    related page structure translation, and will end with the message
+    "WARNING: sparsemem: invalid section number: <number>".
+
+  * Fix for the X86_64 "bt" command in Linux 4.2 and later kernels that are
+    configured with both CONFIG_HAVE_COPY_THREAD_TLS and CONFIG_FRAME_POINTER.
+    Without the patch, the fact that the kernel was compiled with
+    framepointers is not recognized, which may result in backtraces containing
+    stale frame references.
+
+  * Fix for the "dis" command to support three new x86 instruction extensions
+    that have been added to the Intel instruction set for hardware platforms
+    that support them.  The newly-added instructions "clflushopt", "clwb", and
+    "pcommit" prepend 0x66 as a prefix byte to the "clflush", "xsaveopt" and
+    "sfence" instructions respectively.  Without the patch:
+
+    "clflushopt" is disassembled as: "data16" followed by "clflush" "clwb" is
+    disassembled as: "data16" followed by "xsaveopt" "pcommit" is disassembled
+    as: "data16" followed by "sfence"
+
+  The "clflushopt" instruction was introduced in Linux 3.15 in the
+  clflushopt() function.  The "clwb" and "pcommit" instructions were
+  introduced in Linux 4.1 in the clwb() and pcommit_sfence() functions.
+
+  * Fix for the extensions/trace.c extension module for Linux 4.2 and later
+    kernels.  Without the patch, the module fails to load, with the message
+    "failed to init the offset, struct:ftrace_event_call, member:list".
+
+  * For many years, Xen Dom0 dumps could only be saved in ELF format.  Since
+    makedumpfile commit 349a0ed1, it is now possible to save Xen dumps in
+    compressed kdump format.  This patch set adds support for these files.
+    Two new files, xen_dom0.c and xen_dom0.h, have been added to provide the
+    common functionality required by both ELF and compressed kdump formats.
+
+  * Since Linux v4.1, specifically, "MIPS: Rearrange PTE bits into fixed
+    positions.", commit be0c37c985eddc46d0d67543898c086f60460e2e, the MIPS PTE
+    bits are at fixed locations.  Since they are macros in the kernel, this
+    patch adds an explicit kernel version check in order to determine and set
+    their values.
+
+  * Display a machine-type mismatch warning if a little-endian PPC64
+    compressed kdump created by makedumpfile(8) is used as an argument with a
+    non-PPC64 crash utility binary.  Without the patch, the dumpfile is
+    accepted, and the session subsequently fails with a message indicating
+    that that the vmlinux and dumpfile do not match.
+
+  * Fix for bitmap-handling in SADUMP dumpfiles, which associate each bit in a
+    bitmap with a physical page in the reverse order that is used in
+    kdump-compressed format.  The bug had not been detected for a long time
+    because bitmaps in SADUMP formats consist mostly of 0x00 and 0xff
+    excluding a very limited amount of memory space for firmware.
+
+  * Fix for the behavior of the --zero_excluded option when used with SADUMP
+    dumpfiles.  Without the patch, the behavior of --zero_excluded option is
+    the opposite to what is expected: reads of filtered pages return
+    successfully with zero-filled memory, while reads of filtered filtered
+    pages fail when --zero_excluded option has been specified.
+
+  * Fix for the "kmem -i" command in Linux 2.6.27 and later kernels to prevent
+    the possibility that an arbitrary address may be accessed when calculating
+    the number of total huge pages.  Without the patch, the command's "COMMIT
+    LIMIT" and "COMMITTED" values may be invalid.
+
+  * Added recognition of the new DUMP_DH_EXCLUDED_VMEMMAP flag in the header
+    of compressed kdumps, which is set by the new -e option to the
+    makedumpfile(8) facility.  The -e option excludes kernel pages that
+    contain nothing but kernel page structures for pages that are not being
+    included in the dump.  If the bit is set in the dumpfile, the crash
+    utility will issue a warning that the dumpfile is known to be incomplete
+    during initialization, just prior to the system banner display.
+
+  * Fix for the handling of compound pages in Linux 4.4 and later kernels,
+    which contain this kernel commit:
+
+    commit 1d798ca3f16437c71ff63e36597ff07f9c12e4d6 mm: make compound_head()
+    robust
+
+  The commit above removes the PG_tail and PG_compound page.flags bits and the
+  page.first_page member, and introduces a page.compound_head member, which is
+  a pointer to the head page and whose bit 0 acts as the tail flag.  Without
+  the patch, a SLAB or SLUB warning message that indicates "cannot determine
+  how compound pages are linked" is displayed during initialization, and any
+  command that tracks compound pages will be affected.
+
+  * Fix for the handling of dynamically-sized task_struct structures in Linux
+    4.2 and later kernels, which contain these commits:
+
+    commit 5aaeb5c01c5b6c0be7b7aadbf3ace9f3a4458c3d x86/fpu, sched: Introduce
+    CONFIG_ARCH_WANTS_DYNAMIC_TASK_STRUCT and use it on x86 commit
+    0c8c0f03e3a292e031596484275c14cf39c0ab7a x86/fpu, sched: Dynamically
+    allocate 'struct fpu'
+
+  Without the patch, when running on a filtered kdump dumpfile, it is possible
+  that error messages like this will be seen when gathering the tasks running
+  on a system: "crash: page excluded: kernel virtual address: <task_struct
+  address>  type: "fill_task_struct".
+
+  * Fix for the "kmem -s <address>" command in Linux 3.13 and later kernels
+    configured with CONFIG_SLAB.  Without the patch, if the address argument
+    is contained within an object in a tail page of a multi-page slab, the
+    command fails with the message "kmem: address is not allocated in slab
+    subsystem: <address>".  Furthermore, in Linux 4.4 and later kernels
+    configured with CONFIG_SLAB, addresses that are contained within an object
+    in a tail page of a multi-page slab will not be marked by their slab cache
+    name by the "rd -S" and "bt -F" commands.
+
+  * Fix for a segmentation violation when attempting to run live on a a system
+    without the crash.ko memory driver, and whose kernel was configured with
+    CONFIG_STRICT_DEVMEM.  Without the patch, if any -d<value> is entered on
+    the command line, the crash session fails during initialization.
+
+  * Update for the determination of the ARM64 page size for kernels containing
+    this Linux 4.4 commit:
+
+    commit 9d372c9fab34cd8803141871195141995f85c7f7 arm64: Add page size to
+    the kernel image header
+
+  Without the patch, the kernel page size is calculated by looking at the size
+  of the "swapper_pg_dir" page directory.  With this update, the page size can
+  be determined by checking a flag built into the kernel image header,
+  available in the "_kernel_flags_le" absolute symbol.
+
+  * Fix for the handling of ARM and ARM64 QEMU-generated ELF dumpfiles and
+    compressed kdump clones.  The patch utilizes the NT_PRSTATUS notes in the
+    dumpfile headers instead of reading them from the kernel's "crash_notes",
+    which are not initialized when QEMU generates a dumpfile.  Without the
+    patch, these warning messages are displayed during session initialization:
+
+    WARNING: invalid note (n_type != NT_PRSTATUS)   WARNING: cannot retrieve
+    registers for active tasks
+
+  and running "bt" on an active task causes a segmentation violation.
+
+  * Update to the previous QEMU-specific patch to handle kdump dumpfiles which
+    have offline cpus, and therefore will not contain associated NT_PRSTATUS
+    notes in the dumpfile header.  Without the patch, if there are any offline
+    cpus, a segmentation violation is generated during session initialization.
+
+  * The s390 stand-alone dump tools may write the kernel memory directly to a
+    block device.  When running the crash utility against such a block device,
+    a misleading warning message such as this is displayed:
+
+    WARNING: /dev/sda1: may be truncated or incomplete PT_LOAD p_offset: 16384
+    p_filesz: 5497558138880 bytes required: 5497558155264 dumpfile size: 0
+
+  With the patch, the warning message above will be replaced by a note using
+  this format:
+
+    NOTE: /dev/sda1: No dump complete check for block devices
+
+
+  * Map CTRL-l to clear the screen while in vi insertion mode.  Without the
+    patch, it displays "^L".
+
+  * Introduced a general-purpose handler to register data structures that the
+    kernel has dynamically downsized from the size indicated by the debuginfo
+    data.  At this time, only "kmem_cache" and "task_struct" structures that
+    have been downsized are registered, but others may be added in the future.
+    If a downsized data structure is passed to gdb for display, gdb will
+    request a read of the "full" data structure, which may flow into a memory
+    region that was either filtered by makedumpfile(8), or perhaps into
+    non-existent memory, thereby killing the generating command immediately
+    due to a partial read.  With this patch, commands such as "struct" and
+    "task" that reference downsized data structures will have their reads
+    flagged to return successfully if partial read error occurs.
+
+  * Fix for Linux 3.18 and later 32-bit ARM kernels that are configured with
+    CONFIG_SLAB which contain percpu array_cache structures that were
+    allocated with vmalloc().  Without the patch, during session
+    initialization there will be error messages that indicate "crash:
+    kmem_cache: <vaddr>: invalid array_cache pointer: <vaddr>", and during
+    runtime, the "kmem -[sS]" commands will show kmem_cache lines that marked
+    as "[INVALID/CORRUPTED]".
+
+  * Added a new "list -l <offset>" option that can only be used in conjunction
+    with "-s", and requires that the "start" address is the address of a
+    list_head, or other similar list linkage structure whose first member
+    points to the next linkage structure.  The "-l <offset>" argument is the
+    offset of the embedded list linkage structure in the specified "-s" data
+    structure; it can be either a number of bytes or expressed in
+    "struct.member" format.
+
+  * Enhanced the debug-only display of the first kernel data items read during
+    session initialization.  This includes the system's cpu maps, xtime, and
+    utsname data.  These require at least "-d1" as a command line option
+    value, and are primarily useful as an aide for debugging suspect dumpfiles
+    that fail during session initialization.
+
+  * Added "print_array" as a new internal variable that may be turned on/off
+    with the "set" command.  When set to "on", gdb's printing of arrays will
+    be set to "pretty", so that the display of each array element will consume
+    one line.
+
+  * Introduction of the "sys -i" option, which displays the kernel's DMI
+    identification string data if available.
+
+  * Fix for "crash --osrelease" on Xen kernels that have both VMCOREINFO and
+    VMCOREINFO_XEN ELF notes.  Without the patch, the command returns
+    "(unknown)".
+
+ -- Troy Heber <troyh@debian.org>  Fri, 15 Jan 2016 09:40:34 -0700
+
+crash (7.1.3-1) UNRELEASED; urgency=medium
+
+  * New upstream version 7.1.3, upstream changelog follows:
+
+  * Fix for the "crash --osrelease" option for flattened format dumpfiles in
+    the unlikely event that the dumpfile header does not contain the
+    VMCOREINFO note section from the original ELF /proc/vmcore.  Without the
+    patch, the command displays nothing instead of showing "unknown".
+
+  * Fix for the "kmem -s <address>", "bt -F[F]", and "rd -S[S]" options in
+    kernels configured with CONFIG_SLUB.  Without the patch, if a referenced
+    slab object address comes from a slab cache that utilizes a multiple-page
+    slab, and the object is located within a tail page of that slab cache, it
+    will not be recognized as a slab object.  The "bt -F[F]" and "rd -S[S]"
+    options will just show the object address, and the "kmem -s <address>"
+    object will indicate "kmem: address is not allocated in slab subsystem:
+    <address>".  This bug is a regression that was introduced in crash-7.1.0
+    by commit 8b2cb365d7fb139e77cedd80d4061332099ed382, which addressed a bug
+    where stale slab object addresses were incorrectly being recognized as
+    valid slab objects.
+
+  * Fix for a segmentation violation generated by the ARM64 "bt -[f|F]"
+    options when analyzing the active tasks in vmcores generated by the kdump
+    facility.  This bug is a regression that was introduced in crash-7.1.2 by
+    commit 15a58e4070486efa2aa965bdd636626e62b65cc7, which was an enhancement
+    of the ARM64 backtrace capability for active tasks in kdump vmcores.
+
+  * Fix for the extensions/trace.c extension module to account for kernels
+    that are not configured with CONFIG_TRACE_MAX_TRACER.  Without the patch,
+    the module fails to load with the error message "failed to init the
+    offset, struct: trace_array, member: max_offset".
+
+  * If a kdump dumpfile is marked as incomplete in its ELF or compressed kdump
+    header, and the user has not used the --zero_excluded command line option,
+    append a note to the incomplete dump WARNING message shown during
+    invocation that suggests the use of --zero_excluded.
+
+  * Fix for the RSS value displayed by the "ps" command in Linux 2.6.34 and
+    later big-endian machines.  Without the patch, a task's RSS value will be
+    erroneously calculated by using twice its file pages instead of adding its
+    file pages with its anonymous pages.
+
+  * Do not search for a panic task in s390x dumpfiles that are marked as a
+    "live dump" by the "zgetdump" facility.  Without the patch, an exhaustive,
+    unnecessary, search of all kernel stacks that looks for evidence of a
+    system crash may find an invalid reference in a task's kernel stack due to
+    the common zero-based user and kernel virtual address space ranges of the
+    s390x, causing the task to be mistakenly set as the "PANIC" task.
+
+  * Mark the "crash" task that generated a snapshot vmcore utilizing the the
+    "snap.so" extension module as "(ACTIVE)" in the STATE field of the initial
+    system banner and the "set" command.  Without the patch, the task's STATE
+    field shows it as the "(PANIC)" task.
+
+  * Second part of: Do not search for a panic task in s390x dumpfiles that are
+    marked as a "live dump" by the "zgetdump" facility...  The first part
+    prevented a search of the active tasks; this part prevents the last-ditch
+    search of all tasks.
+
+  * When searching all kernel stacks for evidence of a panic task in "live"
+    s390x dumpfiles created by the VMDUMP, stand-alone dump, or "virsh dump"
+    facilities, none of which explicitly mark the dumpfile as a "live dump",
+    run a standard "bt" backtrace on each kernel stack instead of the
+    text-address-only "bt -t".  Without the patch, an invalid text reference
+    may be found in a task's kernel stack due to the common zero-based user
+    and kernel virtual address space ranges of the s390x, causing the task to
+    be mistakenly set as the "PANIC" task.
+
+  * Introduction of the "dis -f <address>" option, which disassembles from the
+    target address until the end of the function.
+
+  * Fix for the ARM64 "dis" command to prevent branch target addresses from
+    being displayed as kernel system call alias/wrapper names, for example,
+    "SyS_read+<offset>" instead of "sys_read+<offset>".
+
+  * Fix for the PPC64 "dis" command to prevent conditional branch target
+    addresses from being displayed as kernel system call alias/wrapper names,
+    for example, "SyS_read+<offset>" instead of "sys_read+<offset>".
+
+  * Fix for the S390X "dis" command to prevent jump target addresses from
+    being displayed as kernel system call alias/wrapper names, for example,
+    "SyS_read+<offset>" instead of "sys_read+<offset>".
+
+  * Fix for the "dis" command on architectures with variable-length
+    instructions.  Without the patch, "dis [-f] <function>" may continue
+    beyond the end of a function, disassembling the memory that is in between
+    the target function and the next function.  For kernel module functions,
+    the module's debuginfo data must be loaded.
+
+  * Minor cleanup and error handling fix-up for the "dis" command.  Without
+    the patch, if the target address of "dis -r" or "dis -f" is not an exact
+    address of an instruction, "dis -r" will continue beyond the target
+    address, and "dis -f" will show nothing.
+
+  * Reduce the unnecessary error messages if a directory is used as a command
+    line argument.  Without the patch, six error messages are displayed:
+
+    crash: unable to read dump file /tmp /tmp: ELF header read: Is a directory
+    /tmp: ELF header read: Is a directory crash: /tmp: read: Is a directory
+    read_maps: unable to read header from /tmp, errno = 1 crash: vmw: Failed
+    to read '/tmp': [Error 21] Is a directory
+
+  With the patch applied, the functions that generate those messages are not
+  called; only the standard "not a supported file format", and "Usage"
+  messages will be displayed.
+
+  * If the method of determining how compound pages are linked cannot be
+    accomplished due to page struct related changes in upstream kernels, issue
+    a WARNING message during session initialization.
+
+  * Fix for the "timer" command on Linux 4.2 and later kernels, which contain
+    this kernel commit that modifies the tvec_root and tvec data structures:
+
+    commit bc7a34b8b9ebfb0f4b8a35a72a0b134fd6c5ef50 timer: Use hlist for the
+    timer wheel hash buckets
+
+  Without the patch, the "timer" command will spew messages indicating "timer:
+  invalid list entry: 0", followed by "timer: ignoring faulty timer list at
+  index <number> of timer array".
+
+  * Introduction of the "dis -s <address>" option, which displays the filename
+    and line number that is associated with the specified text location,
+    followed by a source code listing if it is available on the host machine.
+    The line associated with the text location will be marked with an
+    asterisk; depending upon gdb's internal "listsize" variable, several lines
+    will precede the marked location.  If a "count" argument is entered, it
+    specifies the number of source code lines to be displayed after the marked
+    location; otherwise the remaining source code of the containing function
+    will be displayed.
+
+  * Added a new "--src <directory>" command line option for use by the "dis
+    -s" option if the kernel source code is not located in the standard
+    location that is compiled into the kernel's debuginfo data.  The directory
+    argument should point to the top-level directory of the kernel source
+    tree.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 15 Jan 2016 09:40:34 -0700
+
+crash (7.1.2-1) UNRELEASED; urgency=medium
+
+  * New upstream version 7.1.2, upstream changelog follows:
+
+  * Enhancement of the ARM64 backtrace capability.  Without the patch,
+    backtraces of the active tasks start at the function that is saved in each
+    per-cpu ELF note.  With the patch, the backtrace will start at the
+    "crash_kexec" function on the panicking cpu, and at the "crash_save_cpu"
+    function on the other active cpus.  By doing so, the backtrace will
+    display the exception handling functions leading to crash_kexec() or
+    crash_save_cpu(), as well as the exception frame register set as it was at
+    the time of the fatal exception on the panic cpu, or when the shutdown IPI
+    was received on the other cpus.
+
+  * Enabled the "bt -R" option on the ARM64 architecture.  Without the patch,
+    the option fails with the message "bt: -R option not supported or
+    applicable on this architecture or kernel".
+
+  * Enabled the "crash --log vmcore" command line option on the ARM64
+    architecture.  Without the patch, the option fails with the message
+    "crash: crash --log not implemented on ARM64: TBD".
+
+  * Fix for the S390X "bt" command when running against kernels that have
+    Linux 4.0 commit 2f859d0dad818765117c1cecb24b3bc7f4592074, which removes
+    the "async_stack" and "panic_stack" members from the "pcpu" structure.
+    Without the patch, backtraces of active tasks that were executing I/O or
+    machine check interrupts are not displayed, while other tasks may generate
+    fatal readmem() errors of type "readmem_ul".
+
+  * Fix to prevent an unnecessary/temporary GETBUF() memory allocation of 1 MB
+    by the dump_mem_map() utility function when the kernel is configured with
+    CONFIG_SPARSEMEM.
+
+  * Speed up the "crash --osrelease" option when used with "flattened" format
+    dumpfiles.  Without the patch, the rearranged data array initialization is
+    performed before the vmcoreinfo data in the header is read, which can take
+    a significant amount of time with large dumpfiles.  The patch simply looks
+    for the appropriate vmcoreinfo data string near the beginning of the
+    dumpfile.
+
+  * Fix for the initialization-time sorting mechanism required for "flattened
+    format" dumpfiles if the dumpfile is truncated/incomplete.  Without the
+    patch, the sorting function continues performing invalid reads beyond the
+    of the dumpfile, which may lead to an infinite loop instead of a
+    session-ending error message.  In addition, since the sorting operation
+    may take several minutes, a "please wait" message with an incrementing
+    percentage-complete counter will be displayed.
+
+  * Several fixes associated with the gathering and display of task state.
+    Without the patch: (1) The "ps" command's ST column shows "??" for tasks
+    in the TASK_WAKING state.  (2) The "ps" command's ST column shows "??" for
+    tasks in the TASK_PARKED state in Linux 3.14 and later kernels.  (3) The
+    STATE field of the initial system banner and the "set" command are
+    incorrect if the task state has the TASK_WAKING, TASK_WAKEKILL modifier,
+    or TASK_PARKED bits set in Linux 3.14 and later kernels.  (4) The "foreach
+    DE" task identifier fails if a task with a PID number of 0xDE (222)
+    exists.  (5) The "foreach" command's "SW", "PA", "TR" and "DE" task
+    identifiers inadvertently select all tasks in kernel versions that do not
+    have those states.  (6) The "help -t" output would display incorrect
+    values for the TASK_WAKEKILL, TASK_WAKING and TASK_PARKED states in Linux
+    3.14 and later kernels.  Lastly, support for the TASK_NOLOAD modifier
+    introduced in Linux 4.2 has been added to STATE field of the "set" command
+    and the initial system banner.
+
+  * Fix for the internal memory allocation functionality.  Without the patch,
+    in the unlikely event where the GETBUF() facility has to utilize malloc()
+    to allocate a buffer, and CTRL-c is entered while that buffer is being
+    zeroed out before being returned to the caller, it may result in a
+    never-ending set of "malloc-free mismatch" error messages.
+
+  * Fix for the PPC64 "bt" command for active non-panic tasks.  Without the
+    patch, the backtrace may fail immediately with the error message "bt:
+    invalid kernel virtual address: f  type: Regs NIP value".
+
+  * Fix for the "bt" command on little-endian PPC64 machines for tasks that
+    are blocked in __schedule().  Without the patch, there will be two
+    "__switch_to" frames displayed before the normal "__schedule" frame that
+    is used as the starting point for blocked tasks.
+
+  * Fix for the PPC64 "bt" command to align its exception frame verifier
+    function with the most recent version of the kernel's getvecname()
+    function, which was updated in Linux 3.12.  Without the patch, the
+    "Hypervisor Decrementer", "Emulation Assist", "Hypervisor Doorbell",
+    "Altivec Unavailable", "Instruction Breakpoint", "Denormalisation", "HMI"
+    and "Altivec Assist" exception types are not recognized and their
+    exception frames not displayed; the  "Doorbell" exception type is marked
+    as a "reserved" exception type,
+
+  * Fix for the "timer" command when run on a kernel with a large number of
+    cpus.  Without the patch, the command may fail prematurely with a dump of
+    the internal crash utility allocated buffer statistics followed by the
+    message "timer: cannot allocate any more memory!",
+
+  * Commit f95ecdc330a11d3701de859aab59a5ab5954aae6, which speeds up "crash
+    --osrelease" for flattened format dumpfiles, inadvertently broke the
+    option for ELF kdump and compressed kdump dumpfiles.
+
+  * Implementation of two new "files" command options.  The "files -c" option
+    is context-sensitive, similar to the the regular "files" command when used
+    without an argument, but replaces the FILE and DENTRY columns with
+    I_MAPPING and NRPAGES columns that reflect each open file's
+    inode.i_mapping address_space structure address, and the
+    address_space.nrpages count within it; this shows how many of each open
+    file's pages are currently in the system's page cache.  The "files -p
+    <inode>" option takes the address of an inode, and dumps all of its pages
+    that are currently in the system's page cache, borrowing the "kmem -p"
+    page structure output.
+
+  * Modified the qualification for the execution of the "runq -g" option.
+    Without the patch, if the target kernel was not configured with both
+    CONFIG_FAIR_GROUP_SCHED and CONFIG_RT_GROUP_SCHED, the command fails with
+    the message "runq: -g option not supported or applicable on this
+    architecture or kernel".  With this patch, if the kernel was built with
+    either CONFIG_FAIR_GROUP_SCHED or CONFIG_RT_GROUP_SCHED, the command will
+    execute.
+
+  * Fix for the error handling of the "foreach task -R struct.member" format
+    if an invalid structure and/or member is used as an argument.  Without the
+    patch, the command will display the expected error indicating "task:
+    invalid structure member reference", but then will be followed by a stream
+    of "task: recursive temporary file usage" error messages.
+
+  * Force the 32-bit MIPS extensions/eppic.so to be compiled with -m32.  This
+    is required when "make extensions" is executed after the top level crash
+    binary has been built with "make TARGET=MIPS" on an x86_64 host.
+
+  * If the starting hexadecimal address of a function is passed to the "dis"
+    command without a count argument, disassemble the entire function --
+    similar to when a symbol name of a function is passed without a count
+    argument.  Without the patch, only one instruction is displayed.
+
+  * Fix compiler warning generated by extensions/trace.c when compiled with
+    gcc version 5.  Without the patch, the message "warning: the use of
+    'mktemp' is dangerous, better use 'mkstemp'" is generated.
+
+  * Update the extensions/eppic.mk file to clone the eppic source code from
+    https://github.com/lucchouina/eppic.git.
+
+  * Export the previously static symbol_name_count() function, which returns a
+    count of symbols with the same name.  Export a new is_symbol_text()
+    function, which checks whether specified symbol entry is a type 't' or
+    'T'.
+
+  * If a symbol or symbol+offset argument is passed to the "dis" command, and
+    there are multiple text symbols with the same symbol name, then display a
+    message indicating that there are "duplicate text symbols found", followed
+    by a list of the symbols.  Without the patch, the duplicate symbol with
+    the lowest virtual address is used.
+
+ -- Troy Heber <troyh@debian.org>  Fri, 15 Jan 2016 09:40:34 -0700
+
 crash (7.1.1-1) unstable; urgency=medium
 
   * Autopkgtest fix from Martin Pitt <mpitt@debian.org>  (Closes: #756969):

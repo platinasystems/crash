@@ -34,6 +34,10 @@ static int encapsulated_current_trace;
  * trace_buffer is supported
  */
 static int trace_buffer_available;
+/*
+ * max_buffer is supported
+ */
+static int max_buffer_available;
 
 #define koffset(struct, member) struct##_##member##_offset
 
@@ -154,6 +158,7 @@ static int init_offsets(void)
 		if (koffset(struct, member) < 0) {			\
 			fprintf(fp, "failed to init the offset, struct:"\
 				#struct ", member:" #member);		\
+			fprintf(fp, "\n");				\
 			return -1;					\
 		}							\
 	} while (0)
@@ -163,8 +168,10 @@ static int init_offsets(void)
 
 	if (trace_buffer_available) {
 		init_offset(trace_array, trace_buffer);
-		init_offset(trace_array, max_buffer);
 		init_offset(trace_buffer, buffer);
+
+		if (max_buffer_available)
+			init_offset(trace_array, max_buffer);
 	} else {
 		init_offset(trace_array, buffer);
 	}
@@ -175,6 +182,9 @@ static int init_offsets(void)
 		if (verbose)
 			fprintf(fp, "per cpu buffer sizes\n");
 	}
+
+	if (kernel_symbol_exists("ring_buffer_read"))
+		gdb_set_crash_scope(symbol_value("ring_buffer_read"), "ring_buffer_read");
 
 	if (!per_cpu_buffer_sizes)
 		init_offset(ring_buffer, pages);
@@ -205,7 +215,12 @@ static int init_offsets(void)
 
 	init_offset(list_head, next);
 
-	init_offset(ftrace_event_call, list);
+	koffset(ftrace_event_call, list) = MAX(MEMBER_OFFSET("ftrace_event_call", "list"), 
+		MEMBER_OFFSET("trace_event_call", "list"));
+	if (koffset(ftrace_event_call, list) < 0) {
+		fprintf(fp, "failed to init the offset, struct:[f]trace_event_call member:list)\n");
+		return -1;					\
+	}
 
 	init_offset(ftrace_event_field, link);
 	init_offset(ftrace_event_field, name);
@@ -448,6 +463,9 @@ out_fail:
 static int ftrace_int_max_tr_trace(void)
 {
 	if (trace_buffer_available) {
+		if (!max_buffer_available)
+			return 0;
+
 		global_max_buffer = global_trace + koffset(trace_array, max_buffer);
 		read_value(max_tr_ring_buffer, global_max_buffer, trace_buffer, buffer);
 	} else {
@@ -528,6 +546,9 @@ static int ftrace_init(void)
 
 	if (MEMBER_EXISTS("trace_array", "trace_buffer")) {
 		trace_buffer_available = 1;
+
+		if (MEMBER_EXISTS("trace_array", "max_buffer"))
+			max_buffer_available = 1;
 	} else {
 		sym_max_tr_trace = symbol_search("max_tr");
 		if (sym_max_tr_trace == NULL)
@@ -710,7 +731,8 @@ static int syscall_get_enter_fields(ulong call, ulong *fields)
 		goto work;
 
 	inited = 1;
-	data_offset = MEMBER_OFFSET("ftrace_event_call", "data");
+	data_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "data"), 
+		MEMBER_OFFSET("trace_event_call", "data"));
 	if (data_offset < 0)
 		return -1;
 
@@ -742,7 +764,8 @@ static int syscall_get_exit_fields_old(ulong call, ulong *fields)
 		goto work;
 
 	inited = 1;
-	data_offset = MEMBER_OFFSET("ftrace_event_call", "data");
+	data_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "data"),
+		MEMBER_OFFSET("trace_event_call", "data"));
 	if (data_offset < 0)
 		return -1;
 
@@ -803,18 +826,22 @@ int ftrace_get_event_type_fields(ulong call, ulong *fields)
 		goto work;
 
 	inited = 1;
-	fields_offset = MEMBER_OFFSET("ftrace_event_call", "fields");
+	fields_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "fields"),
+		MEMBER_OFFSET("trace_event_call", "fields"));
 
-	class_offset = MEMBER_OFFSET("ftrace_event_call", "class");
+	class_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "class"),
+		MEMBER_OFFSET("trace_event_call", "class"));
 	if (class_offset < 0)
 		goto work;
 
 	inited = 2;
-	fields_offset = MEMBER_OFFSET("ftrace_event_class", "fields");
+	fields_offset = MAX(MEMBER_OFFSET("ftrace_event_class", "fields"),
+		MEMBER_OFFSET("trace_event_class", "fields"));
 	if (fields_offset < 0)
 		return -1;
 
-	get_fields_offset = MEMBER_OFFSET("ftrace_event_class", "get_fields");
+	get_fields_offset = MAX(MEMBER_OFFSET("ftrace_event_class", "get_fields"),
+		MEMBER_OFFSET("trace_event_class", "get_fields"));
 	if ((sp = symbol_search("syscall_get_enter_fields")) != NULL)
 		syscall_get_enter_fields_value = sp->value;
 	if ((sp = symbol_search("syscall_get_exit_fields")) != NULL)
@@ -1005,15 +1032,18 @@ int ftrace_get_event_type_name(ulong call, char *name, int len)
 		goto work;
 
 	inited = 1;
-	name_offset = MEMBER_OFFSET("ftrace_event_call", "name");
+	name_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "name"),
+		MEMBER_OFFSET("trace_event_call", "name"));
 	if (name_offset >= 0)
 		goto work;
 
-	name_offset = ANON_MEMBER_OFFSET("ftrace_event_call", "name");
+	name_offset = MAX(ANON_MEMBER_OFFSET("ftrace_event_call", "name"),
+		ANON_MEMBER_OFFSET("trace_event_call", "name"));
 	if (name_offset < 0)
 		return -1;
 
-	flags_offset = MEMBER_OFFSET("ftrace_event_call", "flags");
+	flags_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "flags"),
+		MEMBER_OFFSET("trace_event_call", "flags"));
 	if (flags_offset < 0)
 		return -1;
 
@@ -1066,16 +1096,19 @@ int ftrace_get_event_type_system(ulong call, char *system, int len)
 		goto work;
 
 	inited = 1;
-	sys_offset = MEMBER_OFFSET("ftrace_event_call", "system");
+	sys_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "system"),
+		MEMBER_OFFSET("trace_event_call", "system"));
 
 	if (sys_offset >= 0)
 		goto work;
 
-	class_offset = MEMBER_OFFSET("ftrace_event_call", "class");
+	class_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "class"),
+		MEMBER_OFFSET("trace_event_call", "class"));
 	if (class_offset < 0)
 		return -1;
 
-	sys_offset = MEMBER_OFFSET("ftrace_event_class", "system");
+	sys_offset = MAX(MEMBER_OFFSET("ftrace_event_class", "system"),
+		MEMBER_OFFSET("trace_event_class", "system"));
 	inited = 2;
 
 work:
@@ -1147,7 +1180,8 @@ int ftrace_get_event_type_print_fmt(ulong call, char **print_fmt)
 
 	if (!inited) {
 		inited = 1;
-		fmt_offset = MEMBER_OFFSET("ftrace_event_call", "print_fmt");
+		fmt_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "print_fmt"),
+			MEMBER_OFFSET("trace_event_call", "print_fmt"));
 	}
 
 	if (fmt_offset < 0) {
@@ -1170,11 +1204,13 @@ int ftrace_get_event_type_id(ulong call, int *id)
 
 	if (!inited) {
 		inited = 1;
-		id_offset = MEMBER_OFFSET("ftrace_event_call", "id");
+		id_offset = MAX(MEMBER_OFFSET("ftrace_event_call", "id"),
+			MEMBER_OFFSET("trace_event_call", "id"));
 
 		if (id_offset < 0) {
 			/* id = call->event.type */
-			int f1 = MEMBER_OFFSET("ftrace_event_call", "event");
+			int f1 = MAX(MEMBER_OFFSET("ftrace_event_call", "event"),
+				MEMBER_OFFSET("trace_event_call", "event"));
 			int f2 = MEMBER_OFFSET("trace_event", "type");
 
 			if (f1 >= 0 && f2 >= 0)
@@ -1533,7 +1569,6 @@ static void ftrace_show(int argc, char *argv[])
 	FILE *file;
 	size_t ret;
 	size_t nitems __attribute__ ((__unused__));
-	char *unused __attribute__ ((__unused__));
 
 	/* check trace-cmd */
 	if (env_trace_cmd)
@@ -1557,8 +1592,9 @@ static void ftrace_show(int argc, char *argv[])
 	}
 
 	/* dump trace.dat to the temp file */
-	unused = mktemp(tmp);
-	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	fd = mkstemp(tmp);
+	if (fd < 0)
+		return;
 	if (trace_cmd_data_output(fd) < 0)
 		goto out;
 
