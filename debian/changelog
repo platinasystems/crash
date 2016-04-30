@@ -1,12 +1,6 @@
-crash (7.1.5-1~bpo8+2) jessie-backports; urgency=medium
+crash (7.1.5-1) unstable; urgency=medium
 
-  * Fix incorrect/missing dependency
-
- -- Troy Heber <troyh@debian.org>  Thu, 09 Jun 2016 08:09:57 -0600
-
-crash (7.1.5-1~bpo8+1) jessie-backports; urgency=medium
-
-  * New upstream 7.1.5
+  * New upstream 7.1.5  (Closes: #817798):
 
   * Fix for the handling of Xen DomU ELF dumpfiles to prevent the
     pre-gathering of p2m frames during session initialization, which is
