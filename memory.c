@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2015 David Anderson
- * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -279,7 +279,8 @@ static int page_to_nid(ulong);
 static int get_kmem_cache_list(ulong **);
 static int get_kmem_cache_slub_data(long, struct meminfo *);
 static ulong compound_head(ulong);
-static long count_partial(ulong, struct meminfo *);
+static long count_partial(ulong, struct meminfo *, ulong *);
+static short count_cpu_partial(struct meminfo *, int);
 static ulong get_freepointer(struct meminfo *, void *);
 static int count_free_objects(struct meminfo *, ulong);
 char *is_slab_page(struct meminfo *, char *);
@@ -742,6 +743,8 @@ vm_init(void)
 			"kmem_cache_node", "nr_partial");
 		MEMBER_OFFSET_INIT(kmem_cache_node_nr_slabs, 
 			"kmem_cache_node", "nr_slabs");
+		MEMBER_OFFSET_INIT(kmem_cache_node_total_objects,
+			"kmem_cache_node", "total_objects");
 		MEMBER_OFFSET_INIT(kmem_cache_node_partial, 
 			"kmem_cache_node", "partial");
 		MEMBER_OFFSET_INIT(kmem_cache_node_full, 
@@ -15547,6 +15550,9 @@ swap_location(ulonglong pte, char *buf)
         if (!pte)
                 return NULL;
 
+	if (!symbol_exists("nr_swapfiles") || !symbol_exists("swap_info"))
+		return NULL;
+
 	if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
 		sprintf(buf, "%s  OFFSET: %lld", 
 			get_swapdev(__swp_type(pte), swapdev), (ulonglong)__swp_offset(pte));
@@ -15566,12 +15572,8 @@ get_swapdev(ulong type, char *buf)
 	unsigned int i, swap_info_len;
 	ulong swap_info, swap_info_ptr, swap_file;
 	ulong vfsmnt;
-
-        if (!symbol_exists("nr_swapfiles"))
-                error(FATAL, "nr_swapfiles doesn't exist in this kernel!\n");
-
-        if (!symbol_exists("swap_info"))
-                error(FATAL, "swap_info doesn't exist in this kernel!\n");
+	char *devname;
+	char buf1[BUFSIZE];
 
 	swap_info_init();
 
@@ -15613,8 +15615,13 @@ get_swapdev(ulong type, char *buf)
 				OFFSET(swap_info_struct_swap_vfsmnt));
         		get_pathname(swap_file, buf, BUFSIZE, 1, vfsmnt);
                 } else if (VALID_MEMBER (swap_info_struct_old_block_size)) {
-                        get_pathname(file_to_dentry(swap_file),
-                        	buf, BUFSIZE, 1, 0);
+			devname = vfsmount_devname(file_to_vfsmnt(swap_file),
+				buf1, BUFSIZE);
+			get_pathname(file_to_dentry(swap_file),
+				buf, BUFSIZE, 1, file_to_vfsmnt(swap_file));
+			if ((STREQ(devname, "devtmpfs") || STREQ(devname, "udev")) 
+			    && !STRNEQ(buf, "/dev/"))
+				string_insert("/dev", buf);
 		} else {
         		get_pathname(swap_file, buf, BUFSIZE, 1, 0);
 		}
@@ -17788,7 +17795,7 @@ dump_kmem_cache_info_slub(struct meminfo *si)
         fprintf(fp, b1, si->inuse);
 
         fprintf(fp, "%8ld  %5ld  %4ldk\n",  
-		si->num_slabs * si->objects, 
+		si->inuse + si->free,
                 si->num_slabs, si->slabsize/1024); 
 }
 
@@ -17911,6 +17918,94 @@ bailout:
 	FREEBUF(si->cache_buf);
 }
 
+static ushort 
+slub_page_objects(struct meminfo *si, ulong page)
+{
+	ulong objects_vaddr;
+	ushort objects;
+
+	/*
+	 *  Pre-2.6.27, the object count and order were fixed in the
+	 *  kmem_cache structure.  Now they may change, say if a high
+	 *  order slab allocation fails, so the per-slab object count
+	 *  is kept in the slab.
+	 */
+	if (VALID_MEMBER(page_objects)) {
+		objects_vaddr = page + OFFSET(page_objects);
+		if (si->flags & SLAB_BITFIELD)
+			objects_vaddr += sizeof(ushort);
+		if (!readmem(objects_vaddr, KVADDR, &objects,
+			     sizeof(ushort), "page.objects", RETURN_ON_ERROR))
+			return 0;
+		/*
+		 *  Strip page.frozen bit.
+		 */
+		if (si->flags & SLAB_BITFIELD) {
+			if (__BYTE_ORDER == __LITTLE_ENDIAN) {
+				objects <<= 1;
+				objects >>= 1;
+			}
+			if (__BYTE_ORDER == __BIG_ENDIAN)
+				objects >>= 1;
+		}
+
+		if (CRASHDEBUG(1) && (objects != si->objects))
+			error(NOTE, "%s: slab: %lx oo objects: %ld "
+			      "slab objects: %d\n",
+			      si->curname, page,
+			      si->objects, objects);
+
+		if (objects == (ushort)(-1)) {
+			error(INFO, "%s: slab: %lx invalid page.objects: -1\n",
+			      si->curname, page);
+			return 0;
+		}
+	} else
+		objects = (ushort)si->objects;
+
+	return objects;
+}
+
+static short 
+count_cpu_partial(struct meminfo *si, int cpu)
+{
+	short cpu_partial_inuse, cpu_partial_objects, free_objects;
+	ulong cpu_partial;
+
+	free_objects = 0;
+
+	if (VALID_MEMBER(kmem_cache_cpu_partial) && VALID_MEMBER(page_objects)) {
+		readmem(ULONG(si->cache_buf + OFFSET(kmem_cache_cpu_slab)) +
+			kt->__per_cpu_offset[cpu] + OFFSET(kmem_cache_cpu_partial),
+			KVADDR, &cpu_partial, sizeof(ulong),
+			"kmem_cache_cpu.partial", RETURN_ON_ERROR);
+
+		while (cpu_partial) {
+			if (!is_page_ptr(cpu_partial, NULL)) {
+				error(INFO, "%s: invalid partial list slab pointer: %lx\n",
+					si->curname, cpu_partial);
+				return 0;
+			}
+			if (!readmem(cpu_partial + OFFSET(page_inuse), KVADDR, &cpu_partial_inuse,
+			    sizeof(ushort), "page.inuse", RETURN_ON_ERROR))
+				return 0;
+			if (cpu_partial_inuse == -1)
+				return 0;
+
+			cpu_partial_objects = slub_page_objects(si,
+								cpu_partial);
+			if (!cpu_partial_objects)
+				return 0;
+			free_objects += cpu_partial_objects - cpu_partial_inuse;
+
+			readmem(cpu_partial + OFFSET(page_next), KVADDR,
+				&cpu_partial, sizeof(ulong), "page.next",
+				RETURN_ON_ERROR);
+		}
+	}
+	return free_objects;
+}
+
 /*
  *  Emulate the total count calculation done by the
  *  slab_objects() sysfs function in slub.c.
@@ -17919,10 +18014,10 @@ static int
 get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 {
 	int i, n, node;
-	ulong total_objects, total_slabs;
-	ulong cpu_slab_ptr, node_ptr;
-	ulong node_nr_partial, node_nr_slabs;
-	int full_slabs, objects;
+	ulong total_objects, total_slabs, free_objects;
+	ulong cpu_slab_ptr, node_ptr, cpu_freelist, orig_slab;
+	ulong node_nr_partial, node_nr_slabs, node_total_objects;
+	int full_slabs, objects, node_total_avail;
 	long p;
 	short inuse;
         ulong *nodes, *per_cpu;
@@ -17935,10 +18030,11 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
         nodes = (ulong *)GETBUF(2 * sizeof(ulong) * vt->numnodes);
         per_cpu = nodes + vt->numnodes;
 
-	total_slabs = total_objects = 0; 
+	total_slabs = total_objects = free_objects = cpu_freelist = 0;
+	node_total_avail = VALID_MEMBER(kmem_cache_node_total_objects) ? TRUE : FALSE;
 
 	for (i = 0; i < kt->cpus; i++) {
-		cpu_slab_ptr = get_cpu_slab_ptr(si, i, NULL);
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i, &cpu_freelist);
 
 		if (!cpu_slab_ptr)
 			continue;
@@ -17948,12 +18044,33 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 
 		switch (cmd)
 		{
-		case GET_SLUB_OBJECTS:
+		case GET_SLUB_OBJECTS: {
+			/* For better error report, set cur slab to si->slab. */
+			orig_slab = si->slab;
+			si->slab = cpu_slab_ptr;
+
 			if (!readmem(cpu_slab_ptr + OFFSET(page_inuse), 
-			    KVADDR, &inuse, sizeof(short), 
-			    "page inuse", RETURN_ON_ERROR))
+				     KVADDR, &inuse, sizeof(short),
+				     "page inuse", RETURN_ON_ERROR)) {
+				si->slab = orig_slab;
 				return FALSE;
-			total_objects += inuse;
+			}
+			objects = slub_page_objects(si, cpu_slab_ptr);
+			if (!objects) {
+				si->slab = orig_slab;
+				return FALSE;
+			}
+
+			free_objects += objects - inuse;
+			free_objects += count_free_objects(si, cpu_freelist);
+			free_objects += count_cpu_partial(si, i);
+
+			if (!node_total_avail)
+				total_objects += inuse;
+			total_slabs++;
+
+			si->slab = orig_slab;
+		}
 			break;
 
 		case GET_SLUB_SLABS:
@@ -17984,13 +18101,21 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 		    KVADDR, &node_nr_slabs, sizeof(ulong), 
 		    "kmem_cache_node nr_slabs", RETURN_ON_ERROR))
 			goto bailout;
+		if (node_total_avail) {
+			if (!readmem(node_ptr + OFFSET(kmem_cache_node_total_objects),
+			    KVADDR, &node_total_objects, sizeof(ulong),
+			    "kmem_cache_node total_objects", RETURN_ON_ERROR))
+				goto bailout;
+		}
 
 		switch (cmd)
 		{
 		case GET_SLUB_OBJECTS:
-			if ((p = count_partial(node_ptr, si)) < 0)
+			if ((p = count_partial(node_ptr, si, &free_objects)) < 0)
 				return FALSE;
-			total_objects += p;
+			if (!node_total_avail)
+				total_objects += p;
+			total_slabs += node_nr_partial;
 			break;
 
 		case GET_SLUB_SLABS:
@@ -18004,7 +18129,11 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 		switch (cmd)
 		{
 		case GET_SLUB_OBJECTS:
-			total_objects += (full_slabs * objects);
+			if (node_total_avail)
+				total_objects += node_total_objects;
+			else
+				total_objects += (full_slabs * objects);
+			total_slabs += full_slabs;
 			break;
 
 		case GET_SLUB_SLABS:
@@ -18019,7 +18148,14 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 	switch (cmd)
 	{
 	case GET_SLUB_OBJECTS:
-		si->inuse = total_objects;
+		if (!node_total_avail)
+			si->inuse = total_objects;
+		else
+			si->inuse = total_objects - free_objects;
+		if (VALID_MEMBER(page_objects) && node_total_avail)
+			si->free = free_objects;
+		else
+			si->free = (total_slabs * si->objects) - si->inuse;
 		break;
 
 	case GET_SLUB_SLABS:
@@ -18166,7 +18302,7 @@ static int
 do_slab_slub(struct meminfo *si, int verbose)
 {
 	physaddr_t paddr; 
-	ulong vaddr, objects_vaddr;
+	ulong vaddr;
 	ushort inuse, objects; 
 	ulong freelist, cpu_freelist, cpu_slab_ptr;
 	int i, free_objects, cpu_slab, is_free, node;
@@ -18198,50 +18334,17 @@ do_slab_slub(struct meminfo *si, int verbose)
 	if (!readmem(si->slab + OFFSET(page_freelist), KVADDR, &freelist,
 	    sizeof(void *), "page.freelist", RETURN_ON_ERROR))
 		return FALSE;
-	/* 
-	 *  Pre-2.6.27, the object count and order were fixed in the
-	 *  kmem_cache structure.  Now they may change, say if a high
-	 *  order slab allocation fails, so the per-slab object count
-	 *  is kept in the slab.
-	 */
-	if (VALID_MEMBER(page_objects)) {
-		objects_vaddr = si->slab + OFFSET(page_objects);
-		if (si->flags & SLAB_BITFIELD)
-			objects_vaddr += sizeof(ushort);
-		if (!readmem(objects_vaddr, KVADDR, &objects,
-		    sizeof(ushort), "page.objects", RETURN_ON_ERROR))
-			return FALSE;
-		/*
-		 *  Strip page.frozen bit.
-		 */
-		if (si->flags & SLAB_BITFIELD) {
-			if (__BYTE_ORDER == __LITTLE_ENDIAN) {
-				objects <<= 1;
-				objects >>= 1;
-			}
-			if (__BYTE_ORDER == __BIG_ENDIAN)
-				objects >>= 1;
-		}
 
-		if (CRASHDEBUG(1) && (objects != si->objects))
-			error(NOTE, "%s: slab: %lx oo objects: %ld "
-			    "slab objects: %d\n",
-				si->curname, si->slab, 
-				si->objects, objects);
-
-		if (objects == (ushort)(-1)) {
-			error(INFO, "%s: slab: %lx invalid page.objects: -1\n",
-				si->curname, si->slab);
-			return FALSE;
-		}
-	} else
-		objects = (ushort)si->objects;
+	objects = slub_page_objects(si, si->slab);
+	if (!objects)
+		return FALSE;
 
 	if (!verbose) {
 		DUMP_SLAB_INFO_SLUB();
 		return TRUE;
 	}
 
+	cpu_freelist = 0;
 	for (i = 0, cpu_slab = -1; i < kt->cpus; i++) {
 		cpu_slab_ptr = get_cpu_slab_ptr(si, i, &cpu_freelist);
 
@@ -18253,11 +18356,15 @@ do_slab_slub(struct meminfo *si, int verbose)
 			 *  Later slub scheme uses the per-cpu freelist
 			 *  so count the free objects by hand.
 			 */
-			if (cpu_freelist)
-				freelist = cpu_freelist;
-			if ((free_objects = count_free_objects(si, freelist)) < 0)
+			if ((free_objects = count_free_objects(si, cpu_freelist)) < 0)
 				return FALSE;
-			inuse = si->objects - free_objects;
+			/*
+			 * If the object is freed on foreign cpu, the
+			 * object is liked to page->freelist.
+			 */
+			if (freelist)
+				free_objects += objects - inuse;
+			inuse = objects - free_objects;
 			break;
 		}
 	}
@@ -18288,28 +18395,31 @@ do_slab_slub(struct meminfo *si, int verbose)
 	for (p = vaddr; p < vaddr + objects * si->size; p += si->size) {
 		hq_open();
 		is_free = FALSE;
-		for (is_free = 0, q = freelist; q; 
-			q = get_freepointer(si, (void *)q)) {
+		/* Search an object on both of freelist and cpu_freelist */
+		ulong lists[] = { freelist, cpu_freelist, };
+		for (i = 0; i < sizeof(lists) / sizeof(lists[0]); i++) {
+			for (is_free = 0, q = lists[i]; q;
+			     q = get_freepointer(si, (void *)q)) {
 
-			if (q == BADADDR) {
-				hq_close();
-				return FALSE;
+				if (q == BADADDR) {
+					hq_close();
+					return FALSE;
+				}
+				if (q & PAGE_MAPPING_ANON)
+					break;
+				if (p == q) {
+					is_free = TRUE;
+					goto found_object;
+				}
+				if (!hq_enter(q)) {
+					hq_close();
+					error(INFO, "%s: slab: %lx duplicate freelist object: %lx\n",
+					      si->curname, si->slab, q);
+					return FALSE;
+				}
 			}
-			if (q & PAGE_MAPPING_ANON)
-				break;
-			if (p == q) {
-				is_free = TRUE;
-				break;
-			}
-			if (!hq_enter(q)) {
-				hq_close();
-				error(INFO, 
-				    "%s: slab: %lx duplicate freelist object: %lx\n",
-					si->curname, si->slab, q);
-				return FALSE;
-			}
-
 		}
+	found_object:
 		hq_close();
 
 		if (si->flags & ADDRESS_SPECIFIED) {
@@ -18586,10 +18696,10 @@ compound_head(ulong page)
 }
 
 long 
-count_partial(ulong node, struct meminfo *si)
+count_partial(ulong node, struct meminfo *si, ulong *free)
 {
 	ulong list_head, next, last;
-	short inuse;
+	short inuse, objects;
 	ulong total_inuse;
 	ulong count = 0;
 
@@ -18617,6 +18727,16 @@ count_partial(ulong node, struct meminfo *si)
 			break;
 		}
 		total_inuse += inuse;
+
+		if (VALID_MEMBER(page_objects)) {
+			objects = slub_page_objects(si, last);
+			if (!objects) {
+				hq_close();
+				return -1;
+			}
+			*free += objects - inuse;
+		}
+
 		if (!readmem(next, KVADDR, &next, sizeof(ulong),
 		    "page.lru.next", RETURN_ON_ERROR)) {
 			hq_close();

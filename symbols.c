@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2015 David Anderson
- * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,11 +33,16 @@ static void strip_module_symbol_end(char *s);
 static int compare_syms(const void *, const void *);
 static int compare_mods(const void *, const void *);
 static int compare_prios(const void *v1, const void *v2);
+static int compare_size_name(const void *, const void *);
+struct type_request;
+static void append_struct_symbol (struct type_request *, struct gnu_request *);
+static void request_types(ulong, ulong, char *);
 static asection *get_kernel_section(char *);
 static char * get_section(ulong vaddr, char *buf);
 static void symbol_dump(ulong, char *);
 static void check_for_dups(struct load_module *);
 static struct syment *kallsyms_module_symbol(struct load_module *, symbol_info *);
+static int kallsyms_module_function_size(struct syment *, struct load_module *, ulong *);
 static void store_load_module_symbols \
 	(bfd *, int, void *, long, uint, ulong, char *);
 static int load_module_index(struct syment *);
@@ -2104,22 +2109,27 @@ struct elf_common {
 	ulong st_value;
 	ulong st_shndx;
 	unsigned char st_info;
+	ulong st_size;
 };
 
-static void Elf32_Sym_to_common(Elf32_Sym *e32, struct elf_common *ec)
+static void 
+Elf32_Sym_to_common(Elf32_Sym *e32, struct elf_common *ec)
 {
 	ec->st_name = (ulong)e32->st_name;
 	ec->st_value = (ulong)e32->st_value;
 	ec->st_shndx = (ulong)e32->st_shndx;
 	ec->st_info = e32->st_info;
+	ec->st_size = (ulong)e32->st_size;
 }
 
-static void Elf64_Sym_to_common(Elf64_Sym *e64, struct elf_common *ec)
+static void 
+Elf64_Sym_to_common(Elf64_Sym *e64, struct elf_common *ec)
 {
 	ec->st_name = (ulong)e64->st_name;
 	ec->st_value = (ulong)e64->st_value;
 	ec->st_shndx = (ulong)e64->st_shndx;
 	ec->st_info = e64->st_info;
+	ec->st_size = (ulong)e64->st_size;
 }
 
 static int
@@ -2832,9 +2842,19 @@ get_text_function_range(ulong vaddr, ulong *low, ulong *high)
 {
 	struct syment *sp;
 	struct gnu_request gnu_request, *req = &gnu_request;
+	struct load_module *lm;
+	ulong size;
 
 	if (!(sp = value_search(vaddr, NULL)))
 		return FALSE;
+
+	if (module_symbol(vaddr, NULL, &lm, NULL, 0)) {
+		if (kallsyms_module_function_size(sp, lm, &size)) {
+			*low = sp->value;
+			*high = sp->value + size;
+			return TRUE;
+		}
+	}
 
 	BZERO(req, sizeof(struct gnu_request));
 	req->command = GNU_GET_FUNCTION_RANGE;
@@ -2851,6 +2871,97 @@ get_text_function_range(ulong vaddr, ulong *low, ulong *high)
 	*high = req->addr2;
 
 	return TRUE;
+}
+
+/*
+ *  Get the text size of a module function from kallsyms. 
+ */
+static int 
+kallsyms_module_function_size(struct syment *sp, struct load_module *lm, ulong *size)
+{
+	int i;
+	ulong nksyms, ksymtab, st_size;
+	char *ptr, *module_buf, *module_buf_init, *modbuf, *locsymtab;
+	struct elf_common elf_common, *ec;
+
+	if (!(lm->mod_flags & MOD_KALLSYMS) || !(kt->flags & KALLSYMS_V2))
+		return FALSE;
+
+	module_buf = GETBUF(lm->mod_size);
+	modbuf = module_buf + (lm->module_struct - lm->mod_base);
+
+	if (!readmem(lm->mod_base, KVADDR, module_buf, lm->mod_size,
+	    "module (kallsyms)", RETURN_ON_ERROR|QUIET)) {
+		FREEBUF(module_buf);
+		return FALSE;
+	}
+
+	if (lm->mod_init_size > 0) {
+		module_buf_init = GETBUF(lm->mod_init_size);
+		if (!readmem(lm->mod_init_module_ptr, KVADDR, module_buf_init, 
+		    lm->mod_init_size, "module init (kallsyms)", 
+		    RETURN_ON_ERROR|QUIET)) {
+			FREEBUF(module_buf_init);
+			module_buf_init = NULL;
+		}
+	} else
+	 	module_buf_init = NULL;
+
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+		nksyms = UINT(modbuf + OFFSET(module_num_symtab));
+	else
+		nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+
+        ksymtab = ULONG(modbuf + OFFSET(module_symtab));
+        if (!IN_MODULE(ksymtab, lm) && !IN_MODULE_INIT(ksymtab, lm)) {
+                FREEBUF(module_buf);
+                if (module_buf_init)
+                        FREEBUF(module_buf_init);
+                return FALSE;
+        }
+
+        if (IN_MODULE(ksymtab, lm))
+                locsymtab = module_buf + (ksymtab - lm->mod_base);
+        else
+                locsymtab = module_buf_init + (ksymtab - lm->mod_init_module_ptr);
+
+	st_size = 0;
+	ec = &elf_common;
+	BZERO(&elf_common, sizeof(struct elf_common));
+
+        for (i = 1; i < nksyms; i++) {  /* ELF starts real symbols at 1 */
+                switch (BITS())
+                {
+                case 32:
+                        ptr = locsymtab + (i * sizeof(Elf32_Sym));
+                        Elf32_Sym_to_common((Elf32_Sym *)ptr, ec);
+                        break;
+                case 64:
+                        ptr = locsymtab + (i * sizeof(Elf64_Sym));
+                        Elf64_Sym_to_common((Elf64_Sym *)ptr, ec);
+                        break;
+                }
+
+		if (sp->value == ec->st_value) {
+			if (CRASHDEBUG(1))
+				fprintf(fp, "kallsyms_module_function_size: "
+				    "st_value: %lx  st_size: %ld\n", 
+					ec->st_value, ec->st_size);
+			st_size = ec->st_size;
+			break;
+		}
+	}
+
+	if (module_buf_init)
+		FREEBUF(module_buf_init);
+	FREEBUF(module_buf);
+
+	if (st_size) {
+		*size = st_size;
+		return TRUE;
+	}
+
+	return FALSE;
 }
 
 /*
@@ -3287,6 +3398,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_SPARCV9:
+			if (machine_type_mismatch(file, "SPARC64", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -3556,6 +3672,11 @@ is_shared_object(char *file)
 
 		case EM_AARCH64:
 			if (machine_type("ARM64"))
+				return TRUE;
+			break;
+
+		case EM_SPARCV9:
+			if (machine_type("SPARC64"))
 				return TRUE;
 			break;
 		}
@@ -6529,6 +6650,107 @@ dump_datatype_member(FILE *ofp, struct datatype_member *dm)
 	fprintf(ofp, "\n");
 }
 
+struct type_request {
+	int cnt;	    /* current number of entries in types array */
+	int idx;	    /* index to next entry in types array */
+	struct type_info {  /* dynamically-sized array of collected types */
+		char *name;
+		ulong size;
+	} *types;
+};
+
+static int
+compare_size_name(const void *va, const void *vb) {
+	struct type_info *a, *b;
+
+	a = (struct type_info *)va;
+	b = (struct type_info *)vb;
+
+        if (a->size == b->size)
+                return strcmp(a->name, b->name);
+        else
+                return a->size < b->size ? -1 : 1;
+}
+
+static void
+append_struct_symbol (struct type_request *treq,  struct gnu_request *req)
+{
+	int i; 
+	long s;
+
+	for (i = 0; i < treq->idx; i++)
+		if (treq->types[i].name == req->name)
+			break;
+
+	if (i < treq->idx) // We've already collected this type
+		return;
+
+	if (treq->idx == treq->cnt) {
+		s = sizeof(struct type_info) * treq->cnt;
+		treq->types = (void *)resizebuf((void *)treq->types, s, s * 3);
+		treq->cnt *= 3;
+	}
+
+	treq->types[treq->idx].name = req->name;
+	treq->types[treq->idx].size = req->length;
+	treq->idx++;
+}
+
+static void
+request_types(ulong lowest, ulong highest, char *member_name)
+{
+	int i, len;
+	char buf[BUFSIZE];
+	struct type_request typereq;
+	struct gnu_request request = {0};
+
+	typereq.idx = 0;
+	typereq.cnt = 16;
+	typereq.types = (void *)GETBUF(16 * sizeof(struct type_info));
+
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
+	error(FATAL, "-r option not supported with this version of gdb\n");
+#else
+	request.type_name = member_name;
+#endif
+
+	while (!request.global_iterator.finished) {
+		request.command = GNU_GET_NEXT_DATATYPE;
+		gdb_interface(&request);
+		if (highest && 
+		    !(lowest <= request.length && request.length <= highest))
+			continue;
+
+		if (member_name) {
+			request.command = GNU_LOOKUP_STRUCT_CONTENTS;
+			gdb_interface(&request);
+			if (!request.value)
+				continue;
+		}
+
+		append_struct_symbol(&typereq, &request);		
+	}
+
+	qsort(typereq.types, typereq.idx, sizeof(struct type_info), compare_size_name);
+
+	if (typereq.idx == 0)
+		fprintf(fp, "(none found)\n");
+	else {
+		sprintf(buf, "%ld", typereq.types[typereq.idx-1].size);
+		len = MAX(strlen(buf), strlen("SIZE"));
+		fprintf(fp, "%s  TYPE\n",
+			mkstring(buf, len, RJUST, "SIZE"));
+
+		for (i = 0; i < typereq.idx; i++)
+			fprintf(fp, "%s  %s\n", 
+				mkstring(buf, len, RJUST|LONG_DEC, 
+				MKSTR(typereq.types[i].size)),
+				typereq.types[i].name);
+	}
+
+	FREEBUF(typereq.types);
+}
+
 /*
  *  This command displays the definition of structures, unions, typedefs or
  *  text/data symbols:  
@@ -6543,25 +6765,47 @@ dump_datatype_member(FILE *ofp, struct datatype_member *dm)
  *     declaration is displayed.
  *  5. For a kernel symbol name, the output is the same as if the "sym" command
  *     was used.
+ *  6. If the -r and -m are given, then the structures/unions of specified size
+ *     and/or contain a member type.
  */
 void
 cmd_whatis(void)
 {
+	int c, do_request;
         struct datatype_member datatype_member, *dm;
 	struct syment *sp;
-        char buf[BUFSIZE];
+	char buf[BUFSIZE], *pl, *ph, *member;
 	long len;
-	int c;
+	ulong lowest, highest;
         ulong flags;
 
         dm = &datatype_member;
 	flags = 0;
+	lowest = highest = 0;
+	pl = buf;
+	member = NULL;
+	do_request = FALSE;
 
-        while ((c = getopt(argcnt, args, "o")) != EOF) {
+        while ((c = getopt(argcnt, args, "om:r:")) != EOF) {
                 switch(c)
                 {
 		case 'o':
 			flags |= SHOW_OFFSET;
+			break;
+
+		case 'm':
+			member = optarg;
+			do_request = TRUE;
+			break;
+
+		case 'r':
+			strncpy(buf, optarg, 15);
+			if ((ph = strstr(buf, "-")) != NULL)
+				*(ph++) = '\0';
+			highest = lowest = stol(pl, FAULT_ON_ERROR, NULL);
+			if (ph)
+				highest = stol(ph, FAULT_ON_ERROR, NULL);
+			do_request = TRUE;
 			break;
 
                 default:
@@ -6569,6 +6813,11 @@ cmd_whatis(void)
                         break;
                 }
         }
+
+	if (!argerrs && do_request) {
+		request_types(lowest, highest, member);
+		return;
+	}
 
         if (argerrs || !args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
@@ -8724,6 +8973,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(irq_data_chip));
 	fprintf(fp, "             irq_data_affinity: %ld\n",
 		OFFSET(irq_data_affinity));
+	fprintf(fp, "             irq_desc_irq_data: %ld\n",
+		OFFSET(irq_desc_irq_data));
 	fprintf(fp, "              kernel_stat_irqs: %ld\n",
 		OFFSET(kernel_stat_irqs));
 
@@ -9054,6 +9305,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(kmem_cache_node_partial));
         fprintf(fp, "          kmem_cache_node_full: %ld\n",
                 OFFSET(kmem_cache_node_full));
+        fprintf(fp, "          kmem_cache_node_total_objects: %ld\n",
+                OFFSET(kmem_cache_node_total_objects));
 
         fprintf(fp, "       kmem_cache_cpu_freelist: %ld\n",
                 OFFSET(kmem_cache_cpu_freelist));
@@ -9845,6 +10098,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(page_cache_bucket));
         fprintf(fp, "                       pt_regs: %ld\n", SIZE(pt_regs));
         fprintf(fp, "                   task_struct: %ld\n", SIZE(task_struct));
+        fprintf(fp, "             task_struct_flags: %ld\n", SIZE(task_struct_flags));
         fprintf(fp, "                   thread_info: %ld\n", SIZE(thread_info));
         fprintf(fp, "                 softirq_state: %ld\n", 
 		SIZE(softirq_state));

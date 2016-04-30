@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002-2013 David Anderson
-# Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002-2016 David Anderson
+# Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@
 PROGRAM=crash
 
 #
-# Supported targets: X86 ALPHA PPC IA64 PPC64
+# Supported targets: X86 ALPHA PPC IA64 PPC64 SPARC64
 # TARGET and GDB_CONF_FLAGS will be configured automatically by configure
 #
 TARGET=
@@ -62,7 +62,7 @@ VMWARE_HFILES=vmware_vmss.h
 CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
 	alpha.c x86.c ppc.c ia64.c s390.c s390x.c s390dbf.c ppc64.c x86_64.c \
-	arm.c arm64.c mips.c \
+	arm.c arm64.c mips.c sparc64.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
@@ -81,7 +81,7 @@ SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
 	alpha.o x86.o ppc.o ia64.o s390.o s390x.o s390dbf.o ppc64.o x86_64.o \
-	arm.o arm64.o mips.o \
+	arm.o arm64.o mips.o sparc64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o makedumpfile.o xendump.o \
@@ -233,7 +233,7 @@ gdb_merge: force
 	@rm -f ${PROGRAM}
 	@if [ ! -f ${GDB}/config.status ]; then \
 	  (cd ${GDB}; ./configure ${GDB_CONF_FLAGS} --with-separate-debug-dir=/usr/lib/debug \
-	    --with-bugurl="" --with-expat=no --with-python=no; \
+	    --with-bugurl="" --with-expat=no --with-python=no --disable-sim; \
 	  make --no-print-directory CRASH_TARGET=${TARGET}; echo ${TARGET} > crash.target) \
 	else make --no-print-directory rebuild; fi
 	@if [ ! -f ${PROGRAM} ]; then \
@@ -245,7 +245,7 @@ rebuild:
 	  touch ${GDB}/${GDB}.patch; fi
 	@if [ -f ${GDB}.patch ] && [ -s ${GDB}.patch ] && \
 	  [ "`sum ${GDB}.patch`" != "`sum ${GDB}/${GDB}.patch`" ]; then \
-	  (patch -N -p0 -r- < ${GDB}.patch; cp ${GDB}.patch ${GDB}; cd ${GDB}; \
+	  (patch -N -p0 -r- --fuzz=0 < ${GDB}.patch; cp ${GDB}.patch ${GDB}; cd ${GDB}; \
 	  make --no-print-directory CRASH_TARGET=${TARGET}) \
 	else (cd ${GDB}/gdb; make --no-print-directory CRASH_TARGET=${TARGET}); fi
 
@@ -422,6 +422,9 @@ arm64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} arm64.c
 mips.o: ${GENERIC_HFILES} ${REDHAT_HFILES} mips.c
 	${CC} -c ${CRASH_CFLAGS} mips.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+sparc64.o: ${GENERIC_HFILES} ${REDHAT_HFILES} sparc64.c
+	${CC} -c ${CRASH_CFLAGS} sparc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
 	${CC} -c ${CRASH_CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -551,7 +554,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.1.4
+VERSION=7.1.5
 RELEASE=0
 
 release: make_configure

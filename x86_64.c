@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004-2015 David Anderson
- * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2016 David Anderson
+ * Copyright (C) 2004-2016 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1309,7 +1309,8 @@ x86_64_IS_VMALLOC_ADDR(ulong vaddr)
 	return ((vaddr >= VMALLOC_START && vaddr <= VMALLOC_END) ||
                 ((machdep->flags & VMEMMAP) && 
 		 (vaddr >= VMEMMAP_VADDR && vaddr <= VMEMMAP_END)) ||
-                (vaddr >= MODULES_VADDR && vaddr <= MODULES_END));
+                (vaddr >= MODULES_VADDR && vaddr <= MODULES_END) ||
+		(vaddr >= VSYSCALL_START && vaddr < VSYSCALL_END));
 }
 
 static int 
@@ -1430,7 +1431,8 @@ x86_64_uvtop_level4(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, in
 	pte = ULONG(machdep->ptbl + PAGEOFFSET(ptep));
 	if (verbose)
 		fprintf(fp, "   PTE: %lx => %lx\n", (ulong)ptep, pte);
-	if (!(pte & (_PAGE_PRESENT))) {
+
+	if (!(pte & (_PAGE_PRESENT | _PAGE_PROTNONE))) {
 		*paddr = pte;
 
 		if (pte && verbose) {
@@ -2317,19 +2319,19 @@ x86_64_eframe_search(struct bt_info *bt)
 				continue;
                 	if (ms->stkinfo.ibase[c] == 0)
                         	break;
-                                bt->hp->esp = ms->stkinfo.ibase[c];
-                                fprintf(fp, "CPU %d IRQ STACK:", c);
+                        bt->hp->esp = ms->stkinfo.ibase[c];
+                        fprintf(fp, "CPU %d IRQ STACK:", c);
 
-				if (hide_offline_cpu(c)) {
-					fprintf(fp, " [OFFLINE]\n\n");
-					continue;
-				} else
-					fprintf(fp, "\n");
+			if (hide_offline_cpu(c)) {
+				fprintf(fp, " [OFFLINE]\n\n");
+				continue;
+			} else
+				fprintf(fp, "\n");
 
-                                if ((cnt = x86_64_eframe_search(bt)))
-					fprintf(fp, "\n");
-				else
-                                        fprintf(fp, "(none found)\n\n");
+                        if ((cnt = x86_64_eframe_search(bt)))
+				fprintf(fp, "\n");
+			else
+                                fprintf(fp, "(none found)\n\n");
                 }
 
         	for (c = 0; c < kt->cpus; c++) {
