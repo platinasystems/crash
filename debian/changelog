@@ -1,3 +1,9 @@
+crash (7.1.5-2) unstable; urgency=medium
+
+  * Forgot to close bug in the last upload (Closes: #811604)
+
+ -- Troy Heber <troyh@debian.org>  Tue, 06 Sep 2016 15:20:09 -0600
+
 crash (7.1.5-1) unstable; urgency=medium
 
   * New upstream 7.1.5  (Closes: #817798):
