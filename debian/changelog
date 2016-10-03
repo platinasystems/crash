@@ -1,3 +1,9 @@
+crash (7.1.5-3) unstable; urgency=medium
+
+  * Update to packages-arch-specific to enable arm64
+
+ -- Troy Heber <troyh@debian.org>  Mon, 03 Oct 2016 13:23:51 -0600
+
 crash (7.1.5-2) unstable; urgency=medium
 
   * Forgot to close bug in the last upload (Closes: #811604)
