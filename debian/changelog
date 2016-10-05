@@ -1,3 +1,9 @@
+crash (7.1.5-4) unstable; urgency=medium
+
+  * Fix FTBFS due compiler warnings in elf64-s390.c
+
+ -- Troy Heber <troyh@debian.org>  Wed, 05 Oct 2016 07:47:33 -0600
+
 crash (7.1.5-3) unstable; urgency=medium
 
   * Update to packages-arch-specific to enable arm64
