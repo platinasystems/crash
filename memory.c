@@ -434,6 +434,10 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(page_count, "page", "_count");
 		if (INVALID_MEMBER(page_count))
 			ANON_MEMBER_OFFSET_INIT(page_count, "page", "_count");
+		if (INVALID_MEMBER(page_count))
+			MEMBER_OFFSET_INIT(page_count, "page", "_refcount");
+		if (INVALID_MEMBER(page_count))
+			ANON_MEMBER_OFFSET_INIT(page_count, "page", "_refcount");
 	}
 	MEMBER_OFFSET_INIT(page_flags, "page", "flags");
 	MEMBER_SIZE_INIT(page_flags, "page", "flags");
@@ -690,9 +694,15 @@ vm_init(void)
 		/*
 		 *  Common to slab/slub
 		 */
-		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
-		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
-		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		if (INVALID_MEMBER(page_slab))
+			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		if (INVALID_MEMBER(page_slab_page))
+			ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		if (INVALID_MEMBER(page_first_page))
+			ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
 
 	} else if (MEMBER_EXISTS("kmem_cache", "cpu_slab") &&
 		STRUCT_EXISTS("kmem_cache_node")) {
@@ -719,16 +729,32 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_page, "kmem_cache_cpu", "page");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_node, "kmem_cache_cpu", "node");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_partial, "kmem_cache_cpu", "partial");
-		ANON_MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
-		ANON_MEMBER_OFFSET_INIT(page_offset, "page", "offset");
-		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
+		MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
+		if (INVALID_MEMBER(page_inuse))
+			ANON_MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
+		MEMBER_OFFSET_INIT(page_offset, "page", "offset");
+		if (INVALID_MEMBER(page_offset))
+			ANON_MEMBER_OFFSET_INIT(page_offset, "page", "offset");
+		MEMBER_OFFSET_INIT(page_slab, "page", "slab");
 		if (INVALID_MEMBER(page_slab))
-			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
-		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
-		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
-		ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
+			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
+		if (INVALID_MEMBER(page_slab)) {
+			MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+			if (INVALID_MEMBER(page_slab))
+				ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		}
+		MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		if (INVALID_MEMBER(page_slab_page))
+			ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		if (INVALID_MEMBER(page_first_page))
+			ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+		MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
+		if (INVALID_MEMBER(page_freelist))
+			ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
 		if (INVALID_MEMBER(kmem_cache_objects)) {
 			MEMBER_OFFSET_INIT(kmem_cache_oo, "kmem_cache", "oo");
+			/* NOTE: returns offset of containing bitfield */
 			ANON_MEMBER_OFFSET_INIT(page_objects, "page", "objects");
 		}
 		if (VALID_MEMBER(kmem_cache_node)) {
@@ -4617,7 +4643,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
         tm->total_vm = ULONG(tt->mm_struct + OFFSET(mm_struct_total_vm));
         tm->pgd_addr = ULONG(tt->mm_struct + OFFSET(mm_struct_pgd));
 
-	if (is_kernel_thread(task))
+	if (is_kernel_thread(task) && !tm->rss)
 		return;
 
 	tm->pct_physmem = ((double)(tm->rss*100)) /
@@ -6352,8 +6378,13 @@ page_flags_init_from_pageflag_names(void)
 			break;
 		}
 
+		if ((mask == 0UL) && !name) {   /* Linux 4.6 and later */
+			len--;
+			break;
+		}
+
 		if (!read_string((ulong)name, namebuf, BUFSIZE-1)) {
-			error(INFO, "failed to read pageflag_names entry\n",
+			error(INFO, "failed to read pageflag_names entry (i: %d  name: \"%s\"  mask: %ld)\n",
 				i, name, mask);
 			goto pageflags_fail;
 		}
@@ -8293,12 +8324,12 @@ dump_kmeminfo(void)
 			fprintf(fp, "%13s  %7ld  %11s         ----\n", 
 				"TOTAL SWAP", totalswap_pages, 
 				pages_to_size(totalswap_pages, buf));
-				pct = totalswap_pages ? (totalused_pages * 100) /
-				totalswap_pages : 100;
+			pct = totalswap_pages ? (totalused_pages * 100) /
+				totalswap_pages : 0;
 			fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL SWAP\n",
 				"SWAP USED", totalused_pages,
 				pages_to_size(totalused_pages, buf), pct);
-		 		pct = totalswap_pages ? 
+	 		pct = totalswap_pages ? 
 				((totalswap_pages - totalused_pages) *
 				100) / totalswap_pages : 0;
 			fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL SWAP\n", 
@@ -16470,6 +16501,7 @@ memory_page_size(void)
 	case CRASHBUILTIN:
 	case KVMDUMP:
 	case PROC_KCORE:
+	case LIVE_RAMDUMP:
 		psz = (uint)getpagesize();  
 		break;
 

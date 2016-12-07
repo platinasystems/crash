@@ -126,6 +126,7 @@ void
 x86_64_init(int when)
 {
 	int len, dim;
+	char *string;
 
         if (XEN_HYPER_MODE()) {
                 x86_64_init_hyper(when);
@@ -172,6 +173,10 @@ x86_64_init(int when)
 		machdep->get_kvaddr_ranges = x86_64_get_kvaddr_ranges;
                 if (machdep->cmdline_args[0])
                         parse_cmdline_args();
+		if ((string = pc->read_vmcoreinfo("NUMBER(KERNEL_IMAGE_SIZE)"))) {
+			machdep->machspec->kernel_image_size = dtol(string, QUIET, NULL);
+			free(string);
+		}
 		break;
 
 	case PRE_GDB:
@@ -282,6 +287,23 @@ x86_64_init(int when)
 		x86_64_calc_phys_base();
 		break;
 
+	case POST_RELOC:
+		/*
+		 *  Check for CONFIG_RANDOMIZE_MEMORY, and set page_offset here.
+		 *  The remainder of the virtual address range setups will get
+		 *  done below in POST_GDB.
+		 */
+		if (kernel_symbol_exists("page_offset_base") &&
+		    kernel_symbol_exists("vmalloc_base")) {
+			machdep->flags |= RANDOMIZED;
+			readmem(symbol_value("page_offset_base"), KVADDR,
+				&machdep->machspec->page_offset, sizeof(ulong),
+				"page_offset_base", FAULT_ON_ERROR);
+			machdep->kvbase = machdep->machspec->page_offset;
+			machdep->identity_map_base = machdep->machspec->page_offset;
+		}
+		break;
+
 	case POST_GDB:
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,26) &&
 		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
@@ -292,12 +314,40 @@ x86_64_init(int when)
 			machdep->machspec->modules_end = MODULES_END_2_6_27;
 		}
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,31)) {
-			machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_31;
-			machdep->machspec->vmalloc_end = VMALLOC_END_2_6_31;
-			machdep->machspec->vmemmap_vaddr = VMEMMAP_VADDR_2_6_31;
-			machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_31;
-			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_31;
-			machdep->machspec->modules_end = MODULES_END_2_6_31;
+			if (machdep->flags & RANDOMIZED) {
+				readmem(symbol_value("vmalloc_base"), KVADDR,
+					&machdep->machspec->vmalloc_start_addr,
+					sizeof(ulong), "vmalloc_base", FAULT_ON_ERROR);
+				machdep->machspec->vmalloc_end =
+					machdep->machspec->vmalloc_start_addr + TERABYTES(32) - 1;
+				if (kernel_symbol_exists("vmemmap_base")) {
+					readmem(symbol_value("vmemmap_base"), KVADDR,
+						&machdep->machspec->vmemmap_vaddr, sizeof(ulong),
+						"vmemmap_base", FAULT_ON_ERROR);
+					machdep->machspec->vmemmap_end = 
+						machdep->machspec->vmemmap_vaddr +
+						TERABYTES(1) - 1;
+				} else {
+					machdep->machspec->vmemmap_vaddr = VMEMMAP_VADDR_2_6_31;
+					machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_31;
+				}
+				machdep->machspec->modules_vaddr = __START_KERNEL_map + 
+					(machdep->machspec->kernel_image_size ?
+					machdep->machspec->kernel_image_size : GIGABYTES(1));
+				machdep->machspec->modules_end = MODULES_END_2_6_31;
+			} else {
+				machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_2_6_31;
+				machdep->machspec->vmalloc_end = VMALLOC_END_2_6_31;
+				machdep->machspec->vmemmap_vaddr = VMEMMAP_VADDR_2_6_31;
+				machdep->machspec->vmemmap_end = VMEMMAP_END_2_6_31;
+				if ((kt->flags2 & KASLR) && (THIS_KERNEL_VERSION >= LINUX(4,7,0)))
+					machdep->machspec->modules_vaddr = __START_KERNEL_map + 
+						(machdep->machspec->kernel_image_size ?
+						machdep->machspec->kernel_image_size : GIGABYTES(1));
+				else
+					machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_31;
+				machdep->machspec->modules_end = MODULES_END_2_6_31;
+			}
 		}
                 STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
 		/* 
@@ -614,6 +664,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sGART_REGION", others++ ? "|" : "");
 	if (machdep->flags & NESTED_NMI)
 		fprintf(fp, "%sNESTED_NMI", others++ ? "|" : "");
+	if (machdep->flags & RANDOMIZED)
+		fprintf(fp, "%sRANDOMIZED", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -720,6 +772,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "              vmemmap_end: %016lx %s\n", (ulong)ms->vmemmap_end,
 		machdep->flags & VMEMMAP ? "" : "(unused)");
 	fprintf(fp, "                phys_base: %lx\n", (ulong)ms->phys_base);
+	fprintf(fp, "        kernel_image_size: %ldMB\n", ms->kernel_image_size/MEGABYTES(1));
 	fprintf(fp, "               GART_start: %lx\n", ms->GART_start);
 	fprintf(fp, "                 GART_end: %lx\n", ms->GART_end);
 	fprintf(fp, "                     pml4: %lx\n", (ulong)ms->pml4);
@@ -1081,7 +1134,8 @@ x86_64_ist_init(void)
 	struct syment *boot_sp, *tss_sp, *ist_sp;
 
         ms = machdep->machspec;
-	tss_sp = per_cpu_symbol_search("per_cpu__init_tss");
+	if (!(tss_sp = per_cpu_symbol_search("per_cpu__init_tss")))
+		tss_sp = per_cpu_symbol_search("per_cpu__cpu_tss");
 	ist_sp = per_cpu_symbol_search("per_cpu__orig_ist");
 
 	x86_64_exception_stacks_init();
@@ -1132,7 +1186,8 @@ x86_64_ist_init(void)
 				    "orig_ist array", FAULT_ON_ERROR);
 
 				for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
-					if (ms->stkinfo.ebase[c][i] != estacks[i])
+					if (ms->stkinfo.ebase[c][i] && estacks[i] &&
+					    (ms->stkinfo.ebase[c][i] != estacks[i]))
 						error(WARNING, 
 						    "cpu %d %s stack: init_tss: %lx orig_ist: %lx\n", c,  
 							ms->stkinfo.exception_stacks[i],
@@ -4073,6 +4128,8 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 
         if ((flags & EFRAME_PRINT) && BT_REFERENCE_CHECK(bt)) {
                 x86_64_do_bt_reference_check(bt, rip, NULL);
+		if ((sp = value_search(rip, &offset))) 
+			x86_64_do_bt_reference_check(bt, 0, sp->name);
                 x86_64_do_bt_reference_check(bt, rsp, NULL);
                 x86_64_do_bt_reference_check(bt, cs, NULL);
                 x86_64_do_bt_reference_check(bt, ss, NULL);
@@ -4925,24 +4982,25 @@ x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 
 		sprintf(p1, "%s", buf1);
 	
-        } else if (STREQ(argv[argc-2], "callq") &&
-            hexadecimal(argv[argc-1], 0)) {
-            	/*
-             	 *  Update module code of the form:
-             	 *
-             	 *    callq  0xffffffffa0017aa0
+	} else if ((STREQ(argv[argc-2], "callq") || (argv[argc-2][0] == 'j')) &&
+	    hexadecimal(argv[argc-1], 0)) {
+		/*
+	 	 *  Update code of the form:
+	 	 *
+	 	 *    callq  <function-address>
+		 *    jmp    <function-address>  
+		 *    jCC    <function-address>  
 	      	 *
-             	 *  to show a bracketed direct call target.
-             	 */
-                p1 = &LASTCHAR(inbuf);
+	 	 *  to show a translated, bracketed, target.
+	 	 */
+		p1 = &LASTCHAR(inbuf);
 
-                if (extract_hex(argv[argc-1], &value, NULLCHAR, TRUE)) {
-                        sprintf(buf1, " <%s>\n",
-                                value_to_symstr(value, buf2, output_radix));
-                        if (IS_MODULE_VADDR(value) &&
-                            !strstr(buf2, "+"))
-                                sprintf(p1, "%s", buf1);
-                }
+		if (extract_hex(argv[argc-1], &value, NULLCHAR, TRUE)) {
+			sprintf(buf1, " <%s>\n",
+				value_to_symstr(value, buf2, output_radix));
+			if (!strstr(buf1, "<>"))
+				sprintf(p1, "%s", buf1);
+		}
         }
 
 	if (value_symbol(vaddr) &&
@@ -5578,19 +5636,23 @@ search_for_switch_to(ulong start, ulong end)
 	char buf1[BUFSIZE];
 	char search_string1[BUFSIZE];
 	char search_string2[BUFSIZE];
+	char search_string3[BUFSIZE];
 	int found;
 
 	max_instructions = end - start;
 	found = FALSE;
+	search_string1[0] = search_string2[0] = search_string3[0] = NULLCHAR;
 	sprintf(buf1, "x/%ldi 0x%lx", max_instructions, start);
+
 	if (symbol_exists("__switch_to")) {
 		sprintf(search_string1,
 			"callq  0x%lx", symbol_value("__switch_to"));
 		sprintf(search_string2,
 			"call   0x%lx", symbol_value("__switch_to"));
-	} else {
-		search_string1[0] = NULLCHAR;
-		search_string2[0] = NULLCHAR;
+	}
+	if (symbol_exists("__switch_to_asm")) {
+		sprintf(search_string3, 
+			"callq  0x%lx", symbol_value("__switch_to_asm")); 
 	}
 
 	open_tmpfile();
@@ -5607,6 +5669,8 @@ search_for_switch_to(ulong start, ulong end)
 		if (strlen(search_string1) && strstr(buf1, search_string1))
 			found = TRUE;
 		if (strlen(search_string2) && strstr(buf1, search_string2))
+			found = TRUE;
+		if (strlen(search_string3) && strstr(buf1, search_string3))
 			found = TRUE;
 	}
 	close_tmpfile();
@@ -6054,7 +6118,7 @@ x86_64_calc_phys_base(void)
 		}
 	}
 
-	if (ACTIVE()) {
+	if (LOCAL_ACTIVE()) {
 	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
 	                return;
 	
@@ -6148,11 +6212,16 @@ x86_64_calc_phys_base(void)
 		return;
 	}
 
+#define IN_KERNEL_REGION(vaddr) \
+	 (((vaddr) >= __START_KERNEL_map) && \
+	  ((vaddr) < (__START_KERNEL_map + machdep->machspec->kernel_image_size)))
+
 	if ((vd = get_kdump_vmcore_data())) {
                 for (i = 0; i < vd->num_pt_load_segments; i++) {
 			phdr = vd->load64 + i;
 			if ((phdr->p_vaddr >= __START_KERNEL_map) &&
-			    !(IS_VMALLOC_ADDR(phdr->p_vaddr))) {
+			    (IN_KERNEL_REGION(phdr->p_vaddr) || 
+			    !(IS_VMALLOC_ADDR(phdr->p_vaddr)))) {
 
 				machdep->machspec->phys_base = phdr->p_paddr - 
 				    (phdr->p_vaddr & ~(__START_KERNEL_map));

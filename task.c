@@ -108,6 +108,7 @@ static void sort_context_array_by_last_run(void);
 static void show_ps_summary(ulong);
 static void irqstacks_init(void);
 static void parse_task_thread(int argcnt, char *arglist[], struct task_context *);
+static void stack_overflow_check_init(void);
 
 /*
  *  Figure out how much space will be required to hold the task context
@@ -212,21 +213,43 @@ task_init(void)
 		get_idle_threads(&tt->idle_threads[0], kt->cpus);
 	}
 
-	if (MEMBER_EXISTS("task_struct", "thread_info"))
-        	MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", 
-			"thread_info");
-	else if (MEMBER_EXISTS("task_struct", "stack"))
-        	MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", 
-			"stack");
-	else
-		ASSIGN_OFFSET(task_struct_thread_info) = INVALID_OFFSET;
+	/*
+	 * Handle CONFIG_THREAD_INFO_IN_TASK changes
+	 */
+	MEMBER_OFFSET_INIT(task_struct_stack, "task_struct", "stack");
+	MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", "thread_info");
 
 	if (VALID_MEMBER(task_struct_thread_info)) {
-        	MEMBER_OFFSET_INIT(thread_info_task, "thread_info", "task"); 
-        	MEMBER_OFFSET_INIT(thread_info_cpu, "thread_info", "cpu");
-        	MEMBER_OFFSET_INIT(thread_info_flags, "thread_info", "flags");
-        	MEMBER_OFFSET_INIT(thread_info_previous_esp, "thread_info", 
-			"previous_esp");
+		switch (MEMBER_TYPE("task_struct", "thread_info"))
+		{
+		case TYPE_CODE_PTR:
+			break;
+		case TYPE_CODE_STRUCT:
+			tt->flags |= THREAD_INFO_IN_TASK;
+			break;
+		default:
+			error(FATAL, 
+			    "unexpected type code for task_struct.thread_info: %ld\n",
+				MEMBER_TYPE("task_struct", "thread_info"));
+			break;
+		}
+	} else if (VALID_MEMBER(task_struct_stack))
+		MEMBER_OFFSET_INIT(task_struct_thread_info, "task_struct", "stack");
+
+	if (VALID_MEMBER(task_struct_thread_info)) {
+		if (tt->flags & THREAD_INFO_IN_TASK) {
+			MEMBER_OFFSET_INIT(thread_info_flags, "thread_info", "flags");
+			/* (unnecessary) reminders */
+			ASSIGN_OFFSET(thread_info_task) = INVALID_OFFSET;
+			ASSIGN_OFFSET(thread_info_cpu) = INVALID_OFFSET;
+			ASSIGN_OFFSET(thread_info_previous_esp) = INVALID_OFFSET;
+		} else {
+			MEMBER_OFFSET_INIT(thread_info_task, "thread_info", "task"); 
+			MEMBER_OFFSET_INIT(thread_info_cpu, "thread_info", "cpu");
+			MEMBER_OFFSET_INIT(thread_info_flags, "thread_info", "flags");
+			MEMBER_OFFSET_INIT(thread_info_previous_esp, "thread_info", 
+				"previous_esp");
+		}
 		STRUCT_SIZE_INIT(thread_info, "thread_info");
 		tt->flags |= THREAD_INFO;
 	}
@@ -477,6 +500,8 @@ task_init(void)
                 tt->flags |= PIDHASH;
 	}
 
+	tt->pf_kthread = UNINITIALIZED;
+
 	/*
 	 *  Get the IRQ stacks info if it's configured.
 	 */
@@ -494,7 +519,8 @@ task_init(void)
 		tt->flags &= ~(TASK_REFRESH|TASK_REFRESH_OFF);
 
 	if (ACTIVE()) {
-		active_pid = REMOTE() ? pc->server_pid : pc->program_pid; 
+		active_pid = REMOTE() ? pc->server_pid :
+			LOCAL_ACTIVE() ? pc->program_pid : 1;
 		set_context(NO_TASK, active_pid);
 		tt->this_task = pid_to_task(active_pid);
 	}
@@ -513,6 +539,8 @@ task_init(void)
 
 	if (pc->flags & SILENT)
 		initialize_task_state();
+
+	stack_overflow_check_init();
 
 	tt->flags |= TASK_INIT_DONE;
 }
@@ -2352,10 +2380,16 @@ store_context(struct task_context *tc, ulong task, char *tp)
 	tgid_addr = (pid_t *)(tp + OFFSET(task_struct_tgid));
         comm_addr = (char *)(tp + OFFSET(task_struct_comm));
 	if (tt->flags & THREAD_INFO) {
-		tc->thread_info = ULONG(tp + OFFSET(task_struct_thread_info));
+		if (tt->flags & THREAD_INFO_IN_TASK) 
+			tc->thread_info = task + OFFSET(task_struct_thread_info);
+		else
+			tc->thread_info = ULONG(tp + OFFSET(task_struct_thread_info));
 		fill_thread_info(tc->thread_info);
-		processor_addr = (int *) (tt->thread_info + 
-			OFFSET(thread_info_cpu));
+		if (tt->flags & THREAD_INFO_IN_TASK)
+                	processor_addr = (int *) (tp + OFFSET(task_struct_cpu));
+		else
+			processor_addr = (int *) (tt->thread_info + 
+				OFFSET(thread_info_cpu));
 	} else if (VALID_MEMBER(task_struct_processor))
                 processor_addr = (int *) (tp + OFFSET(task_struct_processor));
         else if (VALID_MEMBER(task_struct_cpu))
@@ -4161,7 +4195,7 @@ parent_list(ulong task)
 	while (child != parent) {
 		child = task_list[cnt++] = parent;
 		parent = parent_of(child);
-		if (cnt == reserved) {
+		if ((cnt * sizeof(ulong)) == reserved) {
 			RESIZEBUF(buffer, reserved, reserved * 2);
 			reserved *= 2;
 			task_list = (ulong *)buffer;
@@ -4474,7 +4508,13 @@ task_to_thread_info(ulong task)
 ulong
 task_to_stackbase(ulong task)
 {
-	if (tt->flags & THREAD_INFO)
+	ulong stackbase;
+
+	if (tt->flags & THREAD_INFO_IN_TASK) {
+		readmem(task + OFFSET(task_struct_stack), KVADDR, &stackbase,
+		    sizeof(void *), "task_struct.stack", FAULT_ON_ERROR);
+		return stackbase;
+	} else if (tt->flags & THREAD_INFO)
 		return task_to_thread_info(task);
 	else
 		return (task & ~(STACKSIZE()-1));
@@ -5369,17 +5409,15 @@ is_task_active(ulong task)
 {
 	int has_cpu;
 
+	if (LOCAL_ACTIVE() && (task == tt->this_task))
+		return TRUE;
 	if (DUMPFILE() && is_panic_thread(task))
 		return TRUE;
 
         fill_task_struct(task);
 
-	has_cpu = tt->last_task_read ? 
+	has_cpu = tt->last_task_read ?
 		task_has_cpu(task, tt->task_struct) : 0;
-
-	if (!(kt->flags & SMP) && !has_cpu && ACTIVE() && 
-	    (task == tt->this_task))
-		has_cpu = TRUE;
 
 	return(has_cpu);
 }
@@ -6381,8 +6419,8 @@ foreach(struct foreach_data *fd)
 					bt->flags |= BT_TEXT_SYMBOLS_ALL;
 				}
 				if ((fd->flags & FOREACH_o_FLAG) ||
-				    (kt->flags & USE_OLD_BT))
-					bt->flags |= BT_OLD_BACK_TRACE;
+				    (kt->flags & USE_OPT_BT))
+					bt->flags |= BT_OPT_BACK_TRACE;
                                 if (fd->flags & FOREACH_e_FLAG)
                                         bt->flags |= BT_EFRAME_SEARCH;
 #ifdef GDB_5_3
@@ -6953,6 +6991,9 @@ dump_task_table(int verbose)
         if (tt->flags & THREAD_INFO)
                 sprintf(&buf[strlen(buf)], 
 			"%sTHREAD_INFO", others++ ? "|" : "");
+        if (tt->flags & THREAD_INFO_IN_TASK)
+                sprintf(&buf[strlen(buf)], 
+			"%sTHREAD_INFO_IN_TASK", others++ ? "|" : "");
         if (tt->flags & IRQSTACKS)
                 sprintf(&buf[strlen(buf)], 
 			"%sIRQSTACKS", others++ ? "|" : "");
@@ -6996,7 +7037,20 @@ dump_task_table(int verbose)
 	fprintf(fp, "       init_pid_ns: %lx\n", tt->init_pid_ns);
 	fprintf(fp, "         filepages: %ld\n", tt->filepages);
 	fprintf(fp, "         anonpages: %ld\n", tt->anonpages);
-
+	fprintf(fp, "   stack_end_magic: %lx\n", tt->stack_end_magic);
+	fprintf(fp, "        pf_kthread: %lx ", tt->pf_kthread);
+	switch (tt->pf_kthread) 
+	{
+	case UNINITIALIZED:
+		fprintf(fp, "(UNINITIALIZED)\n"); 
+		break;
+	case 0:
+		fprintf(fp, "(n/a)\n"); 
+		break;
+	default:
+		fprintf(fp, "(PF_KTHREAD)\n"); 
+		break;
+	}
 
 	wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
 	flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
@@ -7229,6 +7283,28 @@ is_kernel_thread(ulong task)
 {
 	struct task_context *tc;
 	ulong mm;
+
+        if (tt->pf_kthread == UNINITIALIZED) {
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
+			tt->pf_kthread = PF_KTHREAD;
+
+			if ((tc = pid_to_context(0)) &&
+			    !(task_flags(tc->task) & PF_KTHREAD)) {
+				error(WARNING, "pid 0: PF_KTHREAD not set?\n");
+				tt->pf_kthread = 0;
+			}
+			if ((tc = pid_to_context(1)) && 
+			    task_mm(tc->task, FALSE) &&
+			    (task_flags(tc->task) & PF_KTHREAD)) {
+				error(WARNING, "pid 1: PF_KTHREAD set?\n");
+				tt->pf_kthread = 0;
+			}
+		} else
+			tt->pf_kthread = 0;
+	}
+
+	if (tt->pf_kthread)
+		return (task_flags(task) & tt->pf_kthread ? TRUE : FALSE);
 
 	tc = task_to_context(task);
 
@@ -10070,4 +10146,141 @@ generic_get_stacktop(ulong task)
         return task_to_stackbase(task) + STACKSIZE();
 }
 
+#define STACK_END_MAGIC 0x57AC6E9D
 
+static void
+stack_overflow_check_init(void)
+{
+	int pid;
+	struct task_context *tc;
+	ulong location, magic;
+
+	if (!(tt->flags & THREAD_INFO))
+		return;
+
+	for (pid = 1; pid < 10; pid++) {
+ 		if (!(tc = pid_to_context(pid)))
+			continue;
+
+		if (tt->flags & THREAD_INFO_IN_TASK)
+			location = task_to_stackbase(tc->task);
+		else
+			location = tc->thread_info + SIZE(thread_info);
+
+		if (!readmem(location, KVADDR, &magic, sizeof(long), 
+		    "stack magic", RETURN_ON_ERROR|QUIET))
+			continue;
+
+		if (magic == STACK_END_MAGIC) {
+			tt->stack_end_magic = STACK_END_MAGIC;
+			break;
+		}
+	}
+}
+
+/*
+ *  Check thread_info.task and thread_info.cpu members, 
+ *  and the STACK_END_MAGIC location.
+ */
+void 
+check_stack_overflow(void)
+{
+	int i, overflow, cpu_size, cpu, total;
+	char buf[BUFSIZE];
+	ulong magic, task, stackbase;
+	struct task_context *tc;
+
+	if (!tt->stack_end_magic && 
+	    INVALID_MEMBER(thread_info_task) && 
+	    INVALID_MEMBER(thread_info_cpu))
+		option_not_supported('v');
+
+	cpu_size = VALID_MEMBER(thread_info_cpu) ? 
+		MEMBER_SIZE("thread_info", "cpu") : 0;
+
+	tc = FIRST_CONTEXT();
+	for (i = total = 0; i < RUNNING_TASKS(); i++, tc++) {
+		overflow = 0;
+
+		if (tt->flags & THREAD_INFO_IN_TASK) {
+			if (!readmem(task_to_stackbase(tc->task), KVADDR, &stackbase, 
+			    sizeof(ulong), "stack overflow check", RETURN_ON_ERROR))
+				continue;
+			goto check_stack_end_magic;
+		} else {
+			if (!readmem(tc->thread_info, KVADDR, buf, 
+			    SIZE(thread_info) + sizeof(ulong), 
+			    "stack overflow check", RETURN_ON_ERROR))
+				continue;
+		}
+
+		if (VALID_MEMBER(thread_info_task)) {
+			task = ULONG(buf + OFFSET(thread_info_task));
+			if (task != tc->task) {
+				print_task_header(fp, tc, 0);
+				fprintf(fp, 
+				    "  possible stack overflow: thread_info.task: %lx != %lx\n",
+					task, tc->task);
+				overflow++; total++;
+			}
+		}
+
+		if (VALID_MEMBER(thread_info_cpu)) {
+			switch (cpu_size)
+			{
+			case 1:
+				cpu = UCHAR(buf + OFFSET(thread_info_cpu));
+				break;
+			case 2:
+				cpu = USHORT(buf + OFFSET(thread_info_cpu));
+				break;
+			case 4:
+				cpu = UINT(buf + OFFSET(thread_info_cpu));
+				break;
+			default:
+				cpu = 0;
+				break;
+			}
+			if (cpu >= kt->cpus) {
+				if (!overflow)
+					print_task_header(fp, tc, 0);
+				fprintf(fp, 
+				    "  possible stack overflow: thread_info.cpu: %d >= %d\n",
+					cpu, kt->cpus);
+				overflow++; total++;
+			}
+		}
+
+check_stack_end_magic:
+		if (!tt->stack_end_magic)
+			continue;
+
+		if (tt->flags & THREAD_INFO_IN_TASK) 
+			magic = stackbase;
+		else
+			magic = ULONG(buf + SIZE(thread_info));
+
+		if (tc->pid == 0) {
+			if (kernel_symbol_exists("init_task")) {
+				if (tc->task == symbol_value("init_task"))
+					continue;
+			} else 
+				continue;
+		}
+
+		if (magic != STACK_END_MAGIC) {
+			if (!overflow)
+				print_task_header(fp, tc, 0);
+			fprintf(fp, 
+			    "  possible stack overflow: %lx: %lx != STACK_END_MAGIC\n",
+				tc->thread_info + SIZE(thread_info), magic);
+			overflow++, total++;
+		}
+
+		if (overflow)
+			fprintf(fp, "\n");
+	}
+
+	if (!total)
+		fprintf(fp, "No stack overflows detected\n");
+}

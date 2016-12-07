@@ -1,24 +1,109 @@
-crash (7.1.5-4) unstable; urgency=medium
+crash (7.1.7-1~bpo8+1) jessie-backports; urgency=medium
 
-  * Fix FTBFS due compiler warnings in elf64-s390.c
+  * New upstream 7.1.7
 
- -- Troy Heber <troyh@debian.org>  Wed, 05 Oct 2016 07:47:33 -0600
+  * Remove -pie compile option
 
-crash (7.1.5-3) unstable; urgency=medium
+  * Set the default 32-bit MIPS HZ value to 100 if the in-kernel config data
+    is unavailable, and have the "mach" command display the value.
 
-  * Update to packages-arch-specific to enable arm64
+  * Enable SPARSEMEM support on 32-bit MIPS by setting SECTION_SIZE_BITS and
+    MAX_PHYSMEM_BITS.
 
- -- Troy Heber <troyh@debian.org>  Mon, 03 Oct 2016 13:23:51 -0600
+  * Fix for Linux 4.9-rc1 commits 15f4eae70d365bba26854c90b6002aaabb18c8aa and
+    c65eacbe290b8141554c71b2c94489e73ade8c8d, which have introduced a new
+    CONFIG_THREAD_INFO_IN_TASK configuration.  This configuration moves each
+    task's thread_info structure from the base of its kernel stack into its
+    task_struct.  Without the patch, the crash session fails during
+    initialization with the error "crash: invalid structure member offset:
+    thread_info_cpu".
 
-crash (7.1.5-2) unstable; urgency=medium
+  * Fixes for the gathering of the active task registers from 32-bit MIPS
+    dumpfiles: (1) If ELF notes are not available, read them from the kernel's
+    crash_notes.  (2) If an online CPUs did not save its ELF notes, then
+    adjust the mapping of each ELF note to its CPU accordingly.
 
-  * Forgot to close bug in the last upload (Closes: #811604)
+  * Add support for "help -r" on 32-bit MIPS to display the registers for each
+    CPU from a dumpfile.
 
- -- Troy Heber <troyh@debian.org>  Tue, 06 Sep 2016 15:20:09 -0600
+  * Fix for Linux 4.9-rc1 commit 0100301bfdf56a2a370c7157b5ab0fbf9313e1cd,
+    which rewrote the x86_64 switch_to() code by embedding the call to
+    __switch_to() inside a new __switch_to_asm() assembly code ENTRY()
+    function.  Without the patch, the message "crash: cannot determine thread
+    return address" gets displayed during initialization, and the "bt" command
+    shows frame #0 starting at "schedule" instead of "__schedule".
 
-crash (7.1.5-1) unstable; urgency=medium
+  * When each x86_64 per-cpu cpu_tss.x86_tss.ist[] array member (or in older
+    kernels, each per-cpu init_tss.x86_hw_tss.ist[] array member), is compared
+    with its associated per-cpu orig_ist.ist[] array member, ensure that both
+    exception stack pointers have been initialized (non-NULL) before printing
+    a WARNING message if they don't match.
 
-  * New upstream 7.1.5  (Closes: #817798):
+  * Fix for a possible segmentation violation when analyzing Linux 4.7 x86_64
+    kernels that are configured with CONFIG_RANDOMIZE_BASE.  Depending upon
+    the randomized starting address of the kernel text and static data, a
+    segmentation violation may occur during session initialization, just after
+    the patching of the gdb minimal_symbol values message.
+
+  * Restore the x86_64 "dis" command's symbolic translation of jump or call
+    target addresses if the kernel was configured with CONFIG_RANDOMIZE_BASE.
+
+  * Fix for the 32-bit MIPS "bt" command to prevent an empty display (task
+    header only) for an active task if the epc register in its exception frame
+    contains 00000000.
+
+  * Fix for support of Linux 4.7 and later x86_64 ELF kdump vmcores from
+    kernels configured with CONFIG_RANDOMIZE_BASE.  Without the patch, the
+    crash session may fail during initialization with the message "crash:
+    vmlinux and vmcore do not match!".
+
+  * Fix for the x86_64 "mach" command display of the vmemmap base address in
+    Linux 4.9 and later kernels configured with CONFIG_RANDOMIZE_BASE.
+    Without the patch, the command shows a value of ffffea0000000000 next to
+    "KERNEL VMEMMAP BASE".
+
+  * Since the Linux 3.10 release, the kernel has offered the ability to create
+    multiple independent ftrace buffers.  At present, however, the "trace.c"
+    extension module is only able to extract the primary buffer.  This patch
+    refactors the trace.c extension module so that the global instance is
+    passed around as a parameter rather than accessing it directly, and then
+    locates all of the available instances and extracts the data from each of
+    them.
+
+  * Fix for the s390x "bt" command for active tasks.  Since the commit above
+    in this crash-7.1.7 release that added support for the new
+    CONFIG_THREAD_INFO_IN_TASK configuration, the backtrace of active tasks
+    can be incomplete.
+
+  * In collaboration with an update to the /dev/crash kernel driver, fix for
+    Linux 4.6 commit a7f8de168ace487fa7b88cb154e413cf40e87fc6, which allows
+    the ARM64 kernel image to be loaded anywhere in physical memory.  Without
+    the patch, attempting to run live on an ARM64 Linux 4.6 and later kernel
+    may display the warning message "WARNING: cannot read linux_banner
+    string", and then fails with the message "crash: vmlinux and /dev/crash do
+    not match!".  Version 1.3 of the crash driver is required, which
+    introduces a new ioctl command that retrieves the ARM64-only
+    "kimage_voffset" value that is required for virtual-to-physical address
+    translation.
+
+  * Update of the sample memory_driver/crash.c /dev/crash kernel driver to
+    version 1.3, which adds support for Linux 4.6 and later ARM64 kernels,
+    kernels configured with CONFIG_HARDENED_USERCOPY, and S390X kernels use
+    xlate_dev_mem_ptr() and unxlate_dev_mem_ptr() instead of kmap() and
+    kunmap().
+
+
+ -- Troy Heber <troyh@debian.org>  Wed, 07 Dec 2016 10:43:57 -0700
+
+crash (7.1.5-1~bpo8+2) jessie-backports; urgency=medium
+
+  * Fix incorrect/missing dependency
+
+ -- Troy Heber <troyh@debian.org>  Thu, 09 Jun 2016 08:09:57 -0600
+
+crash (7.1.5-1~bpo8+1) jessie-backports; urgency=medium
+
+  * New upstream 7.1.5
 
   * Fix for the handling of Xen DomU ELF dumpfiles to prevent the
     pre-gathering of p2m frames during session initialization, which is

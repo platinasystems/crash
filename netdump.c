@@ -40,6 +40,7 @@ static void get_netdump_regs_ppc(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_arm(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_arm64(struct bt_info *, ulong *, ulong *);
+static void get_netdump_regs_mips(struct bt_info *, ulong *, ulong *);
 static void check_dumpfile_size(char *);
 static int proc_kcore_init_32(FILE *fp);
 static int proc_kcore_init_64(FILE *fp);
@@ -2436,7 +2437,7 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		break;
 
 	case EM_MIPS:
-		return get_netdump_regs_32(bt, eip, esp);
+		return get_netdump_regs_mips(bt, eip, esp);
 		break;
 
 	default:
@@ -2504,7 +2505,8 @@ display_regs_from_elf_notes(int cpu, FILE *ofp)
 		}
 	}
 
-	if ((cpu - skipped_count) >= nd->num_prstatus_notes) {
+	if ((cpu - skipped_count) >= nd->num_prstatus_notes &&
+	     !machine_type("MIPS")) {
 		error(INFO, "registers not collected for cpu %d\n", cpu);
 		return;
 	}
@@ -2690,6 +2692,8 @@ display_regs_from_elf_notes(int cpu, FILE *ofp)
 			ULONG(user_regs + sizeof(ulong) * 32),
 			ULONG(user_regs + sizeof(ulong) * 33),
 			UINT(user_regs + sizeof(ulong) * 34));
+	} else if (machine_type("MIPS")) {
+		mips_display_regs_from_elf_notes(cpu, ofp);
 	}
 }
 
@@ -2699,7 +2703,8 @@ dump_registers_for_elf_dumpfiles(void)
         int c;
 
         if (!(machine_type("X86") || machine_type("X86_64") || 
-	    machine_type("ARM64") || machine_type("PPC64")))
+	    machine_type("ARM64") || machine_type("PPC64") ||
+	    machine_type("MIPS")))
                 error(FATAL, "-r option not supported for this dumpfile\n");
 
 	if (NETDUMP_DUMPFILE()) {
@@ -3628,6 +3633,12 @@ get_netdump_regs_arm64(struct bt_info *bt, ulong *eip, ulong *esp)
 	machdep->get_stack_frame(bt, eip, esp);
 }
 
+static void
+get_netdump_regs_mips(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
 int 
 is_partial_netdump(void)
 {
@@ -4458,11 +4469,14 @@ kdump_backup_region_init(void)
 	} else
 		return;
 
-	if (!readmem(symbol_value("kexec_crash_image"), KVADDR,
-		     &kexec_crash_image_p, sizeof(ulong),
-		     "kexec backup region: kexec_crash_image",
-		     QUIET|RETURN_ON_ERROR))
-		goto error;
+	if (symbol_exists("kexec_crash_image")) {
+		if (!readmem(symbol_value("kexec_crash_image"), KVADDR,
+			     &kexec_crash_image_p, sizeof(ulong),
+			     "kexec backup region: kexec_crash_image",
+			     QUIET|RETURN_ON_ERROR))
+			goto error;
+	} else
+		kexec_crash_image_p = 0;
 
 	if (!kexec_crash_image_p) {
 		if (CRASHDEBUG(1))
