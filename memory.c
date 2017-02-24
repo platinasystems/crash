@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 David Anderson
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -723,6 +723,7 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_node, "kmem_cache", "node");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_slab, "kmem_cache", "cpu_slab");
 		MEMBER_OFFSET_INIT(kmem_cache_list, "kmem_cache", "list");
+		MEMBER_OFFSET_INIT(kmem_cache_red_left_pad, "kmem_cache", "red_left_pad");
 		MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
 		MEMBER_OFFSET_INIT(kmem_cache_flags, "kmem_cache", "flags");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_freelist, "kmem_cache_cpu", "freelist");
@@ -9880,6 +9881,7 @@ ignore_cache(struct meminfo *si, char *name)
 #define SLAB_MAGIC_DESTROYED    0xB2F23C5AUL    /* slab has been destroyed */
 
 #define SLAB_CFLGS_BUFCTL       0x020000UL      /* bufctls in own cache */
+#define SLAB_CFLGS_OBJFREELIST  0x40000000UL    /* Freelist as an object */
 
 #define KMEM_SLAB_ADDR          (1)
 #define KMEM_BUFCTL_ADDR        (2)
@@ -12439,11 +12441,13 @@ gather_slab_free_list_percpu(struct meminfo *si)
 static void
 gather_slab_free_list_slab_overload_page(struct meminfo *si)
 {
-	int i, active;
+	int i, active, start_offset;
 	ulong obj, objnr, cnt, freelist;
 	unsigned char *ucharptr;
 	unsigned short *ushortptr;
 	unsigned int *uintptr;
+	unsigned int cache_flags, overload_active;
+	ulong slab_overload_page;
 
 	if (CRASHDEBUG(1))
 		fprintf(fp, "slab page: %lx active: %ld si->c_num: %ld\n", 
@@ -12452,12 +12456,19 @@ gather_slab_free_list_slab_overload_page(struct meminfo *si)
 	if (si->s_inuse == si->c_num )
 		return;
 
-	readmem(si->slab - OFFSET(page_lru) + OFFSET(page_freelist),
+	slab_overload_page = si->slab - OFFSET(page_lru);
+	readmem(slab_overload_page + OFFSET(page_freelist),
 		KVADDR, &freelist, sizeof(void *), "page freelist",
 		FAULT_ON_ERROR);
         readmem(freelist, KVADDR, si->freelist, 
 		si->freelist_index_size * si->c_num,
                 "freelist array", FAULT_ON_ERROR);
+	readmem(si->cache+OFFSET(kmem_cache_s_flags),
+		KVADDR, &cache_flags, sizeof(uint),
+		"kmem_cache_s flags", FAULT_ON_ERROR);
+        readmem(slab_overload_page + OFFSET(page_active),
+                KVADDR, &overload_active, sizeof(uint),
+                "active", FAULT_ON_ERROR);
 
 	BNEG(si->addrlist, sizeof(ulong) * (si->c_num+1));
 	cnt = objnr = 0;
@@ -12466,14 +12477,22 @@ gather_slab_free_list_slab_overload_page(struct meminfo *si)
 	uintptr = NULL;
 	active = si->s_inuse;
 
+	/*
+	 * On an OBJFREELIST slab, the object might have been recycled
+	 * and everything before the active count can be random data.
+	 */
+	start_offset = 0;
+	if (cache_flags & SLAB_CFLGS_OBJFREELIST)
+		start_offset = overload_active;
+
 	switch (si->freelist_index_size)
 	{
-	case 1: ucharptr = (unsigned char *)si->freelist; break;
-	case 2: ushortptr = (unsigned short *)si->freelist; break;
-	case 4: uintptr = (unsigned int *)si->freelist; break;
+	case 1: ucharptr = (unsigned char *)si->freelist + start_offset; break;
+	case 2: ushortptr = (unsigned short *)si->freelist + start_offset; break;
+	case 4: uintptr = (unsigned int *)si->freelist + start_offset; break;
 	}
 
-	for (i = 0; i < si->c_num; i++) {
+	for (i = start_offset; i < si->c_num; i++) {
 		switch (si->freelist_index_size)
 		{
 		case 1: objnr = (ulong)*ucharptr++; break;
@@ -18339,6 +18358,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 	ulong freelist, cpu_freelist, cpu_slab_ptr;
 	int i, free_objects, cpu_slab, is_free, node;
 	ulong p, q;
+#define SLAB_RED_ZONE 0x00000400UL
+	ulong flags, red_left_pad;
 
 	if (!si->slab) {
 		if (CRASHDEBUG(1))
@@ -18424,6 +18445,13 @@ do_slab_slub(struct meminfo *si, int verbose)
 			fprintf(fp, "< SLUB: free list END (%d found) >\n", i);
 	}
 
+	red_left_pad = 0;
+	if (VALID_MEMBER(kmem_cache_red_left_pad)) {
+		flags = ULONG(si->cache_buf + OFFSET(kmem_cache_flags));
+		if (flags & SLAB_RED_ZONE)
+			red_left_pad = ULONG(si->cache_buf + OFFSET(kmem_cache_red_left_pad));
+	}
+
 	for (p = vaddr; p < vaddr + objects * si->size; p += si->size) {
 		hq_open();
 		is_free = FALSE;
@@ -18439,7 +18467,7 @@ do_slab_slub(struct meminfo *si, int verbose)
 				}
 				if (q & PAGE_MAPPING_ANON)
 					break;
-				if (p == q) {
+				if ((p + red_left_pad) == q) {
 					is_free = TRUE;
 					goto found_object;
 				}
@@ -18464,7 +18492,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 
 		fprintf(fp, "  %s%lx%s", 
 			is_free ? " " : "[",
-			p, is_free ? "  " : "]");
+			pc->flags2 & REDZONE ? p : p + red_left_pad,
+			is_free ? "  " : "]");
 		if (is_free && (cpu_slab >= 0))
 			fprintf(fp, "(cpu %d cache)", cpu_slab);
 		fprintf(fp, "\n");

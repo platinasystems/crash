@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 David Anderson
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -536,6 +536,7 @@ struct program_context {
 #define EXCLUDED_VMEMMAP (0x40000ULL)
 #define is_excluded_vmemmap() (pc->flags2 & EXCLUDED_VMEMMAP)
 #define MEMSRC_LOCAL         (0x80000ULL)
+#define REDZONE             (0x100000ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -1977,6 +1978,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long blk_mq_ctx_rq_dispatched;
 	long blk_mq_ctx_rq_completed;
 	long task_struct_stack;
+	long tnt_mod;
+	long radix_tree_node_shift;
+	long kmem_cache_red_left_pad;
+	long inactive_task_frame_ret_addr;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2120,6 +2125,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long trace_print_flags;
 	long task_struct_flags;
 	long timer_base;
+	long taint_flag;
 };
 
 struct array_table {
@@ -2150,6 +2156,7 @@ struct array_table {
 	int kmem_cache_node;
 	int kmem_cache_cpu_slab;
 	int rt_prio_array_queue;
+	int height_to_maxnodes;
 };
 
 /*
@@ -3295,12 +3302,13 @@ struct arm64_stackframe {
 #define IS_LAST_PML4_READ(pml4) ((ulong)(pml4) == machdep->machspec->last_pml4_read)
 
 #define FILL_PML4() { \
-	if (!(pc->flags & RUNTIME) || ACTIVE()) \
+	if (!(pc->flags & RUNTIME) || ACTIVE()) { \
 		if (!IS_LAST_PML4_READ(vt->kernel_pgd[0])) \
                     readmem(vt->kernel_pgd[0], KVADDR, machdep->machspec->pml4, \
                         PAGESIZE(), "init_level4_pgt", FAULT_ON_ERROR); \
                 machdep->machspec->last_pml4_read = (ulong)(vt->kernel_pgd[0]); \
-	}
+	} \
+}
 
 #define FILL_PML4_HYPER() { \
 	if (!machdep->machspec->last_pml4_read) { \
@@ -4800,6 +4808,13 @@ char *shift_string_right(char *, int);
 int bracketed(char *, char *, int);
 void backspace(int);
 int do_list(struct list_data *);
+struct radix_tree_ops {
+	void (*entry)(ulong node, ulong slot, const char *path,
+		      ulong index, void *private);
+	uint radix;
+	void *private;
+};
+int do_radix_tree_traverse(ulong ptr, int is_root, struct radix_tree_ops *ops);
 int do_rdtree(struct tree_data *);
 int do_rbtree(struct tree_data *);
 int retrieve_list(ulong *, int);

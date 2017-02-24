@@ -2,7 +2,7 @@
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
  * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -594,7 +594,7 @@ kaslr_init(void)
 {
 	char *string;
 
-	if ((!machine_type("X86_64") && !machine_type("ARM64")) ||
+	if ((!machine_type("X86_64") && !machine_type("ARM64") && !machine_type("X86")) ||
 	    (kt->flags & RELOC_SET))
 		return;
 
@@ -712,7 +712,11 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 	fromend = from + symcount * size;
 
 	if (machine_type("X86")) {
-		if (!(kt->flags & RELOC_SET))
+		if (kt->flags2 & KASLR) {
+			if ((kt->flags2 & RELOC_AUTO) && !(kt->flags & RELOC_SET))
+				derive_kaslr_offset(abfd, dynamic, from,
+					fromend, size, store);
+		} else if (!(kt->flags & RELOC_SET))
 			kt->flags |= RELOC_FORCE;
 	} else if (machine_type("X86_64") || machine_type("ARM64")) {
 		if ((kt->flags2 & RELOC_AUTO) && !(kt->flags & RELOC_SET))
@@ -8369,6 +8373,8 @@ builtin_array_length(char *s, int len, int *two_dim)
                 lenptr = &array_table.prio_array_queue;
 	else if (STREQ(s, "height_to_maxindex"))
 		lenptr = &array_table.height_to_maxindex;
+	else if (STREQ(s, "height_to_maxnodes"))
+		lenptr = &array_table.height_to_maxnodes;
 	else if (STREQ(s, "pid_hash"))
 		lenptr = &array_table.pid_hash;
         else if (STREQ(s, "free_area")) {
@@ -8462,6 +8468,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(task_struct_tss_ksp));
         fprintf(fp, "        task_struct_thread_eip: %ld\n",
                 OFFSET(task_struct_thread_eip));
+	fprintf(fp, "  inactive_task_frame_ret_addr: %ld\n",
+		OFFSET(inactive_task_frame_ret_addr));
         fprintf(fp, "        task_struct_thread_esp: %ld\n",
                 OFFSET(task_struct_thread_esp));
         fprintf(fp, "        task_struct_thread_ksp: %ld\n",
@@ -8897,6 +8905,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                       tnt_bit: %ld\n", OFFSET(tnt_bit));
 	fprintf(fp, "                      tnt_true: %ld\n", OFFSET(tnt_true));
 	fprintf(fp, "                     tnt_false: %ld\n", OFFSET(tnt_false));
+	fprintf(fp, "                       tnt_mod: %ld\n", OFFSET(tnt_mod));
 
 	fprintf(fp, "                     page_next: %ld\n", OFFSET(page_next));
 	fprintf(fp, "                     page_prev: %ld\n", OFFSET(page_prev));
@@ -9329,6 +9338,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(kmem_cache_name));
         fprintf(fp, "               kmem_cache_list: %ld\n",
                 OFFSET(kmem_cache_list));
+        fprintf(fp, "       kmem_cache_red_left_pad: %ld\n",
+                OFFSET(kmem_cache_red_left_pad));
         fprintf(fp, "               kmem_cache_node: %ld\n",
                 OFFSET(kmem_cache_node));
         fprintf(fp, "           kmem_cache_cpu_slab: %ld\n",
@@ -9768,6 +9779,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(radix_tree_node_slots));
         fprintf(fp, "        radix_tree_node_height: %ld\n",
                 OFFSET(radix_tree_node_height));
+        fprintf(fp, "        radix_tree_node_shift: %ld\n",
+                OFFSET(radix_tree_node_shift));
 
         fprintf(fp, "               rb_root_rb_node: %ld\n",
                 OFFSET(rb_root_rb_node));
@@ -10348,6 +10361,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(timer_base));
 	fprintf(fp, "                           tnt: %ld\n",
 		SIZE(tnt));
+	fprintf(fp, "                    taint_flag: %ld\n",
+		SIZE(taint_flag));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -10401,6 +10416,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 get_array_length("prio_array.queue", NULL, SIZE(list_head)));
 	fprintf(fp, "            height_to_maxindex: %d\n",
 		ARRAY_LENGTH(height_to_maxindex));
+	fprintf(fp, "            height_to_maxnodes: %d\n",
+		ARRAY_LENGTH(height_to_maxnodes));
 	fprintf(fp, "                      pid_hash: %d\n",
 		ARRAY_LENGTH(pid_hash));
 	fprintf(fp, "               kmem_cache_node: %d\n",
