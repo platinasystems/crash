@@ -8,7 +8,7 @@ Standards-Version: 3.9.8.0
 XS-Testsuite: autopkgtest
 
 Package: crash
-Architecture: i386 ia64 alpha powerpc amd64 armel s390x
+Architecture: i386 ia64 alpha powerpc amd64 arm64 armel s390x
 Depends: ${shlibs:Depends}, ${misc:Depends}, binutils
 Suggests: kexec-tools, makedumpfile
 Description: kernel debugging utility, allowing gdb like syntax
