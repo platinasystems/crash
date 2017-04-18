@@ -13,7 +13,7 @@ include /usr/share/dpkg/buildflags.mk
 
 override_dh_auto_build:
 	dh_auto_build 
-	$(MAKE) extensions
+	$(MAKE) extensions lzo snappy
 
 override_dh_auto_clean:
 	cp $(CURDIR)/Makefile $(CURDIR)/debian/Makefile.ori
