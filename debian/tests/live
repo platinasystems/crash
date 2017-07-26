@@ -7,12 +7,13 @@ if [ "$(lsb_release -is)" = "Debian" ]; then
     apt-get update
     apt-get install linux-image-$(uname -r)-dbg
 elif [ "$(lsb_release -is)" = "Ubuntu" ]; then
-    sudo tee /etc/apt/sources.list.d/ddebs.list << EOF
-    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)          main
-    deb http://ddebs.ubuntu.com/ $(lsb_release -cs)-updates  main
-EOF
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys C8CAB6595FDFF622 2>&1
+    # add available pockets
+    for pocket in "" "-updates" "-proposed"; do
+        apt-add-repository "deb http://ddebs.ubuntu.com/ $(lsb_release -cs)${pocket} main"
+        apt-get update 2>&1 || apt-add-repository --remove "deb http://ddebs.ubuntu.com/ $(lsb_release -cs)${pocket} main"
+    done
     # avoid stderr output
-    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys ECDCAD72428D7C01 2>&1
     sudo apt-get update
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q linux-image-$(uname -r)-dbgsym
 fi

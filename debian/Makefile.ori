@@ -37,7 +37,7 @@ endif
 GDB=gdb-7.6
 GDB_FILES=${GDB_7.6_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-7.6.patch gdb-7.6-ppc64le-support.patch
+GDB_PATCH_FILES=gdb-7.6.patch gdb-7.6-ppc64le-support.patch gdb-7.6-proc_service.h.patch
 
 #
 # Default installation directory
@@ -268,6 +268,12 @@ gdb_patch:
 	fi
 	if [ "${ARCH}" = "x86_64" ] && [ "${TARGET}" = "PPC64" ] && [ -f ${GDB}-ppc64le-support.patch ]; then \
 		patch -d ${GDB} -p1 -F0 < ${GDB}-ppc64le-support.patch ; \
+	fi
+	if [ -f /usr/include/proc_service.h ]; then \
+		grep 'extern ps_err_e ps_get_thread_area (struct' /usr/include/proc_service.h; \
+		if [ $$? -eq 0 ]; then \
+			patch -p0 < ${GDB}-proc_service.h.patch; \
+		fi; \
 	fi
 
 library: make_build_data ${OBJECT_FILES}
@@ -554,7 +560,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.1.8
+VERSION=7.1.9
 RELEASE=0
 
 release: make_configure

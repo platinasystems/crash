@@ -1,3 +1,104 @@
+crash (7.1.9-1) unstable; urgency=medium
+
+  * Patch from Balint Reczey <rbalint@ubuntu.com>: Build crash on all Linux
+    architectures (Closes: #763856, #757450)
+
+  * Patch from Balint Reczey <rbalint@ubuntu.com>: Continuous integration
+    tests can fail due to missing packages for the running kernel and missing
+    *-updates packages (Closes: #869367)
+
+  * Fixes to address three gcc-7.0.1 compiler warnings that are generated when
+    building with "make warn".  The warning types are "[-Wnonnull]" in
+    filesys.c, and "[-Wformat-overflow=]" in kernel.c and cmdline.c.
+
+  * Fix for the PPC64 "mach -o" option to update the OPAL console buffer size
+    from 256K to 1MB, based upon the latest skiboot firmware source.
+
+  * Fix for the "mod -[sS]" option to prevent the erroneous reassignment of
+    one or more symbol values of a kernel module.  Without the patch, when
+    loading a kernel module, a message may indicate "mod: <module>: last
+    symbol: <symbol> is not _MODULE_END_<module>?" may be displayed, and one
+    or more symbols may be reassigned an incorrect symbol value.  If none of
+    the erroneous symbol value reassignments are beyond the end of the
+    module's address space, then there will be no message.
+
+  * Linux 4.10 commit 401721ecd1dcb0a428aa5d6832ee05ffbdbffbbe finally exports
+    the x86_64 "phys_base" value in the VMCOREINFO note, so utilize it
+    whenever it exists.
+
+  * Implemented a new "log -a" option that dumps the audit logs remaining in
+    kernel audit buffers that have not been copied out to the user-space audit
+    daemon.
+
+  * Fix for the "kmem <address>" option and the "search" command in x86_64
+    kernels that contain, or have backports of, kernel commit
+    7c1da8d0d046174a4188b5729d7579abf3d29427, titled "crypto: sha - SHA1
+    transform x86_64 AVX2", which introduced an "_end" text symbol.  Without
+    the patch, if a base kernel symbol address that is larger than the "_end"
+    text symbol is passed to "kmem <address>", its symbol/filename information
+    will not be displayed.  Also, when the "search" command scans the
+    __START_KERNEL_map region that contains kernel text and static data, the
+    search will be truncated to stop at the "_end" text symbol address.
+
+  * Enhancement for the determination of the ARM64 "kimage_voffset" value in
+    Linux 4.6 and later kernels if an ELF format dumpfile does not contain its
+    value in a VMCOREINFO note, or when running against live systems using
+    /dev/mem, /proc/kcore, or an older version of /dev/crash.
+
+  * Optimization of the "kmem -f <address>" and "kmem <r;address>" options to
+    significantly reduce the amount of time to complete the buddy allocator
+    free-list scan for the target address.  On very large memory systems, the
+    patch may reduce the time spent by several orders of magnitude.
+
+  * Fix for a compilation error if glibc-2.25 or later has been installed on
+    the host build machine.  Without the patch, the build fails with the error
+    message "amd64-linux-nat.c:496:1: error: conflicting types for
+    'ps_get_thread_area'".
+
+  * Fix for the "list -[hH]" options if a list_head.next pointer is
+    encountered that contains an invalid NULL pointer.  Without the patch, the
+    "list -[hH]" options would complete/continue as if the NULL were a
+    legitimate end-of-list indicator, and no error would be reported.
+
+  * Provide basic Huge Page usage as part of "kmem -i" output, showing the
+    total amount of memory allocated for huge pages, and the amount of the
+    total that is free.
+
+  * Fix for the determination of the x86_64 "phys_base" value when it is not
+    passed in the VMCOREINFO data of ELF vmcores.  Without the patch, it is
+    possible that the base address of the vmalloc region is unknown and
+    initialized to an incorrect default address during the very early stages
+    of initialization, which causes the parsing of the PT_LOAD segments for
+    the START_KERNEL_map region to fail.
+
+  * Fix for the "dis" command to detect duplicate symbols in the case of a
+    "symbol+offset" argument where the duplicates are contiguous in the symbol
+    list.  In addition, reject "symbol+offset" arguments if the resultant
+    address goes beyond the end of the function.
+
+  * Fix for the "set scope" option if the kernel was configured with
+    CONFIG_RANDOMIZE_BASE.  Without the patch, the command fails with the
+    message "set: gdb cannot find text block for address: <symbol>".  This
+    also affects extension modules that call gdb_set_crash_scope() when
+    running with KASLR kernels.
+
+  * Fix for the extensions/trace.c extension module to account for Linux 4.7
+    kernel commit 9b94a8fba501f38368aef6ac1b30e7335252a220, which changed the
+    ring_buffer_per_cpu.nr_pages member from an int to a long.  Without the
+    patch, the trace.so extension module fails to load on big-endian machines,
+    indicating "extend: Num of pages is less than 0".
+
+  * Fix for the extensions/trace.c extension module when running on the ppc64
+    architecture.  Without the patch, the trace.so extension module fails to
+    load, indicating "extend: invalid text address: ring_buffer_read".  On the
+    ppc64 architecture, the text symbol is ".ring_buffer_read".
+
+  * Fix for the ARM64 "bt" command.  Without the patch, the backtrace of a
+    non-panicking active task generates a segmentation violation when
+    analyzing Android 4.4-based dumpfiles.
+
+ -- Troy Heber <troyh@debian.org>  Wed, 26 Jul 2017 12:37:08 -0600
+
 crash (7.1.8-2) unstable; urgency=medium
 
   * Enable lzo and snappy compression (Closes: #860319)

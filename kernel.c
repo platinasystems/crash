@@ -86,6 +86,9 @@ static void show_kernel_taints(char *, int);
 static void dump_dmi_info(void);
 static void list_source_code(struct gnu_request *, int);
 static void source_tree_init(void);
+static ulong dump_audit_skb_queue(ulong);
+static ulong __dump_audit(char *);
+static void dump_audit(void);
 
 
 /*
@@ -117,10 +120,9 @@ kernel_init()
 		kt->init_begin = symbol_value("__init_begin");
 		kt->init_end = symbol_value("__init_end");
 	}
-	if (symbol_exists("_end"))
-		kt->end = symbol_value("_end");
-	else
-		kt->end = highest_bss_symbol();
+	kt->end = highest_bss_symbol();
+	if ((sp1 = kernel_symbol_search("_end")) && (sp1->value > kt->end)) 
+		kt->end = sp1->value;
 	
 	/*
 	 *  For the traditional (non-pv_ops) Xen architecture, default to writable 
@@ -1571,11 +1573,16 @@ list_source_code(struct gnu_request *req, int count_entered)
 /*
  *  From either a syment pointer, or a virtual address evaluated
  *  from a symbol name plus an offset value, determine whether 
- *  there are multiple symbols with the same name.  
-
+ *  there are multiple symbols with the same name, or if it is
+ *  determined to be an invalid expression of a text address.
+ *
  *  If there are multiple text symbols with the same name, then 
  *  display a "duplicate text symbols found" message followed by
  *  a list of each symbol's information, and return FALSE.
+ *
+ *  If a symbol name plus and offset value evaluates to an address 
+ *  that goes beyond the end of the text function, print an "invalid 
+ *  expression" message, and return FALSE;
  * 
  *  If there is one text symbol and one or more data symbols with
  *  the same name, reset the incoming address based upon the 
@@ -1593,15 +1600,37 @@ static int
 resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, int radix)
 {
 	int text_symbols;
-	struct syment *sp, *sp_orig, *first_text_sp;
+	struct syment *sp, *sp_orig, *first_text_sp, *sp_arg, *sp_addr;
 	ulong offset, radix_flag;
+	char buf[BUFSIZE];
+	char *op;
+
+	sp_arg = NULL;
+	if (!sp_in && !IS_A_NUMBER(arg)) {
+		strcpy(buf, arg);
+		strip_beginning_char(buf, '(');
+		strip_ending_char(buf, ')');
+		clean_line(buf);
+		if ((op = strpbrk(buf, "><+-&|*/%^"))) {
+			*op = NULLCHAR;
+			clean_line(buf);
+			if ((sp = symbol_search(buf)) && is_symbol_text(sp))
+				sp_arg = sp;
+		}
+	}
 
 	if (sp_in) {
 		sp_orig = sp_in;
 		offset = 0;
 	} else if ((sp_orig = value_search(req->addr, &offset))) {
-		if (!strstr(arg, sp_orig->name))
+		if (!strstr(arg, sp_orig->name)) {
+			if (sp_arg && (sp_orig != sp_arg)) {
+				error(INFO, "invalid expression: %s evaluates to: %s+%lx\n", 
+					arg, sp_orig->name, offset);
+				return FALSE;
+			}
 			return TRUE;
+		}
 	} else {
 		if (CRASHDEBUG(1))
 			error(INFO, "%s: no text symbol found\n", arg);
@@ -1610,6 +1639,19 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 
 	if (symbol_name_count(sp_orig->name) <= 1)
 		return TRUE;
+
+	if (sp_arg) {
+		sp_addr = value_search(req->addr, &offset);
+		if (sp_arg != sp_addr) {
+			if (STREQ(sp_arg->name, sp_addr->name)) {
+				sp_orig = sp_arg;
+				goto duplicates;
+			}
+			error(INFO, "invalid expression: %s evaluates to %s: %s+%lx\n", 
+				arg, sp_addr->name, offset);
+			return FALSE;
+		}
+	}
 
 	text_symbols = 0;
 	first_text_sp = NULL;
@@ -1645,6 +1687,7 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 		return TRUE;
 	}
 
+duplicates:
 	/*
 	 *  Multiple text symbols with the same name exist.
 	 *  Display them all and return FALSE.
@@ -1657,9 +1700,9 @@ resolve_text_symbol(char *arg, struct syment *sp_in, struct gnu_request *req, in
 	do {
 		if (is_symbol_text(sp)) {
 			if (module_symbol(sp->value, NULL, NULL, NULL, 0))
-				show_symbol(sp, offset, SHOW_LINENUM|SHOW_MODULE|radix_flag);
+				show_symbol(sp, 0, SHOW_LINENUM|SHOW_MODULE|radix_flag);
 			else
-				show_symbol(sp, offset, SHOW_LINENUM|radix_flag);
+				show_symbol(sp, 0, SHOW_LINENUM|radix_flag);
 		}
 	} while ((sp = symbol_search_next(sp->name, sp)));
 
@@ -4760,7 +4803,7 @@ cmd_log(void)
 
 	msg_flags = 0;
 
-        while ((c = getopt(argcnt, args, "tdm")) != EOF) {
+        while ((c = getopt(argcnt, args, "tdma")) != EOF) {
                 switch(c)
                 {
 		case 't':
@@ -4772,6 +4815,9 @@ cmd_log(void)
                 case 'm':
                         msg_flags |= SHOW_LOG_LEVEL;
                         break;
+		case 'a':
+			msg_flags |= SHOW_LOG_AUDIT;
+			break;
                 default:
                         argerrs++;
                         break;
@@ -4780,6 +4826,11 @@ cmd_log(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (msg_flags & SHOW_LOG_AUDIT) {
+		dump_audit();
+		return;
+	}
 
 	dump_log(msg_flags);
 }
@@ -6088,7 +6139,7 @@ cmd_irq(void)
 	int nr_irqs;
 	ulong *cpus;
 	int show_intr, choose_cpu;
-	char buf[10];
+	char buf[15];
 	char arg_buf[BUFSIZE];
 
 	cpus = NULL;
@@ -6203,7 +6254,7 @@ cmd_irq(void)
 		}
 
 		fprintf(fp, "     ");
-		BZERO(buf, 10);
+		BZERO(buf, 15);
 
 		for (i = 0; i < kt->cpus; i++) {
 			if (hide_offline_cpu(i))
@@ -10751,4 +10802,134 @@ dump_dmi_info(void)
 	} 
 
 	close_tmpfile();
+}
+
+#define NLMSG_ALIGNTO 4
+#define NLMSG_DATA(nlh) (nlh + roundup(SIZE(nlmsghdr), NLMSG_ALIGNTO))
+
+static ulong
+dump_audit_skb_queue(ulong audit_skb_queue)
+{
+	ulong skb_buff_head_next = 0, p;
+	uint32_t qlen = 0;
+
+	if (INVALID_SIZE(nlmsghdr)) {
+		STRUCT_SIZE_INIT(nlmsghdr, "nlmsghdr");
+		MEMBER_OFFSET_INIT(nlmsghdr_nlmsg_type, "nlmsghdr", "nlmsg_type");
+		MEMBER_SIZE_INIT(nlmsghdr_nlmsg_type, "nlmsghdr", "nlmsg_type");
+		MEMBER_OFFSET_INIT(sk_buff_head_next, "sk_buff_head", "next");
+		MEMBER_OFFSET_INIT(sk_buff_head_qlen, "sk_buff_head", "qlen");
+		MEMBER_SIZE_INIT(sk_buff_head_qlen, "sk_buff_head", "qlen");
+		MEMBER_OFFSET_INIT(sk_buff_data, "sk_buff", "data");
+		MEMBER_OFFSET_INIT(sk_buff_len, "sk_buff", "len");
+		MEMBER_OFFSET_INIT(sk_buff_next, "sk_buff", "next");
+		MEMBER_SIZE_INIT(sk_buff_len, "sk_buff", "len");
+	}
+
+	readmem(audit_skb_queue + OFFSET(sk_buff_head_qlen),
+		KVADDR,
+		&qlen,
+		SIZE(sk_buff_head_qlen),
+		"audit_skb_queue.qlen",
+		FAULT_ON_ERROR);
+
+	if (!qlen)
+		return 0;
+
+	readmem(audit_skb_queue + OFFSET(sk_buff_head_next),
+		KVADDR,
+		&skb_buff_head_next,
+		sizeof(void *),
+		"audit_skb_queue.next",
+		FAULT_ON_ERROR);
+
+	if (!skb_buff_head_next)
+		error(FATAL, "audit_skb_queue.next: NULL\n");
+
+	p = skb_buff_head_next;
+	do {
+		ulong data, len, data_len;
+		uint16_t nlmsg_type;
+		char *buf = NULL;
+
+		if (CRASHDEBUG(2))
+			fprintf(fp, "%#016lx\n", p);
+
+		readmem(p + OFFSET(sk_buff_len),
+			KVADDR,
+			&len,
+			SIZE(sk_buff_len),
+			"sk_buff.data",
+			FAULT_ON_ERROR);
+
+		data_len = len - roundup(SIZE(nlmsghdr), NLMSG_ALIGNTO);
+
+		readmem(p + OFFSET(sk_buff_data),
+			KVADDR,
+			&data,
+			sizeof(void *),
+			"sk_buff.data",
+			FAULT_ON_ERROR);
+
+		if (!data)
+			error(FATAL, "sk_buff.data: NULL\n");
+
+		readmem(data + OFFSET(nlmsghdr_nlmsg_type),
+			KVADDR,
+			&nlmsg_type,
+			SIZE(nlmsghdr_nlmsg_type),
+			"nlmsghdr.nlmsg_type",
+			FAULT_ON_ERROR);
+
+		buf = GETBUF(data_len + 1);
+		readmem(NLMSG_DATA(data),
+			KVADDR,
+			buf,
+			data_len,
+			"sk_buff.data + sizeof(struct nlmsghdr)",
+			FAULT_ON_ERROR);
+		buf[data_len] = '\0';
+
+		fprintf(fp, "type=%u %s\n", nlmsg_type, buf);
+		FREEBUF(buf);
+
+		readmem(p + OFFSET(sk_buff_next),
+			KVADDR,
+			&p,
+			sizeof(void *),
+			"skb_buff.next",
+			FAULT_ON_ERROR);
+	} while (p != audit_skb_queue);
+
+	return qlen;
+}
+
+static ulong
+__dump_audit(char *symname)
+{
+	if (symbol_exists(symname)) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, "# %s:\n", symname);
+		return dump_audit_skb_queue(symbol_value(symname));
+	}
+	return 0;
+}
+
+static void
+dump_audit(void)
+{
+	ulong qlen = 0;
+
+	if (symbol_exists("audit_skb_queue")) {
+		qlen += __dump_audit("audit_skb_hold_queue");
+		qlen += __dump_audit("audit_skb_queue");
+	} else if (symbol_exists("audit_queue")) {
+		qlen += __dump_audit("audit_hold_queue");
+		qlen += __dump_audit("audit_retry_queue");
+		qlen += __dump_audit("audit_queue");
+	} else
+		option_not_supported('a');
+
+	if (!qlen)
+		error(INFO, "kernel audit log is empty\n");
 }
