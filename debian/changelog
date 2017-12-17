@@ -1,3 +1,242 @@
+crash (7.2.0-1) unstable; urgency=medium
+
+  * New upstream (closes: #884464)
+
+  * Fix for the "snap.so" extension module to pass the KASLR relocation offset
+    value in the ELF header for x86_64 kernels that are compiled with
+    CONFIG_RANDOMIZE_BASE.  Without the patch, it is necessary to use the
+    "--kaslr=<offset>" command line option, or the session fails with the
+    message "WARNING: cannot read linux_banner string", followed by "crash:
+    vmlinux and vmcore do not match!".
+
+  * The native gdb "disassemble" command fails if the kernel has been compiled
+    with CONFIG_RANDOMIZE_BASE because the embedded gdb module still operates
+    under the assumption that the (non-relocated) text locations in the
+    vmlinux file are correct.  The error message that is issued is somewhat
+    confusing, indicating "No function contains specified address".  This
+    patch simply clarifies the error message to indicate "crash: the gdb
+    "disassemble" command is prohibited because the kernel text was relocated
+    by KASLR; use the crash "dis" command instead."
+
+  * Fix for the "mach -m" command in Linux 4.9 and later kernels that contain
+    commit 475339684ef19e46f4702e2d185a869a5c454688, titled "x86/e820: Prepare
+    e280 code for switch to dynamic storage", in which the "e820" symbol was
+    changed from a static e820map structure to a pointer to an e820map
+    structure.  Without the patch, the command either displays just the
+    header, or the header with several nonsensical entries.
+
+  * Fix for Linux 4.10 and later kdump dumpfiles, or kernels that have
+    backported commit 401721ecd1dcb0a428aa5d6832ee05ffbdbffbbe, titled "kexec:
+    export the value of phys_base instead of symbol address".  Without the
+    patch, if the x86_64 "phys_base" value in the VMCOREINFO note is a
+    negative decimal number, the crash session fails during session
+    intialization with a "page excluded" or "seek error" when reading
+    "page_offset_base".
+
+  * Fix for the PPC64 "pte" command.  Without the patch, if the target PTE
+    references a present page, the physical address is incorrect.
+
+  * Fix for a 32-bit MIPS compilation error if glibc-2.25 or later has been
+    installed on the host build machine.  Without the patch, the build fails
+    with the error message "mips-linux-nat.c:157:1: error: conflicting types
+    for 'ps_get_thread_area'".
+
+  * Fix for the validity check of S390X virtual addresses for 5-level page
+    tables where user space memory is mapped above 8 Petabytes.  Without the
+    patch, "rd -u" fails and indicates "invalid user virtual address", and
+    "vtop -u" indicates that the address is "(not mapped)".
+
+  * Crash 7.1.5 commit c3413456599161cabc4e910a0ae91dfe5eec3c21 (xen: Add
+    support for dom0 with Linux kernel 3.19 and newer) from Daniel Kiper
+    implemented support for Xen dom0 vmcores after Linux 3.19 kernel commit
+    054954eb051f35e74b75a566a96fe756015352c8 (xen: switch to linear virtual
+    mapped sparse p2m list).  This patch can be deemed subsequent to Daniel's
+    patch, and implements support Xen PV domU dumpfiles for Linux 3.19 and
+    later kernels.
+
+  * Fix for the "dis" command to detect duplicate symbols in the case of a
+    "symbol+offset" argument where the duplicates are not contiguous in the
+    symbol list.  Without the patch, the first of multiple symbol instances is
+    used in the address evaluation.  With the patch, the command will fail
+    with the error message "dis: <symbol+offset>: duplicate text symbols
+    found:", followed by a list of the duplicate symbols, and their file and
+    line numbers if available.
+
+  * Enhancement to the error reporting mechanism for the "kmem -[sS]" options.
+    When a fatal error is encountered while gathering basic CONFIG_SLUB
+    statistics, it is possible that the slab cache name is not displayed in
+    the error message, and the line containing the slab cache name, address,
+    etc., is not displayed at all.  With this patch, an extra error message
+    indicating "kmem: <cache-name>: cannot gather relevant slab data" will be
+    displayed under the fatal error message; and under that, the CACHE
+    address, cache NAME, OBJSIZE, and SSIZE columns will be displayed, but
+    with "?" under the ALLOCATED, TOTAL, and SLABS columns.
+
+  * Fix to prevent the "tree -t radix" option from failing when it encounters
+    duplicate entries in a radix_tree_node[slots] array.  Without the patch,
+    if a duplicate slot entry is found, the command fails with the message
+    "tree: duplicate tree entry: radix_tree_node: <node address>
+    slots[<index>]: <entry>\n".  (The error can be prevented if the command is
+    preceded by "set hash off".)  However, certain radix trees contain
+    duplicate entries by design, such as the "pgmap_radix" radix tree, in
+    which a radix_tree_node may contain multiple instances of the same
+    page_map structure.  With the patch, checks will only be made for
+    duplicate radix_tree_node structures.
+
+  * First phase of future support for x86_64 5-level page tables.  New sets of
+    virtual memory offsets have been #define'd and helper macros and
+    placeholder functions for the p4d page tables have been added.  The only
+    functional changes with this patchset are dynamically-set PGDIR_SHIFT and
+    PHYSICAL_MASK_SHIFT values that are based upon the kernel configuration.
+
+  * Fix for a build failure.  Without the patch, if the build is done by a
+    user whose username cannot be determined from the user ID number, the
+    build fails immediately with a segmentation fault.
+
+  * Fix for Linux 4.13-rc0 commit 7fd8329ba502ef76dd91db561c7aed696b2c7720
+    "x86/boot/64: Rename init_level4_pgt and early_level4_pgt".  Without the
+    patch, the crash session fails during initialization with the error
+    message "crash: cannot resolve "init_level4_pgt".
+
+  * The internal "build_data" string contains the compile-time date, the user
+    id of the builder, and the build machine hostname, and is viewable by the
+    "crash --buildinfo" command line option or by the "help -B" option during
+    runtime.  This patch replaces that string data with "reproducible build"
+    if the SOURCE_DATE_EPOCH environment variable contains a value string when
+    the crash binary is compiled.
+
+  * Fix for Linux 4.13-rc1 commit 2d070eab2e8270c8a84d480bb91e4f739315f03d
+    "mm: consider zone which is not fully populated to have holes".  Without
+    the patch, SPARSEMEM page struct addresses are incorrectly calculated
+    because a new section state, and an associated flag bit, has been added to
+    the low bits of the mem_section.section_mem_map address; the extra bit is
+    erroneously passed back as part of the section_mem_map and resultant page
+    struct address, leading to errors in commands such as "kmem -p", "kmem
+    -s", "kmem -n", and any other command that translates a physical address
+    to its page struct address.
+
+  * Enhancement to the S390X "vtop" command to display page table walk
+    information, adding output showing the following page table contents:
+
+       "Region-First-Table Entry" (RFTE)
+       "Region-Second-Table Entry" (RSTE)
+       "Region-Third-Table Entry" (RTTE)
+       "Segment Table Entry" (STE)
+       "Page Table Entry" (PTE)
+       "Read address of page" (PAGE)
+
+    Depending on the size of the address space, the page tables can start at
+    different levels.  For example:
+
+      crash> vtop 3ff8000c000
+      VIRTUAL           PHYSICAL
+      3ff8000c000       2e3832000
+
+      PAGE DIRECTORY: 0000000000aaa000
+       RTTE: 0000000000aadff8 => 00000002e3c00007
+        STE: 00000002e3c00000 => 00000002e3df7000
+        PTE: 00000002e3df7060 => 00000002e383203d
+       PAGE: 00000002e3832000
+
+            PAGE      PHYSICAL     MAPPING      INDEX CNT FLAGS
+      3d10b8e0c80    2e3832000               0       0  1 7fffc0000000000
+
+
+  * Fix the s390dbf time stamps for S390X kernel versions 4.11 and 4.14.  With
+    kernel commit ea417aa8a38bc7db ("s390/debug: make debug event time stamps
+    relative to the boot TOD clock") for s390dbf time is stored relative to
+    the kernel boot time.  In order to still show absolute time since 1970 we
+    have to detect those kernels and re-add the boot time before printing the
+    records.  We can use the tod_to_timeval() symbol to check for those
+    kernels because the patch has removed the symbol.  With kernel commit
+    6e2ef5e4f6cc5734 ("s390/time: add support for the TOD clock epoch
+    extension") the symbol name for storing the boot time has changed from
+    "sched_clock_base_cc" to "tod_clock_base".  This commit is currently on
+    the s390 features branch and will be integrated in Linux 4.14.
+
+  * Further enhancement to the S390X "vtop" command to translate the binary
+    values of the hardware flags for region, segment and page table entries.
+    For example:
+
+      crash> vtop -u 0x60000000000000 VIRTUAL           PHYSICAL
+      60000000000000    5b50a000
+
+      PAGE DIRECTORY: 000000005cea0000 RFTE: 000000005cea0018 =>
+      000000006612400f (flags = 00f) flags in binary : P=0; TF=00; I=0; TT=11;
+      TL=11 RSTE: 0000000066124000 => 000000005d91800b (flags = 00b) flags in
+      binary : P=0; TF=00; I=0; TT=10; TL=11 RTTE: 000000005d918000 =>
+      000000006615c007 (flags = 007) flags in binary : FC=0; P=0; TF=00; I=0;
+      CR=0; TT=01; TL=11 STE: 000000006615c000 => 000000005ce48800 (flags =
+      800) flags in binary : FC=0; P=0; I=0; CS=0; TT=00 PTE: 000000005ce48800
+      => 000000005b50a03f (flags = 03f) flags in binary : I=0; P=0 PAGE:
+      000000005b50a000
+
+    or for large pages:
+
+      crash> vtop -k 0x3d100000000 VIRTUAL           PHYSICAL 3d100000000
+      77c00000
+
+      PAGE DIRECTORY: 0000000001210000 RTTE: 0000000001213d10 =>
+      0000000077dc4007 (flags = 007) flags in binary : FC=0; P=0; TF=00; I=0;
+      CR=0; TT=01; TL=11 STE: 0000000077dc4000 => 0000000077c03403 (flags =
+      03403) flags in binary : AV=0, ACC=0011; F=0; FC=1; P=0; I=0; CS=0;
+      TT=00
+
+
+  * PPC64 kernel commit 2f18d533757da3899f4bedab0b2c051b080079dc lowered the
+    max real address to 53 bits.  Without this patch, the warning message
+    "WARNING: cannot access vmalloc'd module memory" appears during
+    initialization, and any command that attempts to read a vmalloc'd kernel
+    virtual address will fail and display "read error" messages.
+
+  * Display the KASLR relocation value warning message whenever it is in use.
+    Without the patch, the message may not get displayed if the --kaslr option
+    is used, or if the dumpfile is a vmcore generated by the current snap.so
+    extension module, which now exports the relocation value in the header.
+
+  * Fix to prevent an initialization-time failure when running a live session
+    on a host system that does not have a "/usr/src" directory.  Without the
+    patch, the session fails with the message "*** Error in 'crash': free():
+    invalid pointer: <address> ***".  (Lei Chen)
+
+  * Fix for the ARM64 "bt" command's display of the user mode exception frame
+    at the top of the stack in Linux 4.7 and later kernels.  Without the
+    patch, the contents of the user mode exception frame are invalid due to
+    the miscalculation of the starting address of the pt_regs structure on the
+    kernel stack.
+
+  * Integrated support for usage of the Linux 4.14 ORC unwinder by the x86_64
+    "bt" command.  Kernels configured with CONFIG_ORC_UNWINDER contain
+    .orc_unwind and .orc_unwind_ip sections that can be queried to determine
+    the stack frame size of any text address within a kernel function.  For
+    kernels not configured with CONFIG_FRAME_POINTER, the crash utility does
+    frame size calculation by disassembling a function from its beginning to
+    the specified text address, counting the push, pop, and add/sub rsp
+    instructions, accounting for retq instructions that occur in the middle of
+    a function.  With this patch, access to the new ORC sections has been
+    plugged into the existing frame size calculator, resulting in a more
+    efficient and accurate manner of determining frame sizes, and as a result,
+    more accurate backtraces.
+
+  * Fix for the ARM64 "bt" command when run against Linux 4.14-rc1.  Without
+    the patch, a message indicating "crash: builtin stackframe.sp offset
+    incorrect!" is issued during session initialization, and the "bt" command
+    fails with the error message "bt: invalid structure member offset:
+    task_struct_thread_context_sp".
+
+  * For for the "task -R <member>" option on Linux 4.13 and later kernels
+    where the task_struct contains a "randomized_struct_fields_start" to
+    "randomized_struct_fields_end" section.  Without the patch, a member
+    argument that is inside the randomized section is not found.
+
+  * Fix for the "snap.so" extension module to pass the value of the ARM64
+    "kimage_voffset" value in the ELF header.  Without the patch, it is
+    necessary to use the "--machdep kvimage_offset=<value>" command line
+    option, or the session fails with the message "crash: vmlinux and vmcore
+    do not match!".
+
+ -- Troy Heber <troyh@debian.org>  Sun, 17 Dec 2017 08:25:06 -0700
+
 crash (7.1.9-1) unstable; urgency=medium
 
   * Patch from Balint Reczey <rbalint@ubuntu.com>: Build crash on all Linux
