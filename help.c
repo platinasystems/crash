@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -159,12 +159,14 @@ char *program_usage_info[] = {
     "    X86_64:",
     "      phys_base=<physical-address>",
     "      irq_eframe_link=<value>",
+    "      irq_stack_gap=<value>",
     "      max_physmem_bits=<value>",
     "      kernel_image_size=<value>",
     "      vm=orig       (pre-2.6.11 virtual memory address ranges)",
     "      vm=2.6.11     (2.6.11 and later virtual memory address ranges)",
     "      vm=xen        (Xen kernel virtual memory address ranges)",
     "      vm=xen-rhel4  (RHEL4 Xen kernel virtual address ranges)",
+    "      vm=5level     (5-level page tables)",
     "    PPC64:",
     "      vm=orig",
     "      vm=2.6.14     (4-level page tables)",
@@ -828,6 +830,7 @@ char *help_foreach[] = {
 "           must be a POSIX extended regular expression that will be used",
 "           to match task names.",
 "     user  perform the command(s) on all user (non-kernel) threads.",
+"  gleader  perform the command(s) on all user (non-kernel) thread group leaders.",
 "   kernel  perform the command(s) on all kernel threads.",
 "   active  perform the command(s) on the active thread on each CPU.",
 "    state  perform the command(s) on all tasks in the specified state, which",
@@ -844,7 +847,7 @@ char *help_foreach[] = {
 "             net  run the \"net\" command  (optional flags: -s -S -R -d -x)",
 "             set  run the \"set\" command",
 "              ps  run the \"ps\" command  (optional flags: -G -s -p -c -t -l -a",
-"                  -g -r)",
+"                  -g -r -y)",
 "             sig  run the \"sig\" command (optional flag: -g)",
 "            vtop  run the \"vtop\" command  (optional flags: -c -u -k)\n",
 "     flag  Pass this optional flag to the command selected.",
@@ -1250,7 +1253,7 @@ NULL
 char *help_ps[] = {
 "ps",
 "display process status information",
-"[-k|-u|-G] [-s] [-p|-c|-t|-[l|m][-C cpu]|-a|-g|-r|-S]\n     [pid | task | command] ...",
+"[-k|-u|-G|-y policy] [-s] [-p|-c|-t|-[l|m][-C cpu]|-a|-g|-r|-S]\n     [pid | task | command] ...",
 "  This command displays process status for selected, or all, processes" ,
 "  in the system.  If no arguments are entered, the process data is",
 "  is displayed for all processes.  Specific processes may be selected",
@@ -1267,6 +1270,16 @@ char *help_ps[] = {
 "        -k  restrict the output to only kernel threads.",
 "        -u  restrict the output to only user tasks.",
 "        -G  display only the thread group leader in a thread group.",
+" -y policy  restrict the output to tasks having a specified scheduling policy",
+"            expressed by its integer value or by its (case-insensitive) name;",
+"            multiple policies may be entered in a comma-separated list:",
+"              0 or NORMAL",
+"              1 or FIFO",
+"              2 or RR",
+"              3 or BATCH",
+"              4 or ISO",
+"              5 or IDLE",
+"              6 or DEADLINE",
 " ",
 "  The process identifier types may be mixed.  For each task, the following",
 "  items are displayed:",
@@ -1799,7 +1812,8 @@ char *help_bt[] = {
 "           It does so by verifying the thread_info.task pointer, ensuring that",
 "           the thread_info.cpu is a valid cpu number, and checking the end of ",
 "           the stack for the STACK_END_MAGIC value.",
-"       -o  arm64: use optional backtrace method.",
+"       -o  arm64: use optional backtrace method; not supported on Linux 4.14 or",
+"           later kernels.",
 "           x86: use old backtrace method, permissible only on kernels that were",
 "           compiled without the -fomit-frame_pointer.",
 "           x86_64: use old backtrace method, which dumps potentially stale",
@@ -2376,7 +2390,7 @@ NULL
 char *help_timer[] = {
 "timer",
 "timer queue data",
-"[-r]",
+"[-r][-C cpu]",
 "  This command displays the timer queue entries, both old- and new-style,",
 "  in chronological order.  In the case of the old-style timers, the",
 "  timer_table array index is shown; in the case of the new-style timers, ",
@@ -2386,6 +2400,8 @@ char *help_timer[] = {
 "        chronological order.  In the case of the old-style hrtimers, the",
 "        expiration time is a single value; in the new-style hrtimers, the",
 "        expiration time is a range.",
+" -C cpu Restrict the output to one or more CPUs, where multiple cpu[s] can", 
+"        be specified, for example, as \"1,3,5\", \"1-3\", or \"1,3,5-7,10\".",
 "\nEXAMPLES",
 "    %s> timer",
 "    JIFFIES",
@@ -2519,7 +2535,7 @@ NULL
 char *help_runq[] = {
 "runq",
 "run queue",
-"[-t] [-m] [-g] [-c cpu(s)]",
+"[-t] [-T] [-m] [-g] [-c cpu(s)]",
 "  With no argument, this command displays the tasks on the run queues",
 "  of each cpu.",
 " ",
@@ -2528,6 +2544,8 @@ char *help_runq[] = {
 "         whichever applies; following each cpu timestamp is the last_run or ",
 "         timestamp value of the active task on that cpu, whichever applies, ",
 "         along with the task identification.",
+"     -T  Display the time lag of each CPU relative to the most recent runqueue",
+"         timestamp.",
 "     -m  Display the amount of time that the active task on each cpu has been",
 "         running, expressed in a format consisting of days, hours, minutes, ",
 "         seconds and milliseconds.",
@@ -2709,7 +2727,7 @@ NULL
 char *help_dev[] = {
 "dev",
 "device data",
-"[-i | -p | -d]",
+"[-i | -p | -d | -D]",
 "  If no argument is entered, this command dumps character and block",
 "  device data.\n",
 "    -i  display I/O port usage; on 2.4 kernels, also display I/O memory usage.",
@@ -2723,6 +2741,7 @@ char *help_dev[] = {
 "           DRV: I/O requests that are in-flight in the device driver.",
 "                If the device driver uses blk-mq interface, this field",
 "                shows N/A(MQ).",
+"    -D  same as -d, but filter out disks with no in-progress I/O requests.",
 "\nEXAMPLES",
 "  Display character and block device data:\n",
 "    %s> dev",
@@ -2862,7 +2881,7 @@ NULL
 char *help_search[] = {
 "search",
 "search memory",
-"[-s start] [ -[kKV] | -u | -p | -t ] [-e end | -l length] [-m mask]\n"
+"[-s start] [ -[kKV] | -u | -p | -t | -T ] [-e end | -l length] [-m mask]\n"
 "         [-x count] -[cwh] [value | (expression) | symbol | string] ...",
 "  This command searches for a given value within a range of user virtual, kernel",
 "  virtual, or physical memory space.  If no end nor length value is entered, ",
@@ -2893,6 +2912,7 @@ char *help_search[] = {
 "          -t  Search only the kernel stack pages of every task.  If one or more",
 "              matches are found in a task's kernel stack, precede the output",
 "              with a task-identifying header.",
+"          -T  Same as -t, except only the active task(s) are considered.",
 "      -e end  Stop the search at this hexadecimal user or kernel virtual",
 "              address, kernel symbol, or physical address.  The end address",
 "              must be appropriate for the memory type specified.",

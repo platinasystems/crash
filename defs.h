@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -845,6 +845,8 @@ struct task_table {                      /* kernel/local task table data */
 	long anonpages;
 	ulong stack_end_magic;
 	ulong pf_kthread;
+	ulong pid_radix_tree;
+	int callbacks;
 };
 
 #define TASK_INIT_DONE       (0x1)
@@ -864,6 +866,7 @@ struct task_table {                      /* kernel/local task table data */
 #define ACTIVE_ONLY       (0x4000)
 #define START_TIME_NSECS  (0x8000)
 #define THREAD_INFO_IN_TASK (0x10000)
+#define PID_RADIX_TREE   (0x20000)
 
 #define TASK_SLUSH (20)
 
@@ -1139,6 +1142,8 @@ extern struct machdep_table *machdep;
 #define FOREACH_a_FLAG   (0x4000000)
 #define FOREACH_G_FLAG   (0x8000000)
 #define FOREACH_F_FLAG2 (0x10000000)
+#define FOREACH_y_FLAG  (0x20000000)
+#define FOREACH_GLEADER (0x40000000)
 
 #define FOREACH_PS_EXCLUSIVE \
   (FOREACH_g_FLAG|FOREACH_a_FLAG|FOREACH_t_FLAG|FOREACH_c_FLAG|FOREACH_p_FLAG|FOREACH_l_FLAG|FOREACH_r_FLAG|FOREACH_m_FLAG)
@@ -1162,6 +1167,7 @@ struct foreach_data {
 	int comms;
 	int args;
 	int regexs;
+	int policy;
 };
 
 struct reference {       
@@ -1992,6 +1998,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mod_arch_specific_num_orcs;
 	long mod_arch_specific_orc_unwind_ip;
 	long mod_arch_specific_orc_unwind;
+	long task_struct_policy;
+	long kmem_cache_random;
+	long pid_namespace_idr;
+	long idr_idr_rt;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2141,6 +2151,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long sk_buff_head_qlen;
 	long sk_buff_len;
 	long orc_entry;
+	long task_struct_policy;
+	long pid;
 };
 
 struct array_table {
@@ -2591,6 +2603,11 @@ struct symbol_table_data {
 	ulong last_section_end;
 	ulong _stext_vmlinux;
 	struct downsized downsized;
+	ulong divide_error_vmlinux;
+	ulong idt_table_vmlinux;
+	ulong saved_command_line_vmlinux;
+	ulong pti_init_vmlinux;
+	ulong kaiser_init_vmlinux;
 };
 
 /* flags for st */
@@ -2680,6 +2697,7 @@ struct load_module {
 	struct syment *mod_init_symend;
 	ulong mod_percpu;
 	ulong mod_percpu_size;
+	struct objfile *loaded_objfile;
 };
 
 #define IN_MODULE(A,L) \
@@ -3038,6 +3056,7 @@ typedef signed int s32;
 #define ARM64_VMEMMAP_END    (ARM64_VMEMMAP_VADDR + GIGABYTES(8UL) - 1)
 
 #define ARM64_STACK_SIZE   (16384)
+#define ARM64_IRQ_STACK_SIZE   ARM64_STACK_SIZE
 
 #define _SECTION_SIZE_BITS      30
 #define _MAX_PHYSMEM_BITS       40
@@ -3117,6 +3136,10 @@ struct machine_specific {
 	ulong kimage_text;
 	ulong kimage_end;
 	ulong user_eframe_offset;
+	/* for v4.14 or later */
+	ulong kern_eframe_offset;
+	ulong machine_kexec_start;
+	ulong machine_kexec_end;
 };
 
 struct arm64_stackframe {
@@ -3298,7 +3321,7 @@ struct arm64_stackframe {
 
 #define USERSPACE_TOP_5LEVEL       0x0100000000000000
 #define PAGE_OFFSET_5LEVEL         0xff10000000000000
-#define VMALLOC_START_ADDR_5LEVEL  0xff92000000000000
+#define VMALLOC_START_ADDR_5LEVEL  0xffa0000000000000
 #define VMALLOC_END_5LEVEL         0xffd1ffffffffffff
 #define MODULES_VADDR_5LEVEL       0xffffffffa0000000
 #define MODULES_END_5LEVEL         0xffffffffff5fffff
@@ -3306,64 +3329,49 @@ struct arm64_stackframe {
 #define VMEMMAP_END_5LEVEL         0xffd5ffffffffffff
 
 #define VSYSCALL_START             0xffffffffff600000
-#define VSYSCALL_END               0xffffffffffe00000
+#define VSYSCALL_END               0xffffffffff601000
 
 #define PTOV(X)               ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)               x86_64_VTOP((ulong)(X))
 #define IS_VMALLOC_ADDR(X)    x86_64_IS_VMALLOC_ADDR((ulong)(X))
 
-#define PML4_SHIFT      39
-#define PTRS_PER_PML4   512
-#define PGDIR_SHIFT     30
+/*
+ * the default page table level for x86_64:
+ *    4 level page tables
+ */
+#define PGDIR_SHIFT     39
 #define PTRS_PER_PGD    512
+#define PUD_SHIFT       30
+#define PTRS_PER_PUD    512
 #define PMD_SHIFT       21
 #define PTRS_PER_PMD    512
 #define PTRS_PER_PTE    512
 
+/* 5 level page */
 #define PGDIR_SHIFT_5LEVEL    48
 #define PTRS_PER_PGD_5LEVEL  512
 #define P4D_SHIFT             39
 #define PTRS_PER_P4D         512
 
 #define __PGDIR_SHIFT  (machdep->machspec->pgdir_shift)
- 
-#define pml4_index(address) (((address) >> PML4_SHIFT) & (PTRS_PER_PML4-1))
+#define __PTRS_PER_PGD  (machdep->machspec->ptrs_per_pgd)
+
+#define pgd_index(address)  (((address) >> __PGDIR_SHIFT) & (__PTRS_PER_PGD-1))
 #define p4d_index(address)  (((address) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
-#define pgd_index(address)  (((address) >> __PGDIR_SHIFT) & (PTRS_PER_PGD-1))
+#define pud_index(address)  (((address) >> PUD_SHIFT) & (PTRS_PER_PUD - 1))
 #define pmd_index(address)  (((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
 #define pte_index(address)  (((address) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
 
-#define IS_LAST_PML4_READ(pml4) ((ulong)(pml4) == machdep->machspec->last_pml4_read)
+#define FILL_TOP_PGD() 							\
+	if (!(pc->flags & RUNTIME) || ACTIVE()) { 				\
+		FILL_PGD(vt->kernel_pgd[0], KVADDR, PAGESIZE());		\
+	}
 
-#define FILL_PML4() { \
-	if (!(pc->flags & RUNTIME) || ACTIVE()) { \
-		if (!IS_LAST_PML4_READ(vt->kernel_pgd[0])) \
-                    readmem(vt->kernel_pgd[0], KVADDR, machdep->machspec->pml4, \
-                        PAGESIZE(), "init_level4_pgt", FAULT_ON_ERROR); \
-                machdep->machspec->last_pml4_read = (ulong)(vt->kernel_pgd[0]); \
-	} \
-}
-
-#define FILL_PML4_HYPER() { \
-	if (!machdep->machspec->last_pml4_read) { \
-		unsigned long idle_pg_table = \
-		    symbol_exists("idle_pg_table_4") ? symbol_value("idle_pg_table_4") : \
-			symbol_value("idle_pg_table"); \
-		readmem(idle_pg_table, KVADDR, \
-			machdep->machspec->pml4, PAGESIZE(), "idle_pg_table", \
-			FAULT_ON_ERROR); \
-		machdep->machspec->last_pml4_read = idle_pg_table; \
-	}\
-}
-
-#define IS_LAST_UPML_READ(pml) ((ulong)(pml) == machdep->machspec->last_upml_read)
-
-#define FILL_UPML(PML, TYPE, SIZE) 					      \
-    if (!IS_LAST_UPML_READ(PML)) {                                             \
-            readmem((ulonglong)((ulong)(PML)), TYPE, machdep->machspec->upml, \
-                    SIZE, "pml page", FAULT_ON_ERROR);                        \
-            machdep->machspec->last_upml_read = (ulong)(PML);                 \
-    }								            
+#define FILL_TOP_PGD_HYPER() 							\
+	unsigned long idle_pg_table = symbol_exists("idle_pg_table_4") ? 	\
+					symbol_value("idle_pg_table_4") : 	\
+					symbol_value("idle_pg_table");		\
+	FILL_PGD(idle_pg_table, KVADDR, PAGESIZE());
 
 #define IS_LAST_P4D_READ(p4d) ((ulong)(p4d) == machdep->machspec->last_p4d_read)
 
@@ -3387,7 +3395,7 @@ struct arm64_stackframe {
 #define __VIRTUAL_MASK         ((1UL << __VIRTUAL_MASK_SHIFT) - 1)
 #define PAGE_SHIFT             12
 #define PAGE_SIZE              (1UL << PAGE_SHIFT)
-#define PHYSICAL_PAGE_MASK    (~(PAGE_SIZE-1) & (__PHYSICAL_MASK << PAGE_SHIFT))
+#define PHYSICAL_PAGE_MASK    (~(PAGE_SIZE-1) & __PHYSICAL_MASK )
 
 #define _PAGE_BIT_NX    63
 #define _PAGE_PRESENT   0x001
@@ -3903,6 +3911,9 @@ struct efi_memory_desc_t {
 #define PGD_INDEX_SIZE_L4_64K_3_10  12
 #define PMD_INDEX_SIZE_L4_64K_4_6  5
 #define PUD_INDEX_SIZE_L4_64K_4_6  5
+#define PMD_INDEX_SIZE_L4_64K_4_12 10
+#define PUD_INDEX_SIZE_L4_64K_4_12 7
+#define PGD_INDEX_SIZE_L4_64K_4_12 8
 #define PTE_INDEX_SIZE_RADIX_64K  5
 #define PMD_INDEX_SIZE_RADIX_64K  9
 #define PUD_INDEX_SIZE_RADIX_64K  9
@@ -4468,6 +4479,7 @@ struct gnu_request {
     		struct symbol *sym;
     		struct objfile *obj;
   	} global_iterator;
+	struct load_module *lm;
 };
 
 /*
@@ -4570,6 +4582,13 @@ enum type_code {
  */
 #define PF_EXITING 0x00000004  /* getting shut down */
 #define PF_KTHREAD 0x00200000  /* I am a kernel thread */
+#define SCHED_NORMAL	0
+#define SCHED_FIFO	1
+#define SCHED_RR	2
+#define SCHED_BATCH	3
+#define SCHED_ISO	4
+#define SCHED_IDLE	5
+#define SCHED_DEADLINE	6
 
 extern long _ZOMBIE_;
 #define IS_ZOMBIE(task)   (task_state(task) & _ZOMBIE_)
@@ -4597,6 +4616,7 @@ extern long _ZOMBIE_;
 #define PS_NO_HEADER  (0x10000)
 #define PS_MSECS      (0x20000)
 #define PS_SUMMARY    (0x40000)
+#define PS_POLICY     (0x80000)
 
 #define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT|PS_MSECS|PS_SUMMARY)
 
@@ -4614,6 +4634,7 @@ struct psinfo {
 	} regex_data[MAX_PS_ARGS];
 	int regexs;
 	ulong *cpus;
+	int policy;
 };
 
 #define IS_A_NUMBER(X)      (decimal(X, 0) || hexadecimal(X, 0))
@@ -4817,7 +4838,7 @@ char *strip_ending_char(char *, char);
 char *strip_beginning_char(char *, char);
 char *strip_comma(char *);
 char *strip_hex(char *);
-char *upper_case(char *, char *);
+char *upper_case(const char *, char *);
 char *first_nonspace(char *);
 char *first_space(char *);
 char *replace_string(char *, char *, char);
@@ -5718,7 +5739,7 @@ struct machine_specific {
 	ulong modules_vaddr;
 	ulong modules_end;
 	ulong phys_base;
-        char *pml4;
+	char *pml4;
 	char *upml;
 	ulong last_upml_read;
 	ulong last_pml4_read;
@@ -5739,6 +5760,10 @@ struct machine_specific {
         char *p4d;
 	ulong last_p4d_read;
 	struct ORC_data orc;
+	ulong irq_stack_gap;
+	ulong kpti_entry_stack;
+	ulong kpti_entry_stack_size;
+	ulong ptrs_per_pgd;
 };
 
 #define KSYMS_START    (0x1)
@@ -5756,6 +5781,7 @@ struct machine_specific {
 #define RANDOMIZED  (0x1000)
 #define VM_5LEVEL   (0x2000)
 #define ORC         (0x4000)
+#define KPTI        (0x8000)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4|VM_5LEVEL)
 
@@ -6309,6 +6335,7 @@ void sadump_set_zero_excluded(void);
 void sadump_unset_zero_excluded(void);
 struct sadump_data;
 struct sadump_data *get_sadump_data(void);
+int sadump_calc_kaslr_offset(ulong *);
 
 /*
  * qemu.c

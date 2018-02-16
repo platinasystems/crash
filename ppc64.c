@@ -447,10 +447,16 @@ ppc64_init(int when)
 				} else if (!(machdep->flags & BOOK3E) &&
 				    (THIS_KERNEL_VERSION >= LINUX(4,6,0))) {
 					m->l1_index_size = PTE_INDEX_SIZE_L4_64K_3_10;
-					m->l2_index_size = PMD_INDEX_SIZE_L4_64K_4_6;
-					m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_6;
-					m->l4_index_size = PGD_INDEX_SIZE_L4_64K_3_10;
 
+					if (THIS_KERNEL_VERSION >= LINUX(4,12,0)) {
+						m->l2_index_size = PMD_INDEX_SIZE_L4_64K_4_12;
+						m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_12;
+						m->l4_index_size = PGD_INDEX_SIZE_L4_64K_4_12;
+					} else {
+						m->l2_index_size = PMD_INDEX_SIZE_L4_64K_4_6;
+						m->l3_index_size = PUD_INDEX_SIZE_L4_64K_4_6;
+						m->l4_index_size = PGD_INDEX_SIZE_L4_64K_3_10;
+					}
 				} else if (THIS_KERNEL_VERSION >= LINUX(3,10,0)) {
 					m->l1_index_size = PTE_INDEX_SIZE_L4_64K_3_10;
 					m->l2_index_size = PMD_INDEX_SIZE_L4_64K_3_10;
@@ -2331,6 +2337,14 @@ retry:
                         *nip = *up;
                         *ksp = bt->stackbase + 
 				((char *)(up) - 16 - bt->stackbuf);
+			/*
+			 * Check whether this symbol relates to a
+			 * backtrace or not
+			 */
+			ur_ksp =  *(ulong *)&bt->stackbuf[(*ksp) - bt->stackbase];
+			if (!INSTACK(ur_ksp, bt))
+				continue;
+
                         return TRUE;
                 }
 	}

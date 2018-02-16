@@ -1,3 +1,244 @@
+crash (7.2.1-1) unstable; urgency=medium
+
+  * New upstream (closes: #890394)
+
+  * Fix for the "runq" command on Linux 4.14 and later kernels that contain
+    commit cd9e61ed1eebbcd5dfad59475d41ec58d9b64b6a, titled "rbtree: cache
+    leftmost node internally".  Without the patch, the command fails with the
+    error message "runq: invalid structure member offset: cfs_rq_rb_leftmost".
+
+  * Fix to prevent a useless message during session inialization.  Without the
+    patch, if the highest possible node bit in the node_states[N_ONLINE]
+    multi-word bitmask is set, then a message such as "crash:
+    next_online_node: 256 is too large!" will be displayed.
+
+  * Additional fixes for the ARM64 "bt" command for Linux 4.14 kernels.  The
+    patch corrects the contents of in-kernel exception frame register dumps,
+    and properly transitions the backtrace from the IRQ stack to the process
+    stack.
+
+  * Implemented a new "search -T" option, which is identical to the "search
+    -t" option, except that the search is restricted to the kernel stacks of
+    active tasks.
+
+  * Removal of the ARM64 "bt -o" option for Linux 4.14 and later kernels,
+    along with several cleanups/readability improvements.
+
+  * Fix for support of KASLR enabled kernels captured by the SADUMP dumpfile
+    facility. SADUMP dumpfile headers do not contain phys_base or VMCOREINFO
+    notes, so without this patch, the crash session fails during
+    initialization with the message "crash: seek error: kernel virtual
+    address: <address>  type: "page_offset_base".  This patch calculates the
+    phys_base value and the KASLR offset using the IDTR and CR3 registers from
+    the dumpfile header.
+
+  * Implemented a new "ps -y policy" option to filter the task display by
+    scheduling policy.  Applicable to both standalone ps invocation as well as
+    via foreach.
+
+  * Fix for the "kmem -[sS]" options on Linux 4.14 and later kernels that
+    contain commit 2482ddec670fb83717d129012bc558777cb159f7, titled "mm: add
+    SLUB free list pointer obfuscation".  Without the patch, there will
+    numerous error messages of the type "kmem: <cache name> slab: <address>
+    invalid freepointer: <obfuscated address>" if the kernel is configured
+    with CONFIG_SLAB_FREELIST_HARDENED.
+
+  * Fix for the validation of the bits located in the least significant bits of
+    mem_section.section_mem_map pointers.  Without the patch, the validation
+    functions always returned valid, due to a coding error found by clang.
+    However, it was never really a problem because it is extremely unlikely
+    that an existing mem_section would ever be invalid.
+
+  * Fix for the x86_64 kernel virtual address to physical address translation
+    mechanism.  Without the patch, when verifying that the PAGE_PRESENT bit is
+    set in the top-level page table, it would always test positively, and the
+    translation would continue parsing the remainder of the page tables.  This
+    would virtually never be a problem in practice because if the top-level
+    page table entry existed, its PAGE_PRESENT bit would be set.
+
+  * Removed a check for a negative block_size value which is always a
+    non-negative unsigned value in the SADUMP header parsing function.
+
+  * Removed a check for an impossible negative value when calculating the
+    beginning address when applying the context value specified by the "search
+    -x <count>" option.
+
+  * Implemented a new "timer -C <cpu-specifier>" option that restricts the
+    timer or hrtimer output to the timer queue data associated with one or
+    more cpus.  For multiple cpus, the cpu-specifier uses the standard comma
+    or dash separated list format.
+
+  * Fix for a "ps -l" regression introduced by the new "ps -y" option
+    introduced above.  Without the patch, the -l option generates a
+    segmentation violation if not accompanied by a -C cpu specifier option.
+
+  * Fix for the "kmem -i" and "kmem -V" options in Linux 4.8 and later kernels
+    containing commit 75ef7184053989118d3814c558a9af62e7376a58, titled "mm,
+    vmstat: add infrastructure for per-node vmstats".  Without the patch, the
+    CACHED line of "kmem -i" shows 0, and the VM_STAT section of "kmem -V" is
+    missing entirely.
+
+  * Fix for Linux 4.11 and later kernels that contain kernel commit
+    4b3ef9daa4fc0bba742a79faecb17fdaaead083b, titled "mm/swap: split swap
+    cache into 64MB trunks".  Without the patch, the CACHED line of "kmem -i"
+    may show nonsensical data.
+
+  * Implemented a new "dev -D" option that is the same as "dev -d", but
+    filters out the display of disks that have no I/O in progress.
+
+  * If a line number request for a module text address initially fails, force
+    the embedded gdb module to complete its two-stage strategy used for
+    reading debuginfo symbol tables from module object files, and then retry
+    the line number extraction.  This automatically does what the "mod -r" or
+    "crash --readnow" options accomplish.
+
+  * Update for support of Linux 4.12 and later PPC64 kernels where the hash
+    page table geometry accommodates a larger virtual address range.  Without
+    the patch, the virtual-to-physical translation of user space virtual
+    addresses by "vm -p", "vtop", and "rd -u" may generate an invalid
+    translation or otherwise fail.
+
+  * Implemented a new "runq -T" option that displays the time lag of each CPU
+    relative to the most recent runqueue timestamp.
+
+  * Fix to support Linux 4.15 and later kernels that contain kernel commit
+    e8cfbc245e24887e3c30235f71e9e9405e0cfc39, titled "pid: remove pidhash".
+    The kernel's traditional usage of a pid_hash[] array to store PIDs has
+    been replaced by an IDR radix tree, requiring a new crash plug-in function
+    to gather the system's task set.  Without the patch, the crash session
+    fails during initialization with the error message "crash: cannot resolve
+    init_task_union".
+
+  * Fix for the "net" command when the network device listing has an unusually
+    large number of IP addresses.  In that case, without the patch, the
+    command may generate a segmentation violation.
+
+  * Fix for Linux 4.15 and later kernels that are configured with
+    CONFIG_SPARSEMEM_EXTREME, and that contain kernel commit
+    83e3c48729d9ebb7af5a31a504f3fd6aff0348c4, titled "mm/sparsemem: Allocate
+    mem_section at runtime for CONFIG_SPARSEMEM_EXTREME=y".  Without the
+    patch, kernels configured with SPARSEMEM_EXTREME have changed the data
+    type of "mem_section" from an array to a pointer, leading to errors in
+    commands such as "kmem -p", "kmem -n", "kmem -s", and any other command
+    that translates a physical address to its page struct address.
+
+  * With the latest PPC64 NMI IPI changes, crash_ipi_callback is found
+    multiple times on the stack of active non-panic tasks.  Ensure that the
+    symbol reference relates to an actual backtrace stack frame.
+
+  * Update the starting virtual address of vmalloc space for kernels
+    configured with CONFIG_X86_5LEVEL.
+
+  * Update the X86_64 VSYSCALL_END address to reflect that it only contains 1
+    page.
+
+  * Prevent the X86_64 FILL_PML() macro from updating the internal
+    machdep->machspec->last_pml4_read address every time a vmalloc'd kernel
+    virtual address is translated.
+
+  * Fix for the "bt" command in x86_64 kernels that contain, or have backports
+    of, kernel commit 4950d6d48a0c43cc61d0bbb76fb10e0214b79c66, titled
+    "x86/dumpstack: Remove 64-byte gap at end of irq stack".  Without the
+    patch, backtraces fail to transition from the IRQ stack back to the
+    process stack, showing an error message such as "bt: cannot transition
+    exception stack to IRQ stack to current process stack".
+
+  * Initial pass for support of kernel page table isolation.  The x86_64 "bt"
+    command may indicate "bt: cannot transition from exception stack to
+    current process stack" if the crash callback NMI occurred while an active
+    task was running on the new entry trampoline stack.  This has only been
+    tested on the RHEL7 backport of the upstream patch because as of this
+    commit, crash does not run on 4.15-rc kernels.  Further changes may be
+    required for upstream kernels, and distributions that implement the kernel
+    changes differently than upstream.
+
+  * Fix for the "bt" command and the "ps -s" option for zombie tasks whose
+    kernel stacks have been freed/detached.  Without the patch, the "bt"
+    command indicates "bt: invalid kernel virtual address: 0 type: stack
+    contents" and "bt: read of stack at 0 failed"; it will be changed to
+    display "(no stack)".  The "ps -s" option would fail prematurely upon
+    reaching such a task, indicating "ps: invalid kernel virtual address: 0
+    type: stack contents" and "ps: read of stack at 0 failed".
+
+  * Fix for running on live systems on 4.15-rc2 and later kernels that are
+    configured with CONFIG_RANDOMIZE_BASE and contain kernel commit
+    668533dc0764b30c9dd2baf3ca800156f688326b, titled "kallsyms: take advantage
+    of the new '%px' format".  Without the patch, a live crash session does
+    not show the "WARNING: kernel relocated ..." message expected with KASLR,
+    and then displays the message "crash: cannot set context for pid: <pid>"
+    prior to generating a SIGSEGV.
+
+  * Fix for 4.15-rc5 and later x86_64 kernels that contain kernel commit
+    c482feefe1aeb150156248ba0fd3e029bc886605, titled "x86/entry/64: Make
+    cpu_entry_area.tss read-only".  Without the patch, the addresses and sizes
+    of the x86_64 exception stacks cannot be determined; therefore if a
+    backtrace starts on one of the exception stacks, then the "bt" command
+    will fail.
+
+  * Additional fix for support of KASLR enabled kernels captured by the SADUMP
+    dumpfile facility, where this patch fixes a problem when Page Table
+    Isolation(PTI) is enabled.  When PTI is enabled, bit 12 of CR3 register is
+    used to split user space and kernel space.  Also bit 11:0 is used for
+    Process Context IDentifiers(PCID).  To open an SADUMP dumpfile, the value
+    of CR3 is used to calculate KASLR offset and phys_base; this patch masks
+    the CR3 register value correctly for a PTI enabled kernel.
+
+  * Second phase of future support for x86_64 5-level page tables.  This patch
+    is a cleanup/collaboration of the original logic used by the various vtop
+    functions, where several new common functions have been added for
+    extracting page table entries from PGD, P4D, PUD, PMD and PTE pages.  The
+    usage of the former PML4 and UPML pages have been replaced with the use of
+    the common PGD page, and use the PUD page in 4-level page table
+    translation.  Support for 5-level page tables has been incorporated into
+    the the existing x86_64_kvtop() and x86_64_uvtop_level4() functions.
+    Backwards compatibility for older legacy kernels has been maintained.  The
+    third phase of support will automatically detect whether the kernel
+    proper, and whether an individual user task, is utilizing 5-level page
+    tables.  This patch enables support for kernel-only 5-level page tables by
+    entering the command line option "--machdep vm=5level".
+
+  * Xen commit 615588563e99a23aaf37037c3fee0c413b051f4d (Xen 4.0.0.) extended
+    the direct mapping to 5 TB.  This area was previously reserved for future
+    use, so it is OK to simply change the upper bound unconditionally.
+
+  * Add a new "foreach gleader" qualifier option, restricting the output to
+    user-space tasks that are thread group leaders.
+
+  * Since Xen commit 666aca08175b ("sched: use the auto-generated list of
+    schedulers") crash cannot open Xen vmcores because the "schedulers" symbol
+    no longer exists.  Xen 4.7 implemented schedulers as its own section in
+    "xen/arch/x86/xen.lds.S", delimited by the two symbols
+    "__start_schedulers_array" and "__end_schedulers_array".  Without the
+    patch, the crash session fails during initialization with the error
+    message "crash: cannot resolve schedulers"
+
+  * Fix the sample crash.ko memory driver to prevent an s390X kernel
+    addressing exception.  Legitimate pages of RAM that successfully pass the
+    page_is_ram() and pfn_valid() verifier functions may not be provided by
+    the s390x hypervisor, and the memcpy() from the non-existent memory to the
+    bounce buffer panics the kernel.  The patch replaces the the memcpy() call
+    with probe_kernel_read().
+
+  * Fix for the ARM64 "bt" command running against Linux 4.14 and later
+    kernels.  Without the patch, the backtraces of the active tasks in a
+    kdump-generated dumpfile are truncated.  Without the patch, the panic task
+    will just show the "crash_kexec" frame and the kernel-entry user-space
+    exception frame; the non-panic tasks will show their backtraces starting
+    from the stackframe addresses captured in the per-cpu NT_PRSTATUS notes,
+    and will not display the exception frame generated by the NMI callback,
+    nor any stackframes on the IRQ stack.
+
+  * Fix for the ARM64 "bt" command in kernels that contain commit
+    30d88c0e3ace625a92eead9ca0ad94093a8f59fe, titled "arm64: entry: Apply BP
+    hardening for suspicious interrupts from EL0".  Without the patch, there
+    may be invalid kernel kernel exception frames displayed on an active
+    task's kernel stack, often below a stackframe of the
+    "do_el0_ia_bp_hardening" function; the address translation of the PC and
+    LR values in the the bogus exception frame will display "[unknown or
+    invalid address]".
+
+ -- Troy Heber <troyh@debian.org>  Fri, 16 Feb 2018 10:47:33 -0700
+
 crash (7.2.0-1) unstable; urgency=medium
 
   * New upstream (closes: #884464)
