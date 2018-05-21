@@ -1,3 +1,12 @@
+crash (7.2.1-2) unstable; urgency=medium
+
+  * Do not git clone eppic extension. (Closes: #898707), from Thadeu Lima de
+    Souza Cascardo <cascardo@debian.org>
+  * Remove generated files: CFLAGS.extra LDFLAGS.extra extensions/defs.h, from
+    Thadeu Lima de Souza Cascardo <cascardo@debian.org>
+
+ -- Troy Heber <troyh@debian.org>  Mon, 21 May 2018 08:18:43 -0600
+
 crash (7.2.1-1) unstable; urgency=medium
 
   * New upstream (closes: #890394)

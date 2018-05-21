@@ -1,0 +1,25 @@
+From: Thadeu Lima de Souza Cascardo <cascardo@debian.org>
+Bug-Debian: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=898707
+Origin: vendor, 
+Forwarded: not-needed
+Last-Update: 2018-05-17
+Description: Build targets shoult not attempt network access
+ When git is installed, the eppic extensions makefile will try to access
+ github.com to clone the extension code.
+
+ This patch simply fails to find the git binary by adding an extra
+ false condition to minimize the delta size.
+
+Index: crash-7.2.1/extensions/eppic.mk
+===================================================================
+--- crash-7.2.1.orig/extensions/eppic.mk
++++ crash-7.2.1/extensions/eppic.mk
+@@ -33,7 +33,7 @@ all:
+         then \
+         if  [ ! -f $(APPFILE) ]; \
+         then \
+-          if [ -f "$(GIT)" ]; \
++          if [ -f "$(GIT)" -a 0 -gt 1 ]; \
+           then \
+              if [ -n "$(EPPIC_GIT_URL)" ]; then \
+                git clone "$(EPPIC_GIT_URL)" eppic; \

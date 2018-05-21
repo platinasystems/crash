@@ -9,10 +9,10 @@ DPKG_EXPORT_BUILDFLAGS=1
 include /usr/share/dpkg/buildflags.mk
 
 %:
-	dh $@ --with quilt
+	dh $@
 
 override_dh_auto_build:
-	dh_auto_build 
+	dh_auto_build
 	$(MAKE) extensions lzo snappy
 
 override_dh_auto_clean:
@@ -27,6 +27,9 @@ override_dh_clean:
 	rm -Rf $(CURDIR)/gdb.files
 	rm -Rf $(CURDIR)/build_data.c
 	rm -Rf $(CURDIR)/extensions/*.so
+	rm -Rf $(CURDIR)/CFLAGS.extra
+	rm -Rf $(CURDIR)/LDFLAGS.extra
+	rm -Rf $(CURDIR)/extensions/defs.h
 
 override_dh_auto_install:
 	dh_auto_install
