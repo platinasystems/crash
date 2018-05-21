@@ -1,3 +1,221 @@
+crash (7.2.3-1) unstable; urgency=medium
+
+  * Fix for a crash-7.2.2 regression that may cause the "mount" command to
+    generate a segmentation violation.  The bug is dependent upon the compiler
+    version used to build the crash utility, where a buffer overrun is not
+    seen with more recent versions of gcc, which hide the bug due to a
+    different stack layout of a function's local variables.
+
+  * Fix for a second crash-7.2.2 buffer overrun regression that may cause the
+    "rd -S" option to generate a segmentation violation if a displayed memory
+    location contains a slab object address.
+
+  * Fix for a third, highly unlikely, crash-7.2.2 buffer overrun regression,
+    that could potentially occur during session initialization.
+
+ -- Troy Heber <troyh@debian.org>  Mon, 21 May 2018 14:01:30 -0600
+
+crash (7.2.2-1) UNRELEASED; urgency=medium
+
+  * Fix to support Linux 4.16-rc1 and later ARM64 kernels, which fail during
+    session initialization with the error message "crash: cannot determine
+    page size".  The failure to determine the page size is due to the
+    combination of the following kernel commits: - Linux 4.6 commit
+    6ad1fe5d9077a1ab40bf74b61994d2e770b00b14 arm64: avoid R_AARCH64_ABS64
+    relocations for Image header fields - Linux 4.10 commit
+    4b65a5db362783ab4b04ca1c1d2ad70ed9b0ba2a arm64: Introduce
+    uaccess_{disable,enable} functionality based on TTBR0_EL1 - Linux 4.16
+    commit 1e1b8c04fa3451e2b7190930adae43c95f0fae31 arm64: entry: Move the
+    trampoline to be before PAN
+
+  * Fix the search for the booted kernel on a live system to prevent selecting
+    the unusable "vmlinux.o" file found in private build directories.  Without
+    the patch, the non-executable vmlinux.o file may be selected, and the
+    resulting fatal error message indicates a somewhat misleading "crash:
+    cannot resolve _stext".
+
+  * Implemented a new "ps -A" option that restricts the task output to just
+    the active tasks on each cpu.
+
+  * As the first step in optimizing the is_page_ptr() function, save the
+    maximum SPARSEMEM section number during initialization, and use it as the
+    topmost delimeter in subsequent mem_section searches.  Also allow for
+    per-architecture machdep->is_page_ptr() plugin functions.
+
+  * Implemented the x86_64 machdep->is_page_ptr() plugin function.  If the
+    kernel is configured with CONFIG_SPARSEMEM_VMEMMAP, the plugin function
+    optimizes the mem_section search, reducing the computation effort and time
+    consumed by commands that repeatedly call the is_page_ptr() function on
+    large-memory systems.
+
+  * Fixes for 32-bit X86 "bt" command on kernels that have been compiled with
+    retpoline gcc support.  Without the patch, backtraces may fail with the
+    error message "bt: cannot resolve stack trace", followed by the text
+    symbols found on the stack and possible exception frames.
+
+  * Fix the "help foreach" argument list to include the new "gleader" task
+    qualifier option that was added in version 7.1.2.
+
+  * VMware VMSS dumpfiles contain the state of each vCPU at the time when the
+    VM was suspended.  This patch enables crash to read the relevant registers
+    from each vCPU state for use as the starting hooks by the "bt" command.
+    Also, support for "help -[D|n]" to display dumpfile contents, and "help
+    -r" to display vCPU register sets has been implemented.  This is also the
+    first step towards implementing automatic KASLR offset calculations for
+    VMSS dumpfiles.
+
+  * Commit 45b74b89530d611b3fa95a1041e158fbb865fa84 added support for
+    calculating phys_base and the mapped kernel offset for KASLR-enabled
+    kernels on SADUMP dumpfiles by using a technique developed by Takao Indoh.
+    Originally, the patchset included support for kdumps, but this was dropped
+    in v2, as it was deemed unnecessary due to the upstream implementation of
+    the "vmcoreinfo device" in QEMU.  However, there are still several reasons
+    for which the vmcoreinfo device may not be present at the time when a
+    memory dump is taken from a VM, ranging from a host running older
+    QEMU/libvirt versions, to misconfigured VMs or environments running
+    Hypervisors that doesn't support this device.  This patchset generalizes
+    the KASLR-related functions from sadump.c and moves them to
+    kaslr_helper.c, and makes kdump analysis fall back to KASLR offset
+    calculation if vmcoreinfo data is missing.
+
+  * Fix for the "bt" command on 4.16 and later kernels size in which the
+    "thread_union" data structure is not contained in the vmlinux file's
+    debuginfo data.  Without the patch, the kernel stack size is not
+    calculated correctly, and defaults to 8K.  As a result "bt" fails with the
+    message "bt: invalid RSP: <address> bt->stackbase/stacktop:
+    <address>/<address> cpu: <number>".
+
+  * Fix for the x86_64 "bt" command for kernels that are configured with
+    CONFIG_FRAME_POINTER.  Without the patch, the per-text-return-address
+    framesize cache may contain invalid entries for functions that have an
+    "and $0xfffffffffffffff0,%rsp" instruction in their prologue, which aligns
+    the stack on a 16-byte boundary; therefore any cached framesize for a
+    text-return-address in such a function may be incorrect depending upon the
+    alignment of the stack address of a calling function.  If an invalid
+    cached framesize is utilized by "bt", the backtrace may skip over several
+    frames, or may display one or more invalid (stale) frames.  The patch
+    introduces a new cache that contains functions for which framesize values
+    should not be cached.
+
+  * Speed up the "bt" command by avoiding the text value cache that was put in
+    place many years ago when the crash utility supported the analysis of
+    remote dumpfiles using the deprecated "crash daemon" running on the remote
+    host.  The performance improvement will be most noticable when running the
+    first instance of "foreach bt", where there would often be a "hitch" when
+    it was determining the framesize of kernel module text return addresses.
+
+  * Optimization of the crash startup time and "ps" command processing time
+    when analyzing dumpfiles/systems with extremely large task counts.  For
+    example, running with a dumpfile containing over a million tasks, startup
+    time and "ps" processing time was reduced from 90 minutes to less then 40
+    seconds.
+
+  * Speed up the "ps -r" option by stashing the length of the task_struct.rlim
+    or signal_struct.rlim array in the internal array_table[].  Without the
+    patch, the length of the array is determined by a call to the embedded gdb
+    module for each task, and as a result, the command takes a minute or more
+    per 1000 tasks.  With the patch applied, it only takes about 0.5 seconds
+    per 1000 tasks.
+
+  * Added a new "tree -l" option for the rbtree display, which dumps the tree
+    sorted in linear order, starting with the leftmost node and progressing to
+    the right.  Also, if a corrupted rb_node pointer is encountered, do not
+    fail immediately, but rather display the rb_node address and the corrupt
+    pointer and continue.
+
+  * Display a fatal error message if the "tree -l" option is attempted with
+    radix trees.  Without the patch, the option would be silently ignored.
+
+  * Introduction of a new "bpf" command that displays information about loaded
+    eBFP (extended Berkeley Packet Filter) programs and maps.  Because of its
+    upstream fluidity, the capabilities of this command will be an ongoing
+    task.  In its initial form, the command displays the addresses, basic
+    information, and key data structures of eBPF programs and maps.  It also
+    translates the bytecode, and disassembles the jited code, of loaded eBPF
+    programs.
+
+  * Fixes to address several gcc-8.0.1 compiler warnings that are generated
+    when building with "make warn".  The warnings are all false alarm messages
+    of type [-Wformat-overflow=], [-Wformat-truncation=] and
+    [-Wstringop-truncation]; the affected files are extensions.c, task.c,
+    kernel.c, memory.c, remote.c, symbols.c, filesys.c and xen_hyper.c.
+
+  * Fix for the "ps -a" option for a user task that has utilized
+    "prctl(PR_SET_MM, ...)" to self-modify its memory map such that the stack
+    locations of its command line arguments and environment variables such are
+    not contiguous.  Without the patch, the command may fail with a dump of
+    the crash utility's internal buffer usage statistics followed by "ps:
+    cannot allocate any more memory!".
+
+  * Fix for a compilation error on ARM64.  Without the patch, the compilation
+    of the new bpf.c file fails with the error message "bpf.c:881:18: error:
+    conflicting types for 'u64'"
+
+  * Fix for an s390x session initialization-time warning that indicates
+    "WARNING: cannot determine MAX_PHYSMEM_BITS" on Linux 4.15 and later
+    kernels containing commit 83e3c48729d9ebb7af5a31a504f3fd6aff0348c4, which
+    changed the data type of "mem_section" from an array to a pointer.
+    Without the patch, the s390x manner of determining MAX_PHYSMEM_BITS fails
+    because it presumes that "mem_section" is an array, and as a result,
+    displays the warning message.
+
+  * Fix for the determination of the ARM64 phys_offset value when running live
+    against /proc/kcore.  Without the patch, the message "WARNING: cannot
+    access vmalloc'd module memory" may be displayed during session
+    initialization, and vmalloc/module memory will be unaccessible.  (It
+    should be noted that at the time of this patch, the upstream version of
+    /proc/kcore does not work correctly for ARM64, because PT_LOAD segments
+    for unity-mapped blocks of physical are not generated.)
+
+  * For live system analysis, if both "/dev/mem" and the "/dev/crash" memory
+    driver do not exist, try to use "/proc/kcore".  Without the patch, the
+    session fails immediately with the error message "crash: /dev/mem: No such
+    file or directory".
+
+  * Fix, and an update, for the "ipcs" command.  The fix addresses an error
+    where IPCS entries are not displayed because of a faulty read of the
+    "deleted" member of the embedded "kern_ipc_perm" data structure.  The
+    "deleted" member was being read as a 4-byte integer, but since it is
+    declared as a "bool" type, only the lowest byte gets set to 1 or 0.  Since
+    the structure is not zeroed-out when allocated, stale data may be left in
+    the upper 3 bytes, and the IPCS entry gets rejected.  The update is
+    required for Linux 4.11 and greater kernels, which reimplemented the IDR
+    facility to use radix trees in kernel commit
+    0a835c4f090af2c76fc2932c539c3b32fd21fbbb, titled "Reimplement IDR and IDA
+    using the radix tree".  Without the patch, if any IPCS entry exists, the
+    command would fail with the message "ipcs: invalid structure member
+    offset: idr_top"
+
+  * Second stage of the new "bpf" command.  This patch adds additional
+    per-program and per-map data for the "bpf -p ID" and "bpf -m ID" options,
+    containing data items shown by the "bpftool prog list" and "bpftool map
+    list" options; new "bpf -P" and "bpf -M" options have been added that dump
+    the extra data for all loaded programs or tasks.
+
+  * Fix for a compilation error of the new "bpf.c" file when building on older
+    host systems where CLOCK_BOOTTIME does not exist.
+
+  * Fix for infrequent failures of the x86 "bt" command to handle cases where
+    a user space task with "resume_userspace" or "entry_INT80_32" at the top
+    of the stack, or which was interrupted by the crash NMI while handling a
+    timer interrupt.  Without the patch, the backtrace would be proceeded with
+    the error message "bt: cannot resolve stack trace", and then dump the text
+    symbols found on the stack and all possible exception frames.
+
+  * Trivial formatting fix to "bpf" help page.
+
+  * Fix the "bpf" command display on Linux 4.17-rc1 and later kernels, which
+    contain two new program types, BPF_PROG_TYPE_RAW_TRACEPOINT and
+    BPF_PROG_TYPE_CGROUP_SOCK_ADDR.  Without the patch, the dynamic header
+    string created for bpf programs overran into the bpf map header, creating
+    one long combined header string.
+
+  * Updates for the presumption that system call names begin with "sys_".  In
+    Linux 4.17, x86_64 system calls may begin with "__x64_sys", where, for
+    example, "sys_read" has been replaced by "__x64_sys_read".
+
+ -- Troy Heber <troyh@debian.org>  Mon, 21 May 2018 13:59:41 -0600
+
 crash (7.2.1-2) unstable; urgency=medium
 
   * Do not git clone eppic extension. (Closes: #898707), from Thadeu Lima de
