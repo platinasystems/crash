@@ -1,3 +1,9 @@
+crash (7.2.3-2) unstable; urgency=medium
+
+  * Add wget as a builddep
+
+ -- Troy Heber <troyh@debian.org>  Tue, 22 May 2018 09:16:03 -0600
+
 crash (7.2.3-1) unstable; urgency=medium
 
   * Fix for a crash-7.2.2 regression that may cause the "mount" command to
