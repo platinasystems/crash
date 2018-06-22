@@ -3,7 +3,7 @@ Section: utils
 Priority: optional
 Maintainer: Troy Heber <troyh@debian.org>
 Uploaders:
-Build-Depends: debhelper (>= 10), dpkg-dev (>= 1.16.1), quilt (>= 0.47), binutils, binutils-dev, bison, gawk, flex, zlib1g-dev, libncurses5-dev, liblzo2-dev, libsnappy-dev, wget
+Build-Depends: debhelper (>= 10), dpkg-dev (>= 1.16.1), quilt (>= 0.47), binutils, binutils-dev, bison, gawk, flex, zlib1g-dev, libncurses5-dev, liblzo2-dev, libsnappy-dev
 Standards-Version: 4.1.3.0
 XS-Testsuite: autopkgtest
 

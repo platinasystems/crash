@@ -1,3 +1,9 @@
+crash (7.2.3+real-1) unstable; urgency=medium
+
+  * Revert wget addition and re-include embedded gdb (Closes: #901863)
+
+ -- Troy Heber <troyh@debian.org>  Fri, 22 Jun 2018 15:39:16 -0600
+
 crash (7.2.3-2) unstable; urgency=medium
 
   * Add wget as a builddep
