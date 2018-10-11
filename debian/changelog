@@ -1,3 +1,10 @@
+crash (7.2.3+real-2) unstable; urgency=medium
+
+  * Patch from Helmut Grohne <helmut@subdivi.de> to support non-glibc libcs
+    (Closes: #910235)
+
+ -- Troy Heber <troyh@debian.org>  Thu, 11 Oct 2018 09:47:22 -0600
+
 crash (7.2.3+real-1) unstable; urgency=medium
 
   * Revert wget addition and re-include embedded gdb (Closes: #901863)

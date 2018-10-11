@@ -1,0 +1,17 @@
+--- crash-7.2.3+real.orig/Makefile
++++ crash-7.2.3+real/Makefile
+@@ -269,11 +269,9 @@
+ 	if [ "${ARCH}" = "x86_64" ] && [ "${TARGET}" = "PPC64" ] && [ -f ${GDB}-ppc64le-support.patch ]; then \
+ 		patch -d ${GDB} -p1 -F0 < ${GDB}-ppc64le-support.patch ; \
+ 	fi
+-	if [ -f /usr/include/proc_service.h ]; then \
+-		grep 'extern ps_err_e ps_get_thread_area (struct' /usr/include/proc_service.h; \
+-		if [ $$? -eq 0 ]; then \
+-			patch -p0 < ${GDB}-proc_service.h.patch; \
+-		fi; \
++	if echo '#include <proc_service.h>' | ${CC} -E - | \
++			grep -q 'extern ps_err_e ps_get_thread_area (struct'; then \
++		patch -p0 < ${GDB}-proc_service.h.patch; \
+ 	fi
+ 
+ library: make_build_data ${OBJECT_FILES}
