@@ -1,3 +1,198 @@
+crash (7.2.5-1) unstable; urgency=medium
+
+  * New upstream (Closes: #919291)
+
+  * Resurrection of the "dev -p" option for displaying PCI device data on
+    Linux 2.6.26 and later kernels.  The option was deprecated as of Linux
+    2.6.26, and without the patch, the option would indicate "dev: -p option
+    not supported or applicable on this architecture or kernel" when running
+    against the newer kernel versions.  PCI Bus information will also be
+    displayed with this patch.
+
+  * With Linux 4.19-rc1 commit 7d4340bb92a9df78e6e28152f3dd89d9bd82146b,
+    titled "powerpc/mm: Increase MAX_PHYSMEM_BITS to 128TB with
+    SPARSEMEM_VMEMMAP config", the PPC64 MAX_PHYSMEM_BITS value has been
+    bumped up to 47.  The appropriate update has been made in this patch.
+
+  * Fix to allow piping command output to a shell script beginning with a
+    shebang (#!) character sequence if the script pathname is specified with a
+    preceding "./" or "/".  Without the patch, the piped command fails with
+    the message "crash: pipe operation failed".
+
+  * Fix for the PPC64 "bt" command to recognize when a thread is running in
+    OPAL firmware.  Without the patch, the "bt" command indicates
+    <task-address>: Invalid Stack Pointer <OPAL-firmware-address>"
+
+  * As an addendum to the "dev -p" patch above, add the new structure member
+    offsets for display by the "help -o" option.
+
+  * Enhancement to the "kmem -n" option to dump memory block information if
+    the kernel supports it.  In addition, the memory section data block has a
+    new "STATE" column added to it.
+
+  * Addendum to the previous "kmem -n" patch to fix a FTBFS issue.   Without
+    the patch, certain architectures fail to compile with the error
+    "memory.c:17315:16: error: ‘PAGE_SHIFT’ undeclared (first use in this
+    function)"
+
+  * Fix the calculation of the vmalloc memory region size to account for Linux
+    4.17 commit a7412546d8cb5ad578805060b4006f2a021b5868, titled "x86/mm:
+    Adjust vmalloc base and size at boot-time", which increases the region's
+    size from 32TB to 1280TB when 5-level pagetables are enabled.  Also
+    presume that virtual addresses above the end of the vmalloc space up to
+    the beginning of vmemmap space are translatable via 5-level page tables.
+    Without the patch, mapped virtual addresses may fail translation in
+    whatever command accesses them, with errors indicating "seek error: kernel
+    virtual address: <mapped-address>  type: <type-string>"
+
+  * Address several Coverity Scan "RESOURCE_LEAK" issues in the following
+    top-level source files: cmdline.c, kvmdump.c, lkcd_v8.c, xendump.c,
+    symbols.c, unwind_x86_32_64.c, va_server.c and va_server_v1.c.
+
+  * Modify the x86_64 "bt" behavior when a legitimate exception RIP value
+    cannot be referenced symbolically, such as when the exception occurs while
+    running in seccomp BPF filter code.  Without the patch, the exception
+    frame register dump is preceded by "[exception RIP: unknown or invalid
+    address]", and then followed by "bt: WARNING: possibly bogus exception
+    frame".  With the patch applied, the translation of the exception RIP will
+    show "[exception RIP: no symbolic reference]", and there will be no
+    warning message.
+
+  * Account for the /proc/kcore VMCOREINFO PT_NOTE in Linux 4.19 and later
+    kernels having commit 23c85094fe1895caefdd19ef624ee687ec5f4507, titled
+    "proc/kcore: add vmcoreinfo note to /proc/kcore".  The PT_NOTE information
+    is stored during session initialization for later display by "help
+    -[n|D]"; a subsequent commit will make it available for use by the crash
+    utility's internal pc->read_vmcoreinfo() function.
+
+  * Second phase of support for the VMCOREINFO PT_NOTE added to the ELF header
+    of /proc/kcore in Linux 4.19 and later kernels.  This patch introduces
+    support for live session /proc/kcore VMCOREINFO access by the crash
+    utility's internal pc->read_vmcoreinfo() function.  New usage include the
+    initialization of the x86_64 phys_base value, and the arm64 phys_offset,
+    page size, and VA bits count.
+
+  * Fix for Linux 4.20-rc1 and later kernels that contain kernel commit
+    5c83511bdb9832c86be20fb86b783356e2f58062, titled "x86/paravirt: Use a
+    single ops structure".  Without the patch, the kernel may be misidentified
+    as an ARCH_XEN kernel, with the most noticeable result being the inability
+    to read vmemmap'd page structures.
+
+  * Implemented the functionality for a new MEMBER_TYPE_NAME() macro, which
+    will return a pointer to the type name string of a structure member.  It
+    is being put in place for the support of Linux 4.20 radix tree to xarray
+    replacements, where structure member types may be changed from
+    radix_tree_root structures to xarray structures.
+
+  * First phase of support for the XArray facility.  The added support is
+    similar to that of radix trees, but introduces completely separate
+    functions, structures and #defines.  None of the applicable radix tree
+    users in the crash utility have been switched over, so this phase does not
+    introduce any functional changes.
+
+  * Second phase of support for the XArray facility, which handles the
+    switch-over of PID handling from a radix tree to an XArray in Linux 4.20
+    and later kernels.  Without the patch, the crash session fails during
+    session initialization with the message "crash: radix trees do not exist
+    or have changed their format".
+
+  * Third phase of support for the XArray facility, which consolidates the
+    radix_tree_pair and xarray_pair structures into a unified list_pair
+    structure that is used by both facilities, and fixes the "bpf" command.
+    Without the patch, the command fails on Linux 4.20 or later kernels with
+    the error message "bpf: radix trees do not exist or have changed their
+    format".
+
+  * Added support for usage of the XArray facility by the "files -p" option.
+    Without the patch, the command fails on Linux 4.20 and later kernels with
+    the error message "files: radix trees do not exist or have changed their
+    format".
+
+  * Added support for usage of the XArray facility by the "irq" command.
+    Without the patch, the command fails on Linux 4.20 and later kernels with
+    the error message "irq: radix trees do not exist or have changed their
+    format".
+
+  * Added support for usage of the XArray facility by the "ipcs" command.
+    Without the patch, the command may fail on Linux 4.20 and later kernels
+    with the error message "irq: radix trees do not exist or have changed
+    their format".
+
+  * Added a new "tree -t xarray" option to display of the contents of an
+    XArray in Linux 4.20 and later kernels.  The implementation is similar to
+    that of radix tree displays, but in addition, the "-p" option will also
+    display the index value of each entry in a radix tree or XArray.
+
+  * Fix for the "files -p <inode>" option on a file with a large number of
+    pages.  Without the patch, the command attempts to read radix tree node
+    slot entries that are RADIX_TREE_EXCEPTIONAL_ENTRY types instead of page
+    pointers, and as a result may fail with a dump of the internal buffer
+    allocation stats followed by the message "files: cannot allocate any more
+    memory!".
+
+  * Fix for the "ps -s" option on ARM64 if the number of tasks exceeds 2000.
+    Without the patch, the command ultimately fails with a dump of the
+    internal buffer allocation stats, followed by the message "ps: cannot
+    allocate any more memory!".
+
+  * With Linux 4.20-rc1 commit 4ffe713b7587b14695c9bec26a000fc88ef54895,
+    titled "powerpc/mm: Increase the max addressable memory to 2PB", the PPC64
+    MAX_PHYSMEM_BITS value has been bumped up to 51 for
+    CONFIG_SPARSEMEM_VMEMMAP and CONFIG_SPARSEMEM_EXTREME.  The appropriate
+    update has been made in this patch.
+
+  * Implemented a new plugin function for the readline library's tab
+    completion feature.  Without the patch, the use of the default plugin from
+    the embedded gdb module has been seen to cause segmentation violations or
+    other fatal malloc/free/corruption assertions.  The new plugin takes gdb
+    out of the picture entirely, and also restricts the matching options to
+    just symbol names, so as not to clutter the results with irrelevant
+    filenames.
+
+  * The RHEL8 kernel will contain a backport of the Linux 4.19 kernel commit
+    7d4340bb92a9df78e6e28152f3dd89d9bd82146b, titled "powerpc/mm: Increase
+    MAX_PHYSMEM_BITS to 128TB with SPARSEMEM_VMEMMAP config".  As a result,
+    the use of the THIS_KERNEL_VERSION() macro by the crash utility does not
+    suffice for determining the MAX_PHYSMEM_BITS value for PPC64.  The
+    appropriate update has been made in this patch.
+
+  * Fix for an initialization-time session failure when all three of the
+    following conditions exist: (1) invoking the session with "crash -d2" or
+    larger debug number (2) running against a Linux 3.3 or later kernel (3)
+    using a post-7.2.4 crash utility that has the new "kmem -n" support above
+    for the display of memory blocks Without the patch, the crash session
+    fails with the error message "crash: invalid structure member offset:
+    device_kobj".
+
+  * Fix for an initialization-time segmentation violation when invoking
+    crash-7.2.4 or later with "crash -d2" or larger debug number.
+
+  * Add a write operation handler to the sample /dev/crash memory driver that
+    enables writing to kernel memory via the "wr" command.
+
+  * Prevent a SIGSEGV if a user attempts to input a command line that exceeds
+    the maximum length of 1500 bytes.  The patch displays an error message and
+    ignores the command line.
+
+  * Fix for the "dev -[dD]" options in kernels containing Linux 5.0-rc1 commit
+    7ff4f8035695984c513598e2d49c8277d5d234ca, titled "block: remove dead queue
+    members", in which the number of I/Os issued to a disk driver are no
+    longer stored in the request_queue structure.  Without the patch, the
+    options indicate "dev: -d option not supported or applicable on this
+    architecture or kernel".  With the patch, the "DRV" column is not shown.
+
+  * A crash-7.1.1 commit added support for Linux version 5.x.  To prevent
+    surprise failures due to unexpected kernel version bumps in the future,
+    support has been added for version 6, keeping it one step ahead.
+
+  * Fix for a gcc-9 compilation error that occurs if an inline asm statement
+    clobbers the stack pointer.  Without the patch, x86 and x86_64 builds will
+    fail to compile gdb-7.6/gdb/common/linux-ptrace.c, generating an error
+    that indicates "error: Stack Pointer register clobbered by '%rsp' in
+    'asm'".
+
+ -- Troy Heber <troyh@debian.org>  Tue, 29 Jan 2019 08:55:24 -0700
+
 crash (7.2.3+real-2) unstable; urgency=medium
 
   * Patch from Helmut Grohne <helmut@subdivi.de> to support non-glibc libcs

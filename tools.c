@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3266,9 +3266,12 @@ cmd_list(void)
 	BZERO(ld, sizeof(struct list_data));
 	struct_list_offset = 0;
 
-	while ((c = getopt(argcnt, args, "Hhrs:S:e:o:xdl:")) != EOF) {
+	while ((c = getopt(argcnt, args, "BHhrs:S:e:o:xdl:")) != EOF) {
                 switch(c)
 		{
+		case 'B':
+			ld->flags |= LIST_BRENT_ALGO;
+			break;
 		case 'H':
 			ld->flags |= LIST_HEAD_FORMAT;
 			ld->flags |= LIST_HEAD_POINTER;
@@ -3516,9 +3519,13 @@ next_arg:
 	ld->flags &= ~(LIST_OFFSET_ENTERED|LIST_START_ENTERED);
 	ld->flags |= VERBOSE;
 
-	hq_open();
-	c = do_list(ld);
-	hq_close();
+	if (ld->flags & LIST_BRENT_ALGO)
+		c = do_list_no_hash(ld);
+	else {
+		hq_open();
+		c = do_list(ld);
+		hq_close();
+	}
 
         if (ld->structname_args)
 		FREEBUF(ld->structname);
@@ -3862,6 +3869,283 @@ do_list(struct list_data *ld)
 	return count;
 }
 
+static void 
+do_list_debug_entry(struct list_data *ld)
+{
+	int i, others;
+
+	if (CRASHDEBUG(1)) {
+		others = 0;
+		console("             flags: %lx (", ld->flags);
+		if (ld->flags & VERBOSE)
+			console("%sVERBOSE", others++ ? "|" : "");
+		if (ld->flags & LIST_OFFSET_ENTERED)
+			console("%sLIST_OFFSET_ENTERED", others++ ? "|" : "");
+		if (ld->flags & LIST_START_ENTERED)
+			console("%sLIST_START_ENTERED", others++ ? "|" : "");
+		if (ld->flags & LIST_HEAD_FORMAT)
+			console("%sLIST_HEAD_FORMAT", others++ ? "|" : "");
+		if (ld->flags & LIST_HEAD_POINTER)
+			console("%sLIST_HEAD_POINTER", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_DUPLICATE)
+			console("%sRETURN_ON_DUPLICATE", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_LIST_ERROR)
+			console("%sRETURN_ON_LIST_ERROR", others++ ? "|" : "");
+		if (ld->flags & RETURN_ON_LIST_ERROR)
+			console("%sRETURN_ON_LIST_ERROR", others++ ? "|" : "");
+		if (ld->flags & LIST_STRUCT_RADIX_10)
+			console("%sLIST_STRUCT_RADIX_10", others++ ? "|" : "");
+		if (ld->flags & LIST_STRUCT_RADIX_16)
+			console("%sLIST_STRUCT_RADIX_16", others++ ? "|" : "");
+		if (ld->flags & LIST_ALLOCATE)
+			console("%sLIST_ALLOCATE", others++ ? "|" : "");
+		if (ld->flags & LIST_CALLBACK)
+			console("%sLIST_CALLBACK", others++ ? "|" : "");
+		if (ld->flags & CALLBACK_RETURN)
+			console("%sCALLBACK_RETURN", others++ ? "|" : "");
+		console(")\n");
+		console("             start: %lx\n", ld->start);
+		console("     member_offset: %ld\n", ld->member_offset);
+		console("  list_head_offset: %ld\n", ld->list_head_offset);
+		console("               end: %lx\n", ld->end);
+		console("         searchfor: %lx\n", ld->searchfor);
+		console("   structname_args: %lx\n", ld->structname_args);
+		if (!ld->structname_args)
+			console("        structname: (unused)\n");
+		for (i = 0; i < ld->structname_args; i++)
+			console("     structname[%d]: %s\n", i, ld->structname[i]);
+		console("            header: %s\n", ld->header);
+		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
+		console("     callback_func: %lx\n", (ulong)ld->callback_func);
+		console("     callback_data: %lx\n", (ulong)ld->callback_data);
+		console("struct_list_offset: %lx\n", ld->struct_list_offset);
+	}
+}
+
+
+static void 
+do_list_output_struct(struct list_data *ld, ulong next, ulong offset,
+				  unsigned int radix, struct req_entry **e)
+{
+	int i;
+
+	for (i = 0; i < ld->structname_args; i++) {
+		switch (count_chars(ld->structname[i], '.'))
+		{
+			case 0:
+				dump_struct(ld->structname[i],
+					    next - offset, radix);
+				break;
+			default:
+				if (ld->flags & LIST_PARSE_MEMBER)
+					dump_struct_members(ld, i, next);
+				else if (ld->flags & LIST_READ_MEMBER)
+					dump_struct_members_fast(e[i],
+						 radix, next - offset);
+				break;
+		}
+	}
+}
+
+static int 
+do_list_no_hash_readmem(struct list_data *ld, ulong *next_ptr,
+				   ulong readflag)
+{
+	if (!readmem(*next_ptr + ld->member_offset, KVADDR, next_ptr,
+		     sizeof(void *), "list entry", readflag)) {
+		error(INFO, "\ninvalid list entry: %lx\n", *next_ptr);
+		return -1;
+	}
+	return 0;
+}
+
+static ulong brent_x; /* tortoise */
+static ulong brent_y; /* hare */
+static ulong brent_r; /* power */
+static ulong brent_lambda; /* loop length */
+static ulong brent_mu; /* distance to start of loop */
+static ulong brent_loop_detect;
+static ulong brent_loop_exit;
+/*
+ * 'ptr': representative of x or y; modified on return
+ */
+static int 
+brent_f(ulong *ptr, struct list_data *ld, ulong readflag)
+{
+       return do_list_no_hash_readmem(ld, ptr, readflag);
+}
+
+/*
+ * Similar to do_list() but without the hash_table or LIST_ALLOCATE.
+ * Useful for the 'list' command and other callers needing faster list
+ * enumeration.
+ */
+int
+do_list_no_hash(struct list_data *ld)
+{
+	ulong next, last, first, offset;
+	ulong searchfor, readflag;
+	int i, count, ret;
+	unsigned int radix;
+	struct req_entry **e = NULL;
+
+	do_list_debug_entry(ld);
+
+	count = 0;
+	searchfor = ld->searchfor;
+	ld->searchfor = 0;
+	if (ld->flags & LIST_STRUCT_RADIX_10)
+		radix = 10;
+	else if (ld->flags & LIST_STRUCT_RADIX_16)
+		radix = 16;
+	else
+		radix = 0;
+	next = ld->start;
+
+	readflag = ld->flags & RETURN_ON_LIST_ERROR ?
+		(RETURN_ON_ERROR|QUIET) : FAULT_ON_ERROR;
+
+	if (!readmem(next + ld->member_offset, KVADDR, &first, sizeof(void *),
+            "first list entry", readflag)) {
+                error(INFO, "\ninvalid list entry: %lx\n", next);
+		return -1;
+	}
+
+	if (ld->header)
+		fprintf(fp, "%s", ld->header);
+
+	offset = ld->list_head_offset + ld->struct_list_offset;
+
+	if (ld->structname && (ld->flags & LIST_READ_MEMBER)) {
+		e = (struct req_entry **)GETBUF(sizeof(*e) * ld->structname_args);
+		for (i = 0; i < ld->structname_args; i++)
+			e[i] = fill_member_offsets(ld->structname[i]);
+	}
+
+	brent_loop_detect = brent_loop_exit = 0;
+	brent_lambda = 0;
+	brent_r = 2;
+	brent_x = brent_y = next;
+	ret = brent_f(&brent_y, ld, readflag);
+	if (ret == -1)
+		return -1;
+	while (1) {
+		if (!brent_loop_detect && ld->flags & VERBOSE) {
+			fprintf(fp, "%lx\n", next - ld->list_head_offset);
+			if (ld->structname) {
+				do_list_output_struct(ld, next, offset, radix, e);
+			}
+		}
+
+                if (next && brent_loop_exit) {
+			if (ld->flags &
+			    (RETURN_ON_DUPLICATE|RETURN_ON_LIST_ERROR)) {
+				error(INFO, "\nduplicate list entry: %lx\n",
+					brent_x);
+				return -1;
+			}
+			error(FATAL, "\nduplicate list entry: %lx\n", brent_x);
+		}
+
+		if ((searchfor == next) ||
+		    (searchfor == (next - ld->list_head_offset)))
+			ld->searchfor = searchfor;
+
+		count++;
+                last = next;
+
+		if ((ld->flags & LIST_CALLBACK) &&
+		    ld->callback_func((void *)(next - ld->list_head_offset),
+		    ld->callback_data) && (ld->flags & CALLBACK_RETURN))
+			break;
+
+		ret = do_list_no_hash_readmem(ld, &next, readflag);
+		if (ret == -1)
+			return -1;
+
+		if (!brent_loop_detect) {
+			if (brent_x == brent_y) {
+				brent_loop_detect = 1;
+				error(INFO, "loop detected, loop length: %lx\n", brent_lambda);
+				/* reset x and y to start; advance y loop length */
+				brent_mu = 0;
+				brent_x = brent_y = ld->start;
+				while (brent_lambda--) {
+					ret = brent_f(&brent_y, ld, readflag);
+					if (ret == -1)
+						return -1;
+				}
+			} else {
+				if (brent_r == brent_lambda) {
+					brent_x = brent_y;
+					brent_r *= 2;
+					brent_lambda = 0;
+				}
+				brent_y = next;
+				brent_lambda++;
+			}
+		} else {
+			if (!brent_loop_exit && brent_x == brent_y) {
+				brent_loop_exit = 1;
+				error(INFO, "length from start to loop: %lx",
+					brent_mu);
+			} else {
+				ret = brent_f(&brent_x, ld, readflag);
+				if (ret == -1)
+					return -1;
+				ret = brent_f(&brent_y, ld, readflag);
+				if (ret == -1)
+					return -1;
+				brent_mu++;
+			}
+		}
+
+		if (next == 0) {
+			if (ld->flags & LIST_HEAD_FORMAT) {
+				error(INFO, "\ninvalid list entry: 0\n");
+				return -1;
+			}
+			if (CRASHDEBUG(1))
+				console("do_list end: next:%lx\n", next);
+
+			break;
+		}
+
+		if (next == ld->end) {
+			if (CRASHDEBUG(1))
+				console("do_list end: next:%lx == end:%lx\n",
+					next, ld->end);
+			break;
+		}
+
+		if (next == ld->start) {
+			if (CRASHDEBUG(1))
+				console("do_list end: next:%lx == start:%lx\n",
+					next, ld->start);
+			break;
+		}
+
+		if (next == last) {
+			if (CRASHDEBUG(1))
+				console("do_list end: next:%lx == last:%lx\n",
+					next, last);
+			break;
+		}
+
+		if ((next == first) && (count != 1)) {
+			if (CRASHDEBUG(1))
+		      console("do_list end: next:%lx == first:%lx (count %d)\n",
+				next, last, count);
+			break;
+		}
+	}
+
+	if (CRASHDEBUG(1))
+		console("do_list count: %d\n", count);
+
+	return count;
+}
+
 /*
  *  Issue a dump_struct_member() call for one or more structure
  *  members.  Multiple members are passed in a comma-separated
@@ -3909,6 +4193,7 @@ dump_struct_members(struct list_data *ld, int idx, ulong next)
 
 #define RADIXTREE_REQUEST (0x1)
 #define RBTREE_REQUEST    (0x2)
+#define XARRAY_REQUEST    (0x4)
 
 void
 cmd_tree()
@@ -3930,7 +4215,7 @@ cmd_tree()
 		switch (c)
 		{
 		case 't':
-			if (type_flag & (RADIXTREE_REQUEST|RBTREE_REQUEST)) {
+			if (type_flag & (RADIXTREE_REQUEST|RBTREE_REQUEST|XARRAY_REQUEST)) {
 				error(INFO, "multiple tree types may not be entered\n");
 				cmd_usage(pc->curcmd, SYNOPSIS);
 			}
@@ -3939,6 +4224,8 @@ cmd_tree()
 				type_flag = RADIXTREE_REQUEST;
 			else if (STRNEQ(optarg, "rb"))
 				type_flag = RBTREE_REQUEST;
+			else if (STRNEQ(optarg, "x"))
+				type_flag = XARRAY_REQUEST;
 			else {
 				error(INFO, "invalid tree type: %s\n", optarg);
 				cmd_usage(pc->curcmd, SYNOPSIS);
@@ -4023,11 +4310,13 @@ cmd_tree()
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if ((type_flag & RADIXTREE_REQUEST) && (td->flags & TREE_LINEAR_ORDER))
-		error(FATAL, "-l option is not applicable to radix trees\n");
+	if ((type_flag & (XARRAY_REQUEST|RADIXTREE_REQUEST)) && (td->flags & TREE_LINEAR_ORDER))
+		error(FATAL, "-l option is not applicable to %s\n", 
+			type_flag & RADIXTREE_REQUEST ? "radix trees" : "Xarrays");
 
-	if ((type_flag & RADIXTREE_REQUEST) && (td->flags & TREE_NODE_OFFSET_ENTERED))
-		error(FATAL, "-o option is not applicable to radix trees\n");
+	if ((type_flag & (XARRAY_REQUEST|RADIXTREE_REQUEST)) && (td->flags & TREE_NODE_OFFSET_ENTERED))
+		error(FATAL, "-o option is not applicable to %s\n",
+			type_flag & RADIXTREE_REQUEST ? "radix trees" : "Xarrays");
 
 	if ((td->flags & TREE_ROOT_OFFSET_ENTERED) && 
 	    (td->flags & TREE_NODE_POINTER))
@@ -4102,8 +4391,15 @@ next_arg:
 			fprintf(fp, "%sTREE_STRUCT_RADIX_16",
 				others++ ? "|" : "");
 		fprintf(fp, ")\n");
-		fprintf(fp, "              type: %s\n",
-			type_flag & RADIXTREE_REQUEST ? "radix" : "red-black");
+		fprintf(fp, "              type: ");
+			if (type_flag & RADIXTREE_REQUEST)
+				fprintf(fp, "radix\n");
+			else if (type_flag & XARRAY_REQUEST)
+				fprintf(fp, "xarray\n");
+			else
+				fprintf(fp, "red-black%s", 
+					type_flag & RBTREE_REQUEST ? 
+					"\n" : " (default)\n");
 		fprintf(fp, "      node pointer: %s\n",
 			td->flags & TREE_NODE_POINTER ? "yes" : "no");
 		fprintf(fp, "             start: %lx\n", td->start);
@@ -4118,6 +4414,8 @@ next_arg:
 	hq_open();
 	if (type_flag & RADIXTREE_REQUEST)
 		do_rdtree(td);
+	else if (type_flag & XARRAY_REQUEST)
+		do_xatree(td);
 	else
 		do_rbtree(td);
 	hq_close();
@@ -4280,6 +4578,120 @@ error_height:
 	return -1;
 }
 
+static ulong XA_CHUNK_SHIFT = UNINITIALIZED;
+static ulong XA_CHUNK_SIZE = UNINITIALIZED;
+static ulong XA_CHUNK_MASK = UNINITIALIZED;
+
+static void 
+do_xarray_iter(ulong node, uint height, char *path,
+	       ulong index, struct xarray_ops *ops)
+{
+	uint off;
+
+	if (!hq_enter(node))
+		error(FATAL,
+			"\nduplicate tree node: %lx\n", node);
+
+	for (off = 0; off < XA_CHUNK_SIZE; off++) {
+		ulong slot;
+		ulong shift = (height - 1) * XA_CHUNK_SHIFT;
+
+		readmem(node + OFFSET(xa_node_slots) +
+			sizeof(void *) * off, KVADDR, &slot, sizeof(void *),
+			"xa_node.slots[off]", FAULT_ON_ERROR);
+		if (!slot)
+			continue;
+
+		if ((slot & XARRAY_TAG_MASK) == XARRAY_TAG_INTERNAL)
+			slot &= ~XARRAY_TAG_INTERNAL;
+
+		if (height == 1)
+			ops->entry(node, slot, path, index | off, ops->private);
+		else {
+			ulong child_index = index | (off << shift);
+			char child_path[BUFSIZE];
+			sprintf(child_path, "%s/%d", path, off);
+			do_xarray_iter(slot, height - 1,
+					   child_path, child_index, ops);
+		}
+	}
+}
+
+int 
+do_xarray_traverse(ulong ptr, int is_root, struct xarray_ops *ops)
+{
+	ulong node_p;
+	long nlen;
+	uint height, is_internal;
+	unsigned char shift;
+	char path[BUFSIZE];
+
+	if (!VALID_STRUCT(xarray) || !VALID_STRUCT(xa_node) ||
+	      !VALID_MEMBER(xarray_xa_head) ||
+	      !VALID_MEMBER(xa_node_slots) ||
+	      !VALID_MEMBER(xa_node_shift)) 
+		error(FATAL, 
+			"xarray facility does not exist or has changed its format\n");
+
+	if (XA_CHUNK_SHIFT == UNINITIALIZED) {
+		if ((nlen = MEMBER_SIZE("xa_node", "slots")) <= 0)
+			error(FATAL, "cannot determine length of xa_node.slots[] array\n");
+		nlen /= sizeof(void *);
+		XA_CHUNK_SHIFT = ffsl(nlen) - 1;
+		XA_CHUNK_SIZE = (1UL << XA_CHUNK_SHIFT);
+		XA_CHUNK_MASK = (XA_CHUNK_SIZE-1);
+	}
+
+	height = 0;
+	if (!is_root) {
+		node_p = ptr;
+
+		if ((node_p & XARRAY_TAG_MASK) == XARRAY_TAG_INTERNAL)
+			node_p &= ~XARRAY_TAG_MASK;
+
+		if (VALID_MEMBER(xa_node_shift)) {
+			readmem(node_p + OFFSET(xa_node_shift), KVADDR,
+				&shift, sizeof(shift), "xa_node shift",
+				FAULT_ON_ERROR);
+			height = (shift / XA_CHUNK_SHIFT) + 1;
+		} else
+			error(FATAL, "-N option is not supported or applicable"
+				" for xarrays on this architecture or kernel\n");
+	} else {
+		readmem(ptr + OFFSET(xarray_xa_head), KVADDR, &node_p,
+			sizeof(void *), "xarray xa_head", FAULT_ON_ERROR);
+		is_internal = ((node_p & XARRAY_TAG_MASK) == XARRAY_TAG_INTERNAL);
+		if (node_p & XARRAY_TAG_MASK)
+			node_p &= ~XARRAY_TAG_MASK;
+
+		if (is_internal && VALID_MEMBER(xa_node_shift)) {
+			readmem(node_p + OFFSET(xa_node_shift), KVADDR, &shift,
+				sizeof(shift), "xa_node shift", FAULT_ON_ERROR);
+			height = (shift / XA_CHUNK_SHIFT) + 1;
+		}
+	}
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "xa_node.slots[%ld]\n", XA_CHUNK_SIZE);
+		fprintf(fp, "pointer at %lx (is_root? %s):\n",
+			node_p, is_root ? "yes" : "no");
+		if (is_root)
+			dump_struct("xarray", ptr, RADIX(ops->radix));
+		else
+			dump_struct("xa_node", node_p, RADIX(ops->radix));
+	}
+
+	if (height == 0) {
+		strcpy(path, "direct");
+		ops->entry(node_p, node_p, path, 0, ops->private);
+	} else {
+		strcpy(path, "root");
+		do_xarray_iter(node_p, height, path, 0, ops);
+	}
+
+	return 0;
+}
+
 static void do_rdtree_entry(ulong node, ulong slot, const char *path,
 			    ulong index, void *private)
 {
@@ -4304,7 +4716,7 @@ static void do_rdtree_entry(ulong node, ulong slot, const char *path,
 		fprintf(fp, "%lx\n", slot);
 
 	if (td->flags & TREE_POSITION_DISPLAY) {
-		fprintf(fp, "  position: %s/%ld\n",
+		fprintf(fp, "  index: %ld  position: %s/%ld\n", index,
 			path, index & RADIX_TREE_MAP_MASK);
 	}
 
@@ -4348,6 +4760,79 @@ int do_rdtree(struct tree_data *td)
 		ops.radix = 0;
 
 	do_radix_tree_traverse(td->start, is_root, &ops);
+
+	return 0;
+}
+
+
+static void do_xarray_entry(ulong node, ulong slot, const char *path,
+			    ulong index, void *private)
+{
+	struct tree_data *td = private;
+	static struct req_entry **e = NULL;
+	uint print_radix;
+	int i;
+
+	if (!td->count && td->structname_args) {
+		/*
+		 * Retrieve all members' info only once (count == 0)
+		 * After last iteration all memory will be freed up
+		 */
+		e = (struct req_entry **)GETBUF(sizeof(*e) * td->structname_args);
+		for (i = 0; i < td->structname_args; i++)
+			e[i] = fill_member_offsets(td->structname[i]);
+	}
+
+	td->count++;
+
+	if (td->flags & VERBOSE)
+		fprintf(fp, "%lx\n", slot);
+
+	if (td->flags & TREE_POSITION_DISPLAY) {
+		fprintf(fp, "  index: %ld  position: %s/%ld\n", index,
+			path, index & XA_CHUNK_MASK);
+	}
+
+	if (td->structname) {
+		if (td->flags & TREE_STRUCT_RADIX_10)
+			print_radix = 10;
+		else if (td->flags & TREE_STRUCT_RADIX_16)
+			print_radix = 16;
+		else
+			print_radix = 0;
+
+		for (i = 0; i < td->structname_args; i++) {
+			switch (count_chars(td->structname[i], '.')) {
+			case 0:
+				dump_struct(td->structname[i], slot, print_radix);
+				break;
+			default:
+				if (td->flags & TREE_PARSE_MEMBER)
+					dump_struct_members_for_tree(td, i, slot);
+				else if (td->flags & TREE_READ_MEMBER)
+					dump_struct_members_fast(e[i], print_radix, slot);
+				break;
+			}
+		}
+	}
+}
+
+int do_xatree(struct tree_data *td)
+{
+	struct xarray_ops ops = {
+		.entry		= do_xarray_entry,
+		.private	= td,
+	};
+	int is_root = !(td->flags & TREE_NODE_POINTER);
+
+	if (td->flags & TREE_STRUCT_RADIX_10)
+		ops.radix = 10;
+	else if (td->flags & TREE_STRUCT_RADIX_16)
+		ops.radix = 16;
+	else
+		ops.radix = 0;
+
+	do_xarray_traverse(td->start, is_root, &ops);
 
 	return 0;
 }
