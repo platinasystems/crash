@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2018 David Anderson
- * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2019 David Anderson
+ * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -167,6 +167,7 @@ char *program_usage_info[] = {
     "      vm=xen        (Xen kernel virtual memory address ranges)",
     "      vm=xen-rhel4  (RHEL4 Xen kernel virtual address ranges)",
     "      vm=5level     (5-level page tables)",
+    "      page_offset=<PAGE_OFFSET-value>",
     "    PPC64:",
     "      vm=orig",
     "      vm=2.6.14     (4-level page tables)",
@@ -179,6 +180,7 @@ char *program_usage_info[] = {
     "    ARM64:",
     "      phys_offset=<physical-address>",
     "      kimage_voffset=<kimage_voffset-value>",
+    "      max_physmem_bits=<value>",
     "    X86:",
     "      page_offset=<CONFIG_PAGE_OFFSET-value>",
     "",
@@ -333,7 +335,7 @@ char *program_usage_info[] = {
     "    and verification.  The default count is 32768.",
     "",
     "  --kaslr offset | auto",
-    "    If an x86 or x86_64 kernel was configured with CONFIG_RANDOMIZE_BASE,",
+    "    If x86, x86_64 or s390x kernel was configured with CONFIG_RANDOMIZE_BASE,",
     "    the offset value is equal to the difference between the symbol values ",
     "    compiled into the vmlinux file and their relocated KASLR value.  If", 
     "    set to auto, the KASLR offset value will be automatically calculated.",
@@ -3205,7 +3207,7 @@ NULL
 char *help_dev[] = {
 "dev",
 "device data",
-"[-i | -p | -d | -D]",
+"[-i | -p | -d | -D ] [-V | -v index [file]]",
 "  If no argument is entered, this command dumps character and block",
 "  device data.\n",
 "    -i  display I/O port usage; on 2.4 kernels, also display I/O memory usage.",
@@ -3220,6 +3222,16 @@ char *help_dev[] = {
 "                If the device driver uses blk-mq interface, this field",
 "                shows N/A(MQ).  If not available, this column is not shown.",
 "    -D  same as -d, but filter out disks with no in-progress I/O requests.",
+" ",
+"  If the dumpfile contains device dumps:",
+"        -V  display an indexed list of all device dumps present in the vmcore,",
+"            showing their file offset, size and name.", 
+"  -v index  select and display one device dump based upon an index value",
+"            shown by the -V option, shown in a default human-readable format;",
+"            alternatively, the \"rd -f\" option along with its various format",
+"            options may be used to further tailor the output.",
+"      file  only used with -v, copy the device dump data to a file.",
+
 "\nEXAMPLES",
 "  Display character and block device data:\n",
 "    %s> dev",
@@ -3350,6 +3362,33 @@ char *help_dev[] = {
 "        8 ffff81012dd71000   sda      ffff81012d8af040       6     0     6     6",
 "        8 ffff81012dc77000   sdb      ffff81012d8b5740       0     0     0     0",
 "        8 ffff81012d8d0c00   sdc      ffff81012d8ae9c0       0     0     0     0",
+
+"\n  Display the available device dumps:\n",
+"    %s> dev -V",
+"    INDEX  OFFSET             SIZE             NAME",
+"      0    0x240              33558464         cxgb4_0000:02:00.4",
+"      1    0x2001240          33558464         cxgb4_0000:03:00.4",
+
+"\n  Extract a specified device dump to file:\n",
+"    %s> dev -v 0 device_dump_0.bin",
+"    DEVICE: cxgb4_0000:02:00.4",
+"    33558464 bytes copied from 0x240 to device_dump_0.bin",
+
+"\n  Format and display a device's dump data to the screen using the \"rd\" command:\n",
+"    %s> rd -f 0x240 -32 8",
+"    240:  040b69e2 00000038 000e0001 00675fd4   .i..8........_g.",
+"    250:  00000000 21600047 00000000 00000000   ....G.`!........",
+
+"\n  Display a device's dump data to the screen using the default format:\n",
+"    %s> dev -v 1",
+"    DEVICE: cxgb4_0000:03:00.4",
+"             2001240:  00000038040b69e2 00af985c000e0001   .i..8.......\\...",
+"             2001250:  2150004700000000 0000000000000000   ....G.P!........",
+"             2001260:  0000000000000000 0000000000000000   ................",
+"             2001270:  0000000000000000 0002fccc00000001   ................",
+"             2001280:  00000000000027b0 0000000000000000   .'..............",
+"    ...",
+
 
 NULL               
 };
@@ -9387,6 +9426,8 @@ README_ENTER_DIRECTORY,
 "     32-bit ppc dumpfiles may be built by typing \"make target=PPC\".",
 "  o  On an x86_64 host, an x86_64 binary that can be used to analyze",
 "     arm64 dumpfiles may be built by typing \"make target=ARM64\".",
+"  o  On an x86_64 host, an x86_64 binary that can be used to analyze",
+"     ppc64le dumpfiles may be built by typing \"make target=PPC64\".",
 "",
 "  Traditionally when vmcores are compressed via the makedumpfile(8) facility",
 "  the libz compression library is used, and by default the crash utility",

@@ -1,3 +1,205 @@
+crash (7.2.6-1) unstable; urgency=medium
+
+  * Two fixes for the Xen hypervisor; the first fixes a bug seen with Xen
+    4.11.0 during initialization, which fails with the error message "crash:
+    invalid kernel virtual address: <address> type: fill_pcpu_struct",
+    followed by "WARNING: cannot fill pcpu_struct" and "crash: cannot read
+    cpu_info".  The second fix prevents a segmentation violation associated
+    with a crash-7.1.1 commit that addressed the Xen 4.5.0 hypervisor symbol
+    name change from "dom0" to "hardware_domain".
+
+  * Fix for Linux 4.20 and later x86_64 kernels which are NOT configured with
+    CONFIG_RANDOMIZE_BASE.  Linux 4.20 introduced kernel commit
+    d52888aa2753e3063a9d3a0c9f72f94aa9809c15, titled "x86/mm: Move LDT remap
+    out of KASLR region on 5-level paging", which modified the 4-level and
+    5-level paging PAGE_OFFSET values.  Without this patch, the crash session
+    fails during initialization with the error message "crash: read error:
+    kernel virtual address: <address>  type: tss_struct ist array".  For
+    kernels prior to Linux 4.20.0 which have backports of the kernel commit,
+    the kernel's PAGE_OFFSET value must be manually specified via the command
+    line option "--machdep page_offset=ffff888000000000" for kernels with
+    4-level page tables, or "--machdep page_offset=ff11000000000000" for
+    kernels with 5-level paging.  (or alternatively the shorter version "-m
+    page_offset=<address>" may be used).  The command line option requirement
+
+  * Fix for the "p" command if the expression contains more than one opening
+    parenthesis character and a minus/dash sign.  Without the patch, the
+    minus/dash sign will get dropped from the command prior to it being passed
+    on to gdb for evaluation, and the command will fail with the message "p:
+    gdb request failed: <expression>", where the <expression> string will not
+
+  * Fix for the internal parse_line() utility function to account for embedded
+    sets of parentheses, which may be used for expressions that are passed to
+    gdb by the "p" command.  Without the patch, expressions containing
+    embedded sets of parentheses are broken up into multiple argument tokens
+    instead of just one.  The previous commit has been reverted by this one.
+
+  * First phase of support for ARM64 kernels that are configured with
+    CONFIG_ARM64_USER_VA_BITS_52, which causes the PTRS_PER_PGD count to
+    increase from 64 to 1024.  Without the patch, "WARNING: cannot access
+    vmalloc'd module memory" will be displayed during session initialization,
+    and the translation of any mapped kernel virtual address that requires a
+    page table walk will fail, leading to a myriad of other errors.
+
+  * Support for configurable CONFIG_ARM64_PA_BITS values introduced in kernel
+    commit 982aa7c5f0861bf56b2412ca341a13f44c238ba4, titled "arm64: add
+    kconfig symbol to configure physical address size".  Without the patch, it
+    is impossible to determine the value of CONFIG_ARM64_PA_BITS is, and will
+    require a new MAX_PHYSMEM_BITS vmcoreinfo entry to be exported.  This
+
+  * For live system analysis where there is no vmcoreinfo ELF note attached to
+    /proc/kcore, or for dumpfile analysis where there is no vmcoreinfo ELF
+    note attached to the dumpfile, this patch sets the internal
+    pc->read_vmcoreinfo() function to a new plugin function that reads the
+    data directly from the live kernel or dumpfile.  Because the function is
+    set much later during initialization than if the ELF note is attached to
+    /proc/kcore or the dumpfile, it may not be available during very early
+
+  * Fix for Linux 4.14.84 and later 4.14-based x86_64 kernels which are NOT
+    configured with CONFIG_RANDOMIZE_BASE and have backported kernel commit
+    d52888aa2753e3063a9d3a0c9f72f94aa9809c15, titled "x86/mm: Move LDT remap
+    out of KASLR region on 5-level paging", which modified the 4-level and
+    5-level paging PAGE_OFFSET values.  Without this patch, the crash session
+    fails during initialization with the error message "crash: read error:
+    kernel virtual address: <address>  type: tss_struct ist array".
+
+  * Fix for determining the x86_64 "phys_base" value in dumpfiles created by
+    the KVM "virsh dump" facility if the kernel is KASLR-enabled and does not
+    have the phys_base value stored in vmcoreinfo data.  Without the patch,
+    the message "WARNING: cannot determine physical base address: defaulting
+    to 0" is displayed, and the crash session fails to initialize.
+
+  * 32-bit ARM kernels built with the Thumb-2 instruction set utilize the R7
+    register instead of FP for unwinding stacks using the DWARF unwinder.  On
+    those kernels, without the patch, the "bt" command only shows the task
+
+  * Fix for the "kmem -z" option on Linux 5.0 and later kernels that contain
+    commit a921444382b49cc7fdeca3fba3e278bc09484a27, titled "mm: move zone
+    watermark accesses behind an accessor".  Without the patch, the command
+    fails with the error message "kmem: invalid (optional) structure member
+    offsets: zone_pages_min or zone_struct_pages_min".
+
+  * Fix for the "kmem -i" option on Linux 5.0 and later kernels that contain
+    commit ca79b0c211af63fa3276f0e3fd7dd9ada2439839 titled "mm: convert
+    totalram_pages and totalhigh_pages variables to atomic".  Without the
+    patch, the command prints some incorrect values, and besides does not
+    print high/low memory information on kernels which are configured with
+
+  * Fix for the display of kernel module symbol types by the "sym" command in
+    Linux 5.0 and later kernels if the module debuginfo data has not been
+    loaded into the crash session.  The st_info member of the Elf32_Sym or
+    Elf64_Sym structures has changed so as to not contain ASCII symbol type
+    characters, and as a result the "sym" command will show unprintable data
+    as the symbol type.  With the patch, only text types ("t" or "T") will be
+
+  * First phase of support of the upcoming ARM64 kernel memory map changes to
+    support 52-bit kernel virtual addressing, which allows the configuration
+    of CONFIG_ARM64_VA_BITS to be 52, but where the actual number of VA bits
+    may be downgraded during boot depending upon the hardware capability.
+    This phase is only applicable for live system analysis.
+
+  * Fix for the "dis <function>" option with kernel module text symbols on
+    Linux 5.0 and later kernels.  Without the patch, the disassembly may stop
+    prematurely or extend into the next function because the st_size member of
+    the Elf32_Sym or Elf64_Sym text symbol structures can no longer be used as
+
+  * Commit dd12805ed1db7 in the linux-next kernel repository, titled "XArray:
+    Remove radix tree compatibility", changes the definition of
+    "radix_tree_root" back to be a struct.  However, the content of the new
+    structure differs from the original structure, so without the patch,
+    current linux-next kernels fail during initialization with the error
+    message "radix trees do not exist or have changed their format".  Because
+    the new "radix_tree_root" and "xarray" structures have nearly the same
+    layout, the existing functionality for XArrays can be reused.
+
+  * Fixes for the "trace.so" extension module: (1) The reader_page can be
+    empty if it was never read, do not record it if it is empty. Better yet,
+    do not record any page that is empty.  The struct buffer_page "real_end"
+    is not available in older kernels, so it needs to be tested if it exists
+    before we can use it.  (2) In newer kernels, the sp->type of kernel module
+    symbols does not contain the symbol type character unless the module's
+    debuginfo data has been loaded into the crash session.  Writing a garbage
+    type to the kallsyms file for trace-cmd to read causes it to crash, so
+    just always write an 'm'.  (3) Add the "trace dump -t <trace.dat>" option
+
+  * Fix to find the kernel configuration data in Linux 5.1 kernels containing
+    commit 13610aa908dcfce77135bb799c0a10d0172da6ba, titled "kernel/configs:
+    use .incbin directive to embed config_data.gz".  Without the patch, new
+    kernels configured with CONFIG_IKCONFIG_PROC will display "WARNING: could
+    not find MAGIC_START!" during session initialization, and also when
+
+  * Fix for the PPC64 "bt" command running against kernels that are configured
+    with CONFIG_THREAD_INFO_IN_TASK.  Without the patch, the "bt" command
+    fails with the message "bt: invalid/stale stack pointer for this task:
+
+  * Fix for the "files -d <dentry>" option if the dentry.d_inode pointer is
+    NULL.  Without the patch, the command output does not display the
+
+  * When the is_s390_dump() function is called to determine whether a file is
+    an s390 dumpfile, it currently presumes that the fopen() call always
+    works, and then tries to read it with using a NULL file pointer.  Change
+    it to verify that the fopen() was successful, and if not, print an error
+    message as is done with the other dumpfile type verifier functions.
+
+  * Implement support for ARM64 kernels that are configured with:
+    CONFIG_ARM64_PA_BITS=52 CONFIG_ARM64_64K_PAGES CONFIG_PGTABLE_LEVELS=3 and
+    that run on a host containing physical memory that utilizes any bit in the
+    uppermost 4 bits of the 52-bit physical address range.
+
+  * Extension of the "snap.so" extension module to pass a second
+    architecture-specific value in the ELF header; its initial use is for
+    support of the upcoming ARM64 52-bit kernel virtual address space by
+
+  * Apply initial changes to support kernel address space layout randomization
+    (KASLR) for s390X.  This is the minimal patch-set required to process
+    s390x dumps for the kernels configured with CONFIG_RANDOMIZE_BASE, and to
+    accept the "--kaslr" command line option.  Only dumpfiles whose headers
+
+  * Fix for the "dev -[dD]" options on Linux 5.1-rc1 and later kernels that
+    contain commit 570d0200123fb4f809aa2f6226e93a458d664d70, titled "driver
+    core: move device->knode_class to device_private".  Without the patch, the
+    command options fail with the error message "dev: invalid structure member
+
+  * Linux 4.18 kernels introduced a new CONFIG_PROC_VMCORE_DEVICE_DUMP
+    configuration in commit 2724273e8fd00b512596a77ee063f49b25f36507, titled
+    "vmcore: add API to collect hardware dump in second kernel", in which
+    device drivers may collect a device specific snapshot of the
+    hardware/firmware state of their underlying devices, and export the data
+    as a kdump ELF note with type NT_VMCOREDD.  This patch recognizes the new
+    ELF note(s) in both ELF and compressed kdump vmcore dumpfiles.  The "help
+    -[nD]" option shows basic information about each note, and two new "dev"
+    command options have been introduced.  The "dev -V" option displays an
+    indexed list of each note, showing the device name, the dumpfile offset,
+    and the size of each note.  The "dev -v index [file]" option either dumps
+    the contents of a note to the display screen in a human-readable format,
+    or copies the note data directly to a specified file.
+
+  * If the kernel's "vmap_area_list" doubly-linked list is corrupt such that
+    it does not link back to the global list_head, commands that require
+    information regarding the range of virtually-mapped kernel addresses will
+    display a generic list-handling error message such as "kmem: invalid list
+    entry: 0", and the command will typically fail to fully complete.
+    However, without the patch, there will also be "WARNING: malloc/free
+    mismatch (29/30)" messages that get displayed after every subsequent
+    command.  This patch prevents the mismatch messages, and also adds an
+    additional error message indicating "WARNING: invalid/corrupt
+    vmap_area_list" to further clarify the generic list-handling error
+
+  * Fix for the "dev" help page to remove the unused -r option letter.
+
+  * If a duplicate list entry is encountered when using the "list -B" Brent
+    algorithm, change the list loop length value from hexadecimal to decimal.
+
+  * Update the README file to indicate the capability of building an x86_64
+    crash binary with "make target=PPC64", which can be used to analyze
+
+  * Fix for hybrid kernels that have backported support for the Xarray
+    facility while allowing subsystems to continue to use radix trees.
+    Without the patch, the crash session fails during initialization with the
+    message "crash: xarray facility does not exist or has changed its format".
+
+ -- Troy Heber <troyh@debian.org>  Mon, 15 Jul 2019 08:20:49 -0600
+
 crash (7.2.5-1) unstable; urgency=medium
 
   * New upstream (Closes: #919291)

@@ -17,6 +17,7 @@
  */
 
 #include <elf.h>
+#include "vmcore.h"
 
 #define MIN_NETDUMP_ELF32_HEADER_SIZE \
         sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)+sizeof(Elf32_Phdr)
@@ -78,7 +79,11 @@ struct vmcore_data {
 	ulong backup_src_size;
 	ulonglong backup_offset;
 	ulong arch_data;
+#define arch_data1 arch_data
 	ulong phys_base;
+	ulong arch_data2;
+	void *nt_vmcoredd_array[NR_DEVICE_DUMPS];
+	uint  num_vmcoredd_notes;
 };
 
 #define DUMP_ELF_INCOMPLETE  0x1   /* dumpfile is incomplete */
