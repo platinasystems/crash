@@ -1,3 +1,332 @@
+crash (7.2.8-1) unstable; urgency=medium
+
+  * New upstream (Closes: #950544)
+
+  * Fix for Linux 5.4-rc1 and later kernels that contain commit
+    688fcbfc06e4fdfbb7e1d5a942a1460fe6379d2d, titled "mm/vmalloc: modify
+    struct vmap_area to reduce its size".  Without the patch "kmem -v" will
+    display nothing; other architectures that utilize the vmap_area_list to
+    determine the base of mapped/vmalloc address space will fail.
+
+  * Fix for Linux 5.4-rc1 and later kernels that contain commit/merge
+    e0703556644a531e50b5dc61b9f6ea83af5f6604, titled "Merge tag 'modules-
+    for-v5.4' of git://git.kernel.org/pub/scm/linux/kernel/git/jeyu/linux
+    which introduces symbol namespaces.  Without the patch, and depending upon
+    the architecture:
+    (1) the kernel module symbol list will contain garbage entries
+    (2) the session fails during session initialization with a dump of
+       the internal buffer allocation stats followed by the message
+       "crash: cannot allocate any more memory!"
+    (3) the session fails during session initialization with a
+       segmentation violation.
+
+  * Fix for the "timer -r" option on Linux 5.4-rc1 and later kernels that
+    contain commit 511885d7061eda3eb1faf3f57dcc936ff75863f1, titled
+    "lib/timerqueue: Rely on rbtree semantics for next timer".  Without the
+    patch, the option fails with the following error "timer: invalid structure
+    member offset: timerqueue_head_next".
+
+  * Fix for a "[-Wstringop-truncation]" compiler warning emitted when
+    symbols.c is built in a Fedora Rawhide environment with gcc-9.0.1 or
+    later.
+
+  * Fix for the "kmem -n" option on Linux-5.4-rc1 and later kernels that
+    contain commit b6c88d3b9d38f9448e0fcf44847a075ea81d5ca2, titled
+    "drivers/base/memory.c: don't store end_section_nr in memory blocks".
+    Without the patch, the command option fails with the error message "kmem:
+    invalid structure member offset: memory_block_end_section_nr".
+
+  * Fix for Linux 4.19.5 and later 4.19-based x86_64 kernels which are NOT
+    configured with CONFIG_RANDOMIZE_BASE and have backported kernel commit
+    d52888aa2753e3063a9d3a0c9f72f94aa9809c15, titled "x86/mm: Move LDT remap
+    out of KASLR region on 5-level paging", which modified the 4-level and
+    5-level paging PAGE_OFFSET values.  Without this patch, the crash session
+    fails during initialization with the error message "crash: seek error:
+    kernel virtual address: <address> type: "tss_struct ist array".
+
+  * Additional fix for the "kmem -n" option on Linux-5.4-rc1 and later kernels
+    that contain commit b6c88d3b9d38f9448e0fcf44847a075ea81d5ca2, titled
+    "drivers/base/memory.c: don't store end_section_nr in memory blocks".  The
+    initial fix only addressed the x86_64 architecture; this incremental patch
+    addresses the other architectures.
+
+  * In the unlikely event that the panic task in a dumpfile cannot be
+    determined by the normal means, scan the kernel log buffer for panic
+    keywords, and if found, generate the panic task from the CPU number that
+    is specified following the panic message.
+
+  * Adjust a crash-7.1.8 patch for support of /proc/kcore as the live memory
+    source in Linux 4.8 and later x86_64 kernels configured with
+    CONFIG_RANDOMIZE_BASE, which randomizes the unity-mapping PAGE_OFFSET
+    value.  Since the problem only arises before the determination of the
+    randomized PAGE_OFFSET value, restrict the patch such that it only takes
+    effect during session initialization.
+
+  * Add support for extended numbering support in ELF dumpfiles to handle more
+    than PN_XNUM (0xffff) program headers.  If the real number of program
+    header table entries is equal to or greater than PN_XNUM, the e_phnum
+    field of the ELF header is set to PN_XNUM, and the actual number is set in
+    the sh_info field of the section header at index 0.
+
+  * Fix for a "warning: large integer implicitly truncated to unsigned type
+    [-Woverflow]" compiler message generated on 32-bit architectures as a
+    result of the "Additional fix for the kmem -n option" patch above.
+
+  * Add support for handling openSUSE vmlinux files which will be shipped in
+    .xz compressed format.  Without the patch, only gzip and bzip2 formats are
+    supported.
+
+  * Fix for the determination of the ARM64 page size on Linux 4.4 and earlier
+    kernels that do not have vmcoreinfo data.  Without the patch, the crash
+    session fails during initialization with the error message "crash: "cannot
+    determine page size".
+
+  * Determine the ARM64 kernel's "vabits_actual" value by reading the new
+    TCR_EL1.T1SZ vmcoreinfo entry.
+
+  * Fix to determine the ARM64 kernel's "vabits_actual" value from the ELF
+    header of a dumpfile created with the "snap.so" extension module.
+
+  * Fix two typos in the examples section of the "help bt" display, which
+    mistakenly show "bf -f" and "bf -FF" instead of "bt -f" and "bt -FF".
+
+  * Similar to ARM64, the X86_64, PPC64 and S390x architectures will use the
+    exported value of MAX_PHYSMEM_BITS from the vmcoreinfo data as the
+    preferred method if it is available.
+
+  * If an S390X kernel crashes before vmcoreinfo initialization, there is no
+    way to extract the KASLR offset for such early dumps.  In a new S390X
+    kernel patch, the KASLR offset will be stored in the lowcore memory during
+    early boot and then overwritten after vmcoreinfo is initialized.  This
+    patch allows crash to identify the KASLR offset that is stored in the
+    lowcore memory.
+
+  * Fix for a crash-7.2.7 regression that determined the value of the ARM64
+    kernel SECTION_SIZE_BITS by reading the in-kernel configuration data if
+    there is no VMCOREINFO data available.  In that case, without the patch, a
+    double-free exception may occur.
+
+  * Fix for segmentation violation if the gdb_readmem_callback() function gets
+    called from other than a crash command, such as from an epython command
+    from the mypkdump.so extension module.
+
+  * Fix for the "dis -s" option when running against kernels that have been
+    configured with CONFIG_RANDOMIZE_BASE=y (KASLR).  Without the patch, the
+    command option indicates that the FILE and LINE numbers are "(unknown)",
+    and that "source code is not available".
+
+  * Fix for newer Xen hypervisors, which fail during initialization with the
+    error message "crash: cannot resolve init_tss".  This is caused by a
+    change in the Xen hypervisor with commit 78884406256, from
+    4.12.0-rc5-763-g7888440625.  In that patch the tss_struct structure was
+    renamed to tss64 and the tss_page structure was introduced, which contains
+    a single tss64.  Now tss information is accessible via the symbol
+    "per_cpu__tss_page".
+
+  * When accessing the ARM64 kernel's "crash_notes" array, continue to read
+    the per-cpu NT_PRSTATUS note contents if an invalid note is encountered.
+    Without the patch, if an invalid note is found, all other notes were
+    ignored, and subsequent "bt" attempts on the active tasks would fail.
+
+  * When accessing the 32-bit ARM kernel's "crash_notes" array, continue to
+    read the per-cpu NT_PRSTATUS note contents if an invalid note is
+    encountered.  Without the patch, if an invalid note is found, all other
+    notes were ignored, and subsequent "bt" attempts on the active tasks would
+    fail.
+
+  * Fix for the "log -a" option.  The kernel's sk_buff.len field is a 32-bit
+    unsigned int, but crash was reading its 32-bit value into a 64-bit
+    unsigned long stack variable.  All extra bits that pre-existed in the
+    upper 32-bits of the stack variable were passed along as part of a buffer
+    size request; if the upper 32-bit bits were non-zero, then the command
+    would fail with a dump of the internal buffer allocation stats followed by
+    the message "log: cannot allocate any more memory!".
+
+  * When determining the ARM64 kernel's "vabits_actual" value by reading the
+    new TCR_EL1.T1SZ vmcoreinfo entry, display its value during session
+    initialization only when invoking crash with "-d1" or larger -d debug
+    value.
+
+  * Update copyright to 2020 in crash version output.
+
+  * Fix for ARM64 when running against Linux 5.5-rc1 and later kernels that
+    contain commit b6e43c0e3129ffe87e65c85f20fcbdf0eb86fba0, titled "arm64:
+    remove __exception annotations".  Without the patch, the ARM64 crash
+    session fails during initialization with the error message "crash: cannot
+    resolve __exception_text_start".
+
+  * Fix for support of ELF format kdump vmcores from S390X KASLR kernels.
+    Without the patch, the crash session fails during initialization with the
+    error message "crash: vmlinux and vmcore do not match!".
+
+  * Fix for support of S390X standalone dumpfiles and LKCD dumpfiles that were
+    taken from S390X KASLR kernels.
+
+  * Rework the previous patch for support of S390X standalone dumpfiles and
+    LKCD dumpfiles that were taken from S390X KASLR kernels to avoid calling
+    an s390x-specific function from generic code.
+
+  * Fix for a gcc-10 compilation error.  Without the patch, the build of the
+    crash library fails with a stream of error messages indicating "multiple
+    definition of 'diskdump_flags'"
+
+ -- Troy Heber <troyh@debian.org>  Tue, 11 Feb 2020 19:19:46 -0700
+
+crash (7.2.7-1) UNRELEASED; urgency=medium
+
+  * Document the "-N", "-g" and "-z" options in the "help" command's help
+    page.
+
+  * Fix for a crash-7.2.6 regression to the "p" command.  Without the patch, a
+    gdb pass-through command construct such as: p ((struct zone
+    *)0xffff901e3ffda000)->min_slab_pages gets parsed incorrectly, and the "-"
+    is mistaken for an argument option, and each of the subsequent characters
+    are marked as an "invalid option".
+
+  * Export the get_mount_list() and get_dump_level() functions in defs.h for
+    use by extension modules.
+
+  * Change the gating of a debug message in the do_xarray_dump_cb() function
+    from CRASHDEBUG(0) to CRASHDEBUG(1).  Without the patch, users of the
+    XArray callback functionality may see messages of the sort "entry has
+    XARRAY_TAG_MASK bits set: 239ab0024001" without setting a debug number.
+
+  * Fix for Linux 5.2 and later x86_64 kernels that contain kernel commit
+    e6401c13093173aad709a5c6de00cf8d692ee786, titled "x86/irq/64: Split the
+    IRQ stack into its own".  Without the patch, the per-cpu IRQ stack
+    addresses cannot be determined, and as a result backtraces that utilize an
+    IRQ stack will fail.
+
+  * Fix to allow live system analysis of s390x kernels that have been
+    configured with CONFIG_RANDOMIZE_BASE=y (KASLR).  Without the patch, the
+    "--kaslr=<offset>" command line option is required.
+
+  * Fix for Linux 5.2 and later x86_64 kernels that contain kernel commit
+    019b17b3ffe48100e52f609ca1c6ed6e5a40cba1, titled "x86/exceptions: Add
+    structs for exception stacks".  Without the patch, the exception stack
+    sizes cannot be determined, and as a result backtraces that initiate from
+    an exception stack will fail with error messages indicating "bt: invalid
+    kernel virtual address: <address> type: stack contents" and then "bt: read
+    of stack at <address> failed".
+
+  * Two fixes for the "sys -c" option, one that significantly shortens the
+    time consumed by the option, and a second fix that addresses occasional
+    situations where the file and line number data are not displayed.
+
+  * Fix for a signed/unsigned comparison bug in vmcoreinfo_read_string() which
+    could lead to a segmentation violation in the highly unlikely event of a
+    zero length or severely truncated VMCOREINFO note.
+
+  * Fix for the determination of the ARM64 "kimage_voffset" value in Linux 4.6
+    and later kernels if an ELF format dumpfile: (1) does not contain its
+    value in a VMCOREINFO note, and (2) if the kernel image was loaded at a
+    higher address than the system's physical base address.  This may happen,
+    for example, when analyzing a dynamically-created ramdump-to-ELF dumpfile.
+
+  * Fix for Linux 4.16 and later ARM64 kernels that contain kernel commit
+    fa2a8445b1d3810c52f2a6b3a006456bd1aacb7e, titled "arm64: allow ID map to
+    be extended to 52 bits", and which have been configured with both
+    CONFIG_DEVMEM=y and CONFIG_STRICT_DEVMEM=y.  Without the patch, an
+    inconsequential error message indicating "crash: read error: kernel
+    virtual address: <address> type: idmap_ptrs_per_pgd" is displayed during
+    initialization.
+
+  * Introduction of a new "bt -p" option that generates a backtrace of the
+    panic task, regardless of the current context.  This option is only
+    applicable when running against dumpfiles in which the panic task is
+    known.
+
+  * When the gdb-7.6.patch file is updated in an existing source tree, it gets
+    re-applied during the next build using "patch -N --fuzz=0", which ignores
+    patches that have already been applied.  However, if a gdb file has been
+    modified multiple times, the secondary patching may fail to recognize that
+    a given patch has been previously applied, and will attempt to re-apply
+    it.  To prevent any uninintended consequences, the gdb-7.6.patch file will
+    also act as a shell script invoked by the Makefile, which restores any
+    selected gdb file to its original state prior to all secondary patch
+    applications.
+
+  * As an addendum to the previous patch for updating the gdb-7.6.patch in an
+    existing pre-built source tree, when rebuilding for the ppc64
+    architecture, do not restore the selected gdb files.  This is because the
+    gdb-7.6-ppc64le-support.patch will have modified the selected files during
+    the initial build.
+
+  * Extend the "timer" command with a new "TTE" column that displays the
+    remaining time in jiffies until the expiration of a timer entry, and where
+    a negative value displays the number of jiffies that have elapsed since a
+    timer has expired.
+
+  * Fix for a "warning: cast to pointer from integer of different size
+    [-Wint-to-pointer-cast]" compiler message generated by the previous
+    "timer" patch when compiling kernel.c on 32-bit architectures.
+
+  * Fix to the x86_64 "--machdep phys_base=<value>" command line option to
+    allow the use of a negative decimal number as the value.  Without the
+    patch, only the hexadecimal representation of the value would be accepted.
+
+  * Introduction of a new "rd -R" option, which will display memory in reverse
+    order.  Memory will be displayed up to and including the address argument,
+    which requires that the count argument be greater than 1 in order to
+    display memory before the specified address.
+
+  * Add support for the "count" argument to be used in conjunction with the
+    "dis -r" and "dis -f" reverse/forward modes of operation.  In reverse
+    mode, the specified "count" number of instructions leading up to and
+    including the target address will be displayed.  In forward mode, the
+    display will be limited to "count" instructions.  Without the patch, using
+    a count argument in either mode generates a "count argument ignored"
+    message, and the command proceeds as if it had not been entered.
+
+  * Fix a memory leak in the previous "dis" commit.
+
+  * Implemented a new "error" environment variable that sets the destination
+    of error messages.  It can be set to either: "default": error messages are
+    always displayed on the console; if the output of a command is piped to an
+    external command or redirected to a file, the error messages are also sent
+    to the pipe or file.  "redirect": if the output of a command is piped to
+    an external command or redirected to a file, error messages are only sent
+    to the pipe or file; otherwise they are displayed on the console.
+    "filename": error messages are only sent to the specified filename; they
+    are not displayed on the console and are not sent to a pipe or file.
+
+  * Fix for the "kmem -n" option on Linux 5.3-rc1 and later kernels that
+    contain commit 326e1b8f83a4318b09033ef754f40c785aed5e68, titled
+    "mm/sparsemem: introduce a SECTION_IS_EARLY flag".  Without the patch,
+    mem_map addresses containing the flag in bit 3 incorrectly show it as part
+    of the virtual address; with the patch, the option displays the new "E"
+    state flag.
+
+  * Fix for the "timer" command in RHEL7.6 and later RHEL7 kernels.  Without
+    the patch, the command emits extra faulty timer entries because the
+    tvec_root.vec[] and tvec.vec[] arrays are tracked using hlist_head
+    structures where list_head structures should be used.
+
+  * crash-7.2.4 commit 6596f1121b added a "list -B" option to allow more
+    efficient enumeration of longer lists.  There is a small bug with this
+    option where it may incorrectly flag a loop length of "0" on list of
+    length 1, indicating "list: loop detected, loop length: 0".  Since it is
+    impossible to have a loop of length 0, the erroneous message can be
+    prevented by ensuring the list count is non-zero.
+
+  * Create the specified installation directory if it does not exist.  Without
+    the patch, the Makefile's "make install" target will fail if the
+    INSTALLDIR and/or DESTDIR macros resolve to a non-existent directory.
+
+  * Fix for the internal caching of the kernel's mem_map array of page
+    structures.  Without the patch, in rare circumstances, commands such as
+    "kmem -p" may erroneously receive zero-filled page structures.
+
+  * Fix to prevent a potential segmentation violation when accessing the
+    compressed configuration data contained in kernels that are configured
+    with CONFIG_IKCONFIG.
+
+  * Determine the ARM64 SECTION_SIZE_BITS value using the following order of
+    precedence: (1) from the VMCOREINFO data if it exists (2) from the
+    in-kernel configuration data if it exists (3) the default value
+
+ -- Troy Heber <troyh@debian.org>  Tue, 11 Feb 2020 19:19:28 -0700
+
 crash (7.2.6-1) unstable; urgency=medium
 
   * Two fixes for the Xen hypervisor; the first fixes a bug seen with Xen

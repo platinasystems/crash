@@ -1,8 +1,8 @@
 /*
  * arm64.c - core analysis suite
  *
- * Copyright (C) 2012-2019 David Anderson
- * Copyright (C) 2012-2019 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2012-2020 David Anderson
+ * Copyright (C) 2012-2020 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,9 +27,12 @@
 static struct machine_specific arm64_machine_specific = { 0 };
 static int arm64_verify_symbol(const char *, ulong, char);
 static void arm64_parse_cmdline_args(void);
+static int arm64_search_for_kimage_voffset(ulong);
+static int verify_kimage_voffset(void);
 static void arm64_calc_kimage_voffset(void);
 static void arm64_calc_phys_offset(void);
 static void arm64_calc_virtual_memory_ranges(void);
+static void arm64_get_section_size_bits(void);
 static int arm64_kdump_phys_base(ulong *);
 static ulong arm64_processor_speed(void);
 static void arm64_init_kernel_pgd(void);
@@ -78,7 +81,7 @@ static int arm64_on_irq_stack(int, ulong);
 static void arm64_set_irq_stack(struct bt_info *);
 static void arm64_set_process_stack(struct bt_info *);
 static int arm64_get_kvaddr_ranges(struct vaddr_range *);
-static int arm64_get_crash_notes(void);
+static void arm64_get_crash_notes(void);
 static void arm64_calc_VA_BITS(void);
 static int arm64_is_uvaddr(ulong, struct task_context *);
 
@@ -176,17 +179,16 @@ arm64_init(int when)
 
 		}
 
+		/*
+		 * This code section will only be executed if the kernel is
+		 * earlier than Linux 4.4 (if there is no vmcoreinfo)
+		 */
 		if (!machdep->pagesize &&
 		    kernel_symbol_exists("swapper_pg_dir") &&
 		    kernel_symbol_exists("idmap_pg_dir")) {
-			if (kernel_symbol_exists("tramp_pg_dir"))
-				value = symbol_value("tramp_pg_dir");
-			else if (kernel_symbol_exists("reserved_ttbr0"))
-				value = symbol_value("reserved_ttbr0");
-			else
-				value = symbol_value("swapper_pg_dir");
+			value = symbol_value("swapper_pg_dir") -
+				symbol_value("idmap_pg_dir");
 
-			value -= symbol_value("idmap_pg_dir");
 			/*
 			 * idmap_pg_dir is 2 pages prior to 4.1,
 			 * and 3 pages thereafter.  Only 4K and 64K 
@@ -283,7 +285,7 @@ arm64_init(int when)
 		case 65536:
 			if (kernel_symbol_exists("idmap_ptrs_per_pgd") &&
 			    readmem(symbol_value("idmap_ptrs_per_pgd"), KVADDR,
-			    &value, sizeof(ulong), "idmap_ptrs_per_pgd", RETURN_ON_ERROR))
+			    &value, sizeof(ulong), "idmap_ptrs_per_pgd", QUIET|RETURN_ON_ERROR))
 				machdep->ptrs_per_pgd = value;
 		
 			if (machdep->machspec->VA_BITS > PGDIR_SHIFT_L3_64K) {
@@ -373,7 +375,8 @@ arm64_init(int when)
 
 	case POST_GDB:
 		arm64_calc_virtual_memory_ranges();
-		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		arm64_get_section_size_bits();
+
 		if (!machdep->max_physmem_bits) {
 			if ((string = pc->read_vmcoreinfo("NUMBER(MAX_PHYSMEM_BITS)"))) {
 				machdep->max_physmem_bits = atol(string);
@@ -462,11 +465,8 @@ arm64_init(int when)
 		 * of the crash. We need this information to extract correct
 		 * backtraces from the panic task.
 		 */
-		if (!LIVE() && !arm64_get_crash_notes())
-			error(WARNING, 
-			    "cannot retrieve registers for active task%s\n\n",
-				kt->cpus > 1 ? "s" : "");
-
+		if (!LIVE()) 
+			arm64_get_crash_notes();
 		break;
 
 	case LOG_ONLY:
@@ -824,11 +824,60 @@ arm64_parse_cmdline_args(void)
 	}
 }
 
+#define	MIN_KIMG_ALIGN	(0x00200000)	/* kimage load address must be aligned 2M */
+/*
+ * Traverse the entire dumpfile to find/verify kimage_voffset.
+ */
+static int
+arm64_search_for_kimage_voffset(ulong phys_base)
+{
+	ulong kimage_load_addr;
+	ulong phys_end;
+	struct machine_specific *ms = machdep->machspec;
+
+	if (!arm_kdump_phys_end(&phys_end))
+		return FALSE;
+
+	for (kimage_load_addr = phys_base;
+	    kimage_load_addr <= phys_end; kimage_load_addr += MIN_KIMG_ALIGN) {
+		ms->kimage_voffset = ms->vmalloc_start_addr - kimage_load_addr;
+
+		if ((kt->flags2 & KASLR) && (kt->flags & RELOC_SET))
+			ms->kimage_voffset += (kt->relocate * - 1);
+
+		if (verify_kimage_voffset()) {
+			if (CRASHDEBUG(1))
+				error(INFO, 
+				    "dumpfile searched for kimage_voffset: %lx\n\n", 
+					ms->kimage_voffset);
+			break;
+		}
+	}
+
+	if (kimage_load_addr > phys_end)
+		return FALSE;
+
+	return TRUE;
+}
+
+static int
+verify_kimage_voffset(void)
+{
+	ulong kimage_voffset;
+
+	if (!readmem(symbol_value("kimage_voffset"), KVADDR, &kimage_voffset,
+	    sizeof(kimage_voffset), "verify kimage_voffset", QUIET|RETURN_ON_ERROR))
+		return FALSE;
+
+	return (machdep->machspec->kimage_voffset == kimage_voffset);
+}
+
 static void
 arm64_calc_kimage_voffset(void)
 {
 	struct machine_specific *ms = machdep->machspec;
-	ulong phys_addr;
+	ulong phys_addr = 0;
+	int errflag;
 
 	if (ms->kimage_voffset) /* vmcoreinfo, ioctl, or --machdep override */
 		return;
@@ -836,7 +885,6 @@ arm64_calc_kimage_voffset(void)
 	if (ACTIVE()) {
 		char buf[BUFSIZE];
 		char *p1;
-		int errflag;
 		FILE *iomem;
 		ulong kimage_voffset, vaddr;
 
@@ -877,9 +925,24 @@ arm64_calc_kimage_voffset(void)
 		if (errflag)
 			return;
 
-	} else if (KDUMP_DUMPFILE())
-		arm_kdump_phys_base(&phys_addr);  /* Get start address of first memory block */
-	else {
+	} else if (KDUMP_DUMPFILE()) {
+		errflag = 1;
+		if (arm_kdump_phys_base(&phys_addr)) {  /* Get start address of first memory block */
+			ms->kimage_voffset = ms->vmalloc_start_addr - phys_addr;
+			if ((kt->flags2 & KASLR) && (kt->flags & RELOC_SET))
+				ms->kimage_voffset += (kt->relocate * -1);
+	    		if (verify_kimage_voffset() || arm64_search_for_kimage_voffset(phys_addr))
+				errflag = 0;
+		}
+
+		if (errflag) {
+			error(WARNING,
+				"kimage_voffset cannot be determined from the dumpfile.\n");
+			error(CONT,
+				"Try using the command line option: --machdep kimage_voffset=<addr>\n");
+		}
+		return;
+	} else {
 		error(WARNING,
 			"kimage_voffset cannot be determined from the dumpfile.\n");
 		error(CONT,
@@ -990,6 +1053,31 @@ arm64_calc_phys_offset(void)
 		fprintf(fp, "using %lx as phys_offset\n", ms->phys_offset);
 }
 
+/*
+ *  Determine SECTION_SIZE_BITS either by reading VMCOREINFO or the kernel
+ *  config, otherwise use the 64-bit ARM default definiton.
+ */
+static void
+arm64_get_section_size_bits(void)
+{
+	int ret;
+	char *string;
+
+	machdep->section_size_bits = _SECTION_SIZE_BITS;
+
+	if ((string = pc->read_vmcoreinfo("NUMBER(SECTION_SIZE_BITS)"))) {
+		machdep->section_size_bits = atol(string);
+		free(string);
+	} else if (kt->ikconfig_flags & IKCONFIG_AVAIL) {
+		if ((ret = get_kernel_config("CONFIG_MEMORY_HOTPLUG", NULL)) == IKCONFIG_Y) {
+			if ((ret = get_kernel_config("CONFIG_HOTPLUG_SIZE_BITS", &string)) == IKCONFIG_STR)
+				machdep->section_size_bits = atol(string);
+		} 
+	}
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "SECTION_SIZE_BITS: %ld\n", machdep->section_size_bits);
+}
 
 /*
  *  Determine PHYS_OFFSET either by reading VMCOREINFO or the kernel
@@ -1556,10 +1644,11 @@ arm64_stackframe_init(void)
 		machdep->machspec->kern_eframe_offset = SIZE(pt_regs);
 	}
 
-	machdep->machspec->__exception_text_start = 
-		symbol_value("__exception_text_start");
-	machdep->machspec->__exception_text_end = 
-		symbol_value("__exception_text_end");
+	if ((sp1 = kernel_symbol_search("__exception_text_start")) &&
+	    (sp2 = kernel_symbol_search("__exception_text_end"))) {
+		machdep->machspec->__exception_text_start = sp1->value;
+		machdep->machspec->__exception_text_end = sp2->value;
+	}
 	if ((sp1 = kernel_symbol_search("__irqentry_text_start")) &&
 	    (sp2 = kernel_symbol_search("__irqentry_text_end"))) {
 		machdep->machspec->__irqentry_text_start = sp1->value; 
@@ -1768,19 +1857,37 @@ arm64_eframe_search(struct bt_info *bt)
 	return count;
 }
 
+static char *arm64_exception_functions[] = {
+        "do_undefinstr",
+        "do_sysinstr",
+        "do_debug_exception",
+        "do_mem_abort",
+        "do_el0_irq_bp_hardening",
+        "do_sp_pc_abort",
+        NULL
+};
+
 static int
 arm64_in_exception_text(ulong ptr)
 {
 	struct machine_specific *ms = machdep->machspec;
-
-	if ((ptr >= ms->__exception_text_start) &&
-	    (ptr < ms->__exception_text_end))
-		return TRUE;
+	char *name, **func;
 
 	if (ms->__irqentry_text_start && ms->__irqentry_text_end &&
 	    ((ptr >= ms->__irqentry_text_start) && 
 	    (ptr < ms->__irqentry_text_end)))
 		return TRUE;
+
+	if (ms->__exception_text_start && ms->__exception_text_end) {
+		if ((ptr >= ms->__exception_text_start) &&
+		    (ptr < ms->__exception_text_end))
+			return TRUE;
+	} else if ((name = closest_symbol(ptr))) {  /* Linux 5.5 and later */
+		for (func = &arm64_exception_functions[0]; *func; func++) {
+			if (STREQ(name, *func))
+				return TRUE;
+		}
+	}
 
 	return FALSE;
 }
@@ -3487,7 +3594,7 @@ arm64_get_smp_cpus(void)
 /*
  * Retrieve task registers for the time of the crash.
  */
-static int
+static void
 arm64_get_crash_notes(void)
 {
 	struct machine_specific *ms = machdep->machspec;
@@ -3496,10 +3603,10 @@ arm64_get_crash_notes(void)
 	ulong offset;
 	char *buf, *p;
 	ulong *notes_ptrs;
-	ulong i;
+	ulong i, found;
 
 	if (!symbol_exists("crash_notes"))
-		return FALSE;
+		return;
 
 	crash_notes = symbol_value("crash_notes");
 
@@ -3511,9 +3618,9 @@ arm64_get_crash_notes(void)
 	 */
 	if (!readmem(crash_notes, KVADDR, &notes_ptrs[kt->cpus-1], 
 	    sizeof(notes_ptrs[kt->cpus-1]), "crash_notes", RETURN_ON_ERROR)) {
-		error(WARNING, "cannot read crash_notes\n");
+		error(WARNING, "cannot read \"crash_notes\"\n");
 		FREEBUF(notes_ptrs);
-		return FALSE;
+		return;
 	}
 
 	if (symbol_exists("__per_cpu_offset")) {
@@ -3529,12 +3636,11 @@ arm64_get_crash_notes(void)
 	if (!(ms->panic_task_regs = calloc((size_t)kt->cpus, sizeof(struct arm64_pt_regs))))
 		error(FATAL, "cannot calloc panic_task_regs space\n");
 	
-	for  (i = 0; i < kt->cpus; i++) {
-
+	for  (i = found = 0; i < kt->cpus; i++) {
 		if (!readmem(notes_ptrs[i], KVADDR, buf, SIZE(note_buf), 
 		    "note_buf_t", RETURN_ON_ERROR)) {
-			error(WARNING, "failed to read note_buf_t\n");
-			goto fail;
+			error(WARNING, "cpu %d: cannot read NT_PRSTATUS note\n", i);
+			continue;
 		}
 
 		/*
@@ -3564,19 +3670,24 @@ arm64_get_crash_notes(void)
 				    note->n_descsz == notesz)
 					BCOPY((char *)note, buf, notesz);
 			} else {
-				error(WARNING,
-					"cannot find NT_PRSTATUS note for cpu: %d\n", i);
+				error(WARNING, "cpu %d: cannot find NT_PRSTATUS note\n", i);
 				continue;
 			}
 		}
 
+		/*
+		 * Check the sanity of NT_PRSTATUS note only for each online cpu.
+		 * If this cpu has invalid note, continue to find the crash notes
+		 * for other online cpus.
+		 */
 		if (note->n_type != NT_PRSTATUS) {
-			error(WARNING, "invalid note (n_type != NT_PRSTATUS)\n");
-			goto fail;
+			error(WARNING, "cpu %d: invalid NT_PRSTATUS note (n_type != NT_PRSTATUS)\n", i);
+			continue;
 		}
-		if (p[0] != 'C' || p[1] != 'O' || p[2] != 'R' || p[3] != 'E') {
-			error(WARNING, "invalid note (name != \"CORE\"\n");
-			goto fail;
+
+		if (!STRNEQ(p, "CORE")) {
+			error(WARNING, "cpu %d: invalid NT_PRSTATUS note (name != \"CORE\")\n", i);
+			continue;
 		}
 
 		/*
@@ -3589,18 +3700,17 @@ arm64_get_crash_notes(void)
 
 		BCOPY(p + OFFSET(elf_prstatus_pr_reg), &ms->panic_task_regs[i],
 		      sizeof(struct arm64_pt_regs));
+
+		found++;
 	}
 
 	FREEBUF(buf);
 	FREEBUF(notes_ptrs);
-	return TRUE;
 
-fail:
-	FREEBUF(buf);
-	FREEBUF(notes_ptrs);
-	free(ms->panic_task_regs);
-	ms->panic_task_regs = NULL;
-	return FALSE;
+	if (!found) {
+		free(ms->panic_task_regs);
+		ms->panic_task_regs = NULL;
+	}
 }
 
 static void
@@ -3763,8 +3873,18 @@ arm64_calc_VA_BITS(void)
 		} else if (ACTIVE())
 			error(FATAL, "cannot determine VA_BITS_ACTUAL: please use /proc/kcore\n");
 		else {
-			if ((string = pc->read_vmcoreinfo("NUMBER(VA_BITS_ACTUAL)"))) {
-				value = atol(string);
+			if ((string = pc->read_vmcoreinfo("NUMBER(tcr_el1_t1sz)"))) {
+				/* See ARMv8 ARM for the description of
+				 * TCR_EL1.T1SZ and how it can be used
+				 * to calculate the vabits_actual
+				 * supported by underlying kernel.
+				 *
+				 * Basically:
+				 * vabits_actual = 64 - T1SZ;
+				 */
+				value = 64 - strtoll(string, NULL, 0);
+				if (CRASHDEBUG(1))
+					fprintf(fp,  "vmcoreinfo : vabits_actual: %ld\n", value);
 				free(string);
 				machdep->machspec->VA_BITS_ACTUAL = value;
 				machdep->machspec->VA_BITS = value;

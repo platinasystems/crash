@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2019 David Anderson
- * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2020 David Anderson
+ * Copyright (C) 2002-2020 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -553,6 +553,8 @@ struct program_context {
 	ulong scope;			/* optional text context address */
 	ulong nr_hash_queues;		/* hash queue head count */
 	char *(*read_vmcoreinfo)(const char *);
+	FILE *error_fp;			/* error() message direction */
+	char *error_path;		/* stderr path information */
 };
 
 #define READMEM  pc->readmem
@@ -2071,6 +2073,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long cpu_context_save_r7;
 	long dentry_d_sb;
 	long device_private_knode_class;
+	long timerqueue_head_rb_root;
+	long rb_root_cached_rb_leftmost;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2692,6 +2696,7 @@ struct symbol_table_data {
 	ulong saved_command_line_vmlinux;
 	ulong pti_init_vmlinux;
 	ulong kaiser_init_vmlinux;
+	int kernel_symbol_type;
 };
 
 /* flags for st */
@@ -4387,6 +4392,7 @@ struct machine_specific {
 #define INT_HEX      (0x40)
 #define LONGLONG_HEX (0x80)
 #define ZERO_FILL   (0x100)
+#define SLONG_DEC   (0x200)
 
 #define INIT_TIME (1)
 #define RUN_TIME  (2)
@@ -4954,6 +4960,7 @@ void exec_args_input_file(struct command_table_entry *, struct args_input_file *
 /*
  *  tools.c
  */
+FILE *set_error(char *);
 int __error(int, char *, ...);
 #define error __error               /* avoid conflict with gdb error() */
 int console(char *, ...);
@@ -5298,6 +5305,7 @@ void set_tmpfile2(FILE *);
 void close_tmpfile2(void);
 void open_files_dump(ulong, int, struct reference *);
 void get_pathname(ulong, char *, int, int, ulong);
+ulong *get_mount_list(int *, struct task_context *);
 char *vfsmount_devname(ulong, char *, int);
 ulong file_to_dentry(ulong);
 ulong file_to_vfsmnt(ulong);
@@ -6391,6 +6399,7 @@ void map_cpus_to_prstatus(void);
 int kdump_phys_base(ulong *);
 int kdump_set_phys_base(ulong);
 int arm_kdump_phys_base(ulong *);
+int arm_kdump_phys_end(ulong *);
 int is_proc_kcore(char *, ulong);
 int proc_kcore_init(FILE *, int);
 int read_proc_kcore(int, void *, int, ulong, physaddr_t);
@@ -6438,8 +6447,9 @@ FILE *set_diskdump_fp(FILE *);
 void get_diskdump_regs(struct bt_info *, ulong *, ulong *);
 int diskdump_phys_base(unsigned long *);
 int diskdump_set_phys_base(unsigned long);
-ulong *diskdump_flags;
+extern ulong *diskdump_flags;
 int is_partial_diskdump(void);
+int get_dump_level(void);
 int dumpfile_is_split(void);
 void show_split_dumpfiles(void);
 void x86_process_elf_notes(void *, unsigned long);

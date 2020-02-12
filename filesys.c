@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2018 David Anderson
- * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2019 David Anderson
+ * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,7 +37,6 @@ static int mount_point(char *);
 static int open_file_reference(struct reference *);
 static void memory_source_init(void);
 static int get_pathname_component(ulong, ulong, int, char *, char *);
-static ulong *get_mount_list(int *, struct task_context *);
 char *inode_type(char *, char *);
 static void match_proc_version(void);
 static void get_live_memory_source(void);
@@ -1600,7 +1599,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 /*
  *  Allocate and fill a list of the currently-mounted vfsmount pointers.
  */
-static ulong *
+ulong *
 get_mount_list(int *cntptr, struct task_context *namespace_context)
 {
 	struct list_data list_data, *ld;
@@ -4196,7 +4195,7 @@ static void do_xarray_dump_cb(ulong node, ulong slot, const char *path,
 	/* Caller defined operation */
 	if (!cb(slot)) {
 		if (slot & XARRAY_TAG_MASK) {
-			if (CRASHDEBUG(0))
+			if (CRASHDEBUG(1))
 				error(INFO, "entry has XARRAY_TAG_MASK bits set: %lx\n", slot); 
 			return;
 		}

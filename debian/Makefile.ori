@@ -245,7 +245,7 @@ rebuild:
 	  touch ${GDB}/${GDB}.patch; fi
 	@if [ -f ${GDB}.patch ] && [ -s ${GDB}.patch ] && \
 	  [ "`sum ${GDB}.patch`" != "`sum ${GDB}/${GDB}.patch`" ]; then \
-	  (patch -N -p0 -r- --fuzz=0 < ${GDB}.patch; cp ${GDB}.patch ${GDB}; cd ${GDB}; \
+	  (sh -x ${GDB}.patch ${TARGET}; patch -N -p0 -r- --fuzz=0 < ${GDB}.patch; cp ${GDB}.patch ${GDB}; cd ${GDB}; \
 	  make --no-print-directory CRASH_TARGET=${TARGET}) \
 	else (cd ${GDB}/gdb; make --no-print-directory CRASH_TARGET=${TARGET}); fi
 
@@ -301,6 +301,7 @@ make_build_data: force
 	${CC} -c ${CRASH_CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 install:
+	/usr/bin/install -d ${INSTALLDIR}
 	/usr/bin/install ${PROGRAM} ${INSTALLDIR}
 #	/usr/bin/install ${PROGRAM}d ${INSTALLDIR}
 
@@ -564,7 +565,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.2.6
+VERSION=7.2.8
 RELEASE=0
 
 release: make_configure

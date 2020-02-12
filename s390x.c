@@ -46,6 +46,8 @@
 
 #define S390X_PSW_MASK_PSTATE	0x0001000000000000UL
 
+#define S390X_LC_VMCORE_INFO	0xe0c
+
 /*
  * Flags for Region and Segment table entries.
  */
@@ -240,6 +242,13 @@ static int
 set_s390x_max_physmem_bits(void)
 {
 	int array_len, dimension;
+	char *string;
+
+	if ((string = pc->read_vmcoreinfo("NUMBER(MAX_PHYSMEM_BITS)"))) {
+		machdep->max_physmem_bits = atol(string);
+		free(string);
+		return TRUE;
+	}
 
 	machdep->max_physmem_bits = _MAX_PHYSMEM_BITS_OLD;
 
@@ -446,6 +455,97 @@ static void s390x_check_live(void)
 		pc->flags2 |= LIVE_DUMP;
 }
 
+static char *
+vmcoreinfo_read_string_s390x(const char *vmcoreinfo, const char *key)
+{
+	char *value_string = NULL;
+	size_t value_length;
+	char keybuf[128];
+	char *p1, *p2;
+
+	sprintf(keybuf, "%s=", key);
+
+	if ((p1 = strstr(vmcoreinfo, keybuf))) {
+		p2 = p1 + strlen(keybuf);
+		p1 = strstr(p2, "\n");
+		value_length = p1-p2;
+		value_string = calloc(value_length + 1, sizeof(char));
+		strncpy(value_string, p2, value_length);
+		value_string[value_length] = NULLCHAR;
+	}
+
+	return value_string;
+}
+
+/*
+ * Check the value in well-known lowcore location and process it as either
+ * an explicit KASLR offset (early dump case) or as vmcoreinfo pointer to
+ * read the relocated _stext symbol value (important for s390 and lkcd dump
+ * formats).
+ */
+static void s390x_check_kaslr(void)
+{
+	char *_stext_string, *vmcoreinfo;
+	Elf64_Nhdr note;
+	char str[128];
+	ulong addr;
+
+	/* Read the value from well-known lowcore location*/
+	if (!readmem(S390X_LC_VMCORE_INFO, PHYSADDR, &addr,
+		    sizeof(addr), "s390x vmcoreinfo ptr",
+		    QUIET|RETURN_ON_ERROR))
+		return;
+	if (addr == 0)
+		return;
+	/* Check for explicit kaslr offset flag */
+	if (addr & 0x1UL) {
+		/* Drop the last bit to get an offset value */
+		addr &= ~(0x1UL);
+		/* Make sure the offset is aligned by 0x1000 */
+		if (addr && !(addr & 0xfff)) {
+					kt->relocate = addr * (-1);
+					kt->flags |= RELOC_SET;
+					kt->flags2 |= KASLR;
+		}
+		return;
+	}
+	/* Use the addr value as vmcoreinfo pointer */
+	if (!readmem(addr, PHYSADDR, &note,
+		     sizeof(note), "Elf64_Nhdr vmcoreinfo",
+		     QUIET|RETURN_ON_ERROR))
+		return;
+	memset(str, 0, sizeof(str));
+	if (!readmem(addr + sizeof(note), PHYSADDR, str,
+		     note.n_namesz, "VMCOREINFO",
+		     QUIET|RETURN_ON_ERROR))
+		return;
+	if (memcmp(str, "VMCOREINFO", sizeof("VMCOREINFO")) != 0)
+		return;
+	if ((vmcoreinfo = malloc(note.n_descsz + 1)) == NULL) {
+		error(INFO, "s390x_check_kaslr: cannot malloc vmcoreinfo buffer\n");
+		return;
+	}
+	addr = addr + sizeof(note) + note.n_namesz + 1;
+	if (!readmem(addr, PHYSADDR, vmcoreinfo,
+		     note.n_descsz, "s390x vmcoreinfo",
+		     QUIET|RETURN_ON_ERROR)) {
+		free(vmcoreinfo);
+		return;
+	}
+	vmcoreinfo[note.n_descsz] = NULLCHAR;
+	/*
+	 * Read relocated _stext symbol value and store it in the kernel_table
+	 * for further processing within derive_kaslr_offset().
+	 */
+	if ((_stext_string = vmcoreinfo_read_string_s390x(vmcoreinfo,
+							  "SYMBOL(_stext)"))) {
+		kt->vmcoreinfo._stext_SYMBOL = htol(_stext_string,
+						    RETURN_ON_ERROR, NULL);
+		free(_stext_string);
+	}
+	free(vmcoreinfo);
+}
+
 /*
  *  Do all necessary machine-specific setup here.  This is called several
  *  times during initialization.
@@ -479,6 +579,8 @@ s390x_init(int when)
 		machdep->verify_paddr = generic_verify_paddr;
 		machdep->get_kvaddr_ranges = s390x_get_kvaddr_ranges;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
+		if (DUMPFILE() && !(kt->flags & RELOC_SET))
+			s390x_check_kaslr();
 		break;
 
 	case PRE_GDB:
@@ -1919,4 +2021,4 @@ s390x_get_kvaddr_ranges(struct vaddr_range *vrp)
 
 	return cnt;
 }
-#endif 
+#endif  /* S390X */
