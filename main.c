@@ -244,6 +244,7 @@ main(int argc, char **argv)
 					kt->relocate *= -1;
 					kt->flags |= RELOC_SET;
 					kt->flags2 |= KASLR;
+					st->_stext_vmlinux = UNINITIALIZED;
 				}
 
 			} else if (STREQ(long_options[option_index].name, "reloc")) {
@@ -666,6 +667,18 @@ main(int argc, char **argv)
                                         program_usage(SHORT_FORM);
                                 }
 				pc->flags |= VMWARE_VMSS;
+				pc->dumpfile = argv[optind];
+				pc->readmem = read_vmware_vmss;
+				pc->writemem = write_vmware_vmss;
+
+			} else if (is_vmware_guestdump(argv[optind])) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+				pc->flags |= VMWARE_VMSS;
+				pc->flags2 |= VMWARE_VMSS_GUESTDUMP;
 				pc->dumpfile = argv[optind];
 				pc->readmem = read_vmware_vmss;
 				pc->writemem = write_vmware_vmss;
@@ -1485,6 +1498,8 @@ dump_program_context(void)
 		fprintf(fp, "%sMEMSRC_LOCAL", others++ ? "|" : "");
 	if (pc->flags2 & REDZONE)
 		fprintf(fp, "%sREDZONE", others++ ? "|" : "");
+	if (pc->flags2 & VMWARE_VMSS_GUESTDUMP)
+		fprintf(fp, "%sVMWARE_VMSS_GUESTDUMP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);

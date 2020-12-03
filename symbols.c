@@ -145,6 +145,7 @@ static void print_union(char *, ulong);
 static void dump_datatype_member(FILE *, struct datatype_member *);
 static void dump_datatype_flags(ulong, FILE *);
 static long anon_member_offset(char *, char *);
+static long anon_member_size(char *, char *);
 static int gdb_whatis(char *);
 static void do_datatype_declaration(struct datatype_member *, ulong);
 static int member_to_datatype(char *, struct datatype_member *, ulong);
@@ -539,30 +540,28 @@ get_text_init_space(void)
 static char *
 strip_symbol_end(const char *name, char *buf)
 {
+	int i;
 	char *p;
+	char *strip[] = {
+		".isra.",
+		".part.",
+		".llvm.",
+		NULL
+	};
 
 	if (st->flags & NO_STRIP)
 		return (char *)name;
 
-	if ((p = strstr(name, ".isra."))) {
-		if (buf) {
-			strcpy(buf, name);
-			buf[p-name] = NULLCHAR;
-			return buf;
-		} else {
-			*p = NULLCHAR;
-			return (char *)name;
-		}
-	}
-
-	if ((p = strstr(name, ".part."))) {
-		if (buf) {
-			strcpy(buf, name);
-			buf[p-name] = NULLCHAR;
-			return buf;
-		} else {
-			*p = NULLCHAR;
-			return (char *)name;
+	for (i = 0; strip[i]; i++) {
+		if ((p = strstr(name, strip[i]))) {
+			if (buf) {
+				strcpy(buf, name);
+				buf[p-name] = NULLCHAR;
+				return buf;
+			} else {
+				*p = NULLCHAR;
+				return (char *)name;
+			}
 		}
 	}
 
@@ -635,8 +634,11 @@ kaslr_init(void)
 		}
 	}
 
-	if (SADUMP_DUMPFILE() || VMSS_DUMPFILE())
+	if (SADUMP_DUMPFILE() || QEMU_MEM_DUMP_NO_VMCOREINFO() || VMSS_DUMPFILE()) {
+		/* Need for kaslr_offset and phys_base */
 		kt->flags2 |= KASLR_CHECK;
+		st->_stext_vmlinux = UNINITIALIZED;
+	}
 }
 
 /*
@@ -1767,17 +1769,17 @@ store_module_symbols_v2(ulong total, int mods_installed)
 
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 			nksyms = UINT(modbuf + OFFSET(module_num_symtab));
-			size = UINT(modbuf + OFFSET(module_core_size));
+			size = UINT(modbuf + MODULE_OFFSET2(module_core_size, rx));
 		} else {
 			nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
-			size = ULONG(modbuf + OFFSET(module_core_size));
+			size = ULONG(modbuf + MODULE_OFFSET2(module_core_size, rx));
 		}
 
 		mod_name = modbuf + OFFSET(module_name);
 
 		lm = &st->load_modules[m++];
 		BZERO(lm, sizeof(struct load_module));
-		lm->mod_base = ULONG(modbuf + OFFSET(module_module_core));
+		lm->mod_base = ULONG(modbuf + MODULE_OFFSET2(module_module_core, rx));
 		lm->module_struct = mod;
 		lm->mod_size = size;
         	if (strlen(mod_name) < MAX_MOD_NAME)
@@ -1796,23 +1798,23 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		lm->mod_flags = MOD_EXT_SYMS;
 		lm->mod_ext_symcnt = mcnt;
 		lm->mod_init_module_ptr = ULONG(modbuf + 
-			OFFSET(module_module_init));
+			MODULE_OFFSET2(module_module_init, rx));
 		if (VALID_MEMBER(module_percpu))
 			lm->mod_percpu = ULONG(modbuf + OFFSET(module_percpu));
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 			lm->mod_etext_guess = lm->mod_base +
-				UINT(modbuf + OFFSET(module_core_text_size));
+				UINT(modbuf + MODULE_OFFSET(module_core_text_size, module_core_size_rx));
 			lm->mod_init_size =
-				UINT(modbuf + OFFSET(module_init_size));
+				UINT(modbuf + MODULE_OFFSET2(module_init_size, rx));
 			lm->mod_init_text_size = 
-				UINT(modbuf + OFFSET(module_init_text_size));
+				UINT(modbuf + MODULE_OFFSET(module_init_text_size, module_init_size_rx));
 		} else {
 			lm->mod_etext_guess = lm->mod_base +
-				ULONG(modbuf + OFFSET(module_core_text_size));
+				ULONG(modbuf + MODULE_OFFSET(module_core_text_size, module_core_size_rx));
 			lm->mod_init_size =
-				ULONG(modbuf + OFFSET(module_init_size));
+				ULONG(modbuf + MODULE_OFFSET2(module_init_size, rx));
 			lm->mod_init_text_size = 
-				ULONG(modbuf + OFFSET(module_init_text_size));
+				ULONG(modbuf + MODULE_OFFSET(module_init_text_size, module_init_size_rx));
 		}
 		lm->mod_text_start = lm->mod_base;
 
@@ -3227,6 +3229,11 @@ dump_symbol_table(void)
 		fprintf(fp, " kaiser_init_vmlinux: (unused)\n");
 	}
 
+	if (SADUMP_DUMPFILE())
+		fprintf(fp, "linux_banner_vmlinux: %lx\n", st->linux_banner_vmlinux);
+	else
+		fprintf(fp, "linux_banner_vmlinux: (unused)\n");
+
         fprintf(fp, "    symval_hash[%d]: %lx\n", SYMVAL_HASH,
                 (ulong)&st->symval_hash[0]);
 
@@ -3864,7 +3871,8 @@ is_shared_object(char *file)
 			break;
 
 		case EM_X86_64:
-			if (machine_type("X86_64") || machine_type("ARM64")) 
+			if (machine_type("X86_64") || machine_type("ARM64") ||
+			    machine_type("PPC64"))
 				return TRUE;
 			break;
 
@@ -5604,13 +5612,16 @@ long
 datatype_info(char *name, char *member, struct datatype_member *dm)
 {
 	struct gnu_request *req;
-        long offset, size, member_size;
+	long offset, size, member_size;
 	int member_typecode;
-        ulong type_found;
+	ulong type_found;
 	char buf[BUFSIZE];
 
-        if (dm == ANON_MEMBER_OFFSET_REQUEST)
+	if (dm == ANON_MEMBER_OFFSET_REQUEST)
 		return anon_member_offset(name, member);
+
+	if (dm == ANON_MEMBER_SIZE_REQUEST)
+		return anon_member_size(name, member);
 
 	strcpy(buf, name);
 
@@ -5819,6 +5830,46 @@ retry:
 	if ((value == -1) && (type == STRUCT_REQUEST)) {
 		type = UNION_REQUEST;
 		sprintf(buf, "printf \"%%p\", &((union %s *)0x0)->%s", name, member);
+		rewind(pc->tmpfile2);
+		goto retry;
+	}
+
+	close_tmpfile2();
+
+	return value;
+}
+
+/*
+ *  Determine the size of a member in an anonymous union
+ *  in a structure or union.
+ */
+static long
+anon_member_size(char *name, char *member)
+{
+	char buf[BUFSIZE];
+	ulong value;
+	int type;
+
+	value = -1;
+	type = STRUCT_REQUEST;
+	sprintf(buf, "printf \"%%ld\", (u64)(&((struct %s*)0)->%s + 1) - (u64)&((struct %s*)0)->%s",
+		name, member, name, member);
+	open_tmpfile2();
+retry:
+	if (gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
+		rewind(pc->tmpfile2);
+		if (fgets(buf, BUFSIZE, pc->tmpfile2)) {
+			if (hexadecimal(buf, 0))
+				value = htol(buf, RETURN_ON_ERROR|QUIET, NULL);
+			else if (STRNEQ(buf, "(nil)"))
+				value = 0;
+		}
+	}
+
+	if ((value == -1) && (type == STRUCT_REQUEST)) {
+		type = UNION_REQUEST;
+		sprintf(buf, "printf \"%%ld\", (u64)(&((union %s*)0)->%s + 1) - (u64)&((union %s*)0)->%s",
+			name, member, name, member);
 		rewind(pc->tmpfile2);
 		goto retry;
 	}
@@ -6617,6 +6668,8 @@ do_datatype_addr(struct datatype_member *dm, ulong addr, int count,
 		i = 0;
         	do {
                 	if (argc_members) {
+				if (argc_members > 1 && flags & SHOW_RAW_DATA)
+					error(FATAL, "only one structure member allowed with -r\n");
 				/* This call works fine with fields
 				 * of the second, third, ... levels.
 				 * There is no need to fix it
@@ -6625,9 +6678,6 @@ do_datatype_addr(struct datatype_member *dm, ulong addr, int count,
 							ANON_MEMBER_QUERY))
 					error(FATAL, "invalid data structure reference: %s.%s\n",
 					      dm->name, memberlist[i]);
-				if (flags & SHOW_RAW_DATA)
-        				error(FATAL, 
-					      "member-specific output not allowed with -r\n");
 			}
 
 			/*
@@ -6636,9 +6686,18 @@ do_datatype_addr(struct datatype_member *dm, ulong addr, int count,
 			if (flags & SHOW_OFFSET) {
 				dm->vaddr = addr;
 				do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
-			} else if (flags & SHOW_RAW_DATA)
+			} else if (flags & SHOW_RAW_DATA) {
+				if (dm->member) {
+					addr += dm->member_offset;
+					len = MEMBER_SIZE(dm->name, dm->member);
+					if (len < 0)
+						len = ANON_MEMBER_SIZE(dm->name, dm->member);
+					if (len < 0)
+						error(FATAL, "invalid data structure reference: %s.%s\n",
+						      dm->name, dm->member);
+				}
 				raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
-			else if ((flags & DEREF_POINTERS) && !dm->member) {
+			} else if ((flags & DEREF_POINTERS) && !dm->member) {
 				print_struct_with_dereference(addr, dm, flags);
                 	} else {
 	                        if (dm->member)
@@ -9064,12 +9123,28 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(module_core_size));
 	fprintf(fp, "         module_core_text_size: %ld\n",
 		OFFSET(module_core_text_size));
-	fprintf(fp, "         module_init_size: %ld\n",
+	fprintf(fp, "              module_init_size: %ld\n",
 		OFFSET(module_init_size));
 	fprintf(fp, "         module_init_text_size: %ld\n",
 		OFFSET(module_init_text_size));
 	fprintf(fp, "            module_module_init: %ld\n",
 		OFFSET(module_module_init));
+	fprintf(fp, "         module_module_core_rx: %ld\n",
+		OFFSET(module_module_core_rx));
+	fprintf(fp, "         module_module_core_rw: %ld\n",
+		OFFSET(module_module_core_rw));
+	fprintf(fp, "           module_core_size_rx: %ld\n",
+		OFFSET(module_core_size_rx));
+	fprintf(fp, "           module_core_size_rw: %ld\n",
+		OFFSET(module_core_size_rw));
+	fprintf(fp, "         module_module_init_rx: %ld\n",
+		OFFSET(module_module_init_rx));
+	fprintf(fp, "         module_module_init_rw: %ld\n",
+		OFFSET(module_module_init_rw));
+	fprintf(fp, "           module_init_size_rx: %ld\n",
+		OFFSET(module_init_size_rx));
+	fprintf(fp, "           module_init_size_rw: %ld\n",
+		OFFSET(module_init_size_rw));
 	fprintf(fp, "             module_num_symtab: %ld\n",
 		OFFSET(module_num_symtab));
 	fprintf(fp, "                 module_symtab: %ld\n",
@@ -9255,8 +9330,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(irq_data_chip));
 	fprintf(fp, "             irq_data_affinity: %ld\n",
 		OFFSET(irq_data_affinity));
+	fprintf(fp, "      irq_common_data_affinity: %ld\n",
+		OFFSET(irq_common_data_affinity));
 	fprintf(fp, "             irq_desc_irq_data: %ld\n",
 		OFFSET(irq_desc_irq_data));
+	fprintf(fp, "      irq_desc_irq_common_data: %ld\n",
+		OFFSET(irq_desc_irq_common_data));
 	fprintf(fp, "              kernel_stat_irqs: %ld\n",
 		OFFSET(kernel_stat_irqs));
 
@@ -9397,6 +9476,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(inode_i_fop)); 
 	fprintf(fp, "               inode_i_mapping: %ld\n",
 		OFFSET(inode_i_mapping));
+	fprintf(fp, "               inode_i_sb_list: %ld\n",
+		OFFSET(inode_i_sb_list));
 
         fprintf(fp, "             vfsmount_mnt_next: %ld\n", 
 		OFFSET(vfsmount_mnt_next));
@@ -9433,6 +9514,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(super_block_s_type));
         fprintf(fp, "           super_block_s_files: %ld\n", 
 		OFFSET(super_block_s_files));
+	fprintf(fp, "          super_block_s_inodes: %ld\n",
+		OFFSET(super_block_s_inodes));
 
 	fprintf(fp, "               nlm_file_f_file: %ld\n",
 		OFFSET(nlm_file_f_file));
@@ -10479,6 +10562,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(bpf_map_name));
 	fprintf(fp, "                  bpf_map_user: %ld\n",
 		OFFSET(bpf_map_user));
+	fprintf(fp, "                bpf_map_memory: %ld\n",
+		OFFSET(bpf_map_memory));
+	fprintf(fp, "          bpf_map_memory_pages: %ld\n",
+		OFFSET(bpf_map_memory_pages));
+	fprintf(fp, "           bpf_map_memory_user: %ld\n",
+		OFFSET(bpf_map_memory_user));
 
 	fprintf(fp, "     bpf_prog_aux_used_map_cnt: %ld\n",
 		OFFSET(bpf_prog_aux_used_map_cnt));
@@ -10488,6 +10577,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(bpf_prog_aux_load_time));
 	fprintf(fp, "             bpf_prog_aux_user: %ld\n",
 		OFFSET(bpf_prog_aux_user));
+	fprintf(fp, "             bpf_prog_aux_name: %ld\n",
+		OFFSET(bpf_prog_aux_name));
 	fprintf(fp, "               user_struct_uid: %ld\n",
 		OFFSET(user_struct_uid));
 
@@ -10497,6 +10588,9 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(xa_node_slots));
 	fprintf(fp, "                 xa_node_shift: %ld\n",
 		OFFSET(xa_node_shift));
+
+	fprintf(fp, "            uts_namespace_name: %ld\n",
+		OFFSET(uts_namespace_name));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -10600,6 +10694,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                      runqueue: %ld\n", SIZE(runqueue));
 	fprintf(fp, "                    irq_desc_t: %ld\n", SIZE(irq_desc_t));
 	fprintf(fp, "                      irq_data: %ld\n", SIZE(irq_data));
+	fprintf(fp, "               irq_common_data: %ld\n", SIZE(irq_common_data));
 	fprintf(fp, "                    task_union: %ld\n", SIZE(task_union));
 	fprintf(fp, "                  thread_union: %ld\n", SIZE(thread_union));
 	fprintf(fp, "                    prio_array: %ld\n", SIZE(prio_array));
@@ -12619,9 +12714,11 @@ numeric_forward(const void *P_x, const void *P_y)
 
 	if (SADUMP_DUMPFILE() || QEMU_MEM_DUMP_NO_VMCOREINFO() || VMSS_DUMPFILE()) {
 		/* Need for kaslr_offset and phys_base */
-		if (STREQ(x->name, "divide_error"))
+		if (STREQ(x->name, "divide_error") ||
+		    STREQ(x->name, "asm_exc_divide_error"))
 			st->divide_error_vmlinux = valueof(x);
-		else if (STREQ(y->name, "divide_error"))
+		else if (STREQ(y->name, "divide_error") ||
+			 STREQ(y->name, "asm_exc_divide_error"))
 			st->divide_error_vmlinux = valueof(y);
 
 		if (STREQ(x->name, "idt_table"))
@@ -12629,15 +12726,25 @@ numeric_forward(const void *P_x, const void *P_y)
 		else if (STREQ(y->name, "idt_table"))
 			st->idt_table_vmlinux = valueof(y);
 
+		if (STREQ(x->name, "kaiser_init"))
+			st->kaiser_init_vmlinux = valueof(x);
+		else if (STREQ(y->name, "kaiser_init"))
+			st->kaiser_init_vmlinux = valueof(y);
+
+		if (STREQ(x->name, "linux_banner"))
+			st->linux_banner_vmlinux = valueof(x);
+		else if (STREQ(y->name, "linux_banner"))
+			st->linux_banner_vmlinux = valueof(y);
+
+		if (STREQ(x->name, "pti_init"))
+			st->pti_init_vmlinux = valueof(x);
+		else if (STREQ(y->name, "pti_init"))
+			st->pti_init_vmlinux = valueof(y);
+
 		if (STREQ(x->name, "saved_command_line"))
 			st->saved_command_line_vmlinux = valueof(x);
 		else if (STREQ(y->name, "saved_command_line"))
 			st->saved_command_line_vmlinux = valueof(y);
-
-		if (STREQ(x->name, "pti_init"))
-			st->pti_init_vmlinux = valueof(x);
-		else if (STREQ(y->name, "kaiser_init"))
-			st->kaiser_init_vmlinux = valueof(y);
 	}
 
   	xs = bfd_get_section(x);

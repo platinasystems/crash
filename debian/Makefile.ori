@@ -34,10 +34,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=gdb-7.6
-GDB_FILES=${GDB_7.6_FILES}
+GDB=
+GDB_FILES=
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-7.6.patch gdb-7.6-ppc64le-support.patch gdb-7.6-proc_service.h.patch
+GDB_PATCH_FILES=
 
 #
 # Default installation directory
@@ -70,7 +70,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	unwind_x86_32_64.c unwind_arm.c \
 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
 	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c sadump.c ipcs.c \
-	ramdump.c vmware_vmss.c \
+	ramdump.c vmware_vmss.c vmware_guestdump.c \
 	xen_dom0.c kaslr_helper.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
@@ -89,7 +89,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	unwind_x86_32_64.o unwind_arm.o \
 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
 	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o sadump.o ipcs.o \
-	ramdump.o vmware_vmss.o \
+	ramdump.o vmware_vmss.o vmware_guestdump.o \
 	xen_dom0.o kaslr_helper.o
 
 MEMORY_DRIVER_FILES=memory_driver/Makefile memory_driver/crash.c memory_driver/README
@@ -200,7 +200,7 @@ TARGET_CFLAGS=
 
 CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${GDB_FLAGS} ${CFLAGS}
 
-GPL_FILES=COPYING3
+GPL_FILES=
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES} ${MEMORY_DRIVER_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
@@ -516,6 +516,9 @@ ramdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} ramdump.c
 vmware_vmss.o: ${GENERIC_HFILES} ${VMWARE_HFILES} vmware_vmss.c
 	${CC} -c ${CRASH_CFLAGS} vmware_vmss.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
+vmware_guestdump.o: ${GENERIC_HFILES} ${VMWARE_HFILES} vmware_guestdump.c
+	${CC} -c ${CRASH_CFLAGS} vmware_guestdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
 kaslr_helper.o: ${GENERIC_HFILES} kaslr_helper.c
 	${CC} -c ${CRASH_CFLAGS} kaslr_helper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
@@ -565,7 +568,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.2.8
+VERSION=
 RELEASE=0
 
 release: make_configure

@@ -237,7 +237,6 @@ static int vm_area_page_dump(ulong, ulong, ulong, ulong, ulong,
 static void rss_page_types_init(void);
 static int dump_swap_info(ulong, ulong *, ulong *);
 static int get_hugetlb_total_pages(ulong *, ulong *);
-static void swap_info_init(void);
 static char *get_swapdev(ulong, char *);
 static void fill_swap_info(ulong);
 static char *vma_file_offset(ulong, ulong, char *);
@@ -253,6 +252,7 @@ static ulonglong get_vm_flags(char *);
 static void PG_reserved_flag_init(void);
 static void PG_slab_flag_init(void);
 static ulong nr_blockdev_pages(void);
+static ulong nr_blockdev_pages_v2(void);
 void sparse_mem_init(void);
 void dump_mem_sections(int);
 void dump_memory_blocks(int);
@@ -464,6 +464,8 @@ vm_init(void)
         MEMBER_OFFSET_INIT(page_compound_head, "page", "compound_head");
 	if (INVALID_MEMBER(page_compound_head))
 		ANON_MEMBER_OFFSET_INIT(page_compound_head, "page", "compound_head");
+	MEMBER_OFFSET_INIT(page_private, "page", "private");
+	MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
 
 	MEMBER_OFFSET_INIT(mm_struct_pgd, "mm_struct", "pgd");
 
@@ -484,6 +486,11 @@ vm_init(void)
 		"inuse_pages");
 	MEMBER_OFFSET_INIT(swap_info_struct_old_block_size, 
         	"swap_info_struct", "old_block_size");
+	MEMBER_OFFSET_INIT(swap_info_struct_bdev, "swap_info_struct", "bdev");
+
+	MEMBER_OFFSET_INIT(zspoll_size_class, "zs_pool", "size_class");
+	MEMBER_OFFSET_INIT(size_class_size, "size_class", "size");
+
 	MEMBER_OFFSET_INIT(block_device_bd_inode, "block_device", "bd_inode");
 	MEMBER_OFFSET_INIT(block_device_bd_list, "block_device", "bd_list");
 	MEMBER_OFFSET_INIT(block_device_bd_disk, "block_device", "bd_disk");
@@ -495,9 +502,13 @@ vm_init(void)
 	if (INVALID_MEMBER(address_space_nrpages))
 		MEMBER_OFFSET_INIT(address_space_nrpages, "address_space", "__nrpages");
 
+	MEMBER_OFFSET_INIT(super_block_s_inodes, "super_block", "s_inodes");
+	MEMBER_OFFSET_INIT(inode_i_sb_list, "inode", "i_sb_list");
+
 	MEMBER_OFFSET_INIT(gendisk_major, "gendisk", "major");
 	MEMBER_OFFSET_INIT(gendisk_fops, "gendisk", "fops");
 	MEMBER_OFFSET_INIT(gendisk_disk_name, "gendisk", "disk_name");
+	MEMBER_OFFSET_INIT(gendisk_private_data, "gendisk", "private_data");
 
 	STRUCT_SIZE_INIT(block_device, "block_device");
 	STRUCT_SIZE_INIT(address_space, "address_space");
@@ -2113,6 +2124,7 @@ raw_data_dump(ulong addr, long count, int symbolic)
 	long wordcnt;
 	ulonglong address;
 	int memtype;
+	ulong flags = HEXADECIMAL;
 
 	switch (sizeof(long))
 	{
@@ -2132,6 +2144,22 @@ raw_data_dump(ulong addr, long count, int symbolic)
 		break;
 	}
 
+	switch (count)
+	{
+	case SIZEOF_8BIT:
+		flags |= DISPLAY_8;
+		break;
+	case SIZEOF_16BIT:
+		flags |= DISPLAY_16;
+		break;
+	case SIZEOF_32BIT:
+		flags |= DISPLAY_32;
+		break;
+	default:
+		flags |= DISPLAY_DEFAULT;
+		break;
+	}
+
 	if (pc->curcmd_flags & MEMTYPE_FILEADDR) {
 		address = pc->curcmd_private;
 		memtype = FILEADDR;
@@ -2144,7 +2172,7 @@ raw_data_dump(ulong addr, long count, int symbolic)
 	}
 
 	display_memory(address, wordcnt, 
- 	    HEXADECIMAL|DISPLAY_DEFAULT|(symbolic ? SYMBOLIC : ASCII_ENDLINE),
+		flags|(symbolic ? SYMBOLIC : ASCII_ENDLINE),
 		memtype, NULL);
 }
 
@@ -2262,11 +2290,24 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 		switch (memtype)
 		{
 		case UVADDR:
-                	if (!uvtop(CURRENT_CONTEXT(), addr, &paddr, 0)) {
-                        	if (PRINT_ERROR_MESSAGE)
-                                	error(INFO, INVALID_UVADDR, addr, type);
-                        	goto readmem_error;
-                	}
+			if (!uvtop(CURRENT_CONTEXT(), addr, &paddr, 0)) {
+				if (paddr != 0) {
+					cnt = PAGESIZE() - PAGEOFFSET(addr);
+					if (cnt > size)
+						cnt = size;
+
+					cnt = try_zram_decompress(paddr, (unsigned char *)bufptr, cnt, addr);
+					if (cnt) {
+						bufptr += cnt;
+						addr += cnt;
+						size -= cnt;
+						continue;
+					}
+				}
+				if (PRINT_ERROR_MESSAGE)
+					error(INFO, INVALID_UVADDR, addr, type);
+				goto readmem_error;
+			}
 			break;
 
 		case KVADDR:
@@ -8571,6 +8612,9 @@ nr_blockdev_pages(void)
 	ulong nrpages;
 	char *block_device_buf, *inode_buf, *address_space_buf;
 
+	if (!kernel_symbol_exists("all_bdevs"))
+		return nr_blockdev_pages_v2();
+
         ld = &list_data;
         BZERO(ld, sizeof(struct list_data));
 	get_symbol_data("all_bdevs", sizeof(void *), &ld->start);
@@ -8613,6 +8657,57 @@ nr_blockdev_pages(void)
 
 	return nrpages;
 } 
+
+/*
+ *  Emulate 5.9 nr_blockdev_pages() function.
+ */
+static ulong
+nr_blockdev_pages_v2(void)
+{
+	struct list_data list_data, *ld;
+	ulong bd_sb, address_space;
+	ulong nrpages;
+	int i, inode_count;
+	char *inode_buf, *address_space_buf;
+
+	ld = &list_data;
+	BZERO(ld, sizeof(struct list_data));
+
+	get_symbol_data("blockdev_superblock", sizeof(void *), &bd_sb);
+	readmem(bd_sb + OFFSET(super_block_s_inodes), KVADDR, &ld->start,
+		sizeof(ulong), "blockdev_superblock.s_inodes", FAULT_ON_ERROR);
+
+	if (empty_list(ld->start))
+		return 0;
+	ld->flags |= LIST_ALLOCATE;
+	ld->end = bd_sb + OFFSET(super_block_s_inodes);
+	ld->list_head_offset = OFFSET(inode_i_sb_list);
+
+	inode_buf = GETBUF(SIZE(inode));
+	address_space_buf = GETBUF(SIZE(address_space));
+
+	inode_count = do_list(ld);
+
+	/*
+	 *  go through the s_inodes list, emulating:
+	 *
+	 *      ret += inode->i_mapping->nrpages;
+	 */
+	for (i = nrpages = 0; i < inode_count; i++) {
+		readmem(ld->list_ptr[i], KVADDR, inode_buf, SIZE(inode), "inode buffer",
+			FAULT_ON_ERROR);
+		address_space = ULONG(inode_buf + OFFSET(inode_i_mapping));
+		readmem(address_space, KVADDR, address_space_buf, SIZE(address_space),
+			"address_space buffer", FAULT_ON_ERROR);
+		nrpages += ULONG(address_space_buf + OFFSET(address_space_nrpages));
+	}
+
+	FREEBUF(ld->list_ptr);
+	FREEBUF(inode_buf);
+	FREEBUF(address_space_buf);
+
+	return nrpages;
+}
 
 /*
  *  dump_vmlist() displays information from the vmlist.
@@ -15739,7 +15834,7 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 /*
  *  Determine the swap_info_struct usage.
  */
-static void
+void
 swap_info_init(void)
 {
 	struct gnu_request *req;
@@ -17020,8 +17115,12 @@ dumpfile_memory(int cmd)
                         retval = kcore_memory_dump(fp);
 		else if (pc->flags & SADUMP)
 			retval = sadump_memory_dump(fp);
-		else if (pc->flags & VMWARE_VMSS)
-			retval = vmware_vmss_memory_dump(fp);
+		else if (pc->flags & VMWARE_VMSS) {
+			if (pc->flags2 & VMWARE_VMSS_GUESTDUMP)
+				retval = vmware_guestdump_memory_dump(fp);
+			else
+				retval = vmware_vmss_memory_dump(fp);
+		}
 		break;
 	
 	case DUMPFILE_ENVIRONMENT:
@@ -19227,7 +19326,7 @@ count_free_objects(struct meminfo *si, ulong freelist)
 static ulong
 freelist_ptr(struct meminfo *si, ulong ptr, ulong ptr_addr)
 {
-	if (si->random)
+	if (VALID_MEMBER(kmem_cache_random))
 		/* CONFIG_SLAB_FREELIST_HARDENED */
 		return (ptr ^ si->random ^ ptr_addr);
 	else

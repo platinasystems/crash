@@ -23,13 +23,7 @@
 
 #define LOGPRX "vmw: "
 
-/* VMware only supports X86/X86_64 virtual machines. */
-#define VMW_PAGE_SIZE (4096)
-#define VMW_PAGE_SHIFT (12)
-
-#define MAX_BLOCK_DUMP (128)
-
-static vmssdata vmss = { 0 };
+vmssdata vmss = { 0 };
 
 int
 is_vmware_vmss(char *filename)
@@ -175,8 +169,10 @@ vmware_vmss_init(char *filename, FILE *ofp)
 				}
 				DEBUG_PARSE_PRINT((ofp, "[%d]", idx[j]));
 			}
-		       if (nextgroup)
+			if (nextgroup) {
+				DEBUG_PARSE_PRINT((ofp, "\n"));
 				break;
+			}
 
 			if (IS_BLOCK_TAG(tag)) {
 				uint64_t nbytes;
@@ -232,16 +228,22 @@ vmware_vmss_init(char *filename, FILE *ofp)
 						      filename, errno, strerror(errno));
 						break;
 					}
+					DEBUG_PARSE_PRINT((ofp, "\n"));
 					vmss.vcpu_regs[cpu] |= REGS_PRESENT_GPREGS;
 				} else if (strcmp(name, "CR64") == 0 &&
 					   nbytes == VMW_CR64_SIZE &&
 					   idx[0] < vmss.num_vcpus) {
 					int cpu = idx[0];
+					DEBUG_PARSE_PRINT((ofp, "\t=> "));
 					if (fread(&vmss.regs64[cpu]->cr[0], VMW_CR64_SIZE, 1, fp) != 1) {
 						error(INFO, LOGPRX"Failed to read '%s': [Error %d] %s\n",
 						      filename, errno, strerror(errno));
 						break;
 					}
+					for (j = 0; j < VMW_CR64_SIZE / 8; j++)
+						DEBUG_PARSE_PRINT((ofp, "%s%016llX", j ? " " : "",
+								(ulonglong)vmss.regs64[cpu]->cr[j]));
+					DEBUG_PARSE_PRINT((ofp, "\n"));
 					vmss.vcpu_regs[cpu] |= REGS_PRESENT_CRS;
 				} else if (strcmp(name, "IDTR") == 0 &&
 					   nbytes == VMW_IDTR_SIZE &&
@@ -258,6 +260,7 @@ vmware_vmss_init(char *filename, FILE *ofp)
 						      filename, errno, strerror(errno));
 						break;
 					}
+					DEBUG_PARSE_PRINT((ofp, "\n"));
 					vmss.regs64[cpu]->idtr = idtr;
 					vmss.vcpu_regs[cpu] |= REGS_PRESENT_IDTR;
 				} else {
@@ -266,6 +269,7 @@ vmware_vmss_init(char *filename, FILE *ofp)
 						      (ulonglong)(blockpos + nbytes));
 						break;
 					}
+					DEBUG_PARSE_PRINT((ofp, "\n"));
 				}
 			} else {
 				union {
@@ -498,12 +502,14 @@ read_vmware_vmss(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	        int i;
 
 		for (i = 0; i < vmss.regionscount; i++) {
+			uint32_t hole;
+
 			if (ppn < vmss.regions[i].startppn)
 				break;
 
 			/* skip holes. */
-			pos -= ((vmss.regions[i].startppn - vmss.regions[i].startpagenum)
-				<< VMW_PAGE_SHIFT);
+			hole = vmss.regions[i].startppn - vmss.regions[i].startpagenum;
+			pos -= (uint64_t)hole << VMW_PAGE_SHIFT;
 		}
 	}
 
@@ -867,13 +873,20 @@ vmware_vmss_valid_regs(struct bt_info *bt)
 }
 
 int
-vmware_vmss_get_cr3_idtr(ulong *cr3, ulong *idtr)
+vmware_vmss_get_nr_cpus(void)
 {
-	if (vmss.num_vcpus == 0 || vmss.vcpu_regs[0] != REGS_PRESENT_ALL)
+	return vmss.num_vcpus;
+}
+
+int
+vmware_vmss_get_cr3_cr4_idtr(int cpu, ulong *cr3, ulong *cr4, ulong *idtr)
+{
+	if (cpu >= vmss.num_vcpus || vmss.vcpu_regs[cpu] != REGS_PRESENT_ALL)
 		return FALSE;
 
-	*cr3 = vmss.regs64[0]->cr[3];
-	*idtr = vmss.regs64[0]->idtr;
+	*cr3 = vmss.regs64[cpu]->cr[3];
+	*cr4 = vmss.regs64[cpu]->cr[4];
+	*idtr = vmss.regs64[cpu]->idtr;
 
 	return TRUE;
 }

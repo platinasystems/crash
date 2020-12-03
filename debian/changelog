@@ -1,3 +1,250 @@
+crash (7.2.9-1) unstable; urgency=medium
+
+  * Patch from Sebastian Andrzej Siewior <sebastian@breakpoint.cc>: The crash
+    project moved recently to github. The attached patch updates the
+    information within the package. It also adds a watch file which points to
+    the latest release (closes: #976195)
+
+  * Fix for an ARM64 gcc-10 compilation error.  Without the patch, the build
+    of the embedded gdb module fails with an error message that indicates
+    "multiple definition of 'tdesc_aarch64'".
+
+  * Fix for the "log" command.  Without the patch, the command's output may be
+    truncated, ending with the error message "log: invalid log_buf entry
+    encountered".
+
+  * Fix to allow the translation of ARM64 FIXMAP addresses located in the
+    virtual memory region between the end of the vmalloc region and the
+    beginning of the vmemmap region.  Without the patch, reads of virtual
+    addresses within that region are not recognized properly and will fail.
+
+  * Introduction of a new "extend -s" option, which shows all available shared
+    object extension modules that are located in the directories that are part
+    of the normal search path that is used when a shared object is loaded
+    without a fully-qualified pathname.
+
+  * Fix for the "bpf -m|-M" options on Linux 5.3 and later kernels that
+    contain commit 3539b96e041c06e4317082816d90ec09160aeb11, titled "bpf:
+    group memory related fields in struct bpf_map_memory".  Without the patch,
+    the options prints "(unknown)" for MEMLOCK and UID.
+
+  * Enhancement to the "bpf -p|-P" options to display the eBPF program name
+    string.
+
+  * Fix for reading compressed kdump dumpfiles from systems with physical
+    memory located at extraordinarily high addresses.  In a system with a
+    physical address range from 0x602770ecf000 to 0x6027ffffffff, the crash
+    utility fails during session initialization due to an integer overflow,
+    ending with the error message "crash: vmlinux and vmcore do not match!".
+
+  * Enhancement of the "struct -r" option to support the raw memory display of
+    a single data structure member.  Without the patch, the option only
+    supported the raw display of a complete data structure.
+
+  * Modify the display behavior of the "struct -r" option so as to scale the
+    minimum display size from the size of a per-architecture long (32-bits or
+    64-bits) down to 8-bits, 16-bits or 32-bits when the requested size is
+    equal to one of the smaller sizes.
+
+  * Introduce a new ARM64 "--machdep vabits_actual=<value>" command line
+    option for Linux 5.4 and later dumpfiles, which require the kernel's
+    dynamically-determined "vabits_actual" value for virtual address
+    translation.  Without the patch, the crash session fails during
+    initialization with the error message "crash: cannot determine
+    VA_BITS_ACTUAL".  This option will become unnecessary when the proposed
+    TCR_EL1.T1SZ vmcoreinfo entry is incorporated into the kernel.
+
+  * Fix for "kmem -[sS]" options on Linux 4.14 and later kernels built with
+    CONFIG_SLAB_FREELIST_HARDENED enabled. Without the patch, there will error
+    messages of the type "kmem: <cache name> slab: <address> invalid
+    freepointer: <obfuscated address>" for caches created during SLUB
+    bootstrap, as they are likely to have s->random == 0.
+
+  * If readmem() receives a user-space address in a page that has been swapped
+    to the zswap compressed swap cache, an attempt will be made to find and
+    decompress the page.
+
+  * Fix for the "mount -n [pid|task]" option when running on a live system.
+    Without the patch, if the [pid|task] has been created since the last
+    internal task table refresh, the command fails with the error message
+    "mount: invalid task or pid value: <value>".
+
+  * Introduction of the "log -T" option, which translates the leading
+    timestamp value of each message into human readable format.
+
+  * When kernels are built with LLVM, the names of many symbols may be
+    appended with an ".llvm.<number>" string.  As a result, commands such as
+    "irq" fail with the error message irq: neither irq_desc, _irq_desc,
+    irq_desc_ptrs or irq_desc_tree symbols exist".  This patch adds the
+    LLVM-generated string to the other strings that are stripped from symbols
+    before they are stored.
+
+  * Prepare for the introduction of ARM64 8.3 Pointer Authentication as
+    in-kernel feature.  The value of CONFIG_ARM64_KERNELPACMASK will be
+    exported as a vmcoreinfo entry, and will be used with text return
+    addresses on the kernel stack.
+
+  * Several fixes for ARM64 kernels:
+    (1) Linux kernel patch "arm64: mm: Introduce vabits_actual"
+        introduced "physvirt_offset", which is not equal to
+        (PHYS_OFFSET - PAGE_OFFSET) when KASLR is enabled.
+        physvirt_offset is caculated in arch/arm64/mm/init.c
+        before memstart_addr (PHYS_OFFSET) is randomized.  Let
+        arm64_VTOP() and arm64_PTOV() use physvirt_offset instead,
+        whose default value is set to (phys_offset - page_offset)
+    (2) For ARM64 RAM dumps without any vmcoreinfo and KASLRpassed as
+        argument, " _stext_vmlinux" is not set.  This causes incorrect
+        calculation of vmalloc_start with VA_BITS_ACTUAL.
+    (3) For ARM64 RAM dumps For ramdumps without vmcoreinfo, get
+        CONFIG_ARM64_VA_BITS from in-kernel config. Without this,
+        vmemmap size is calculated incorrectly.
+    (4) Fix the vmemmap_start to match with what the kernel uses.
+
+  * Replace people.redhat.com references with github equivalents.
+
+  * Implement support for user-space zram reads on x86_64 for recent
+   Fedora kernel version 5.6.7-200.fc31.  The patch adds the following:
+    (1) Redefine _PFN_BITS() macro to use MAX_POSSIBLE_PHYSMEM_BITS.
+    (2) Fix to determine whether address_space.i_pages is a radix tree
+        or an xarray.
+    (3) Fix to not mistakenly select the "lzo" compressor when the
+        kernel has used the default "lzo-rle" compressor.
+    (4) Since zram may be provided as a kernel module, it would be
+        necessary to load its debuginfo during the crash session;
+        therefore perform the zram structure-size/member-offset
+        initializations when first required instead of during
+        session initialization.
+    (5) Handle the zram_table_entry structure member name change
+        from "value" to "flags".
+
+  * Add support for 1GB huge pages to "vtop" command on x86_64.  Without this
+    patch, the command with a user virtual address corresponding to a 1GB huge
+    page fails with the error message "vtop: seek error: physical address:
+    <address>  type: "page table".
+
+  * Fix six spelling typos in help.c.
+
+  * Change tcr_el1_t1sz vmcoreinfo entry name to TCR_EL1_T1SZ according to
+    kernel commit bbdbc11804ff ("arm64/crash_core: Export TCR_EL1.T1SZ in
+    vmcoreinfo").
+
+  * Fix for a failure of calculating kaslr_offset due to an sadump format
+    restriction.  Without the patch set, calculating kaslr_offset fails
+    because it is based on the assumption that unused part of register values
+    in the sadump format are always zero cleared.
+
+  * Support for huge holes in vmem of VMware VMSS dumpfiles.  Without the
+    patch, if the hole is big enough, the multiplication by page size will
+    truncate as it's operating on a uint32_t.
+
+  * Beautify and extend debug log for VMware VMSS dumpfiles.  Without the
+    patch, the parser's debug log is missing a few line breaks as well as some
+    crucial information, like control register dumps.
+
+  * Support core files with unusual layout that the ELF program headers do not
+    directly follow the ELF header, such as vmcores generated with 'vmss2core'
+    tool.
+
+  * Fix for the "log -T" option when crash is started with "--minimal" option.
+    Without the patch, crash will spin at 100% and continuously crash at a
+    divide by zero.  Disallow the option in minimal mode.
+
+  * Remove raw-view from s390bpf.  With kernel commit ecb1ff6833c4
+    ("s390/debug: remove raw view"), the raw-view is no longer supported by
+    s390 debug feature.  Since there has never been a single user of the
+    raw-view, remove it from crash as well.
+
+  * Support s390 debug feature version 3, which was introduced by kernel
+    commit 0990d836cecb ("s390/debug: debug feature version 3").
+
+  * Basic support for PaX's split module layout.  PaX and grsecurity kernels
+    split module memory into dedicated r/x and r/w mappings using '*_rw' and
+    '*_rx' named member variables in 'struct module'.  To add basic support
+    for such kernels, detect the split layout by testing for the corresponding
+      structure members and use these instead.
+
+  * Fix for the "kmem -i" option on Linux 5.9-rc1 and later kernels that
+    contain commit 1008fe6dc36d ("block: remove the all_bdevs list").  Without
+    the patch, the option fails halfway with the error message 'kmem: cannot
+    resolve: "all_bdevs"'.
+
+  * Fix for the "irq -a" option on Linux 4.3 or later kernels that contain
+    commit 9df872faa7e1 ("genirq: Move field 'affinity' from irq_data into
+    irq_common_data").  Without the patch, the option cannot work with the
+    message "irq: -a option not supported or applicable on this architecture
+    or kernel".
+
+  * Append time zone explicitly to each output of date and time like "DATE:
+    Thu Nov 29 06:44:02 JST 2018".
+
+  * Fixes for the "trace.so" extension module on Linux 5.6 and later kernels
+    that contain commit: (1) 1c5eb4481e01 ("tracing: Rename trace_buffer to
+    array_buffer") (2) 13292494379f ("tracing: Make struct ring_buffer less
+    ambiguous") With the patch set, rename trace_buffer to array_buffer and
+    ring_buffer to trace_buffer respectively.
+
+  * Fix for the "help -D" option listing uninteresting register entries for
+    SADUMP dumpfiles.
+
+  * Fix for an initialization-time failure due to offset change of the name
+    member of struct uts_namespace that might be introduced by linux-next
+    commit 9a56493f6942 ("uts: Use generic ns_common::count").
+
+  * Add support for VMware guestdump (debug.guest) and vmem (debug.vmem)
+    files.  To use, the companion debug.vmem file must be present in the same
+    directory as the debug.guest file.
+
+  * Fix for the "extend" command on a PPC64 targeted x86_64 crash binary.
+    Without the patch, the command on an x86_64 crash binary that can be used
+    to analyze ppc64le dumpfiles fails with the error message "extend: <path
+    to extension>: not an ELF format object".
+
+  * Fix for a failure to match arm/aarch64 ELF format of xendump file.
+
+  * Fix for the x86_64 "bt" command in cases where the pt_regs is not present
+    in the stack.  Without the patch, the command can be incomplete with the
+    error message 'bt: seek error: kernel virtual address: <address> type:
+    "pt_regs"'.
+
+  * Fix for the crash.ko memory driver build with Linux 5.8 and later kernels
+    that contain commit fe557319aa06 ("maccess: rename
+    probe_kernel_{read,write} to copy_{from,to}_kernel_nofault").
+    Additionally, due to commit 0493cb086353 ("maccess: unexport
+    probe_kernel_write()"), writing kernel memory is no longer possible from a
+    module.  Without this patch, build with the kernels fails with the error
+    message "error: implicit declaration of function 'probe_kernel_write'".
+
+  * Fix for the memory_driver/Makefile for Linux 5.4 and later kernels that
+    contain commit 7e35b42591c0 ("kbuild: remove SUBDIRS support").  Without
+    the patch, the "make" command in the memory_driver directory doesn't build
+    crash memory driver module as expected.
+
+  * Improvements of KASLR offset detection for QEMU, VMware VMSS and SADUMP
+    dumpfiles: (1) Try all CPUs to provide CR3 and IDTR, because these
+    registers on CPU0 can be not initialized or clobbered.  (2) Support
+    5-level page table by using LA57 bit in CR4.  (3) Get KASLR offset by
+    walking page tree.
+
+  * Fix for an initialization-time failure with QEMU dumpfiles with Linux
+    5.8 and later x86_64 kernels that contain commit 9d06c4027f21 ("x86/entry:
+    Convert Divide Error to IDTENTRY"), renamed divide_error handler to
+    asm_exc_divide_error.
+
+  * Fix for several compiler warnings on 32-bit architectures when building
+    with "make warn".  Without the patch, gcc generates the message "warning:
+    format '%ld' expects argument of type 'long int', but argument 4 has type
+    'uint64_t' [-Wformat=]" and similar ones as a result of crash commit
+    3fedbee9bfbb ("vmware_guestdump: new input format").
+
+  * Speed up session initialization by avoiding unnecessary processing in the
+    stkptr_to_task() function when sp is 0 on some architectures.  Without the
+    patch, as it runs through each task's stack to find whether the given
+    address is in its range, on a system with about
+    1500 CPUs and 165k running tasks, it takes about a day to finish session
+    initialization.  With the patch applied, it only takes about 5-10 minutes.
+
+ -- Troy Heber <troyh@debian.org>  Thu, 03 Dec 2020 09:53:49 -0700
+
 crash (7.2.8-1) unstable; urgency=medium
 
   * New upstream (Closes: #950544)
