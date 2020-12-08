@@ -1,3 +1,11 @@
+crash (7.2.9-2) unstable; urgency=medium
+
+  * Backporting future patches to support printk in kernel 5.10+ based on:
+    https://github.com/crash-utility/crash/compare/bf57c44...71e159c
+  * Update to current debhelper 13. 
+
+ -- Troy Heber <troyh@debian.org>  Tue, 08 Dec 2020 12:58:57 -0700
+
 crash (7.2.9-1) unstable; urgency=medium
 
   * Patch from Sebastian Andrzej Siewior <sebastian@breakpoint.cc>: The crash
