@@ -2898,11 +2898,25 @@ cmd_list(void)
 			}
 
 			/*
-			 *  If it's not a symbol nor a number, bail out.
+			 *  If it's not a symbol nor a number, bail out if it
+			 *  cannot be evaluated as a start address.
 			 */
-			if (!IS_A_NUMBER(args[optind]))	
+			if (!IS_A_NUMBER(args[optind])) {	
+				if (can_eval(args[optind])) {
+                        		value = eval(args[optind], FAULT_ON_ERROR, NULL);
+					if (IS_KVADDR(value)) {
+                               			if (ld->flags & LIST_START_ENTERED)
+                                        		error(FATAL,
+                                            		    "list start already entered\n");
+                                		ld->start = value;
+                                		ld->flags |= LIST_START_ENTERED;
+						goto next_arg;
+					}
+				}
+				
 				error(FATAL, "invalid argument: %s\n",
                                 	args[optind]);
+			}
 
 			/*
 			 *  If the start is known, it's got to be an offset.
@@ -2943,7 +2957,8 @@ cmd_list(void)
                                 ld->member_offset = value;
                                 ld->flags |= LIST_OFFSET_ENTERED;
                                 goto next_arg;
-			} else if (!IS_A_NUMBER(args[optind+1]) &&
+			} else if ((!IS_A_NUMBER(args[optind+1]) &&
+				!can_eval(args[optind+1])) &&
 				!strstr(args[optind+1], "."))
 				error(FATAL, "symbol not found: %s\n",
                                         args[optind+1]);

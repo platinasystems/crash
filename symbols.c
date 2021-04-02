@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -6626,6 +6626,8 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "                     x8664_pda: %ld\n", 
 		SIZE(x8664_pda));
+	fprintf(fp, "                    ppc64_paca: %ld\n", 
+		SIZE(ppc64_paca));
 	fprintf(fp, "                   gate_struct: %ld\n", 
 		SIZE(gate_struct));
 	fprintf(fp, "                    tss_struct: %ld\n", 

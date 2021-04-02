@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3344,7 +3344,7 @@ char *help__list[] = {
 "       c. a pointer to the first item pointed to by the start address.",
 "       d. a pointer to its containing structure.",
 "  ",
-"  2. Many Linux lists are linked via embedded list_head structures contained ",
+"  2. Most Linux lists are linked via embedded list_head structures contained ",
 "     within the data structures in the list.  The linked list is headed by an",
 "     external LIST_HEAD, which is simply a list_head structure initialized to",
 "     point to itself, signifying that the list is empty:",
@@ -3386,8 +3386,9 @@ char *help__list[] = {
 "  is pre-pended or not:",
 " ",
 "      start  The address of the first structure in the list.",
-"   -H start  The address of the LIST_HEAD structure, typically expressed",
-"             symbolically.",
+"   -H start  The address of the list_head structure, typically expressed",
+"             symbolically, but also can be an expression evaluating to the",
+"             address of the starting list_head structure.",
 "\nEXAMPLES",
 "  Note that each task_struct is linked to its parent's task_struct via the",
 "  p_pptr member:",

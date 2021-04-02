@@ -48,6 +48,7 @@ static char * ppc64_check_eframe(struct ppc64_pt_regs *);
 static void ppc64_print_eframe(char *, struct ppc64_pt_regs *, 
 		struct bt_info *);
 static void parse_cmdline_arg(void);
+static void ppc64_paca_init(void);
 
 struct machine_specific ppc64_machine_specific = { { 0 }, 0, 0 };
 
@@ -161,6 +162,8 @@ ppc64_init(int when)
 			m->l3_shift = m->l2_shift + m->l2_index_size;
 			m->l4_shift = m->l3_shift + m->l3_index_size;
 		}
+
+		ppc64_paca_init();
 		machdep->vmalloc_start = ppc64_vmalloc_start;
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables,
 			"thread_struct", "pg_tables");
@@ -332,10 +335,10 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
-	fprintf(fp, "     pgd_index_size: %ld\n", machdep->machspec->l4_index_size);
-	fprintf(fp, "     pud_index_size: %ld\n", machdep->machspec->l3_index_size);
-	fprintf(fp, "     pmd_index_size: %ld\n", machdep->machspec->l2_index_size);
-	fprintf(fp, "     pte_index_size: %ld\n", machdep->machspec->l1_index_size);
+	fprintf(fp, "     pgd_index_size: %d\n", machdep->machspec->l4_index_size);
+	fprintf(fp, "     pud_index_size: %d\n", machdep->machspec->l3_index_size);
+	fprintf(fp, "     pmd_index_size: %d\n", machdep->machspec->l2_index_size);
+	fprintf(fp, "     pte_index_size: %d\n", machdep->machspec->l1_index_size);
 }
 
 /*
@@ -1417,19 +1420,10 @@ ppc64_check_eframe(struct ppc64_pt_regs *regs)
 	return NULL;
 }
 
-/*
- *  Print exception frame information for ppc64
- */
 static void
-ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
-		struct bt_info *bt)
+ppc64_print_regs(struct ppc64_pt_regs *regs)
 {
 	int i;
-
-	if (BT_REFERENCE_CHECK(bt))
-		return;
-
-        fprintf(fp, " %s  [%lx] exception frame:", efrm_str, regs->trap);
 
         /* print out the gprs... */
         for(i=0; i<32; i++) {
@@ -1462,9 +1456,66 @@ ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
         fprintf(fp, "DAR: %016lx\n", regs->dar);
         fprintf(fp, " DSISR: %016lx ", regs->dsisr);
         fprintf(fp, "    Syscall Result: %016lx\n", regs->result);
+}
+
+/*
+ * Print the exception frame information
+ */
+static void
+ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
+			struct bt_info *bt)
+{
+	if (BT_REFERENCE_CHECK(bt))
+		return;
+
+	fprintf(fp, " %s  [%lx] exception frame:", efrm_str, regs->trap);
+	ppc64_print_regs(regs);
 	fprintf(fp, "\n");
 }
 
+/*
+ * get SP and IP from the saved ptregs.
+ */
+static int
+ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
+{
+	struct ppc64_pt_regs *pt_regs;
+	unsigned long unip;
+
+	pt_regs = (struct ppc64_pt_regs *)bt_in->machdep;
+	if (!pt_regs->gpr[1]) {
+		/*
+		 * Not collected regs. May be the corresponding CPU not
+		 * responded to an IPI.
+		 */
+		fprintf(fp, "%0lx: GPR1 register value (SP) was not saved\n",
+			bt_in->task);
+		return FALSE;
+	}
+	*ksp = pt_regs->gpr[1];
+	readmem(*ksp+16, KVADDR, &unip, sizeof(ulong), "Regs NIP value",
+		FAULT_ON_ERROR);
+	*nip = unip;
+
+	if (bt_in->flags && 
+	((BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT))) 
+		return TRUE;
+
+	/*
+	 * Print the collected regs for the active task
+	 */
+	ppc64_print_regs(pt_regs);
+
+	fprintf(fp, " NIP [%016lx] %s\n", pt_regs->nip,
+		closest_symbol(pt_regs->nip));
+	if (unip != pt_regs->link)
+		fprintf(fp, " LR  [%016lx] %s\n", pt_regs->link,
+			closest_symbol(pt_regs->link));
+
+	fprintf(fp, "\n");
+
+	return TRUE;
+}
 
 /*
  *  Get the starting point for the active cpus in a diskdump/netdump.
@@ -1482,12 +1533,18 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
         ulong ur_ksp = 0;
 	int check_hardirq, check_softirq;
 	int check_intrstack = TRUE;
+	struct ppc64_pt_regs *pt_regs;
+
+	/* 
+	 * For the kdump vmcore, Use SP and IP values that are saved in ptregs.
+	 */ 
+	if (pc->flags && KDUMP)
+		return ppc64_kdump_stack_frame(bt_in, nip, ksp);
 
         bt = &bt_local;
         BCOPY(bt_in, bt, sizeof(struct bt_info));
         ms = machdep->machspec;
         ur_nip = ur_ksp = 0;
-	struct ppc64_pt_regs *pt_regs;
 	
 	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
 
@@ -2222,4 +2279,47 @@ parse_cmdline_arg(void)
 		fprintf(fp, "\n");
 }
 
+static void
+ppc64_paca_init(void)
+{
+	int i, cpus, nr_paca;
+	char *cpu_paca_buf;
+	ulong data_offset;
+	ulong per_cpu_offset;
+	ulong cpuid_offset;
+	signed short cpuid;
+
+	if (!symbol_exists("paca"))
+		return;
+
+	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
+		return;
+	
+	STRUCT_SIZE_INIT(ppc64_paca, "paca_struct");
+	cpuid_offset = MEMBER_OFFSET("paca_struct", "hw_cpu_id");
+	data_offset = MEMBER_OFFSET("paca_struct", "data_offset");
+
+	cpu_paca_buf = GETBUF(SIZE(ppc64_paca));
+
+	if (!(nr_paca = get_array_length("paca", NULL, 0)))
+		nr_paca = NR_CPUS;
+
+	for (i = cpus = 0; i < nr_paca; i++) {
+        	readmem(symbol_value("paca") + (i * SIZE(ppc64_paca)),
+             		KVADDR, cpu_paca_buf, SIZE(ppc64_paca),
+			"paca entry", FAULT_ON_ERROR);
+
+		cpuid = SHORT(cpu_paca_buf + cpuid_offset);
+		if (cpuid == -1)
+			continue;
+
+		per_cpu_offset = ULONG(cpu_paca_buf + data_offset); 
+		kt->__per_cpu_offset[i] = per_cpu_offset;
+		kt->flags |= PER_CPU_OFF;
+		cpus++;
+	}
+	kt->cpus = cpus;
+	if (kt->cpus > 1)
+		kt->flags |= SMP;
+}
 #endif /* PPC64 */ 

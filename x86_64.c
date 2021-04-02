@@ -365,9 +365,9 @@ x86_64_dump_machdep_table(ulong arg)
 static void 
 x86_64_cpu_pda_init(void)
 {
-	int i, cpus, nr_pda, cpunumber;
+	int i, cpus, nr_pda, cpunumber, _cpu_pda;
 	char *cpu_pda_buf;
-	ulong level4_pgt, data_offset;
+	ulong level4_pgt, data_offset, cpu_pda_addr;
 	struct syment *sp, *nsp;
 	ulong offset, istacksize;
 
@@ -383,12 +383,25 @@ x86_64_cpu_pda_init(void)
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
-		nr_pda = NR_CPUS;
+	if (symbol_exists("_cpu_pda")) {
+		if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
+			nr_pda = NR_CPUS;
+		_cpu_pda = TRUE;
+	} else {
+		if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+			nr_pda = NR_CPUS;
+		_cpu_pda = FALSE;
+	}
 
 	for (i = cpus = 0; i < nr_pda; i++) {
-		if (!CPU_PDA_READ(i, cpu_pda_buf))
-			break;
+		if (_cpu_pda) {
+			if (!_CPU_PDA_READ(i, cpu_pda_buf))
+				break;
+		} else {
+			if (!CPU_PDA_READ(i, cpu_pda_buf))
+				break;
+		}
+
 		if (VALID_MEMBER(x8664_pda_level4_pgt)) {
 			level4_pgt = ULONG(cpu_pda_buf + OFFSET(x8664_pda_level4_pgt));
 			if (!VALID_LEVEL4_PGT_ADDR(level4_pgt))
@@ -2716,22 +2729,32 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 int
 x86_64_get_smp_cpus(void)
 {
-	int i, cpus, nr_pda, cpunumber;
+	int i, cpus, nr_pda, cpunumber, _cpu_pda;
 	char *cpu_pda_buf;
-	ulong level4_pgt;
+	ulong level4_pgt, cpu_pda_addr;
 
 	if (!VALID_STRUCT(x8664_pda))
 		return 1;
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
-               nr_pda = NR_CPUS;
-
+	if (symbol_exists("_cpu_pda")) {
+		if (!(nr_pda = get_array_length("_cpu_pda", NULL, 0)))
+        	       nr_pda = NR_CPUS;
+		_cpu_pda = TRUE;
+	} else {
+		if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+        	       nr_pda = NR_CPUS;
+		_cpu_pda = FALSE;
+	}
 	for (i = cpus = 0; i < nr_pda; i++) {
-		if (!CPU_PDA_READ(i, cpu_pda_buf))
-			break;
-
+		if (_cpu_pda) {
+			if (!_CPU_PDA_READ(i, cpu_pda_buf))
+				break;
+		} else {
+			if (!CPU_PDA_READ(i, cpu_pda_buf))
+				break;
+		}
 		if (VALID_MEMBER(x8664_pda_level4_pgt)) {
 			level4_pgt = ULONG(cpu_pda_buf + OFFSET(x8664_pda_level4_pgt));
 			if (!VALID_LEVEL4_PGT_ADDR(level4_pgt))
@@ -2815,9 +2838,9 @@ x86_64_display_machine_stats(void)
 static void 
 x86_64_display_cpu_data(void)
 {
-        int cpu, cpus, boot_cpu;
+        int cpu, cpus, boot_cpu, _cpu_pda;
         ulong cpu_data;
-	ulong cpu_pda;
+	ulong cpu_pda, cpu_pda_addr;
 
 	if (symbol_exists("cpu_data")) {
         	cpu_data = symbol_value("cpu_data");
@@ -2828,7 +2851,13 @@ x86_64_display_cpu_data(void)
 		boot_cpu = TRUE;
 		cpus = 1;
 	}
-	cpu_pda = symbol_value("cpu_pda");
+	if (symbol_exists("_cpu_pda")) {
+		cpu_pda = symbol_value("_cpu_pda");
+		_cpu_pda = TRUE;
+	} else if (symbol_exists("cpu_pda")) {
+		cpu_pda = symbol_value("cpu_pda");
+		_cpu_pda = FALSE;
+	}
 
         for (cpu = 0; cpu < cpus; cpu++) {
 		if (boot_cpu)
@@ -2838,10 +2867,17 @@ x86_64_display_cpu_data(void)
 
                 dump_struct("cpuinfo_x86", cpu_data, 0);
 		fprintf(fp, "\n");
-		dump_struct("x8664_pda", cpu_pda, 0);
 
+		if (_cpu_pda) {
+			readmem(cpu_pda, KVADDR, &cpu_pda_addr,
+				sizeof(unsigned long), "_cpu_pda addr", FAULT_ON_ERROR);
+			dump_struct("x8664_pda", cpu_pda_addr, 0);
+			cpu_pda += sizeof(void *);
+		} else {
+			dump_struct("x8664_pda", cpu_pda, 0);
+			cpu_pda += SIZE(x8664_pda);
+		}
                 cpu_data += SIZE(cpuinfo_x86);
-		cpu_pda += SIZE(x8664_pda);
         }
 }
 
