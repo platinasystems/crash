@@ -213,6 +213,11 @@ is_netdump(char *file, ulong source_query)
 				goto bailout;
 			break;
 
+		case EM_S390:
+			if (machine_type_mismatch(file, "S390X", NULL,
+			    source_query))
+				goto bailout;
+			break;
 		case EM_386:
 			if (machine_type_mismatch(file, "X86", NULL,
 			    source_query))
@@ -1990,6 +1995,9 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
                 break;
 	}
 
+	if (store && machine_type("S390X"))
+		machdep->dumpfile_init(nd->num_prstatus_notes, note);
+
 	uptr = (ulonglong *)(ptr + note->n_namesz);
 
         /*
@@ -2082,6 +2090,9 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		return get_netdump_regs_x86_64(bt, eip, esp);
 		break;
 
+	case EM_S390:
+		machdep->get_stack_frame(bt, eip, esp);
+		break;
 	default:
 		error(FATAL, 
 		   "support for ELF machine type %d not available\n",

@@ -2081,10 +2081,11 @@ static int
 unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
 			  char *type)
 {
-	unsigned long pt, sw, pid;
+	unsigned long pt, sw, sos, pid;
 	char *p, *q;
 	struct task_context *tc = NULL;
 	struct bt_info clone_bt;
+	unsigned long kr_current, offset_kr;
 
 	/*
 	 *    The structure of INIT/MCA stack
@@ -2107,6 +2108,7 @@ unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
 	 */
 	pt = ALIGN16(bt->task + IA64_STK_OFFSET - STRUCT_SIZE("pt_regs"));
 	sw = ALIGN16(pt - STRUCT_SIZE("switch_stack"));
+	sos = ALIGN16(sw - STRUCT_SIZE("ia64_sal_os_state"));
 
 	/*
 	 * 1. Try to find interrupted task from comm
@@ -2121,6 +2123,51 @@ unw_switch_from_osinit_v3(struct unw_frame_info *info, struct bt_info *bt,
 	 */
 	if (!bt->tc || !bt->tc->comm)
 		goto find_exframe;
+
+	/*
+	 * If comm is "INIT" or "MCA", it means original stack is not modified.
+	 */
+	if (STREQ(bt->tc->comm, type)) {
+		/* Get pid using ia64_sal_os_state */
+		pid = 0;
+		offset_kr = MEMBER_OFFSET("ia64_sal_os_state",
+		                          "prev_IA64_KR_CURRENT");
+		readmem(sos + offset_kr, KVADDR, &kr_current, sizeof(ulong),
+		        "ia64_sal_os_state prev_IA64_KR_CURRENT",
+		        FAULT_ON_ERROR);
+		readmem(kr_current + OFFSET(task_struct_pid), KVADDR, &pid,
+		        sizeof(pid_t), "task_struct pid", FAULT_ON_ERROR);
+
+		if (pid)
+			tc = pid_to_context(pid);
+		else {
+			tc = pid_to_context(0);
+			while (tc) {
+				if (tc != bt->tc &&
+					tc->processor == bt->tc->processor)
+					break;
+				tc = tc->tc_next;
+			}
+		}
+
+		if (tc) {
+			/* Clone bt_info and do backtrace */
+			clone_bt_info(bt, &clone_bt, tc);
+			if (!BT_REFERENCE_CHECK(&clone_bt)) {
+				fprintf(fp, "(%s) INTERRUPTED TASK\n", type);
+				print_task_header(fp, tc, 0);
+			}
+			if (!user_mode(bt, pt))
+				goto find_exframe;
+			else if (!BT_REFERENCE_CHECK(bt)) {
+				fprintf(fp, " #0 [interrupted in user space]\n");
+				/* at least show the incomplete exception frame */
+				bt->flags |= BT_INCOMPLETE_USER_EFRAME;
+				ia64_exception_frame(pt, bt);
+			}
+		}
+		return FALSE;
+	}
 
 	if ((p = strstr(bt->tc->comm, type))) {
 		p += strlen(type);

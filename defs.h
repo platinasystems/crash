@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -792,6 +792,7 @@ struct machdep_table {
 	void (*clear_machdep_cache)(void);
 	int (*xen_kdump_p2m_create)(struct xen_kdump_data *);
 	int (*in_alternate_stack)(int, ulong);
+	void (*dumpfile_init)(int, void *);
 };
 
 /*
@@ -1494,6 +1495,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long attribute_owner;
 	long module_sect_attr_attr;
 	long module_sections_attrs;
+	long swap_info_struct_inuse_pages;
+	long s390_lowcore_psw_save_area;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1791,6 +1794,8 @@ struct vm_table {                /* kernel VM-related data */
 #define VM_EVENT                (0x40000)
 #define PGCNT_ADJ               (0x80000)
 #define VM_INIT                (0x100000)
+#define SWAPINFO_V1            (0x200000)
+#define SWAPINFO_V2            (0x400000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)

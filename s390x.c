@@ -1,9 +1,9 @@
 /* s390.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
- * Copyright (C) 2005, 2006 Michael Holzheu, IBM Corporation
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005, 2006, 2010 Michael Holzheu, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
  * GNU General Public License for more details.
  */
 #ifdef S390X
+#include <elf.h>
 #include "defs.h"
 
 #define S390X_WORD_SIZE   8
@@ -39,6 +40,86 @@
 #define KERNEL_STACK_SIZE STACKSIZE() // can be 8192 or 16384
 
 #define LOWCORE_SIZE 8192
+
+/*
+ * S390 CPU timer ELF note
+ */
+#ifndef NT_S390_TIMER
+#define NT_S390_TIMER 0x301
+#endif
+
+/*
+ * S390 TOD clock comparator ELF note
+ */
+#ifndef NT_S390_TODCMP
+#define NT_S390_TODCMP 0x302
+#endif
+
+/*
+ * S390 TOD programmable register ELF note
+ */
+#ifndef NT_S390_TODPREG
+#define NT_S390_TODPREG 0x303
+#endif
+
+/*
+ * S390 control registers ELF note
+ */
+#ifndef NT_S390_CTRS
+#define NT_S390_CTRS 0x304
+#endif
+
+/*
+ * S390 prefix ELF note
+ */
+#ifndef NT_S390_PREFIX
+#define NT_S390_PREFIX 0x305
+#endif
+
+/*
+ * S390x prstatus ELF Note
+ */
+struct s390x_nt_prstatus {
+	uint8_t		pad1[32];
+	uint32_t	pr_pid;
+	uint8_t		pad2[76];
+	uint64_t	psw[2];
+	uint64_t	gprs[16];
+	uint32_t	acrs[16];
+	uint64_t	orig_gpr2;
+	uint32_t	pr_fpvalid;
+	uint8_t		pad3[4];
+} __attribute__ ((packed));
+
+/*
+ * S390x floating point register ELF Note
+ */
+#ifndef NT_FPREGSET
+#define NT_FPREGSET 0x2
+#endif
+
+struct s390x_nt_fpregset {
+	uint32_t	fpc;
+	uint32_t	pad;
+	uint64_t	fprs[16];
+} __attribute__ ((packed));
+
+/*
+ * s390x CPU info
+ */
+struct s390x_cpu
+{
+	uint64_t	gprs[16];
+	uint64_t	ctrs[16];
+	uint32_t	acrs[16];
+	uint64_t	fprs[16];
+	uint32_t	fpc;
+	uint64_t	psw[2];
+	uint32_t	prefix;
+	uint64_t	timer;
+	uint64_t	todcmp;
+	uint32_t	todpreg;
+};
 
 /*
  * declarations of static functions
@@ -65,6 +146,131 @@ static void s390x_dump_line_number(ulong);
 static struct line_number_hook s390x_line_number_hooks[];
 static int s390x_is_uvaddr(ulong, struct task_context *);
 
+ 
+/*
+ * Initialize member offsets
+ */
+static void s390x_offsets_init(void)
+{
+	if (MEMBER_EXISTS("_lowcore", "st_status_fixed_logout"))
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+				   "st_status_fixed_logout");
+	else
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+				   "psw_save_area");
+}
+
+static struct s390x_cpu *s390x_cpu_vec;
+static int s390x_cpu_cnt;
+/*
+ * Return s390x CPU data for backtrace
+ */
+static struct s390x_cpu *s390x_cpu_get(struct bt_info *bt)
+{
+	unsigned int cpu = bt->tc->processor;
+	unsigned long lowcore_ptr, prefix;
+	unsigned int i;
+
+	lowcore_ptr = symbol_value("lowcore_ptr");
+	readmem(lowcore_ptr + cpu * sizeof(long), KVADDR,
+		&prefix, sizeof(long), "lowcore_ptr", FAULT_ON_ERROR);
+	for (i = 0; i < s390x_cpu_cnt; i++) {
+		if (s390x_cpu_vec[i].prefix == prefix)
+			return &s390x_cpu_vec[i];
+	}
+	error(FATAL, "cannot determine CPU for task: %lx\n", bt->task);
+	return NULL;
+}
+
+/*
+ * ELF core dump fuctions for storing CPU data
+ */
+static void s390x_elf_nt_prstatus_add(struct s390x_cpu *cpu,
+				      struct s390x_nt_prstatus *prstatus)
+{
+	memcpy(&cpu->psw, &prstatus->psw, sizeof(cpu->psw));
+	memcpy(&cpu->gprs, &prstatus->gprs, sizeof(cpu->gprs));
+	memcpy(&cpu->acrs, &prstatus->acrs, sizeof(cpu->acrs));
+}
+
+static void s390x_elf_nt_fpregset_add(struct s390x_cpu *cpu,
+				      struct s390x_nt_fpregset *fpregset)
+{
+	memcpy(&cpu->fpc, &fpregset->fpc, sizeof(cpu->fpc));
+	memcpy(&cpu->fprs, &fpregset->fprs, sizeof(cpu->fprs));
+}
+
+static void s390x_elf_nt_timer_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->timer, desc, sizeof(cpu->timer));
+}
+
+static void s390x_elf_nt_todcmp_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->todcmp, desc, sizeof(cpu->todcmp));
+}
+
+static void s390x_elf_nt_todpreg_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->todpreg, desc, sizeof(cpu->todpreg));
+}
+
+static void s390x_elf_nt_ctrs_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->ctrs, desc, sizeof(cpu->ctrs));
+}
+
+static void s390x_elf_nt_prefix_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->prefix, desc, sizeof(cpu->prefix));
+}
+
+static void *get_elf_note_desc(Elf64_Nhdr *note)
+{
+	void *ptr = note;
+
+	return ptr + roundup(sizeof(*note) + note->n_namesz, 4);
+}
+
+static void s390x_elf_note_add(int elf_cpu_nr, void *note_ptr)
+{
+	Elf64_Nhdr *note = note_ptr;
+	struct s390x_cpu *cpu;
+	void *desc;
+
+	desc = get_elf_note_desc(note);
+	if (elf_cpu_nr != s390x_cpu_cnt) {
+		s390x_cpu_cnt++;
+		s390x_cpu_vec = realloc(s390x_cpu_vec,
+					s390x_cpu_cnt * sizeof(*s390x_cpu_vec));
+		if (!s390x_cpu_vec)
+			error(FATAL, "cannot malloc cpu space.");
+	}
+	cpu = &s390x_cpu_vec[s390x_cpu_cnt - 1];
+	switch (note->n_type) {
+	case NT_PRSTATUS:
+		s390x_elf_nt_prstatus_add(cpu, desc);
+		break;
+	case NT_FPREGSET:
+		s390x_elf_nt_fpregset_add(cpu, desc);
+		break;
+	case NT_S390_TIMER:
+		s390x_elf_nt_timer_add(cpu, desc);
+		break;
+	case NT_S390_TODCMP:
+		s390x_elf_nt_todcmp_add(cpu, desc);
+		break;
+	case NT_S390_TODPREG:
+		s390x_elf_nt_todpreg_add(cpu, desc);
+		break;
+	case NT_S390_CTRS:
+		s390x_elf_nt_ctrs_add(cpu, desc);
+		break;
+	case NT_S390_PREFIX:
+		s390x_elf_nt_prefix_add(cpu, desc);
+		break;
+	}
+}
 
 /*
  *  Do all necessary machine-specific setup here.  This is called several
@@ -75,6 +281,9 @@ s390x_init(int when)
 {
 	switch (when)
 	{
+	case SETUP_ENV:
+		machdep->dumpfile_init = s390x_elf_note_add;
+		break;
 	case PRE_SYMTAB:
 		machdep->verify_symbol = s390x_verify_symbol;
 		if (pc->flags & KERNEL_DEBUG_QUERY)
@@ -130,6 +339,7 @@ s390x_init(int when)
 			machdep->hz = HZ;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		s390x_offsets_init();
 		break;
 
 	case POST_INIT:
@@ -188,6 +398,7 @@ s390x_dump_machdep_table(ulong arg)
 	fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
 	fprintf(fp, "    init_kernel_pgd: NULL\n");
 	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+	fprintf(fp, "      dumpfile_init: s390x_elf_note_add()\n");
 	fprintf(fp, "  line_number_hooks: s390x_line_number_hooks\n");
 	fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
 	fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
@@ -511,6 +722,7 @@ s390x_eframe_search(struct bt_info *bt)
 		    "Option '-e' is not implemented for this architecture\n"));
 }
 
+#ifdef DEPRECATED
 /*
  * returns cpu number of task
  */ 
@@ -537,63 +749,57 @@ s390x_cpu_of_task(unsigned long task)
 	}
 	return cpu;
 }
+#endif
 
 /*
- * returns true, if task currently is executed by a cpu
+ * returns true, if task of bt currently is executed by a cpu
  */ 
 static int 
-s390x_has_cpu(unsigned long task)
+s390x_has_cpu(struct bt_info *bt)
 {
-	if(VALID_MEMBER(task_struct_cpus_runnable)){
-		/* Linux 2.4 */
-		unsigned long cpus_runnable;
-		readmem(task+OFFSET(task_struct_cpus_runnable),KVADDR,
-			&cpus_runnable,sizeof(cpus_runnable),
-			"cpus_runnable", FAULT_ON_ERROR);
-		if(cpus_runnable != ~0ULL)
-			return TRUE;
-		else
-			return FALSE;
-	} else {
-		/* Linux 2.6 */
-		unsigned long runqueue_addr, runqueue_offset;
-		unsigned long cpu_offset, per_cpu_offset_addr, running_task;
-		char *runqueue;
-		int cpu;
+	int cpu = bt->tc->processor;
 
-		cpu = s390x_cpu_of_task(task);
-		runqueue = GETBUF(SIZE(runqueue));
-
-		runqueue_offset=symbol_value("per_cpu__runqueues");
-		per_cpu_offset_addr=symbol_value("__per_cpu_offset");
-		readmem(per_cpu_offset_addr + cpu * sizeof(long),KVADDR,
-			&cpu_offset, sizeof(long),"per_cpu_offset",
-			FAULT_ON_ERROR);
-		runqueue_addr=runqueue_offset + cpu_offset;
-		readmem(runqueue_addr,KVADDR,runqueue,SIZE(runqueue),
-			"runqueue", FAULT_ON_ERROR);
-		running_task = ULONG(runqueue + OFFSET(runqueue_curr));
-		FREEBUF(runqueue);
-		if(running_task == task)
-			return TRUE; 
-		else
-			return FALSE;
-	}
+	if (is_task_active(bt->task) && (kt->cpu_flags[cpu] & ONLINE))
+		return TRUE;
+	else
+		return FALSE;
 }
 
 /*
  * read lowcore for cpu
  */
 static void
-s390x_get_lowcore(int cpu, char* lowcore)
+s390x_get_lowcore(struct bt_info *bt, char* lowcore)
 {
 	unsigned long lowcore_array,lowcore_ptr;
+	struct s390x_cpu *s390x_cpu;
+	int cpu = bt->tc->processor;
 
 	lowcore_array = symbol_value("lowcore_ptr");
 	readmem(lowcore_array + cpu * S390X_WORD_SIZE,KVADDR,
 		&lowcore_ptr, sizeof(long), "lowcore_ptr", FAULT_ON_ERROR);
 	readmem(lowcore_ptr, KVADDR, lowcore, LOWCORE_SIZE, "lowcore", 
 		FAULT_ON_ERROR);
+
+	if (!s390x_cpu_vec)
+		return;
+
+	/* Copy register information to defined places in lowcore */
+	s390x_cpu = s390x_cpu_get(bt);
+
+	memcpy(lowcore + 4864, &s390x_cpu->psw, sizeof(s390x_cpu->psw));
+	memcpy(lowcore + 4736, &s390x_cpu->gprs, sizeof(s390x_cpu->gprs));
+	memcpy(lowcore + 4928, &s390x_cpu->acrs, sizeof(s390x_cpu->acrs));
+
+	memcpy(lowcore + 4892, &s390x_cpu->fpc, sizeof(s390x_cpu->fpc));
+	memcpy(lowcore + 4608, &s390x_cpu->fprs, sizeof(s390x_cpu->fprs));
+
+	memcpy(lowcore + 4888, &s390x_cpu->prefix, sizeof(s390x_cpu->prefix));
+	memcpy(lowcore + 4992, &s390x_cpu->ctrs, sizeof(s390x_cpu->ctrs));
+
+	memcpy(lowcore + 4900, &s390x_cpu->todpreg, sizeof(s390x_cpu->todpreg));
+	memcpy(lowcore + 4904, &s390x_cpu->timer, sizeof(s390x_cpu->timer));
+	memcpy(lowcore + 4912, &s390x_cpu->todcmp, sizeof(s390x_cpu->todcmp));
 }
 
 /*
@@ -632,18 +838,17 @@ s390x_back_trace_cmd(struct bt_info *bt)
 	ksp = bt->stkptr;
 
 	/* print lowcore and get async stack when task has cpu */
-	if(s390x_has_cpu(bt->task)){
+	if(s390x_has_cpu(bt)){
 		char lowcore[LOWCORE_SIZE];
 		unsigned long psw_flags;
-		int cpu = s390x_cpu_of_task(bt->task);
 
 		if (ACTIVE()) {
 			fprintf(fp,"(active)\n");
 			return;
 		}
-		s390x_get_lowcore(cpu,lowcore);
-		psw_flags = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
-			    "st_status_fixed_logout"));
+		s390x_get_lowcore(bt, lowcore);
+		psw_flags = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area));
+
 		if(psw_flags & 0x1000000000000ULL){
 			fprintf(fp,"Task runs in userspace\n");
 			s390x_print_lowcore(lowcore,bt,0);
@@ -685,7 +890,7 @@ s390x_back_trace_cmd(struct bt_info *bt)
 			stack = bt->stackbuf;
 			stack_base = stack_start;
 		} else if((backchain > async_start) && (backchain < async_end)
-			  && s390x_has_cpu(bt->task)){
+			  && s390x_has_cpu(bt)){
 			stack = async_stack;
 			stack_base = async_start;
 		} else {
@@ -766,7 +971,7 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	char* ptr;
 	unsigned long tmp[4];
 
-	ptr = lc + MEMBER_OFFSET("_lowcore","st_status_fixed_logout");
+	ptr = lc + OFFSET(s390_lowcore_psw_save_area);
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr + S390X_WORD_SIZE);
 
@@ -921,12 +1126,12 @@ s390x_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 	int r14_offset;
 	char lowcore[LOWCORE_SIZE];
 
-	if(s390x_has_cpu(bt->task))
-		s390x_get_lowcore(s390x_cpu_of_task(bt->task),lowcore);
+	if(s390x_has_cpu(bt))
+		s390x_get_lowcore(bt, lowcore);
 
 	/* get the stack pointer */
 	if(esp){
-		if(s390x_has_cpu(bt->task)){
+		if(s390x_has_cpu(bt)){
 			ksp = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
 				"gpregs_save_area") + (15 * S390X_WORD_SIZE));
 		} else {
@@ -944,9 +1149,9 @@ s390x_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 	if(!eip)
 		return;
 
-	if(s390x_has_cpu(bt->task) && esp){
-		*eip = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
-		       "st_status_fixed_logout") + S390X_WORD_SIZE);
+	if(s390x_has_cpu(bt) && esp){
+		*eip = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area) +
+			S390X_WORD_SIZE);
 	} else {
 		if(!STRUCT_EXISTS("stack_frame")){
 			r14_offset = 112;
@@ -1033,7 +1238,7 @@ s390x_dis_filter(ulong vaddr, char *inbuf)
 int
 s390x_get_smp_cpus(void)
 {
-	return get_cpus_online();
+	return MAX(get_cpus_online(), get_highest_cpu_online()+1);
 }
 
 /*

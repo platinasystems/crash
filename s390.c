@@ -1,9 +1,9 @@
 /* s390.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
- * Copyright (C) 2005, 2006 Michael Holzheu, IBM Corporation
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005, 2006, 2010 Michael Holzheu, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -67,6 +67,18 @@ static void s390_dump_line_number(ulong);
 static struct line_number_hook s390_line_number_hooks[];
 static int s390_is_uvaddr(ulong, struct task_context *);
 
+/*
+ * Initialize member offsets
+ */
+static void s390_offsets_init(void)
+{
+	if (MEMBER_EXISTS("_lowcore", "st_status_fixed_logout"))
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+				   "st_status_fixed_logout");
+	else
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+				   "psw_save_area");
+}
 
 /*
  *  Do all necessary machine-specific setup here.  This is called several
@@ -132,6 +144,7 @@ s390_init(int when)
 			machdep->hz = HZ;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+		s390_offsets_init();
 		break;
 
 	case POST_INIT:
@@ -529,46 +542,17 @@ s390_cpu_of_task(unsigned long task)
 }
 
 /*
- * returns true, if task currently is executed by a cpu
+ * returns true, if task of bt currently is executed by a cpu
  */ 
 static int 
-s390_has_cpu(unsigned long task)
+s390_has_cpu(struct bt_info *bt)
 {
-	if(VALID_MEMBER(task_struct_cpus_runnable)){
-                /* Linux 2.4 */
-                unsigned long cpus_runnable;
-                readmem(task+OFFSET(task_struct_cpus_runnable),KVADDR,
-                        &cpus_runnable,sizeof(cpus_runnable),
-                        "cpus_runnable", FAULT_ON_ERROR);
-                if(cpus_runnable != ~0U)
-                        return TRUE;
-                else
-                        return FALSE;
-        } else {
-		/* Linux 2.6 */
-		unsigned long runqueue_addr, runqueue_offset;
-		unsigned long cpu_offset, per_cpu_offset_addr, running_task;
-		char *runqueue;
-		int cpu;
+	int cpu = bt->tc->processor;
 
-		cpu = s390_cpu_of_task(task);
-		runqueue = GETBUF(SIZE(runqueue));
-
-		runqueue_offset=symbol_value("per_cpu__runqueues");
-		per_cpu_offset_addr=symbol_value("__per_cpu_offset");
-		readmem(per_cpu_offset_addr + cpu * sizeof(long),KVADDR,
-			&cpu_offset, sizeof(long),"per_cpu_offset",
-			FAULT_ON_ERROR);
-		runqueue_addr=runqueue_offset + cpu_offset;
-		readmem(runqueue_addr,KVADDR,runqueue,SIZE(runqueue),
-			"runqueue", FAULT_ON_ERROR);
-		running_task = ULONG(runqueue + OFFSET(runqueue_curr));
-		FREEBUF(runqueue);
-		if(running_task == task)
-			return TRUE;
-		else
-			return FALSE;
-	}
+	if (is_task_active(bt->task) && (kt->cpu_flags[cpu] & ONLINE))
+		return TRUE;
+	else
+		return FALSE;
 }
 
 /*
@@ -622,7 +606,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 	ksp = bt->stkptr;
 
 	/* print lowcore and get async stack when task has cpu */
-	if(s390_has_cpu(bt->task)){
+	if(s390_has_cpu(bt)){
 		char lowcore[LOWCORE_SIZE];
 		unsigned long psw_flags;
 		int cpu = s390_cpu_of_task(bt->task);
@@ -632,8 +616,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 			return;
 		}
 		s390_get_lowcore(cpu,lowcore);
-		psw_flags = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
-			    "st_status_fixed_logout"));
+		psw_flags = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area));
 		if(psw_flags & 0x10000UL){
 				fprintf(fp,"Task runs in userspace\n");
 				s390_print_lowcore(lowcore,bt,0);
@@ -675,7 +658,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 			stack = bt->stackbuf;
 			stack_base = stack_start;
 		} else if((backchain > async_start) && (backchain < async_end)
-			  && s390_has_cpu(bt->task)){
+			  && s390_has_cpu(bt)){
 			stack = async_stack;
 			stack_base = async_start;
 		} else {
@@ -755,7 +738,7 @@ s390_print_lowcore(char* lc, struct bt_info *bt, int show_symbols)
 	char* ptr;
 	unsigned long tmp[4];
 
-	ptr = lc + MEMBER_OFFSET("_lowcore","st_status_fixed_logout");
+	ptr = lc + OFFSET(s390_lowcore_psw_save_area);
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr + S390_WORD_SIZE);
 
@@ -891,12 +874,12 @@ s390_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 	int r14_offset;
 	char lowcore[LOWCORE_SIZE];
 
-	if(s390_has_cpu(bt->task))
+	if(s390_has_cpu(bt))
 		s390_get_lowcore(s390_cpu_of_task(bt->task),lowcore);
 
 	/* get the stack pointer */
 	if(esp){
-		if(s390_has_cpu(bt->task)){
+		if(s390_has_cpu(bt)){
 			ksp = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
 				"gpregs_save_area") + (15 * S390_WORD_SIZE));
 		} else {
@@ -914,10 +897,9 @@ s390_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 	if(!eip)
 		return;
 
-	if(s390_has_cpu(bt->task) && esp){
-		*eip = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
-		       "st_status_fixed_logout") + S390_WORD_SIZE)
-       		       & S390_ADDR_MASK;
+	if(s390_has_cpu(bt) && esp){
+		*eip = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area) +
+			S390_WORD_SIZE) & S390_ADDR_MASK;
 	} else {
 		if(!STRUCT_EXISTS("stack_frame")){
 			r14_offset = 56;
@@ -1004,7 +986,7 @@ s390_dis_filter(ulong vaddr, char *inbuf)
 int
 s390_get_smp_cpus(void)
 {
-	return get_cpus_online();
+	return MAX(get_cpus_online(), get_highest_cpu_online()+1);
 }
 
 /*

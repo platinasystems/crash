@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1534,7 +1534,8 @@ BUG_x86(void)
 		if (parse_line(buf2, arglist) < 3)
 			continue;
 
-		if ((vaddr = htol(arglist[0], RETURN_ON_ERROR, NULL)) >= spn->value)
+		if ((vaddr = htol(strip_ending_char(arglist[0], ':'), 
+		    RETURN_ON_ERROR, NULL)) >= spn->value)
 			continue; 
 
 		if (STREQ(arglist[2], "ud2a")) {
@@ -4998,10 +4999,12 @@ do_linked_action:
                         "irqaction flags", FAULT_ON_ERROR);
                 fprintf(fp, "            flags: %lx\n", value);
 
-                readmem(action+OFFSET(irqaction_mask), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "irqaction mask", FAULT_ON_ERROR);
-                fprintf(fp, "             mask: %lx\n", tmp1);
+		if (VALID_MEMBER(irqaction_mask)) {
+			readmem(action+OFFSET(irqaction_mask), KVADDR,
+				&tmp1, sizeof(void *),
+				"irqaction mask", FAULT_ON_ERROR);
+			fprintf(fp, "             mask: %lx\n", tmp1);
+		}
 
                 readmem(action+OFFSET(irqaction_name), KVADDR,
                         &tmp1, sizeof(void *),

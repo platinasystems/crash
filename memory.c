@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -142,6 +142,7 @@ static int next_identity_mapping(ulong, ulong *);
 static int vm_area_page_dump(ulong, ulong, ulong, ulong, void *, 
 	struct reference *);
 static int dump_swap_info(ulong, ulong *, ulong *);
+static void swap_info_init(void);
 static char *get_swapdev(ulong, char *);
 static void fill_swap_info(ulong);
 static char *vma_file_offset(ulong, ulong, char *);
@@ -319,6 +320,8 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(swap_info_struct_prio, "swap_info_struct", "prio");
 	MEMBER_OFFSET_INIT(swap_info_struct_max, "swap_info_struct", "max");
 	MEMBER_OFFSET_INIT(swap_info_struct_pages, "swap_info_struct", "pages");
+	MEMBER_OFFSET_INIT(swap_info_struct_inuse_pages, "swap_info_struct", 
+		"inuse_pages");
 	MEMBER_OFFSET_INIT(swap_info_struct_old_block_size, 
         	"swap_info_struct", "old_block_size");
 	MEMBER_OFFSET_INIT(block_device_bd_inode, "block_device", "bd_inode");
@@ -6697,7 +6700,7 @@ dump_kmeminfo(void)
 	                pages_to_size(totalswap_pages - totalused_pages, buf), 
 			pct);
 	} else
-		error(INFO, "swap_info[%ld].swap_map at %lx is unaccessible\n",
+		error(INFO, "swap_info[%ld].swap_map at %lx is inaccessible\n",
 			totalused_pages, totalswap_pages);
 
 	dump_zone_page_usage();
@@ -7525,6 +7528,7 @@ kmem_cache_downsize(void)
 	int nr_node_ids;
 
 	if ((THIS_KERNEL_VERSION < LINUX(2,6,22)) ||
+	    !(vt->flags & PERCPU_KMALLOC_V2_NODES) ||
 	    !kernel_symbol_exists("cache_cache") ||
 	    !MEMBER_EXISTS("kmem_cache", "buffer_size"))
 		return;
@@ -7541,7 +7545,6 @@ kmem_cache_downsize(void)
 		MEMBER_OFFSET("kmem_cache", "buffer_size"));
 
 	if (buffer_size < SIZE(kmem_cache_s)) {
-		ASSIGN_SIZE(kmem_cache_s) = buffer_size;
 
 		if (kernel_symbol_exists("nr_node_ids")) {
 			get_symbol_data("nr_node_ids", sizeof(int),
@@ -7550,6 +7553,14 @@ kmem_cache_downsize(void)
 					
 		} else
 			vt->kmem_cache_len_nodes = 1;
+
+		if (buffer_size >= (uint)(OFFSET(kmem_cache_s_lists) + 
+	    	    (sizeof(void *) * vt->kmem_cache_len_nodes)))
+			ASSIGN_SIZE(kmem_cache_s) = buffer_size;
+		else
+			error(WARNING, 
+			    "questionable cache_cache.buffer_size: %d\n",
+				buffer_size);
 
 		if (CRASHDEBUG(1)) {
      			fprintf(fp, 
@@ -10802,6 +10813,10 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sVM_EVENT", others++ ? "|" : "");\
 	if (vt->flags & PGCNT_ADJ)
 		fprintf(fp, "%sPGCNT_ADJ", others++ ? "|" : "");\
+	if (vt->flags & SWAPINFO_V1)
+		fprintf(fp, "%sSWAPINFO_V1", others++ ? "|" : "");\
+	if (vt->flags & SWAPINFO_V2)
+		fprintf(fp, "%sSWAPINFO_V2", others++ ? "|" : "");\
 	if (vt->flags & VM_INIT)
 		fprintf(fp, "%sVM_INIT", others++ ? "|" : "");\
 
@@ -11530,9 +11545,9 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 	int flags, swap_device, pages, prio, usedswap;
 	ulong swap_file, max, swap_map, pct;
 	ulong vfsmnt;
-	ulong swap_info;
-	ushort *map;
-	ulong totalswap, totalused;
+	ulong swap_info, swap_info_ptr;
+	ushort *smap;
+	ulong inuse_pages, totalswap, totalused;
 	char buf[BUFSIZE];
 
 	if (!symbol_exists("nr_swapfiles"))
@@ -11540,6 +11555,8 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 
         if (!symbol_exists("swap_info"))
                 error(FATAL, "swap_info doesn't exist in this kernel!\n");
+
+	swap_info_init();
 
 	swap_info = symbol_value("swap_info");
 
@@ -11549,8 +11566,18 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 	totalswap = totalused = 0;
 
 	for (i = 0; i < vt->nr_swapfiles; i++, 
-	    swap_info += SIZE(swap_info_struct)) {
-		fill_swap_info(swap_info);
+	    swap_info += (vt->flags & SWAPINFO_V1 ? 
+            SIZE(swap_info_struct) : sizeof(void *))) {
+		if (vt->flags & SWAPINFO_V2) {
+			if (!readmem(swap_info, KVADDR, &swap_info_ptr,
+			    sizeof(void *), "swap_info pointer", 
+			    QUIET|RETURN_ON_ERROR))
+				continue;
+			if (!swap_info_ptr)
+				continue;
+			fill_swap_info(swap_info_ptr);
+		} else
+			fill_swap_info(swap_info);
 
 		flags = INT(vt->swap_info_struct + 
 			OFFSET(swap_info_struct_flags));
@@ -11570,19 +11597,33 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 
 		totalswap += pages;
 		pages <<= (PAGESHIFT() - 10);
+		inuse_pages = 0;
 
-                prio = INT(vt->swap_info_struct + 
-			OFFSET(swap_info_struct_prio));
+		if (MEMBER_SIZE("swap_info_struct", "prio") == sizeof(short))
+			prio = SHORT(vt->swap_info_struct + 
+				OFFSET(swap_info_struct_prio));
+		else
+			prio = INT(vt->swap_info_struct + 
+				OFFSET(swap_info_struct_prio));
 
 		if (MEMBER_SIZE("swap_info_struct", "max") == sizeof(int))
 			max = UINT(vt->swap_info_struct +
-                                OFFSET(swap_info_struct_max));
+				OFFSET(swap_info_struct_max));
 		else
-                	max = ULONG(vt->swap_info_struct +
-                        	OFFSET(swap_info_struct_max));
+			max = ULONG(vt->swap_info_struct +
+				OFFSET(swap_info_struct_max));
 
-                swap_map = ULONG(vt->swap_info_struct +
-                        OFFSET(swap_info_struct_swap_map));
+		if (VALID_MEMBER(swap_info_struct_inuse_pages)) {
+			if (MEMBER_SIZE("swap_info_struct", "inuse_pages") == sizeof(int))
+				inuse_pages = UINT(vt->swap_info_struct +
+					OFFSET(swap_info_struct_inuse_pages));
+			else
+				inuse_pages = ULONG(vt->swap_info_struct +
+					OFFSET(swap_info_struct_inuse_pages));
+		}
+
+		swap_map = ULONG(vt->swap_info_struct +
+			OFFSET(swap_info_struct_swap_map));
 
 		if (swap_file) {
 			if (VALID_MEMBER(swap_info_struct_swap_vfsmnt)) {
@@ -11600,34 +11641,40 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 		} else
 			sprintf(buf, "(unknown)");
 
-		map = (ushort *)GETBUF(sizeof(ushort) * max);
+		smap = NULL;
+		if (vt->flags & SWAPINFO_V1) {
+			smap = (ushort *)GETBUF(sizeof(ushort) * max);
 
-		if (!readmem(swap_map, KVADDR, map, 
-		    sizeof(ushort) * max, "swap_info swap_map data",
-		    RETURN_ON_ERROR|QUIET)) {
-			if (swapflags & RETURN_ON_ERROR) {
-				*totalswap_pages = swap_map;
-				*totalused_pages = i;
-				return FALSE;
-			} else 
-				error(FATAL, 
-		              "swap_info[%d].swap_map at %lx is unaccessible\n",
-                        		i, swap_map);
+			if (!readmem(swap_map, KVADDR, smap, 
+			    sizeof(ushort) * max, "swap_info swap_map data",
+			    RETURN_ON_ERROR|QUIET)) {
+				if (swapflags & RETURN_ON_ERROR) {
+					*totalswap_pages = swap_map;
+					*totalused_pages = i;
+					FREEBUF(smap);
+					return FALSE;
+				} else 
+					error(FATAL, 
+			"swap_info[%d].swap_map at %lx is inaccessible\n",
+						i, swap_map);
+			}
 		}
 
 		usedswap = 0;
-                for (j = 0; j < max; j++) {
-                        switch (map[j])
-                        {
-                        case SWAP_MAP_BAD:
-                        case 0:
-                                continue;
-                        default:
-                                usedswap++;
-                        }
-		}
-
-		FREEBUF(map);
+		if (smap) {
+	                for (j = 0; j < max; j++) {
+	                        switch (smap[j])
+	                        {
+	                        case SWAP_MAP_BAD:
+	                        case 0:
+	                                continue;
+	                        default:
+	                                usedswap++;
+	                        }
+			}
+			FREEBUF(smap);
+		} else
+			usedswap = inuse_pages;
 
 		totalused += usedswap;
 		usedswap <<= (PAGESHIFT() - 10);
@@ -11645,6 +11692,41 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 		*totalused_pages = totalused;
 
 	return TRUE;
+}
+
+/*
+ *  Determine the swap_info_struct usage.
+ */
+static void
+swap_info_init(void)
+{
+	struct gnu_request *req;
+
+	if (vt->flags & (SWAPINFO_V1|SWAPINFO_V2))
+		return;
+
+	req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
+
+	if ((get_symbol_type("swap_info", NULL, req) == TYPE_CODE_ARRAY) && 
+	    ((req->target_typecode == TYPE_CODE_PTR) ||
+	     (req->target_typecode == TYPE_CODE_STRUCT))) {
+		switch (req->target_typecode)
+		{
+		case TYPE_CODE_STRUCT:
+			vt->flags |= SWAPINFO_V1;
+			break;
+		case TYPE_CODE_PTR:
+			vt->flags |= SWAPINFO_V2;
+			break;
+		}
+	} else {
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,33))
+			vt->flags |= SWAPINFO_V2;
+		else
+			vt->flags |= SWAPINFO_V1;
+        }
+
+	FREEBUF(req);
 }
 
 /*
@@ -11675,7 +11757,7 @@ static char *
 get_swapdev(ulong type, char *buf)
 {
 	unsigned int i, swap_info_len;
-	ulong swap_info, swap_file;
+	ulong swap_info, swap_info_ptr, swap_file;
 	ulong vfsmnt;
 
         if (!symbol_exists("nr_swapfiles"))
@@ -11683,6 +11765,8 @@ get_swapdev(ulong type, char *buf)
 
         if (!symbol_exists("swap_info"))
                 error(FATAL, "swap_info doesn't exist in this kernel!\n");
+
+	swap_info_init();
 
         swap_info = symbol_value("swap_info");
 
@@ -11694,8 +11778,25 @@ get_swapdev(ulong type, char *buf)
 	if (type >= swap_info_len)
 		return buf;
 
-	swap_info += (SIZE(swap_info_struct) * type);
-	fill_swap_info(swap_info);
+	switch (vt->flags & (SWAPINFO_V1|SWAPINFO_V2))
+	{
+	case SWAPINFO_V1:
+		swap_info += type * SIZE(swap_info_struct);
+		fill_swap_info(swap_info);
+		break;
+
+	case SWAPINFO_V2:
+		swap_info += type * sizeof(void *);
+		if (!readmem(swap_info, KVADDR, &swap_info_ptr,
+		    sizeof(void *), "swap_info pointer",
+		    RETURN_ON_ERROR|QUIET))
+			return buf;
+		if (!swap_info_ptr)
+			return buf;
+		fill_swap_info(swap_info_ptr);
+		break;
+	}
+
 	swap_file = ULONG(vt->swap_info_struct + 
 		OFFSET(swap_info_struct_swap_file));
 

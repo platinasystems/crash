@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -794,14 +794,35 @@ x86_64_per_cpu_init(void)
 	int i, cpus, cpunumber;
 	struct machine_specific *ms;
 
-	if (!(kt->flags & PER_CPU_OFF))
+	ms = machdep->machspec;
+
+	if (!(kt->flags & PER_CPU_OFF)) {
+		/*
+		 * Presume kernel is !CONFIG_SMP.
+		 */
+		if (symbol_exists("per_cpu__irq_stack_union")) { 
+			ms->stkinfo.ibase[0] = 
+				symbol_value("per_cpu__irq_stack_union");  
+			if ((ms->stkinfo.isize = 
+		    	    MEMBER_SIZE("irq_stack_union", "irq_stack")) <= 0)
+				ms->stkinfo.isize = 16384;
+		}
+		if (DUMPFILE() && symbol_exists("per_cpu__current_task")) {
+			if (!(ms->current = calloc(kt->cpus, sizeof(ulong))))
+				error(FATAL, 
+			    	    "cannot calloc"
+				    " %d x86_64 current pointers!\n",
+					kt->cpus);
+			get_symbol_data("per_cpu__current_task", sizeof(ulong),
+				&ms->current[0]);
+		}
+
 		return;
+	}
 
 	if (!symbol_exists("per_cpu__cpu_number") || 
 	    !symbol_exists("per_cpu__irq_stack_union"))
 		return;
-
-        ms = machdep->machspec;
 
 	for (i = cpus = 0; i < NR_CPUS; i++) {
 		if (!readmem(symbol_value("per_cpu__cpu_number") + 

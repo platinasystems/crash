@@ -123,8 +123,12 @@ xc_core_verify(char *file, char *buf)
 		clean_exit(1);
 	}
 
-	BCOPY(xcp, &xd->xc_core.header, 
-		sizeof(struct xc_core_header));
+	xd->xc_core.header.xch_magic = xcp->xch_magic;
+	xd->xc_core.header.xch_nr_vcpus = xcp->xch_nr_vcpus;
+	xd->xc_core.header.xch_nr_pages = xcp->xch_nr_pages;
+	xd->xc_core.header.xch_ctxt_offset = (ulong)xcp->xch_ctxt_offset;
+	xd->xc_core.header.xch_index_offset = (ulong)xcp->xch_index_offset;
+	xd->xc_core.header.xch_pages_offset = (ulong)xcp->xch_pages_offset;
 
         xd->flags |= (XENDUMP_LOCAL | XC_CORE_ORIG | XC_CORE_P2M_CREATE);
 
@@ -1036,13 +1040,13 @@ xendump_memory_dump(FILE *fp)
 	fprintf(fp, "             xch_nr_pages: %d (0x%x)\n",
 		xd->xc_core.header.xch_nr_pages,
 		xd->xc_core.header.xch_nr_pages);
-	fprintf(fp, "          xch_ctxt_offset: %d (0x%x)\n", 
+	fprintf(fp, "          xch_ctxt_offset: %ld (0x%lx)\n", 
 		xd->xc_core.header.xch_ctxt_offset,
 		xd->xc_core.header.xch_ctxt_offset);
-	fprintf(fp, "         xch_index_offset: %d (0x%x)\n",
+	fprintf(fp, "         xch_index_offset: %ld (0x%lx)\n",
 		xd->xc_core.header.xch_index_offset,
 		xd->xc_core.header.xch_index_offset);
-	fprintf(fp, "         xch_pages_offset: %d (0x%x)\n",
+	fprintf(fp, "         xch_pages_offset: %ld (0x%lx)\n",
 		xd->xc_core.header.xch_pages_offset,
 		xd->xc_core.header.xch_pages_offset);
 
@@ -2538,7 +2542,7 @@ xc_core_dump_Elf32_Shdr(Elf32_Off offset, int store)
 
 	if (STREQ(name, ".xen_prstatus"))
 		xd->xc_core.header.xch_ctxt_offset = 
-			(unsigned int)shdr.sh_offset;
+			(unsigned long)shdr.sh_offset;
 
 	if (STREQ(name, ".xen_shared_info"))
 		xd->xc_core.shared_info_offset = (off_t)shdr.sh_offset;
@@ -2555,7 +2559,7 @@ xc_core_dump_Elf32_Shdr(Elf32_Off offset, int store)
 
 	if (STREQ(name, ".xen_pages"))
 		xd->xc_core.header.xch_pages_offset = 
-			(unsigned int)shdr.sh_offset;
+			(unsigned long)shdr.sh_offset;
 
 	if (STREQ(name, ".xen_ia64_mapped_regs"))
 		xd->xc_core.ia64_mapped_regs_offset = 
@@ -2638,7 +2642,7 @@ xc_core_dump_Elf64_Shdr(Elf64_Off offset, int store)
 
 	if (STREQ(name, ".xen_prstatus"))
 		xd->xc_core.header.xch_ctxt_offset = 
-			(unsigned int)shdr.sh_offset;
+			(unsigned long)shdr.sh_offset;
 
 	if (STREQ(name, ".xen_shared_info"))
 		xd->xc_core.shared_info_offset = (off_t)shdr.sh_offset;
@@ -2655,7 +2659,7 @@ xc_core_dump_Elf64_Shdr(Elf64_Off offset, int store)
 
 	if (STREQ(name, ".xen_pages"))
 		xd->xc_core.header.xch_pages_offset = 
-			(unsigned int)shdr.sh_offset;
+			(unsigned long)shdr.sh_offset;
 
 	if (STREQ(name, ".xen_ia64_mapped_regs"))
 		xd->xc_core.ia64_mapped_regs_offset = 

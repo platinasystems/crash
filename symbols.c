@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1762,9 +1762,25 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 		nksyms = UINT(modbuf + OFFSET(module_num_symtab));
 	else
 		nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+
 	ksymtab = ULONG(modbuf + OFFSET(module_symtab));
+	if (!IN_MODULE(ksymtab, lm)) {
+		error(WARNING,
+		    "%s: module.symtab outside of module address space\n",
+			lm->mod_name);
+		FREEBUF(module_buf);
+		return 0;
+	} 
 	locsymtab = module_buf + (ksymtab - lm->mod_base);
+
 	kstrtab = ULONG(modbuf + OFFSET(module_strtab));
+	if (!IN_MODULE(kstrtab, lm)) {
+		error(WARNING, 
+		    "%s: module.strtab outside of module address space\n",
+			lm->mod_name);
+		FREEBUF(module_buf);
+		return 0;
+	}
 	locstrtab = module_buf + (kstrtab - lm->mod_base);
 
 	for (i = 1; i < nksyms; i++) {  /* ELF starts real symbols at 1 */
@@ -5247,7 +5263,7 @@ display_per_cpu_info(struct syment *sp)
 	if (((kt->flags & (SMP|PER_CPU_OFF)) != (SMP|PER_CPU_OFF)) ||
 	    (sp->value < symbol_value("__per_cpu_start")) || 
 	    (sp->value >= symbol_value("__per_cpu_end")) ||
-	    !((sp->type == 'd') || (sp->type == 'D')))
+	    !((sp->type == 'd') || (sp->type == 'D') || (sp->type == 'V')))
 		return FALSE;
 
 	fprintf(fp, "PER-CPU DATA TYPE:\n  ");
@@ -5403,7 +5419,7 @@ print_struct(char *s, ulong addr)
 	else
         	sprintf(buf, "output *(struct %s *)0x%lx", s, addr);
 	fprintf(fp, "struct %s ", s);
-        gdb_pass_through(buf, NULL, 0);
+	gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
 	fprintf(fp, "\n");
 }
 
@@ -5421,7 +5437,7 @@ print_union(char *s, ulong addr)
         else 
         	sprintf(buf, "output *(union %s *)0x%lx", s, addr);
         fprintf(fp, "union %s ", s);
-        gdb_pass_through(buf, NULL, 0);
+        gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
 }
 
 /*
@@ -6541,6 +6557,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(swap_info_struct_max));
         fprintf(fp, "        swap_info_struct_pages: %ld\n",
 		OFFSET(swap_info_struct_pages));
+        fprintf(fp, "  swap_info_struct_inuse_pages: %ld\n",
+		OFFSET(swap_info_struct_inuse_pages));
         fprintf(fp, "swap_info_struct_old_block_size: %ld\n",
 		OFFSET(swap_info_struct_old_block_size));
 	fprintf(fp, "         block_device_bd_inode: %ld\n",
@@ -7303,6 +7321,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(pcpu_info_idle));
 	fprintf(fp, "                vcpu_struct_rq: %ld\n",
 		OFFSET(vcpu_struct_rq));
+	fprintf(fp, "    s390_lowcore_psw_save_area: %ld\n",
+		OFFSET(s390_lowcore_psw_save_area));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
