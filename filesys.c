@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3484,10 +3484,14 @@ cleanup_memory_driver(void)
 #define RADIX_TREE_MAP_SHIFT  6
 #define RADIX_TREE_MAP_SIZE  (1UL << RADIX_TREE_MAP_SHIFT)
 #define RADIX_TREE_MAP_MASK  (RADIX_TREE_MAP_SIZE-1)
+#define RADIX_TREE_TAGS         2
+#define RADIX_TREE_TAG_LONGS    \
+	((RADIX_TREE_MAP_SIZE + BITS_PER_LONG - 1) / BITS_PER_LONG)
 
 struct radix_tree_node {
         unsigned int    count;
         void            *slots[RADIX_TREE_MAP_SIZE];
+	unsigned long	tags[RADIX_TREE_TAGS][RADIX_TREE_TAG_LONGS];
 };
 
 /*
@@ -3639,16 +3643,15 @@ static void *
 radix_tree_lookup(ulong root_rnode, ulong index, int height)
 {
 	unsigned int shift;
-	struct radix_tree_node **slot;
+	void *slot;
 	struct radix_tree_node slotbuf;
-	void **kslotp, **uslotp;
 
 	shift = (height-1) * RADIX_TREE_MAP_SHIFT;
-	kslotp = (void **)root_rnode;
+
+	readmem(root_rnode, KVADDR, &slot, sizeof(void *),
+		"radix_tree_root rnode", FAULT_ON_ERROR);
 
 	while (height > 0) {
-		readmem((ulong)kslotp, KVADDR, &slot, sizeof(void *),
-			"radix_tree_node slot", FAULT_ON_ERROR);
 
 		if (slot == NULL)
 			return NULL;
@@ -3657,15 +3660,13 @@ radix_tree_lookup(ulong root_rnode, ulong index, int height)
 			sizeof(struct radix_tree_node),
 			"radix_tree_node struct", FAULT_ON_ERROR);
 
-		uslotp = (void **)
-		    (slotbuf.slots + ((index >> shift) & RADIX_TREE_MAP_MASK));
-		kslotp = *uslotp;
-
+		slot = slotbuf.slots[((index >> shift) & RADIX_TREE_MAP_MASK)];
+		
 		shift -= RADIX_TREE_MAP_SHIFT;
 		height--;
 	}
 
-	return (void *) kslotp;
+	return slot;
 }
 
 int

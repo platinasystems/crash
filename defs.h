@@ -467,10 +467,12 @@ struct new_utsname {
 #define BUGVERBOSE_OFF       (0x1000000)
 #define RELOC_SET            (0x2000000)
 #define RELOC_FORCE          (0x4000000)
+#define ARCH_OPENVZ          (0x8000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
-#define XEN()  (kt->flags & ARCH_XEN)
+#define XEN()    (kt->flags & ARCH_XEN)
+#define OPENVZ() (kt->flags & ARCH_OPENVZ)
 
 #define XEN_MACHINE_TO_MFN(m)    ((ulonglong)(m) >> PAGESHIFT())
 #define XEN_PFN_TO_PSEUDO(p)     ((ulonglong)(p) << PAGESHIFT())
@@ -1437,6 +1439,11 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long zone_present_pages;
 	long zone_flags;
 	long zone_pages_scanned;
+	long pcpu_info_vcpu;
+	long pcpu_info_idle;
+	long vcpu_struct_rq;
+	long task_struct_sched_info;
+	long sched_info_last_arrival;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1540,6 +1547,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long upid;
 	long kmem_cache_cpu;
 	long cfs_rq;
+	long pcpu_info;
+	long vcpu_struct;
 };
 
 struct array_table {

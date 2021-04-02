@@ -5916,6 +5916,10 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_last_run));
         fprintf(fp, "         task_struct_timestamp: %ld\n",
                 OFFSET(task_struct_timestamp));
+        fprintf(fp, "        task_struct_sched_info: %ld\n",
+                OFFSET(task_struct_sched_info));
+	fprintf(fp, "       sched_info_last_arrival: %ld\n",
+                OFFSET(sched_info_last_arrival));
         fprintf(fp, "       task_struct_thread_info: %ld\n",
                 OFFSET(task_struct_thread_info));
         fprintf(fp, "           task_struct_nsproxy: %ld\n",
@@ -6991,6 +6995,12 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(cfs_rq_tasks_timeline));
 	fprintf(fp, "                  rt_rq_active: %ld\n",
 		OFFSET(rt_rq_active));
+	fprintf(fp, "                pcpu_info_vcpu: %ld\n",
+		OFFSET(pcpu_info_vcpu));
+	fprintf(fp, "                pcpu_info_idle: %ld\n",
+		OFFSET(pcpu_info_idle));
+	fprintf(fp, "                vcpu_struct_rq: %ld\n",
+		OFFSET(vcpu_struct_rq));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -7147,6 +7157,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(rlimit));
 	fprintf(fp, "                        cfs_rq: %ld\n", 
 		SIZE(cfs_rq));
+	fprintf(fp, "                     pcpu_info: %ld\n", 
+		SIZE(pcpu_info));
+	fprintf(fp, "                   vcpu_struct: %ld\n", 
+		SIZE(vcpu_struct));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
