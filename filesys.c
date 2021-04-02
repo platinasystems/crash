@@ -18,7 +18,7 @@
 #include "defs.h"
 #include <linux/major.h>
 
-static void show_mounts(ulong, int);
+static void show_mounts(ulong, int, struct task_context *);
 static int find_booted_kernel(void);
 static int find_booted_system_map(void);
 static int verify_utsname(char *);
@@ -33,7 +33,7 @@ static int mount_point(char *);
 static int open_file_reference(struct reference *);
 static void memory_source_init(void);
 static int get_pathname_component(ulong, ulong, int, char *, char *);
-static ulong *get_mount_list(int *);
+static ulong *get_mount_list(int *, struct task_context *);
 char *inode_type(char *, char *);
 static void match_proc_version(void);
 static void get_live_memory_source(void);
@@ -244,10 +244,12 @@ match_proc_version(void)
 
 	found = FALSE;
         while (fgets(buffer, BUFSIZE-1, pipe)) {
-		if (!strstr(buffer, "Linux version 2."))
+		char* ptr;
+		ptr = strstr(buffer, "Linux version 2.");
+		if (!ptr)
 			continue;
 
-                if (STREQ(buffer, kt->proc_version)) 
+                if (STREQ(ptr, kt->proc_version)) 
                 	found = TRUE;
 		break;
         }
@@ -315,14 +317,12 @@ build_searchdirs(int create, int *preferred)
                 for (dp = readdir(dirp); dp != NULL; dp = readdir(dirp)) 
 			cnt++;
 
-		if ((searchdirs = (char **)malloc(cnt * sizeof(char *))) 
-		    == NULL) {
+		if ((searchdirs = calloc(cnt, sizeof(char *))) == NULL) {
 			error(INFO, "/usr/src/ directory list malloc: %s\n",
                                 strerror(errno));
 			closedir(dirp);
 			return default_searchdirs;
 		} 
-		BZERO(searchdirs, cnt * sizeof(char *));
 
 		for (i = 0; i < DEFAULT_SEARCHDIRS; i++) 
 			searchdirs[i] = default_searchdirs[i];
@@ -357,6 +357,16 @@ build_searchdirs(int create, int *preferred)
 		closedir(dirp);
 
 		searchdirs[cnt] = NULL;
+	} else {
+		if ((searchdirs = calloc(cnt, sizeof(char *))) == NULL) {
+			error(INFO, "search directory list malloc: %s\n",
+                                strerror(errno));
+			closedir(dirp);
+			return default_searchdirs;
+		} 
+		for (i = 0; i < DEFAULT_SEARCHDIRS; i++) 
+			searchdirs[i] = default_searchdirs[i];
+		cnt = DEFAULT_SEARCHDIRS;
 	}
 
         if (redhat_kernel_directory_v1(dirbuf)) {
@@ -1137,6 +1147,8 @@ cmd_mount(void)
 {
 	int i;
 	int c, found;
+	struct task_context *tc, *namespace_context;
+	ulong value;
 	char *spec_string;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
@@ -1146,7 +1158,9 @@ cmd_mount(void)
 	int mh_flag = 1;
 	int save_next;
 
-        while ((c = getopt(argcnt, args, "if")) != EOF) {
+	namespace_context = pid_to_context(1);
+
+        while ((c = getopt(argcnt, args, "ifn:")) != EOF) {
                 switch(c)
 		{
 		case 'i':
@@ -1155,6 +1169,19 @@ cmd_mount(void)
 
 		case 'f':
 			flags |= MOUNT_PRINT_FILES;
+			break;
+
+		case 'n':
+			switch (str_to_context(optarg, &value, &tc)) {
+		        case STR_PID:
+                        case STR_TASK:
+				namespace_context = tc;
+                               	break;
+                        case STR_INVALID:
+                               	error(FATAL, "invalid task or pid value: %s\n",
+                                        	optarg);
+                               	break;
+			}
 			break;
 
 		default:
@@ -1175,7 +1202,7 @@ cmd_mount(void)
                         	shift_string_left(spec_string, 2);
 
 			open_tmpfile();
-			show_mounts(0, MOUNT_PRINT_ALL);
+			show_mounts(0, MOUNT_PRINT_ALL, namespace_context);
 
 			found = FALSE;
         		rewind(pc->tmpfile);
@@ -1201,7 +1228,8 @@ cmd_mount(void)
 					fp = pc->saved_fp;
 					if (flags) {
 						sscanf(buf2,"%lx",&vfsmount);
-						show_mounts(vfsmount, flags);
+						show_mounts(vfsmount, flags, 
+							namespace_context);
 					} else {
 						if (mh_flag) {
 							fprintf(fp, mount_hdr);
@@ -1216,7 +1244,7 @@ cmd_mount(void)
 			close_tmpfile();
 		} while (args[++optind]);
 	} else
-		show_mounts(0, flags);
+		show_mounts(0, flags, namespace_context);
 }
 
 /*
@@ -1224,7 +1252,7 @@ cmd_mount(void)
  */
 
 static void
-show_mounts(ulong one_vfsmount, int flags)
+show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_context)
 {
 	ulong one_vfsmount_list;
 	long sb_s_files;
@@ -1262,7 +1290,7 @@ show_mounts(ulong one_vfsmount, int flags)
 		mount_cnt = 1;
 		mntlist = &one_vfsmount_list;
 	} else 
-		mntlist = get_mount_list(&mount_cnt); 
+		mntlist = get_mount_list(&mount_cnt, namespace_context); 
 
 	if (!strlen(mount_hdr)) {
 		devlen = strlen("DEVNAME");
@@ -1424,7 +1452,7 @@ show_mounts(ulong one_vfsmount, int flags)
  *  Allocate and fill a list of the currently-mounted vfsmount pointers.
  */
 static ulong *
-get_mount_list(int *cntptr)
+get_mount_list(int *cntptr, struct task_context *namespace_context)
 {
 	struct list_data list_data, *ld;
 	int mount_cnt;
@@ -1438,8 +1466,7 @@ get_mount_list(int *cntptr)
         	get_symbol_data("vfsmntlist", sizeof(void *), &ld->start);
                	ld->end = symbol_value("vfsmntlist");
 	} else if (VALID_MEMBER(namespace_root)) {
-		if (!(tc = pid_to_context(1)))
-	 		tc = CURRENT_CONTEXT();
+ 		tc = namespace_context;
 
         	readmem(tc->task + OFFSET(task_struct_namespace), KVADDR, 
 			&namespace, sizeof(void *), "task namespace", 
@@ -1513,7 +1540,7 @@ display_dentry_info(ulong dentry)
 		goto nopath;
 
         if (VALID_MEMBER(file_f_vfsmnt)) {
-		mntlist = get_mount_list(&mount_cnt);
+		mntlist = get_mount_list(&mount_cnt, pid_to_context(1));
         	vfsmount_buf = GETBUF(SIZE(vfsmount));
 
         	for (m = found = 0, vfsmnt = mntlist; 

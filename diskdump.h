@@ -22,6 +22,7 @@
 #define DUMP_PARTITION_SIGNATURE	"diskdump"
 #define SIG_LEN (sizeof(DUMP_PARTITION_SIGNATURE) - 1)
 #define DISK_DUMP_SIGNATURE		"DISKDUMP"
+#define KDUMP_SIGNATURE			"KDUMP   "
 
 #define DUMP_HEADER_COMPLETED	0
 #define DUMP_HEADER_INCOMPLETED 1
@@ -51,6 +52,10 @@ struct disk_dump_header {
 
 struct disk_dump_sub_header {
 	long		elf_regs;
+};
+
+struct kdump_sub_header {
+	unsigned long	phys_base;
 };
 
 /* page flags */

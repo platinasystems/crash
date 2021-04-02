@@ -5674,6 +5674,8 @@ dump_offset_table(char *spec, ulong makestruct)
         	OFFSET(signal_struct_count));
 	fprintf(fp, "          signal_struct_action: %ld\n",
         	OFFSET(signal_struct_action));
+	fprintf(fp, "  signal_struct_shared_pending: %ld\n",
+        	OFFSET(signal_struct_shared_pending));
         fprintf(fp, "        task_struct_start_time: %ld\n",
                 OFFSET(task_struct_start_time));
         fprintf(fp, "             task_struct_times: %ld\n",
@@ -6611,6 +6613,8 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                      in6_addr: %ld\n", SIZE(in6_addr));
 	fprintf(fp, "                 signal_struct: %ld\n", 
 		SIZE(signal_struct));
+	fprintf(fp, "             sigpending_signal: %ld\n", 
+		SIZE(sigpending_signal));
 	fprintf(fp, "                  signal_queue: %ld\n", 
 		SIZE(signal_queue));
 	fprintf(fp, "                      sigqueue: %ld\n", SIZE(sigqueue));

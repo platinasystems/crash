@@ -53,6 +53,7 @@ static struct line_number_hook ia64_line_number_hooks[];
 static ulong ia64_get_stackbase(ulong);
 static ulong ia64_get_stacktop(ulong);
 static void parse_cmdline_arg(void);
+static void ia64_calc_phys_start(void);
 
 struct unw_frame_info;
 static void dump_unw_frame_info(struct unw_frame_info *);
@@ -192,8 +193,7 @@ ia64_init(int when)
 				machdep->machspec->kernel_start +
 				GIGABYTES((ulong)(4));
 			if (machdep->machspec->phys_start == UNKNOWN_PHYS_START)
-				machdep->machspec->phys_start = 
-					DEFAULT_PHYS_START;
+				ia64_calc_phys_start();
 		} else
                		machdep->machspec->vmalloc_start = KERNEL_VMALLOC_BASE;
 
@@ -259,8 +259,10 @@ parse_cmdline_arg(void)
 	char *arglist[MAXARGS];
 	ulong value;
         struct machine_specific *ms;
+	int vm_flag;
 
         ms = &ia64_machine_specific;
+	vm_flag = 0;
 
 	if (!strstr(machdep->cmdline_arg, "=")) {
 		errflag = 0;
@@ -316,6 +318,7 @@ parse_cmdline_arg(void)
 				}
 			}
 		} else if (STRNEQ(arglist[i], "vm=")) {
+			vm_flag++;
 			p = arglist[i] + strlen("vm=");
 			if (strlen(p)) {
 				if (STREQ(p, "4l")) {
@@ -328,19 +331,21 @@ parse_cmdline_arg(void)
 		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
 	} 
 
-	switch (machdep->flags & (VM_4_LEVEL))
-	{
-		case VM_4_LEVEL:
-			error(NOTE, "using 4-level pagetable\n");
-			c++;
-			break;
-			
-		default:
-			error(WARNING, "Invalid vm= option\n");
-			c++;
-			machdep->flags &= ~(VM_4_LEVEL);
-			break;
-	} 
+	if (vm_flag) {
+		switch (machdep->flags & (VM_4_LEVEL))
+		{
+			case VM_4_LEVEL:
+				error(NOTE, "using 4-level pagetable\n");
+				c++;
+				break;
+				
+			default:
+				error(WARNING, "invalid vm= option\n");
+				c++;
+				machdep->flags &= ~(VM_4_LEVEL);
+				break;
+		} 
+	}
 
 
 	if (c)
@@ -628,9 +633,9 @@ ia64_verify_symbol(const char *name, ulong value, char type)
         if (CRASHDEBUG(8))
                 fprintf(fp, "%016lx %s\n", value, name);
 
-	if (STREQ(name, "phys_start") && type == 'A')
-		if (machdep->machspec->phys_start == UNKNOWN_PHYS_START)
-			machdep->machspec->phys_start = value;
+//	if (STREQ(name, "phys_start") && type == 'A')
+//		if (machdep->machspec->phys_start == UNKNOWN_PHYS_START)
+//			machdep->machspec->phys_start = value;
 
 	region = VADDR_REGION(value);
 
@@ -3636,6 +3641,122 @@ ia64_vtop_xen_wpt(ulong vaddr, physaddr_t *paddr, ulong *pgd, int verbose, int u
 }
 
 #include "netdump.h"
+
+/*
+ *  Determine the relocatable physical address base.
+ */
+static void
+ia64_calc_phys_start(void)
+{
+	FILE *iomem;
+	int i, found, errflag;
+	char buf[BUFSIZE];
+	char *p1;
+	ulong kernel_code_start;
+	struct vmcore_data *vd;
+	Elf64_Phdr *phdr;
+	ulong phys_start, text_start;
+
+	/*
+	 *  Default to 64MB.
+	 */
+	machdep->machspec->phys_start = DEFAULT_PHYS_START;
+
+	text_start = symbol_exists("_text") ? symbol_value("_text") : BADADDR;
+
+	if (ACTIVE()) {
+	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
+	                return;
+	
+		errflag = 1;
+	        while (fgets(buf, BUFSIZE, iomem)) {
+			if (strstr(buf, ": Kernel code")) {
+				clean_line(buf);
+				errflag = 0;
+				break;
+			}
+		}
+	        fclose(iomem);
+	
+		if (errflag)
+			return;
+	
+		if (!(p1 = strstr(buf, "-")))
+			return;
+		else
+			*p1 = NULLCHAR;
+	
+		errflag = 0;
+		kernel_code_start = htol(buf, RETURN_ON_ERROR|QUIET, &errflag);
+	        if (errflag)
+			return;
+	
+		machdep->machspec->phys_start = kernel_code_start;
+	
+		if (CRASHDEBUG(1)) {
+			if (text_start == BADADDR)
+				fprintf(fp, "_text: (unknown)  ");
+			else
+				fprintf(fp, "_text: %lx  ", text_start);
+			fprintf(fp, "Kernel code: %lx -> ", kernel_code_start);
+			fprintf(fp, "phys_start: %lx\n\n", 
+				machdep->machspec->phys_start);
+		}
+
+		return;
+	}
+
+	/*
+	 *  Get relocation value from whatever dumpfile format is being used.
+	 */
+
+        if (DISKDUMP_DUMPFILE()) {
+                if (diskdump_phys_base(&phys_start)) {
+                        machdep->machspec->phys_start = phys_start;
+			if (CRASHDEBUG(1))
+				fprintf(fp, 
+				    "compressed kdump: phys_start: %lx\n",
+					phys_start);
+		}
+                return;
+        }
+
+	if ((vd = get_kdump_vmcore_data())) {
+		/*
+		 *  There should be at most one region 5 region, and it
+		 *  should be equal to "_text".  If not, take whatever
+		 *  region 5 address comes first and hope for the best.
+		 */
+                for (i = found = 0; i < vd->num_pt_load_segments; i++) {
+			phdr = vd->load64 + i;
+			if (phdr->p_vaddr == text_start) {
+				machdep->machspec->phys_start = phdr->p_paddr;
+				found++;
+				break;
+			}
+		}
+
+                for (i = 0; !found && (i < vd->num_pt_load_segments); i++) {
+			phdr = vd->load64 + i;
+			if (VADDR_REGION(phdr->p_vaddr) == KERNEL_VMALLOC_REGION) {
+				machdep->machspec->phys_start = phdr->p_paddr;
+				found++;
+				break;
+			}
+		}
+
+		if (found && CRASHDEBUG(1)) {
+			if (text_start == BADADDR)
+				fprintf(fp, "_text: (unknown)  ");
+			else
+				fprintf(fp, "_text: %lx  ", text_start);
+			fprintf(fp, "p_vaddr: %lx  p_paddr: %lx\n", 
+				phdr->p_vaddr, phdr->p_paddr);
+		}
+
+		return;
+	}
+}
 
 /*
  *  From the xen vmcore, create an index of mfns for each page that makes

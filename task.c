@@ -52,7 +52,8 @@ static void signal_reference(struct task_context *, ulong, struct reference *);
 static void dump_signal_data(struct task_context *);
 static int sigrt_minmax(int *, int *);
 static void signame_list(void);
-static ulonglong task_signal(ulong);
+static void sigqueue_list(ulong);
+static ulonglong task_signal(ulong, ulong*);
 static ulonglong task_blocked(ulong);
 static void translate_sigset(ulonglong);
 static ulonglong sigaction_mask(ulong);
@@ -211,6 +212,8 @@ task_init(void)
 	 
 	MEMBER_OFFSET_INIT(signal_struct_count, "signal_struct", "count");
 	MEMBER_OFFSET_INIT(signal_struct_action, "signal_struct", "action");
+	MEMBER_OFFSET_INIT(signal_struct_shared_pending, "signal_struct",
+		"shared_pending");
 
 	MEMBER_OFFSET_INIT(k_sigaction_sa, "k_sigaction", "sa");
 	
@@ -221,6 +224,7 @@ task_init(void)
 	if (INVALID_MEMBER(sigpending_head))
 		MEMBER_OFFSET_INIT(sigpending_list, "sigpending", "list");
 	MEMBER_OFFSET_INIT(sigpending_signal, "sigpending", "signal");
+	MEMBER_SIZE_INIT(sigpending_signal, "sigpending", "signal");
 
 	STRUCT_SIZE_INIT(sigqueue, "sigqueue");
        	STRUCT_SIZE_INIT(signal_queue, "signal_queue");
@@ -5805,10 +5809,10 @@ static void
 dump_signal_data(struct task_context *tc)
 {
 	int i, sigrtmax, others, use_sighand;
-	int translate, sig, sigpending;
+	int translate, sigpending;
 	uint ti_flags;
 	ulonglong sigset, blocked, mask;
-	ulong signal_struct, kaddr, handler, flags, sigqueue, sigqueue_save, next;
+	ulong signal_struct, kaddr, handler, flags, sigqueue;
 	ulong sighand_struct;
 	long size;
 	char *signal_buf, *uaddr;
@@ -5826,7 +5830,7 @@ dump_signal_data(struct task_context *tc)
                 MEMBER_OFFSET_INIT(signal_queue_info, "signal_queue", "info");
         }
 
-	sigset = task_signal(tc->task);
+	sigset = task_signal(tc->task, 0);
 	if (!tt->last_task_read)
 		return;
 	blocked = task_blocked(tc->task);
@@ -5840,11 +5844,6 @@ dump_signal_data(struct task_context *tc)
 		sigpending = ti_flags & (1<<TIF_SIGPENDING);
 	}
 	
-	fprintf(fp, "SIGPENDING: %s\n", sigpending ? "yes" : "no");
-		
-	fprintf(fp, "    SIGNAL: %016llx\n", sigset);
-
-	fprintf(fp, "   BLOCKED: %016llx\n", blocked);
 
 	if (VALID_MEMBER(task_struct_sig))
 		signal_struct = ULONG(tt->task_struct + 
@@ -5973,6 +5972,12 @@ dump_signal_data(struct task_context *tc)
 
                 fprintf(fp, "\n");
         }
+	fprintf(fp, "SIGPENDING: %s\n", sigpending ? "yes" : "no");
+	fprintf(fp, "   BLOCKED: %016llx\n", blocked);
+		
+	if (VALID_MEMBER(signal_struct_shared_pending) )
+		fprintf(fp, "PRIVATE_PENDING\n");
+	fprintf(fp, "    SIGNAL: %016llx\n", sigset);
 
 	if (VALID_MEMBER(task_struct_sigqueue)) 
 		sigqueue = ULONG(tt->task_struct + 
@@ -5986,14 +5991,54 @@ dump_signal_data(struct task_context *tc)
 	if (VALID_MEMBER(sigqueue_list) && empty_list(sigqueue))
 		sigqueue = 0;
 
-	if (sigqueue)
-                fprintf(fp, "SIGQUEUE:  SIG  %s\n",
+	if (sigqueue) {
+                fprintf(fp, "  SIGQUEUE:  SIG  %s\n",
                         mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SIGINFO"));
-	else
-                fprintf(fp, "SIGQUEUE: (empty)\n");
+		 sigqueue_list(sigqueue);
+	} else
+                fprintf(fp, "  SIGQUEUE: (empty)\n");
 
-	sigqueue_save = sigqueue;
+	if (VALID_MEMBER(signal_struct_shared_pending) ) {
+		ulong shared_pending, signal;
+		fprintf(fp, "SHARED_PENDING\n");
+		shared_pending = signal_struct + OFFSET(signal_struct_shared_pending);
+		signal = shared_pending + OFFSET(sigpending_signal);
+		readmem(signal, KVADDR, signal_buf,SIZE(sigpending_signal),
+			"signal", FAULT_ON_ERROR);
+		sigset = task_signal(0, (ulong*)signal_buf);
+		fprintf(fp, "    SIGNAL: %016llx\n", sigset);
+                sigqueue = (shared_pending + 
+			OFFSET_OPTION(sigpending_head, sigpending_list) + 
+			OFFSET(list_head_next));
+		readmem(sigqueue,KVADDR, signal_buf,
+			SIZE(sigqueue), "sigqueue", FAULT_ON_ERROR);
+		sigqueue = ULONG(signal_buf);
 
+		if (VALID_MEMBER(sigqueue_list) && empty_list(sigqueue))
+			sigqueue = 0;
+		if (sigqueue) {
+               		fprintf(fp, "  SIGQUEUE:  SIG  %s\n",
+                       		mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SIGINFO"));
+			 sigqueue_list(sigqueue);
+		} else
+               		fprintf(fp, "  SIGQUEUE: (empty)\n");
+	}
+	FREEBUF(signal_buf);
+}
+
+/*
+ *  Dump a pending signal queue (private/shared).
+ */
+
+static void sigqueue_list(ulong sigqueue) {
+        ulong sigqueue_save, next;
+	int sig;
+	char *signal_buf;
+	long size;
+        size = VALID_SIZE(signal_queue) ?  SIZE(signal_queue) : SIZE(sigqueue);
+        signal_buf = GETBUF(size);
+
+        sigqueue_save = sigqueue;
         while (sigqueue) {
         	readmem(sigqueue, KVADDR, signal_buf, 
 			SIZE_OPTION(signal_queue, sigqueue), 
@@ -6014,14 +6059,14 @@ dump_signal_data(struct task_context *tc)
 		if (sigqueue_save == next)
 			break;
 
-                fprintf(fp, "           %3d  %lx\n",
+                fprintf(fp, "             %3d  %lx\n",
                         sig, sigqueue +
 			OFFSET_OPTION(signal_queue_info, sigqueue_info));
 
                 sigqueue = next;
         }
-
 	FREEBUF(signal_buf);
+
 }
 
 /*
@@ -6031,12 +6076,13 @@ dump_signal_data(struct task_context *tc)
  */
 
 static ulonglong 
-task_signal(ulong task)
+task_signal(ulong task, ulong *signal)
 {
 	ulonglong sigset;
 	ulong *sigset_ptr;
 
-        fill_task_struct(task);
+	if (task) {
+        	fill_task_struct(task);
 
 	if (!tt->last_task_read) 
 		return 0;
@@ -6049,6 +6095,10 @@ task_signal(ulong task)
                 sigset_ptr = (ulong *)(tt->task_struct +
                         OFFSET(task_struct_signal));
         } else
+		return 0;
+	} else if (signal) {
+		sigset_ptr = signal;
+	} else
 		return 0;
 
 	switch (_NSIG_WORDS)

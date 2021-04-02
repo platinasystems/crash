@@ -205,8 +205,10 @@ struct number_option {
 #define DUMPFILE_FORMAT(flags) ((flags) & \
 		        (NETDUMP_ELF32|NETDUMP_ELF64|KDUMP_ELF32|KDUMP_ELF64))
 
-#define DISKDUMP_LOCAL   (0x1)
-#define DISKDUMP_VALID() (dd->flags & DISKDUMP_LOCAL)
+#define DISKDUMP_LOCAL      (0x1)
+#define KDUMP_CMPRS_LOCAL   (0x2)
+#define DISKDUMP_VALID()    (dd->flags & DISKDUMP_LOCAL)
+#define KDUMP_CMPRS_VALID() (dd->flags & KDUMP_CMPRS_LOCAL)
 
 #define XENDUMP_LOCAL    (0x1)
 #define XENDUMP_VALID()  (xd->flags & XENDUMP_LOCAL)
@@ -911,6 +913,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long tms_tms_stime;
 	long signal_struct_count;
 	long signal_struct_action;
+	long signal_struct_shared_pending;
 	long k_sigaction_sa;
 	long sigaction_sa_handler;
 	long sigaction_sa_flags;
@@ -1362,6 +1365,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long net_device;
 	long sock;
 	long signal_struct;
+	long sigpending_signal;
 	long signal_queue;
 	long sighand_struct;
 	long sigqueue;
@@ -2307,6 +2311,9 @@ struct efi_memory_desc_t {
 #ifdef PPC64
 #define _64BIT_
 #define MACHINE_TYPE       "PPC64"
+
+#define PPC64_64K_PAGE_SIZE  65536
+#define PPC64_STACK_SIZE     16384
 
 #define PAGEBASE(X)  (((ulong)(X)) & (ulong)machdep->pagemask)
 
@@ -3805,6 +3812,7 @@ ulong get_diskdump_switch_stack(ulong);
 int diskdump_memory_dump(FILE *);
 FILE *set_diskdump_fp(FILE *);
 void get_diskdump_regs(struct bt_info *, ulong *, ulong *);
+int diskdump_phys_base(unsigned long *);
 
 /*
  * xendump.c

@@ -1,4 +1,4 @@
---- gdb-6.1/bfd/coff-alpha.c.orig
+--- gdb-6.1.orig/bfd/coff-alpha.c
 +++ gdb-6.1/bfd/coff-alpha.c
 @@ -1455,7 +1455,7 @@ alpha_relocate_section (output_bfd, info
  	  amt = sizeof (struct ecoff_section_tdata);
@@ -9,3 +9,13 @@
  	}
  
        if (lita_sec_data->gp != 0)
+--- gdb-6.1.orig/sim/ppc/debug.c
++++ gdb-6.1/sim/ppc/debug.c
+@@ -28,6 +28,7 @@
+ #ifdef HAVE_STDLIB_H
+ #include <stdlib.h>
+ #endif
++#include <string.h>
+ 
+ int ppc_trace[nr_trace_options];
+ 
