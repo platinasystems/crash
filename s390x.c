@@ -913,10 +913,34 @@ s390x_get_lowcore(struct bt_info *bt, char* lowcore)
 }
 
 /*
+ * Get stack address for interrupt stack using the pcpu array
+ */
+static unsigned long get_int_stack_pcpu(char *stack_name, int cpu)
+{
+	unsigned long addr;
+
+	if (!MEMBER_EXISTS("pcpu", stack_name))
+		return 0;
+	addr = symbol_value("pcpu_devices") +
+		cpu * STRUCT_SIZE("pcpu") + MEMBER_OFFSET("pcpu", stack_name);
+	return readmem_ul(addr) + INT_STACK_SIZE;
+}
+
+/*
+ * Get stack address for interrupt stack using the lowcore
+ */
+static unsigned long get_int_stack_lc(char *stack_name, char *lc)
+{
+	if (!MEMBER_EXISTS(lc_struct, stack_name))
+		return 0;
+	return ULONG(lc + MEMBER_OFFSET(lc_struct, stack_name));
+}
+
+/*
  * Read interrupt stack (either "async_stack" or "panic_stack");
  */
-static void get_int_stack(char *stack_name, char *lc, unsigned long *start,
-			  unsigned long *end)
+static void get_int_stack(char *stack_name, int cpu, char *lc,
+			  unsigned long *start, unsigned long *end)
 {
 	unsigned long stack_addr;
 
@@ -925,9 +949,10 @@ static void get_int_stack(char *stack_name, char *lc, unsigned long *start,
 		stack_addr = symbol_value("restart_stack");
 		stack_addr = readmem_ul(stack_addr);
 	} else {
-		if (!MEMBER_EXISTS(lc_struct, stack_name))
-			return;
-		stack_addr = ULONG(lc + MEMBER_OFFSET(lc_struct, stack_name));
+		if (symbol_exists("pcpu_devices"))
+			stack_addr = get_int_stack_pcpu(stack_name, cpu);
+		else
+			stack_addr = get_int_stack_lc(stack_name, lc);
 	}
 	if (stack_addr == 0)
 		return;
@@ -1070,7 +1095,8 @@ static void print_ptregs(struct bt_info *bt, unsigned long sp)
 static unsigned long show_trace(struct bt_info *bt, int cnt, unsigned long sp,
 				unsigned long low, unsigned long high)
 {
-	unsigned long reg, psw_addr;
+	unsigned long reg; 
+	unsigned long psw_addr ATTRIBUTE_UNUSED;
 
 	while (1) {
 		if (sp < low || sp > high - SIZE(s390_stack_frame))
@@ -1156,12 +1182,13 @@ static void s390x_back_trace_cmd(struct bt_info *bt)
 		s390x_print_lowcore(lowcore,bt,1);
 		fprintf(fp,"\n");
 		if (symbol_exists("restart_stack")) {
-			get_int_stack("restart_stack", lowcore, &low, &high);
+			get_int_stack("restart_stack",
+				      cpu, lowcore, &low, &high);
 			sp = show_trace(bt, cnt, sp, low, high);
 		}
-		get_int_stack("panic_stack", lowcore, &low, &high);
+		get_int_stack("panic_stack", cpu, lowcore, &low, &high);
 		sp = show_trace(bt, cnt, sp, low, high);
-		get_int_stack("async_stack", lowcore, &low, &high);
+		get_int_stack("async_stack", cpu, lowcore, &low, &high);
 		sp = show_trace(bt, cnt, sp, low, high);
 	}
 	/*

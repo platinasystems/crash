@@ -17,6 +17,10 @@
 
 #include "defs.h"
 #include <elf.h>
+#ifdef GDB_7_6
+#define __CONFIG_H__ 1
+#include "config.h"
+#endif
 #include "bfd.h"
 
 static void store_symbols(bfd *, int, void *, long, unsigned int);
@@ -419,8 +423,13 @@ separate_debug_file_exists(const char *name, unsigned long crc, int *exists)
 #ifdef GDB_5_3
     		file_crc = calc_crc32(file_crc, buffer, count);
 #else
+#ifdef GDB_7_6
+    		file_crc = bfd_calc_gnu_debuglink_crc32(file_crc, 
+			(unsigned char *)buffer, count);
+#else
     		file_crc = gnu_debuglink_crc32(file_crc, 
 			(unsigned char *)buffer, count);
+#endif
 #endif
 
   	close (fd);
@@ -3084,6 +3093,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_AARCH64:
+			if (machine_type_mismatch(file, "ARM64", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -3298,6 +3312,11 @@ is_shared_object(char *file)
 
 		case EM_S390:
 			if (machine_type("S390X"))
+				return TRUE;
+			break;
+
+		case EM_AARCH64:
+			if (machine_type("ARM64"))
 				return TRUE;
 			break;
 		}
@@ -5165,28 +5184,28 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 static long
 anon_member_offset(char *name, char *member)
 {
-	int c;
 	char buf[BUFSIZE];
-	char *arglist[MAXARGS];
 	ulong value;
 	int type;
 
 	value = -1;
 	type = STRUCT_REQUEST;
-	sprintf(buf, "print &((struct %s *)0x0)->%s", name, member);
-
+	sprintf(buf, "printf \"%%p\", &((struct %s *)0x0)->%s", name, member);
 	open_tmpfile2();
 retry:
 	if (gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
 		rewind(pc->tmpfile2);
-		if (fgets(buf, BUFSIZE, pc->tmpfile2) &&
-		    (c = parse_line(strip_linefeeds(buf), arglist)))
-			value = stol(arglist[c-1], RETURN_ON_ERROR|QUIET, NULL);
+		if (fgets(buf, BUFSIZE, pc->tmpfile2)) {
+			if (hexadecimal(buf, 0))
+				value = htol(buf, RETURN_ON_ERROR|QUIET, NULL);
+			else if (STRNEQ(buf, "(nil)"))
+				value = 0;
+		}
 	}
 
 	if ((value == -1) && (type == STRUCT_REQUEST)) {
 		type = UNION_REQUEST;
-		sprintf(buf, "print &((union %s *)0x0)->%s", name, member);
+		sprintf(buf, "printf \"%%p\", &((union %s *)0x0)->%s", name, member);
 		rewind(pc->tmpfile2);
 		goto retry;
 	}
@@ -6859,13 +6878,14 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 	char lookfor4[BUFSIZE];
 	char lookfor5[BUFSIZE];
 	long curpos, last_open_bracket;
-	int indent, on, array;
+	int indent, on, array, embed;
 	char *p1;
 
 	s = dm->member;
 	indent = 0;
 	array = FALSE;
 	on = 0;
+	embed = 0;
 	rewind(pc->tmpfile);
 
 	switch (flag)  
@@ -6875,6 +6895,15 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 		sprintf(lookfor2, "  %s[", s);
 next_item:
 		while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+			if (embed && (count_leading_spaces(buf) == embed))
+				embed = 0;
+
+			if (!on && !embed && strstr(buf, "= {") && !strstr(buf, lookfor1))
+				embed = count_leading_spaces(buf);
+
+			if (embed)
+				continue;
+
 			if (strstr(buf, lookfor1) || strstr(buf, lookfor2)) {
 				on++;
 				if (strstr(buf, "= {")) 
@@ -7406,6 +7435,12 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_thread_esp));
         fprintf(fp, "        task_struct_thread_ksp: %ld\n",
                 OFFSET(task_struct_thread_ksp));
+	fprintf(fp, " task_struct_thread_context_fp: %ld\n",
+		OFFSET(task_struct_thread_context_fp));
+	fprintf(fp, " task_struct_thread_context_sp: %ld\n",
+		OFFSET(task_struct_thread_context_sp));
+	fprintf(fp, " task_struct_thread_context_pc: %ld\n",
+		OFFSET(task_struct_thread_context_pc));
 	fprintf(fp, "         task_struct_processor: %ld\n", 
 		OFFSET(task_struct_processor));
 	fprintf(fp, "            task_struct_p_pptr: %ld\n",
@@ -7809,6 +7844,16 @@ dump_offset_table(char *spec, ulong makestruct)
         	OFFSET(kallsyms_section_size));
         fprintf(fp, "     kallsyms_section_name_off: %ld\n",
         	OFFSET(kallsyms_section_name_off));
+
+	fprintf(fp, "                 module_taints: %ld\n",
+		OFFSET(module_taints));
+	fprintf(fp, "          module_license_gplok: %ld\n",
+		OFFSET(module_license_gplok));
+	fprintf(fp, "              module_gpgsig_ok: %ld\n",
+		OFFSET(module_gpgsig_ok));
+	fprintf(fp, "                       tnt_bit: %ld\n", OFFSET(tnt_bit));
+	fprintf(fp, "                      tnt_true: %ld\n", OFFSET(tnt_true));
+	fprintf(fp, "                     tnt_false: %ld\n", OFFSET(tnt_false));
 
 	fprintf(fp, "                     page_next: %ld\n", OFFSET(page_next));
 	fprintf(fp, "                     page_prev: %ld\n", OFFSET(page_prev));
@@ -9197,6 +9242,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(hrtimer_clock_base));
 	fprintf(fp, "                  hrtimer_base: %ld\n",
 		SIZE(hrtimer_base));
+	fprintf(fp, "                           tnt: %ld\n",
+		SIZE(tnt));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

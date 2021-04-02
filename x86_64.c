@@ -5366,28 +5366,35 @@ static ulong
 search_for_switch_to(ulong start, ulong end)
 {
 	ulong max_instructions, address;
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 	int found;
 
 	max_instructions = end - start;
 	found = FALSE;
-	sprintf(buf, "x/%ldi 0x%lx", max_instructions, start);
+	sprintf(buf1, "x/%ldi 0x%lx", max_instructions, start);
+	if (symbol_exists("__switch_to"))
+		sprintf(buf2, "callq  0x%lx", symbol_value("__switch_to"));
+	else
+		buf2[0] = NULLCHAR;
 
 	open_tmpfile();
 
-	if (!gdb_pass_through(buf, pc->tmpfile, GNU_RETURN_ON_ERROR))
+	if (!gdb_pass_through(buf1, pc->tmpfile, GNU_RETURN_ON_ERROR))
 		return FALSE;
 
 	rewind(pc->tmpfile);
-	while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+	while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
 		if (found)
 			break;
-		if (strstr(buf, "<__switch_to>"))
+		if (strstr(buf1, "<__switch_to>"))
+			found = TRUE;
+		if (strlen(buf2) && strstr(buf1, buf2))
 			found = TRUE;
 	}
 	close_tmpfile();
 
-	if (found && extract_hex(buf, &address, NULLCHAR, TRUE))
+	if (found && extract_hex(buf1, &address, ':', TRUE))
 		return address;
 
 	return 0;

@@ -89,7 +89,8 @@ kvmdump_init(char *filename, FILE *fptr)
 	FILE *tmpfp;
 
 	if (!machine_type("X86") && !machine_type("X86_64")) {
-		error(FATAL, "invalid host architecture for KVM: %s\n",
+		error(FATAL, 
+		    "invalid or unsupported host architecture for KVM: %s\n",
 			MACHINE_TYPE);
 		return FALSE;
 	}

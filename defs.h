@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "6.1.2"
+#define BASELEVEL_REVISION  "7.0.1"
 
 #undef TRUE
 #undef FALSE
@@ -1867,6 +1867,15 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long ktime_t_tv64;
 	long ktime_t_sec;
 	long ktime_t_nsec;
+	long module_taints;
+	long module_gpgsig_ok;
+	long module_license_gplok;
+	long tnt_bit;
+	long tnt_true;
+	long tnt_false;
+	long task_struct_thread_context_fp;
+	long task_struct_thread_context_sp;
+	long task_struct_thread_context_pc;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2006,6 +2015,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long vmap_area;
 	long hrtimer_clock_base;
 	long hrtimer_base;
+	long tnt;
 };
 
 struct array_table {
@@ -2591,11 +2601,192 @@ struct load_module {
 
 #endif  /* ARM */
 
+#ifndef EM_AARCH64
+#define EM_AARCH64              183
+#endif
+
 #ifdef ARM64
 #define _64BIT_
 #define MACHINE_TYPE       "ARM64"    
 
-/* TBD */
+#define PTOV(X) \
+	((unsigned long)(X)-(machdep->machspec->phys_offset)+(machdep->kvbase))
+#define VTOP(X) \
+	((unsigned long)(X)-(machdep->kvbase)+(machdep->machspec->phys_offset))
+
+#define USERSPACE_TOP   (machdep->machspec->userspace_top)
+#define PAGE_OFFSET     (machdep->machspec->page_offset)
+#define VMALLOC_START   (machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END     (machdep->machspec->vmalloc_end)
+#define VMEMMAP_VADDR   (machdep->machspec->vmemmap_vaddr)
+#define VMEMMAP_END     (machdep->machspec->vmemmap_end)
+#define MODULES_VADDR   (machdep->machspec->modules_vaddr)
+#define MODULES_END     (machdep->machspec->modules_end)
+
+#define IS_VMALLOC_ADDR(X)    arm64_IS_VMALLOC_ADDR((ulong)(X))
+
+#define PAGEBASE(X)     (((ulong)(X)) & (ulong)machdep->pagemask)
+
+/*
+ * 40-bit physical address supported.  (512GB)
+ */
+#define PHYS_MASK_SHIFT   (40)
+#define PHYS_MASK         (((1UL) << PHYS_MASK_SHIFT) - 1)
+
+typedef signed int s32;
+
+/* 
+ * 3-levels / 4K pages
+ */
+#define PTRS_PER_PGD_L3_4K   (512)
+#define PTRS_PER_PMD_L3_4K   (512)
+#define PTRS_PER_PTE_L3_4K   (512)
+#define PGDIR_SHIFT_L3_4K    (30)
+#define PGDIR_SIZE_L3_4K     ((1UL) << PGDIR_SHIFT_L3_4K)
+#define PGDIR_MASK_L3 4K     (~(PGDIR_SIZE_L3_4K-1))
+#define PMD_SHIFT_L3_4K      (21)
+#define PMD_SIZE_L3_4K       (1UL << PMD_SHIFT_4K)
+#define PMD_MASK_L3 4K       (~(PMD_SIZE_4K-1))
+
+/*
+ * 2-levels / 64K pages
+ */
+#define PTRS_PER_PGD_L2_64K  (1024)
+#define PTRS_PER_PTE_L2_64K  (8192)
+#define PGDIR_SHIFT_L2_64K   (29)
+#define PGDIR_SIZE_L2_64K    ((1UL) << PGDIR_SHIFT_L2_64K)
+#define PGDIR_MASK_L2_64K    (~(PGDIR_SIZE_L2_64K-1))
+
+/*
+ * Software defined PTE bits definition.
+ * (arch/arm64/include/asm/pgtable.h)
+ */
+#define PTE_VALID       (1UL << 0)
+#define PTE_PROT_NONE   (1UL << 1) /* only when !PTE_VALID */
+#define PTE_FILE        (1UL << 2) /* only when !pte_present() */
+#define PTE_DIRTY       (1UL << 55)
+#define PTE_SPECIAL     (1UL << 56)
+
+/*
+ * HugeTLB/THP 3.10 support proposal swaps PTE_PROT_NONE
+ * and PTE_FILE bit positions:
+ */
+#define PTE_FILE_3_10       (1UL << 1)
+#define PTE_PROT_NONE_3_10  (1UL << 2)
+
+/*
+ * Level 3 descriptor (PTE).
+ * (arch/arm64/include/asm/pgtable-hwdef.h)
+ */
+#define PTE_TYPE_MASK   (3UL << 0)
+#define PTE_TYPE_FAULT  (0UL << 0)
+#define PTE_TYPE_PAGE   (3UL << 0)
+#define PTE_USER        (1UL << 6)         /* AP[1] */
+#define PTE_RDONLY      (1UL << 7)         /* AP[2] */
+#define PTE_SHARED      (3UL << 8)         /* SH[1:0], inner shareable */
+#define PTE_AF          (1UL << 10)        /* Access Flag */
+#define PTE_NG          (1UL << 11)        /* nG */
+#define PTE_PXN         (1UL << 53)        /* Privileged XN */
+#define PTE_UXN         (1UL << 54)        /* User XN */
+
+/*
+ * swap entry:
+ *      bits 0-1:       present (must be zero)
+ *      bit  2:         PTE_FILE
+ *      bits 3-8:       swap type
+ *      bits 9-63:      swap offset
+ *
+ * HugeTLB/THP 3.10 support proposal swaps PTE_PROT_NONE 
+ * and PTE_FILE bit positions:
+ *
+ *      bits 0, 2:	present (must both be zero)
+ *	bit  1:		PTE_FILE
+ *      bits 3-8:       swap type
+ *      bits 9-63:      swap offset
+ */
+#define __SWP_TYPE_SHIFT    3
+#define __SWP_TYPE_BITS     6
+#define __SWP_TYPE_MASK     ((1 << __SWP_TYPE_BITS) - 1)
+#define __SWP_OFFSET_SHIFT  (__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+
+#define __swp_type(x)       (((x) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
+#define __swp_offset(x)     ((x) >> __SWP_OFFSET_SHIFT)
+#define SWP_TYPE(x)         __swp_type(x)
+#define SWP_OFFSET(x)       __swp_offset(x)
+
+#define KSYMS_START   (0x1)
+#define PHYS_OFFSET   (0x2)
+#define VM_L2_64K     (0x4)
+#define VM_L3_4K      (0x8)
+
+/* 
+ * source: Documentation/arm64/memory.txt 
+ */
+#define ARM64_USERSPACE_TOP  (0x0000007fffffffffUL)
+#define ARM64_VMALLOC_START  (0xffffff8000000000UL)
+#define ARM64_VMALLOC_END    (0xffffffbbfffeffffUL)
+#define ARM64_VMEMMAP_VADDR  (0xffffffbc00000000UL)
+#define ARM64_VMEMMAP_END    (0xffffffbffbbfffffUL)
+#define ARM64_MODULES_VADDR  (0xffffffbffc000000UL)
+#define ARM64_MODULES_END    (0xffffffbfffffffffUL)
+#define ARM64_PAGE_OFFSET    (0xffffffc000000000UL)
+
+#define ARM64_STACK_SIZE   (8192)
+
+#define _SECTION_SIZE_BITS      30
+#define _MAX_PHYSMEM_BITS       40
+
+typedef unsigned long long __u64;
+typedef unsigned long long u64;
+
+struct arm64_user_pt_regs {
+        __u64           regs[31];
+        __u64           sp;
+        __u64           pc;
+        __u64           pstate;
+};
+
+struct arm64_pt_regs {
+        union {
+                struct arm64_user_pt_regs user_regs;
+                struct {
+                        u64 regs[31];
+                        u64 sp;
+                        u64 pc;
+                        u64 pstate;
+                };
+        };
+        u64 orig_x0;
+        u64 syscallno;
+};
+
+#define TIF_SIGPENDING  (0)
+#define display_idt_table() \
+        error(FATAL, "-d option is not applicable to ARM64 architecture\n")
+
+struct machine_specific {
+	ulong flags;
+	ulong userspace_top;
+	ulong page_offset;
+	ulong vmalloc_start_addr;
+	ulong vmalloc_end;
+	ulong vmemmap_vaddr;
+	ulong vmemmap_end;
+	ulong modules_vaddr;
+	ulong modules_end;
+	ulong phys_offset;
+	ulong __exception_text_start;
+	ulong __exception_text_end;
+	struct arm64_pt_regs *panic_task_regs;
+	ulong pte_protnone;
+	ulong pte_file;
+};
+
+struct arm64_stackframe {
+        unsigned long fp;
+        unsigned long sp;
+        unsigned long pc;
+};
 
 #endif  /* ARM64 */
 
@@ -3251,9 +3442,10 @@ struct efi_memory_desc_t {
 
 #define PAGEBASE(X)  (((ulong)(X)) & (ulong)machdep->pagemask)
 
-#define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
-#define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
+#define PTOV(X)            ((unsigned long)(X)+(machdep->identity_map_base))
+#define VTOP(X)            ((unsigned long)(X)-(machdep->identity_map_base))
+#define BOOK3E_VMBASE 0x8000000000000000
+#define IS_VMALLOC_ADDR(X) machdep->machspec->is_vmaddr(X)
 #define KERNELBASE      machdep->pageoffset
 
 #define PGDIR_SHIFT     (machdep->pageshift + (machdep->pageshift -3) + (machdep->pageshift - 2))
@@ -3295,6 +3487,8 @@ struct efi_memory_desc_t {
 #define PGD_INDEX_SIZE_L4_64K  4
 #define PTE_SHIFT_L4_64K_V1  32
 #define PTE_SHIFT_L4_64K_V2  30
+#define PTE_SHIFT_L4_BOOK3E_64K 28
+#define PTE_SHIFT_L4_BOOK3E_4K 24
 #define PMD_MASKED_BITS_64K  0x1ff
 
 #define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & 0x1ff)
@@ -3305,15 +3499,16 @@ struct efi_memory_desc_t {
 #define PMD_OFFSET_L4(vaddr)	\
 	((vaddr >> (machdep->machspec->l2_shift)) & (machdep->machspec->ptrs_per_l2 - 1))
 
-#define _PAGE_PRESENT   0x001UL /* software: pte contains a translation */
-#define _PAGE_USER      0x002UL /* matches one of the PP bits */
-#define _PAGE_RW        0x004UL /* software: user write access allowed */
-#define _PAGE_GUARDED   0x008UL
-#define _PAGE_COHERENT  0x010UL /* M: enforce memory coherence (SMP systems) */
-#define _PAGE_NO_CACHE  0x020UL /* I: cache inhibit */
-#define _PAGE_WRITETHRU 0x040UL /* W: cache write-through */
-#define _PAGE_DIRTY     0x080UL /* C: page changed */
-#define _PAGE_ACCESSED  0x100UL /* R: page referenced */
+#define _PAGE_PRESENT   (machdep->machspec->_page_present)      /* software: pte contains a translation */
+#define _PAGE_USER      (machdep->machspec->_page_user)         /* matches one of the PP bits */
+#define _PAGE_RW        (machdep->machspec->_page_rw)           /* software: user write access allowed */
+#define _PAGE_GUARDED   (machdep->machspec->_page_guarded)
+#define _PAGE_COHERENT  (machdep->machspec->_page_coherent      /* M: enforce memory coherence (SMP systems) */)
+#define _PAGE_NO_CACHE  (machdep->machspec->_page_no_cache)     /* I: cache inhibit */
+#define _PAGE_WRITETHRU (machdep->machspec->_page_writethru)    /* W: cache write-through */
+#define _PAGE_DIRTY     (machdep->machspec->_page_dirty)        /* C: page changed */
+#define _PAGE_ACCESSED  (machdep->machspec->_page_accessed)     /* R: page referenced */
+
 #define TIF_SIGPENDING (2)
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
@@ -3765,8 +3960,8 @@ enum type_code {
   TYPE_CODE_STRUCT,             /* C struct or Pascal record */
   TYPE_CODE_UNION,              /* C union or Pascal variant part */
   TYPE_CODE_ENUM,               /* Enumeration type */
-#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0) || defined(GDB_7_3_1)
-#if defined(GDB_7_0) || defined(GDB_7_3_1)
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0) || defined(GDB_7_3_1) || defined(GDB_7_6)
+#if defined(GDB_7_0) || defined(GDB_7_3_1) || defined(GDB_7_6)
   TYPE_CODE_FLAGS,              /* Bit flags type */
 #endif
   TYPE_CODE_FUNC,               /* Function type */
@@ -4712,14 +4907,14 @@ int init_unwind_tables(void);
 void unwind_backtrace(struct bt_info *);
 #endif /* ARM */
 
+/* 
+ * arm64.c 
+ */
 #ifdef ARM64
 void arm64_init(int);
 void arm64_dump_machdep_table(ulong);
-
-/* TBD */
-
-#endif  /* ARM64 */
-
+int arm64_IS_VMALLOC_ADDR(ulong);
+#endif
 
 /*
  *  alpha.c
@@ -4936,6 +5131,17 @@ struct machine_specific {
 	int vmemmap_psize;
 	ulong vmemmap_base;
 	struct ppc64_vmemmap *vmemmap_list;
+	ulong _page_present;
+	ulong _page_user;
+	ulong _page_rw;
+	ulong _page_guarded;
+	ulong _page_coherent;
+	ulong _page_no_cache;
+	ulong _page_writethru;
+	ulong _page_dirty;
+	ulong _page_accessed;
+	int (*is_kvaddr)(ulong);
+	int (*is_vmaddr)(ulong);
 };
 
 #define IS_LAST_L4_READ(l4)   ((ulong)(l4) == machdep->machspec->last_level4_read)
@@ -4954,6 +5160,7 @@ void ppc64_dump_machdep_table(ulong);
 #define KSYMS_START (0x1)
 #define VM_ORIG     (0x2)
 #define VMEMMAP_AWARE (0x4)
+#define BOOK3E (0x8)
 
 #define REGION_SHIFT       (60UL)
 #define REGION_ID(addr)    (((unsigned long)(addr)) >> REGION_SHIFT)
@@ -5654,10 +5861,19 @@ extern unsigned int print_max;
 extern int stop_print_at_null;
 #endif
 
+#ifdef GDB_7_6
+/*
+ *  gdb/cleanups.c
+ */
+struct cleanup;
+extern struct cleanup *all_cleanups(void);
+extern void do_cleanups(struct cleanup *);
+#else
 /*
  *  gdb/utils.c
  */
 extern void do_cleanups(void *);
+#endif
 
 /*
  *  gdb/version.c

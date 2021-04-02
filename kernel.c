@@ -22,6 +22,7 @@
 #include <ctype.h>
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
+static void show_module_taint(void);
 static char *find_module_objfile(char *, char *, char *);
 static char *module_objfile_search(char *, char *, char *);
 static char *get_loadavg(char *);
@@ -906,7 +907,8 @@ verify_version(void)
 	if (!(sp = symbol_search("linux_banner")))
 		error(FATAL, "linux_banner symbol does not exist?\n");
 	else if ((sp->type == 'R') || (sp->type == 'r') ||
-		 (machine_type("ARM") && sp->type == 'T'))
+		 (machine_type("ARM") && sp->type == 'T') ||
+		 (machine_type("ARM64")))
 		linux_banner = symbol_value("linux_banner");
 	else
 		get_symbol_data("linux_banner", sizeof(ulong), &linux_banner);
@@ -3220,6 +3222,7 @@ irregularity:
 #define DELETE_ALL_MODULE_SYMBOLS     (5)
 #define REMOTE_MODULE_SAVE_MSG        (6)
 #define REINIT_MODULES                (7)
+#define LIST_ALL_MODULE_TAINT         (8)
 
 void
 cmd_mod(void)
@@ -3294,7 +3297,7 @@ cmd_mod(void)
 	address = 0;
 	flag = LIST_MODULE_HDR;
 
-        while ((c = getopt(argcnt, args, "Rd:Ds:So")) != EOF) {
+        while ((c = getopt(argcnt, args, "Rd:Ds:Sot")) != EOF) {
                 switch(c)
 		{
                 case 'R':
@@ -3363,6 +3366,13 @@ cmd_mod(void)
 				modref = optarg;
 			else
 				cmd_usage(pc->curcmd, SYNOPSIS);
+			break;
+
+		case 't':
+                        if (flag)
+				cmd_usage(pc->curcmd, SYNOPSIS);
+			else
+				flag = LIST_ALL_MODULE_TAINT;
 			break;
 
 		default:
@@ -3485,6 +3495,146 @@ check_specified_module_tree(char *module, char *gdb_buffer)
 	return retval;
 }
 
+static void
+show_module_taint(void)
+{
+	int i, j, bx;
+	struct load_module *lm;
+	int maxnamelen;
+	int found;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	int gpgsig_ok, license_gplok;
+	struct syment *sp;
+	uint *taintsp, taints;
+	uint8_t tnt_bit;
+	char tnt_true, tnt_false;
+	int tnts_exists, tnts_len;
+	ulong tnts_addr;
+	char *modbuf;
+
+	if (INVALID_MEMBER(module_taints) &&
+	    INVALID_MEMBER(module_license_gplok)) {
+		MEMBER_OFFSET_INIT(module_taints, "module", "taints");
+		MEMBER_OFFSET_INIT(module_license_gplok, 
+			"module", "license_gplok");
+		MEMBER_OFFSET_INIT(module_gpgsig_ok, "module", "gpgsig_ok");
+		STRUCT_SIZE_INIT(tnt, "tnt");
+		MEMBER_OFFSET_INIT(tnt_bit, "tnt", "bit");
+		MEMBER_OFFSET_INIT(tnt_true, "tnt", "true");
+		MEMBER_OFFSET_INIT(tnt_false, "tnt", "false");
+	}
+
+	if (INVALID_MEMBER(module_taints) &&
+	    INVALID_MEMBER(module_license_gplok))
+		option_not_supported('t');
+
+	modbuf = GETBUF(SIZE(module));
+
+	for (i = found = maxnamelen = 0; i < kt->mods_installed; i++) {
+		lm = &st->load_modules[i];
+
+		readmem(lm->module_struct, KVADDR, modbuf, SIZE(module),
+			"module struct", FAULT_ON_ERROR);
+
+		taints = VALID_MEMBER(module_taints) ?
+			UINT(modbuf + OFFSET(module_taints)) : 0;
+		license_gplok = VALID_MEMBER(module_license_gplok) ? 
+			INT(modbuf + OFFSET(module_license_gplok)) : 0;
+		gpgsig_ok = VALID_MEMBER(module_gpgsig_ok) ?
+			INT(modbuf + OFFSET(module_gpgsig_ok)) : 1;
+
+		if (taints || license_gplok || !gpgsig_ok) {
+			found++;
+			maxnamelen = strlen(lm->mod_name) > maxnamelen ?
+				strlen(lm->mod_name) : maxnamelen;
+		}
+			
+	}
+
+	if (!found) {
+		fprintf(fp, "no tainted modules\n");
+		FREEBUF(modbuf);
+		return;
+	}
+
+	if (VALID_STRUCT(tnt) && (sp = symbol_search("tnts"))) {
+		tnts_exists = TRUE;
+		tnts_len = get_array_length("tnts", NULL, 0);
+		tnts_addr = sp->value;
+	} else {
+		tnts_exists = FALSE;
+		tnts_len = 0;
+		tnts_addr = 0;
+	}
+
+	fprintf(fp, "%s  %s\n",
+		mkstring(buf2, maxnamelen, LJUST, "NAME"),
+		VALID_MEMBER(module_taints) ? "TAINTS" : "LICENSE_GPLOK");
+
+	for (i = 0; i < st->mods_installed; i++) {
+
+		lm = &st->load_modules[i];
+		bx = 0;
+		buf1[0] = '\0';
+
+		readmem(lm->module_struct, KVADDR, modbuf, SIZE(module),
+			"module struct", FAULT_ON_ERROR);
+
+		taints = VALID_MEMBER(module_taints) ?
+			UINT(modbuf + OFFSET(module_taints)) : 0;
+		license_gplok = VALID_MEMBER(module_license_gplok) ? 
+			INT(modbuf + OFFSET(module_license_gplok)) : 0;
+		gpgsig_ok = VALID_MEMBER(module_gpgsig_ok) ?
+			INT(modbuf + OFFSET(module_gpgsig_ok)) : 1;
+
+		if (!taints && !license_gplok && gpgsig_ok)
+			continue;
+
+		if (tnts_exists && taints) {
+			taintsp = &taints;
+			for (j = 0; j < (tnts_len * SIZE(tnt)); j += SIZE(tnt)) {
+				readmem((tnts_addr + j) + OFFSET(tnt_bit),
+					KVADDR, &tnt_bit, sizeof(uint8_t), 
+					"tnt bit", FAULT_ON_ERROR);
+
+				if (NUM_IN_BITMAP(taintsp, tnt_bit)) {
+					readmem((tnts_addr + j) + OFFSET(tnt_true),
+						KVADDR, &tnt_true, sizeof(char), 
+						"tnt true", FAULT_ON_ERROR);
+					buf1[bx++] = tnt_true;
+				} else {
+					readmem((tnts_addr + j) + OFFSET(tnt_false),
+						KVADDR, &tnt_false, sizeof(char), 
+						"tnt false", FAULT_ON_ERROR);
+					if (tnt_false != ' ' && tnt_false != '-' &&
+					    tnt_false != 'G')
+						buf1[bx++] = tnt_false;
+				}
+
+			}
+		}
+
+		if (VALID_MEMBER(module_gpgsig_ok) && !gpgsig_ok) {
+			buf1[bx++] = '(';
+			buf1[bx++] = 'U';
+			buf1[bx++] = ')';
+		}
+
+		buf1[bx++] = '\0';
+
+		if (tnts_exists)
+			fprintf(fp, "%s  %s\n", mkstring(buf2, maxnamelen,
+				LJUST, lm->mod_name), buf1);
+		else
+			fprintf(fp, "%s  %x%s\n", mkstring(buf2, maxnamelen,
+				LJUST, lm->mod_name), 
+				VALID_MEMBER(module_taints) ? 
+				taints : license_gplok, buf1);
+	}
+
+	FREEBUF(modbuf);
+}
 
 /*
  *  Do the simple list work for cmd_mod().
@@ -3654,6 +3804,10 @@ do_module_cmd(ulong flag, char *modref, ulong address,
 	case REINIT_MODULES:
 		reinit_modules();
         	do_module_cmd(LIST_MODULE_HDR, NULL, 0, NULL, NULL);
+		break;
+
+	case LIST_ALL_MODULE_TAINT:
+		show_module_taint();
 		break;
 	}
 }

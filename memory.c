@@ -7061,6 +7061,7 @@ char *kmeminfo_hdr = "              PAGES        TOTAL      PERCENTAGE\n";
 static void
 dump_kmeminfo(void)
 {
+	int i, len;
 	ulong totalram_pages;
 	ulong freeram_pages;
 	ulong used_pages;
@@ -7190,13 +7191,23 @@ dump_kmeminfo(void)
 		page_cache_size -= subtract_buffer_pages;
 	} else if (dump_vm_stat("NR_FILE_PAGES", &nr_file_pages, 0)) {
 		char *swapper_space = GETBUF(SIZE(address_space));
-		
-                if (!symbol_exists("swapper_space") || 
-		    !readmem(symbol_value("swapper_space"), KVADDR, 
+
+		swapper_space_nrpages = 0;
+		if (symbol_exists("swapper_spaces") && 
+		    (len = get_array_length("swapper_spaces", NULL, 0))) {
+			for (i = 0; i < len; i++) {
+		    		if (!readmem(symbol_value("swapper_spaces") + 
+				    i * SIZE(address_space), KVADDR, 
+		    		    swapper_space, SIZE(address_space), 
+				    "swapper_space", RETURN_ON_ERROR))
+					break;
+				swapper_space_nrpages += ULONG(swapper_space + 
+					OFFSET(address_space_nrpages));
+			}
+                } else if (symbol_exists("swapper_space") &&
+		    readmem(symbol_value("swapper_space"), KVADDR, 
 		    swapper_space, SIZE(address_space), "swapper_space", 
 		    RETURN_ON_ERROR))
-			swapper_space_nrpages = 0;
-		else
 			swapper_space_nrpages = ULONG(swapper_space + 
 				OFFSET(address_space_nrpages));
 			
@@ -7272,7 +7283,7 @@ dump_kmeminfo(void)
          *  get swap data from dump_swap_info().
          */
 	fprintf(fp, "\n");
-	if (symbol_exists("swapper_space")) {
+	if (symbol_exists("swapper_space") || symbol_exists("swapper_spaces")) {
 		if (dump_swap_info(RETURN_ON_ERROR, &totalswap_pages, 
 		    &totalused_pages)) {
 			fprintf(fp, "%10s  %7ld  %11s         ----\n", 
@@ -15361,10 +15372,11 @@ vm_stat_init(void)
 {
         char buf[BUFSIZE];
         char *arglist[MAXARGS];
-	int i, stringlen, total;
+	int i, count, stringlen, total;
 	int c ATTRIBUTE_UNUSED;
         struct gnu_request *req;
 	char *start;
+	long enum_value;
 
 	if (vt->flags & VM_STAT)
 		return TRUE;
@@ -15387,23 +15399,7 @@ vm_stat_init(void)
 		    get_symbol_type("vm_stat", NULL, NULL) != TYPE_CODE_ARRAY)
 			goto bailout;
 
-	        open_tmpfile();
-	        sprintf(buf, "whatis vm_stat");
-	        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
-	                close_tmpfile();
-			goto bailout;
-	        }
-	        rewind(pc->tmpfile);
-	        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-	                if (STRNEQ(buf, "type = "))
-	                        break;
-	        }
-	        close_tmpfile();
-
-	        if (!strstr(buf, "atomic_long_t") ||
-	            (count_chars(buf, '[') != 1) ||
-	            (count_chars(buf, ']') != 1))
-	                goto bailout;
+		vt->nr_vm_stat_items = get_array_length("vm_stat", NULL, 0);
 	}
 
         open_tmpfile();
@@ -15415,6 +15411,7 @@ vm_stat_init(void)
         FREEBUF(req);
 
 	stringlen = 1;
+	count = -1;
 
         rewind(pc->tmpfile);
         while (fgets(buf, BUFSIZE, pc->tmpfile)) {
@@ -15423,10 +15420,14 @@ vm_stat_init(void)
 		clean_line(buf);
 		c = parse_line(buf, arglist);
 		if (STREQ(arglist[0], "NR_VM_ZONE_STAT_ITEMS")) {
-			vt->nr_vm_stat_items = atoi(arglist[2]);
+			if (LKCD_KERNTYPES())
+				vt->nr_vm_stat_items = 
+					MAX(atoi(arglist[2]), count);
 			break;
-		} else
+		} else {
 			stringlen += strlen(arglist[0]);
+			count++;
+		}
         }
 
 	total = stringlen + vt->nr_vm_stat_items + 
@@ -15435,6 +15436,7 @@ vm_stat_init(void)
 		close_tmpfile();
                 error(FATAL, "cannot malloc vm_stat_items cache\n");
 	}
+	BZERO(vt->vm_stat_items, total);
 
 	start = (char *)&vt->vm_stat_items[vt->nr_vm_stat_items];
 
@@ -15443,7 +15445,12 @@ vm_stat_init(void)
                 if (strstr(buf, "{") || strstr(buf, "}"))
                         continue;
 		c = parse_line(buf, arglist);
-		i = atoi(arglist[2]);
+		if (enumerator_value(arglist[0], &enum_value))
+			i = enum_value;
+		else {
+			close_tmpfile();
+			goto bailout;
+		}
 		if (i < vt->nr_vm_stat_items) {
 			vt->vm_stat_items[i] = start;
 			strcpy(start, arglist[0]);
@@ -15471,7 +15478,7 @@ dump_vm_stat(char *item, long *retval, ulong zone)
 	char *buf;
 	ulong *vp;
 	ulong location;
-	int i;
+	int i, maxlen, len;
 
 	if (!vm_stat_init()) {
 		if (!item)
@@ -15492,9 +15499,14 @@ dump_vm_stat(char *item, long *retval, ulong zone)
 	if (!item) {
 		if (!zone)
 			fprintf(fp, "  VM_STAT:\n");
+		for (i = maxlen = 0; i < vt->nr_vm_stat_items; i++)
+			if ((len = strlen(vt->vm_stat_items[i])) > maxlen)
+				maxlen = len;
 		vp = (ulong *)buf;
 		for (i = 0; i < vt->nr_vm_stat_items; i++)
-			fprintf(fp, "%23s: %ld\n", vt->vm_stat_items[i], vp[i]);
+			fprintf(fp, "%s%s: %ld\n", 
+				space(maxlen - strlen(vt->vm_stat_items[i])),
+				 vt->vm_stat_items[i], vp[i]);
 		return TRUE;
 	}
 
@@ -15624,7 +15636,7 @@ dump_page_states(void)
 static int 
 dump_vm_event_state(void)
 {
-	int i, c;
+	int i, c, maxlen, len;
 	struct syment *sp;
 	ulong addr;
 	ulong *events, *cumulative;
@@ -15651,8 +15663,15 @@ dump_vm_event_state(void)
         }
 
 	fprintf(fp, "\n  VM_EVENT_STATES:\n");
+
+	for (i = maxlen = 0; i < vt->nr_vm_event_items; i++)
+		if ((len = strlen(vt->vm_event_items[i])) > maxlen)
+			maxlen = len; 
+
 	for (i = 0; i < vt->nr_vm_event_items; i++)
-		fprintf(fp, "%23s: %ld\n", vt->vm_event_items[i], cumulative[i]);
+		fprintf(fp, "%s%s: %ld\n", 
+			space(maxlen - strlen(vt->vm_event_items[i])),
+			vt->vm_event_items[i], cumulative[i]);
 
 	FREEBUF(events);
 
@@ -15664,7 +15683,7 @@ vm_event_state_init(void)
 {
 	int i, stringlen, total;
 	int c ATTRIBUTE_UNUSED;
-	long count;
+	long count, enum_value;
 	struct gnu_request *req;
 	char *arglist[MAXARGS];
 	char buf[BUFSIZE];
@@ -15710,6 +15729,7 @@ vm_event_state_init(void)
 		close_tmpfile();
                 error(FATAL, "cannot malloc vm_event_items cache\n");
 	}
+	BZERO(vt->vm_event_items, total);
 
 	start = (char *)&vt->vm_event_items[vt->nr_vm_event_items];
 
@@ -15718,7 +15738,12 @@ vm_event_state_init(void)
                 if (strstr(buf, "{") || strstr(buf, "}"))
                         continue;
 		c = parse_line(buf, arglist);
-		i = atoi(arglist[2]);
+		if (enumerator_value(arglist[0], &enum_value))
+			i = enum_value;
+		else {
+			close_tmpfile();
+			goto bailout;
+		}
 		if (i < vt->nr_vm_event_items) {
 			vt->vm_event_items[i] = start;
 			strcpy(start, arglist[0]);
