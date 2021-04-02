@@ -486,12 +486,14 @@ struct new_utsname {
 #define ARCH_OPENVZ          (0x8000000)
 #define ARCH_PVOPS          (0x10000000)
 #define IN_KERNEL_INIT      (0x20000000)
+#define ARCH_PVOPS_XEN      (0x40000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
-#define XEN()    (kt->flags & ARCH_XEN)
-#define OPENVZ() (kt->flags & ARCH_OPENVZ)
-#define PVOPS()  (kt->flags & ARCH_PVOPS)
+#define XEN()       (kt->flags & ARCH_XEN)
+#define OPENVZ()    (kt->flags & ARCH_OPENVZ)
+#define PVOPS()     (kt->flags & ARCH_PVOPS)
+#define PVOPS_XEN() (kt->flags & ARCH_PVOPS_XEN)
 
 #define XEN_MACHINE_TO_MFN(m)    ((ulonglong)(m) >> PAGESHIFT())
 #define XEN_PFN_TO_PSEUDO(p)     ((ulonglong)(p) << PAGESHIFT())
@@ -544,12 +546,14 @@ struct kernel_table {                   /* kernel data */
 #define P2M_MAPPING_CACHE    (512)
 	struct p2m_mapping_cache {
 		ulong mapping;
+		ulong pfn;
 		ulong start;
 		ulong end;
 	} p2m_mapping_cache[P2M_MAPPING_CACHE];
-#define P2M_MAPPING_TO_PAGE_INDEX(c) \
-   (((kt->p2m_mapping_cache[c].mapping - kt->phys_to_machine_mapping)/PAGESIZE()) \
-    * XEN_PFNS_PER_PAGE)
+#define P2M_MAPPING_PAGE_PFN(c) \
+   (PVOPS_XEN() ? kt->p2m_mapping_cache[c].pfn : \
+    (((kt->p2m_mapping_cache[c].mapping - kt->phys_to_machine_mapping)/PAGESIZE()) \
+    * XEN_PFNS_PER_PAGE))
 	ulong last_mapping_read;
 	ulong p2m_cache_index;
 	ulong p2m_pages_searched;
@@ -557,6 +561,11 @@ struct kernel_table {                   /* kernel data */
 	ulong p2m_page_cache_hits;
 	ulong relocate;
 	char *module_tree;
+	struct pvops_xen_info {
+		int p2m_top_entries;
+		ulong p2m_top;
+		ulong p2m_missing;
+	} pvops_xen;
 };
 
 /*

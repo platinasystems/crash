@@ -84,6 +84,7 @@ static void x86_64_thread_return_init(void);
 static void x86_64_framepointer_init(void);
 static void x86_64_xendump_phys_base(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
+static int x86_64_pvops_xendump_p2m_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
 static int x86_64_xendump_page_index(ulong, struct xendump_data *);
 static int x86_64_xen_kdump_p2m_create(struct xen_kdump_data *);
@@ -385,6 +386,7 @@ x86_64_init(int when)
 				switch (machdep->flags & VM_FLAGS)
 				{
 				case VM_XEN: 
+				case VM_2_6_11:
                         		machdep->uvtop = x86_64_uvtop_level4_xen_wpt;
 					break;
 				case VM_XEN_RHEL4:
@@ -517,7 +519,9 @@ x86_64_dump_machdep_table(ulong arg)
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
         fprintf(fp, "    init_kernel_pgd: x86_64_init_kernel_pgd()\n");
         fprintf(fp, "clear_machdep_cache: x86_64_clear_machdep_cache()\n");
-	fprintf(fp, " xendump_p2m_create: x86_64_xendump_p2m_create()\n");
+	fprintf(fp, " xendump_p2m_create: %s\n", PVOPS_XEN() ?
+		"x86_64_pvops_xendump_p2m_create()" :
+		"x86_64_xendump_p2m_create()");
 	fprintf(fp, "   get_xendump_regs: x86_64_get_xendump_regs()\n");
 	fprintf(fp, " xendump_panic_task: x86_64_xendump_panic_task()\n");
 	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
@@ -5027,6 +5031,7 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
         ulong frames;
         ulong frame_mfn[MAX_X86_64_FRAMES] = { 0 };
         int mfns[MAX_X86_64_FRAMES] = { 0 };
+	struct syment *sp;
 
         /*
          *  Temporarily read physical (machine) addresses from vmcore by
@@ -5108,7 +5113,15 @@ use_cr3:
                 x86_64_debug_dump_page(fp, machdep->machspec->pml4,
                         "contents of PML4 page:");
 
-	kvaddr = symbol_value("end_pfn");
+	/*
+	 * kernel version <  2.6.27 => end_pfn
+	 * kernel version >= 2.6.27 => max_pfn
+	 */
+	if ((sp = symbol_search("end_pfn")))
+		kvaddr = sp->value;
+	else
+		kvaddr = symbol_value("max_pfn");
+
         if (!x86_64_xen_kdump_load_page(kvaddr, xkd->page))
                 return FALSE;
         up = (ulong *)(xkd->page + PAGEOFFSET(kvaddr));
@@ -5424,7 +5437,8 @@ x86_64_calc_phys_base(void)
 			}
 		}
 
-		x86_64_xendump_phys_base();
+		if (xd->xc_core.header.xch_magic == XC_CORE_MAGIC_HVM)
+			x86_64_xendump_phys_base();
 	}
 }
 
@@ -5478,6 +5492,14 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
 	ulong *up;
 	off_t offset; 
+	struct syment *sp;
+
+	/*
+	 *  Check for pvops Xen kernel before presuming it's HVM.
+	 */
+	if (symbol_exists("pv_init_ops") && symbol_exists("xen_patch") &&
+	    (xd->xc_core.header.xch_magic == XC_CORE_MAGIC))
+		return x86_64_pvops_xendump_p2m_create(xd);
 
         if (!symbol_exists("phys_to_machine_mapping")) {
                 xd->flags |= XC_CORE_NO_P2M;
@@ -5515,13 +5537,21 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 		x86_64_debug_dump_page(xd->ofp, machdep->machspec->pml4, 
                 	"contents of PML4 page:");
 
-	kvaddr = symbol_value("end_pfn");
+	/*
+	 * kernel version <  2.6.27 => end_pfn
+	 * kernel version >= 2.6.27 => max_pfn
+	 */
+	if ((sp = symbol_search("end_pfn")))
+		kvaddr = sp->value;
+	else
+		kvaddr = symbol_value("max_pfn");
+
 	if (!x86_64_xendump_load_page(kvaddr, xd))
 		return FALSE;
 
 	up = (ulong *)(xd->page + PAGEOFFSET(kvaddr));
 	if (CRASHDEBUG(1))
-		fprintf(xd->ofp, "end_pfn: %lx\n", *up);
+		fprintf(xd->ofp, "end pfn: %lx\n", *up);
 
 	xd->xc_core.p2m_frames = (*up/(PAGESIZE()/sizeof(ulong))) +
                 ((*up%(PAGESIZE()/sizeof(ulong))) ? 1 : 0);
@@ -5548,6 +5578,102 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 		kvaddr += PAGESIZE();
 	}
 
+	machdep->last_ptbl_read = 0;
+
+	return TRUE;
+}
+
+static int 
+x86_64_pvops_xendump_p2m_create(struct xendump_data *xd)
+{
+	int i, p, idx;
+	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
+	ulong *up;
+	off_t offset; 
+	struct syment *sp;
+
+	if ((ctrlreg_offset = MEMBER_OFFSET("vcpu_guest_context", "ctrlreg")) ==
+	     INVALID_OFFSET)
+		error(FATAL, 
+		    "cannot determine vcpu_guest_context.ctrlreg offset\n");
+	else if (CRASHDEBUG(1))
+		fprintf(xd->ofp, 
+		    "MEMBER_OFFSET(vcpu_guest_context, ctrlreg): %ld\n",
+			ctrlreg_offset);
+
+	offset = (off_t)xd->xc_core.header.xch_ctxt_offset + 
+		(off_t)ctrlreg_offset;
+
+	if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+		error(FATAL, "cannot lseek to xch_ctxt_offset\n");
+
+	if (read(xd->xfd, &ctrlreg, sizeof(ctrlreg)) !=
+	    sizeof(ctrlreg))
+		error(FATAL, "cannot read vcpu_guest_context ctrlreg[8]\n");
+
+	for (i = 0; CRASHDEBUG(1) && (i < 8); i++)
+		fprintf(xd->ofp, "ctrlreg[%d]: %lx\n", i, ctrlreg[i]);
+
+	mfn = ctrlreg[3] >> PAGESHIFT();
+
+	if (!xc_core_mfn_to_page(mfn, machdep->machspec->pml4))
+		error(FATAL, "cannot read/find cr3 page\n");
+
+	if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(xd->ofp, machdep->machspec->pml4, 
+                	"contents of PML4 page:");
+
+	/*
+	 * kernel version <  2.6.27 => end_pfn
+	 * kernel version >= 2.6.27 => max_pfn
+	 */
+	if ((sp = symbol_search("end_pfn")))
+		kvaddr = sp->value;
+	else
+		kvaddr = symbol_value("max_pfn");
+
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		return FALSE;
+
+	up = (ulong *)(xd->page + PAGEOFFSET(kvaddr));
+	if (CRASHDEBUG(1))
+		fprintf(xd->ofp, "end pfn: %lx\n", *up);
+
+	xd->xc_core.p2m_frames = (*up/(PAGESIZE()/sizeof(ulong))) +
+                ((*up%(PAGESIZE()/sizeof(ulong))) ? 1 : 0);
+
+	if ((xd->xc_core.p2m_frame_index_list = (ulong *)
+	    malloc(xd->xc_core.p2m_frames * sizeof(ulong))) == NULL)
+        	error(FATAL, "cannot malloc p2m_frame_list");
+
+	machdep->last_ptbl_read = BADADDR;
+	kvaddr = symbol_value("p2m_top");
+
+	for (p = 0; p < xd->xc_core.p2m_frames; p += XEN_PFNS_PER_PAGE) {
+		if (!x86_64_xendump_load_page(kvaddr, xd))
+			return FALSE;
+
+		if ((idx = x86_64_xendump_page_index(kvaddr, xd)) == MFN_NOT_FOUND)
+			return FALSE;
+
+		if (CRASHDEBUG(7)) {
+ 			x86_64_debug_dump_page(xd->ofp, xd->page,
+                       		"contents of page:");
+		}
+
+		up = (ulong *)(xd->page);
+
+		for (i = 0; i < XEN_PFNS_PER_PAGE; i++, up++) {
+			if ((p+i) >= xd->xc_core.p2m_frames)
+				break;
+			if ((idx = x86_64_xendump_page_index(*up, xd)) == MFN_NOT_FOUND)
+				return FALSE;
+			xd->xc_core.p2m_frame_index_list[p+i] = idx; 
+		}
+
+		kvaddr += PAGESIZE();
+	}
+	
 	machdep->last_ptbl_read = 0;
 
 	return TRUE;

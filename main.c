@@ -586,7 +586,7 @@ main_loop(void)
 
 	if (pc->flags & MINIMAL_MODE)
             error(NOTE, 
-		"minimal mode commands: log, dis, rd, sym, eval and exit\n\n");
+		"minimal mode commands: log, dis, rd, sym, eval, set and exit\n\n");
 
         pc->flags |= RUNTIME;
 
@@ -640,7 +640,7 @@ reattempt:
 #else
         			error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
-			} else {
+			} else if (!(pc->flags & MINIMAL_MODE)) {
 				tt->refresh_task_table();
 				sort_context_array();
 			}
@@ -679,7 +679,7 @@ reattempt:
 	if (pc->flags & MINIMAL_MODE)
 		error(INFO, 
 		    "%s: command not available in minimal mode\n"
-		    "NOTE: minimal mode commands: log, dis, rd, sym, eval and exit\n",
+		    "NOTE: minimal mode commands: log, dis, rd, sym, eval, set and exit\n",
 			args[0]);
 	else
 		error(INFO, "command not found: %s\n", args[0]);

@@ -1927,6 +1927,9 @@ cmd_repeat(void)
 		if (received_SIGINT() || !output_open())
 			break;
 
+		if ((pc->flags & TTY) && !is_a_tty("/dev/tty"))
+			break;
+
 		if (!(pc->curcmd_flags & REPEAT))
 			break;
 
@@ -2182,8 +2185,9 @@ shell_command(char *cmd)
 
 int minimal_functions(char *name)
 {
-	return  STREQ("log", name) || STREQ("help",name) || \
-		STREQ("dis", name) || STREQ("q", name)   || \
-		STREQ("sym", name) || STREQ("exit", name)|| \
-		STREQ("rd", name)  || STREQ("eval", name) ; 
+	return  STREQ("log", name) || STREQ("help",name)  || \
+		STREQ("dis", name) || STREQ("q", name)    || \
+		STREQ("sym", name) || STREQ("exit", name) || \
+		STREQ("rd", name)  || STREQ("eval", name) || \
+		STREQ("set", name); 
 }

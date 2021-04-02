@@ -2669,7 +2669,8 @@ is_kernel(char *file)
 			goto bailout;
 
 	} else if ((elf64->e_ident[EI_CLASS] == ELFCLASS64) &&
-	    (swap16(elf64->e_type, swap) == ET_EXEC) &&
+	    ((swap16(elf64->e_type, swap) == ET_EXEC) || 
+	     (swap16(elf64->e_type, swap) == ET_DYN)) &&
 	    (swap32(elf64->e_version, swap) == EV_CURRENT)) {
 		switch (swap16(elf64->e_machine, swap))
 		{

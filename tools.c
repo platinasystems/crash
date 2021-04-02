@@ -1693,7 +1693,7 @@ cmd_set(void)
                 switch(c)
 		{
 		case 'c':
-			if (XEN_HYPER_MODE())
+			if (XEN_HYPER_MODE() || (pc->flags & MINIMAL_MODE))
 				option_not_supported(c);
 
 			if (!runtime) {
@@ -1712,7 +1712,7 @@ cmd_set(void)
 			return;
 
 		case 'p':
-			if (XEN_HYPER_MODE())
+			if (XEN_HYPER_MODE() || (pc->flags & MINIMAL_MODE))
 				option_not_supported(c);
 
 			if (!runtime)
@@ -1737,7 +1737,7 @@ cmd_set(void)
 			return;
 
 		case 'a':
-			if (XEN_HYPER_MODE())
+			if (XEN_HYPER_MODE() || (pc->flags & MINIMAL_MODE))
 				option_not_supported(c);
 
 			if (!runtime)
@@ -1790,6 +1790,8 @@ cmd_set(void)
 		if (XEN_HYPER_MODE())
 			error(INFO, 
 			    "requires an option with the Xen hypervisor\n");
+		else if (pc->flags & MINIMAL_MODE)
+			show_options();
 		else if (runtime)
 			show_context(CURRENT_CONTEXT());
 		return;
@@ -2237,6 +2239,8 @@ cmd_set(void)
 
 		} else if (XEN_HYPER_MODE()) {
 			error(FATAL, "invalid argument for the Xen hypervisor\n");
+		} else if (pc->flags & MINIMAL_MODE) {
+			error(FATAL, "invalid argument in minimal mode\n");
 		} else if (runtime) {
 			ulong pid, task;
 
