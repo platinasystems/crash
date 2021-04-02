@@ -715,11 +715,12 @@ debug_format_output_v1(debug_info_t * debug_area, debug_view_t *view,
 	debug_entry_t *act_entry, *last_entry;
 	char *act_entry_data;
 	char buf[2048];
+	size_t items;
 
 	/* print prolog */
 	if (view->prolog_proc) {
 		len = view->prolog_proc(debug_area, view, buf);
-		fwrite(buf,len, 1, ofp);
+		items = fwrite(buf,len, 1, ofp);
 		memset(buf, 0, 2048);
 	}
 	/* print debug records */
@@ -744,13 +745,13 @@ debug_format_output_v1(debug_info_t * debug_area, debug_view_t *view,
 			if (view->header_proc) {
 				len = view->header_proc(debug_area, view, i,
 						  act_entry, buf);
-				fwrite(buf,len, 1, ofp);
+				items = fwrite(buf,len, 1, ofp);
 				memset(buf, 0, 2048);
 			}
 			if (view->format_proc) {
 				len = view->format_proc(debug_area, view,
 						  buf, act_entry_data);
-				fwrite(buf,len, 1, ofp);
+				items = fwrite(buf,len, 1, ofp);
 				memset(buf, 0, 2048); 
 			}
 			act_entry =
@@ -776,11 +777,12 @@ debug_format_output_v2(debug_info_t * debug_area,
 	debug_entry_t *act_entry;
 	char *act_entry_data;
 	char buf[2048];
+	size_t items;
 
 	/* print prolog */
 	if (view->prolog_proc) {
 		len = view->prolog_proc(debug_area, view, buf);
-		fwrite(buf,len, 1, ofp);
+		items = fwrite(buf,len, 1, ofp);
 		memset(buf, 0, 2048);
 	}
 	/* print debug records */
@@ -801,13 +803,13 @@ debug_format_output_v2(debug_info_t * debug_area,
 				if (view->header_proc) {
 					len = view->header_proc(debug_area, 
 						view, i, act_entry, buf);
-					fwrite(buf,len, 1, ofp);
+					items = fwrite(buf,len, 1, ofp);
 					memset(buf, 0, 2048);
 				}
 				if (view->format_proc) {
 					len = view->format_proc(debug_area, 
 						view, buf, act_entry_data);
-					fwrite(buf,len, 1, ofp);
+					items = fwrite(buf,len, 1, ofp);
 					memset(buf, 0, 2048); 
 				}
 				act_entry = (debug_entry_t *) (((char *) 

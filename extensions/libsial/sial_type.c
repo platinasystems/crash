@@ -5,6 +5,7 @@
 #include "sial.tab.h"
 #include <string.h>
 #include <errno.h>
+#include <endian.h>
 /*
 	This file contains functions that deals with type and type
 	casting operators.
@@ -287,7 +288,11 @@ get_bit_value(ull val, int nbits, int boff, int size, value_t *v)
         else {
                 mask = ((1 << nbits) - 1);
         }
-        val = val >> boff;
+
+	if (__BYTE_ORDER == __LITTLE_ENDIAN)
+		val = val >> boff;
+	else
+		val = val >> (vnbits - boff - nbits);
 	val &= mask;
 
 	if(issigned(v)) {

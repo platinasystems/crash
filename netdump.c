@@ -125,6 +125,8 @@ is_netdump(char *file, ulong source_query)
                 goto bailout;
 	}
 
+	load32 = NULL;
+	load64 = NULL;
 	tmp_flags = 0;
 	elf32 = (Elf32_Ehdr *)&eheader[0];
 	elf64 = (Elf64_Ehdr *)&eheader[0];
@@ -450,6 +452,8 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	struct pt_load_segment *pls;
 	int i;
 
+	offset = 0;
+
 	/*
 	 *  The Elf32_Phdr has 32-bit fields for p_paddr, p_filesz and
 	 *  p_memsz, so for now, multiple PT_LOAD segment support is
@@ -512,6 +516,8 @@ write_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	off_t offset;
 	struct pt_load_segment *pls;
 	int i;
+
+	offset = 0;
 
         switch (DUMPFILE_FORMAT(nd->flags))
 	{
@@ -670,6 +676,10 @@ get_netdump_panic_task(void)
 
 		if ((nd->num_prstatus_notes > 1) && (crashing_cpu == -1))
 			goto panic_task_undetermined;
+		break;
+
+	default:
+		crashing_cpu = -1;
 		break;
 	}
 
@@ -1290,6 +1300,8 @@ dump_Elf32_Phdr(Elf32_Phdr *prog, int store_pt_load_data)
 
 	if (store_pt_load_data) 
 		pls = &nd->pt_load_segments[store_pt_load_data-1];
+	else
+		pls = NULL;
 
 	netdump_print("Elf32_Phdr:\n");
 	netdump_print("                 p_type: %lx ", prog->p_type);
@@ -1372,6 +1384,8 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 
 	if (store_pt_load_data)
 		pls = &nd->pt_load_segments[store_pt_load_data-1];
+	else
+		pls = NULL;
 
 	netdump_print("Elf64_Phdr:\n");
 	netdump_print("                 p_type: %lx ", prog->p_type);
@@ -2591,6 +2605,9 @@ get_x86_regs_from_elf_notes(struct task_context *tc)
 	size_t len;
 	void *pt_regs;
 
+	len = 0;
+	pt_regs = NULL;
+
 	if ((tc->task == tt->panic_task) || 
 	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
 		if (nd->num_prstatus_notes > 1)
@@ -2627,6 +2644,8 @@ get_x86_64_regs_from_elf_notes(struct task_context *tc)
 	size_t len;
 	void *pt_regs;
 
+	pt_regs = NULL;
+
 	if ((tc->task == tt->panic_task) || 
 	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
 		if (nd->num_prstatus_notes > 1)
@@ -2653,6 +2672,8 @@ get_ppc64_regs_from_elf_notes(struct task_context *tc)
 	size_t len;
 	void *pt_regs;
 	extern struct vmcore_data *nd;
+
+	pt_regs = NULL;
 
 	if ((tc->task == tt->panic_task) ||
 	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {

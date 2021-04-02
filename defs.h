@@ -1481,6 +1481,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long probe_data;
 	long kobj_map_probes;
 	long task_struct_prio;
+	long zone_watermark;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1589,6 +1590,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long cdev;
 	long probe;
 	long kobj_map;
+	long page_flags;
 };
 
 struct array_table {
@@ -1774,6 +1776,7 @@ struct vm_table {                /* kernel VM-related data */
 #define KMALLOC_SLUB            (0x10000)
 #define CONFIG_NUMA             (0x20000)
 #define VM_EVENT                (0x40000)
+#define PGCNT_ADJ               (0x80000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2159,7 +2162,7 @@ struct load_module {
 #define VMEMMAP_VADDR_2_6_24       0xffffe20000000000
 #define VMEMMAP_END_2_6_24         0xffffe2ffffffffff
 
-#define VMALLOC_START_ADDR_2_6_26  0xffffffffa0000000
+#define MODULES_VADDR_2_6_26       0xffffffffa0000000
 
 #define PAGE_OFFSET_2_6_27         0xffff880000000000
 #define MODULES_END_2_6_27         0xffffffffff000000
@@ -3036,6 +3039,7 @@ extern long _ZOMBIE_;
 #define PS_ARGV_ENVP  (0x800)
 #define PS_TGID_LIST (0x1000)
 #define PS_RLIMIT    (0x2000)
+#define PS_GROUP     (0x4000)
 
 #define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT)
 
@@ -3398,7 +3402,7 @@ long OFFSET_verify(long, char *, char *, int, char *);
 long SIZE_verify(long, char *, char *, int, char *);
 long OFFSET_option(long, long, char *, char *, int, char *, char *);
 long SIZE_option(long, long, char *, char *, int, char *, char *);
-void dump_trace(ulong *);
+void dump_trace(void **);
 int enumerator_value(char *, long *);
 
 /*  

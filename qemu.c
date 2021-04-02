@@ -254,6 +254,8 @@ qemu_init(char *filename)
 	else if (machine_type("X86_64"))
 		dl = qemu_load(devices_x86_64, 
 			QEMU_FEATURE_CPU|QEMU_FEATURE_RAM, kvm->vmp);
+	else
+		dl = NULL;
 
 	please_wait_done();
 

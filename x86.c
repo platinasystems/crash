@@ -476,13 +476,13 @@ db_get_value(addr, size, is_signed, bt)
 		    text_value_cache(addr, 0, (uint32_t *)&value))
 			return value;
 
-		if (!readmem(addr, KVADDR, data, size, "db_get_value", 
+		if (!readmem(addr, KVADDR, &value, size, "db_get_value", 
 	    	     RETURN_ON_ERROR))
 			error(FATAL, "db_get_value: read error: address: %lx\n",
 				 addr);
 
 		if (size == sizeof(int)) 
-			text_value_cache(addr, *((db_expr_t *)data), NULL);
+			text_value_cache(addr, value, NULL);
 	}
 #endif
 
@@ -1821,6 +1821,9 @@ x86_init(int when)
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 				"irq_desc", NULL, 0);
+		else if (kernel_symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(unsigned int),
+				&machdep->nr_irqs);
 		else
 			machdep->nr_irqs = 224;  /* NR_IRQS */
 		if (!machdep->hz) {
@@ -3629,6 +3632,7 @@ read_idt_table(int flag)
 	struct syment *sp;
 	struct machine_specific *ms;
 
+	idt = NULL;
 	ms = machdep->machspec;
 
 	if (ms->idt_table)
@@ -3964,7 +3968,7 @@ static void
 x86_display_cpu_data(void)
 {
 	int cpu;
-	ulong cpu_data;
+	ulong cpu_data = 0;
 	
 	if (symbol_exists("cpu_data"))
 		cpu_data = symbol_value("cpu_data");
@@ -4109,6 +4113,7 @@ x86_text_lock_jmp(ulong eip, ulong *offset)
 	
         sprintf(buf1, "x/10i 0x%lx", eip);
 	buf2[0] = NULLCHAR;
+	value = 0;
 
         open_tmpfile2();
         if (gdb_pass_through(buf1, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {

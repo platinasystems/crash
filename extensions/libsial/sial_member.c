@@ -4,6 +4,7 @@
 #include <string.h>
 #include "sial.h"
 #include "sial.tab.h"
+#include <endian.h>
 
 /* these function are used to access and set members in structs */
 
@@ -236,10 +237,13 @@ srcpos_t p;
 		}
 		/* bit field gymnastic */
 		else if(stm->m.nbits) {
-
 			ull value=0;
+			void *target = &value;
 
-			API_GETMEM(m->mem+stm->m.offset, &value, stm->m.size);
+			if (__BYTE_ORDER != __LITTLE_ENDIAN)
+				target = target + (sizeof(value) - stm->m.size);
+
+			API_GETMEM(m->mem+stm->m.offset, target, stm->m.size);
 			get_bit_value(value, stm->m.nbits, stm->m.fbit, stm->m.size, v);
 			/* no mempos for bit fields ... */
 

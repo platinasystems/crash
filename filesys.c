@@ -1026,6 +1026,8 @@ is_a_tty(char *filename)
 void
 open_tmpfile(void)
 {
+	int ret;
+
         if (pc->tmpfile)
                 error(FATAL, "recursive temporary file usage\n");
 
@@ -1035,7 +1037,7 @@ open_tmpfile(void)
 	}
 
 	fflush(pc->tmpfile);
-	ftruncate(fileno(pc->tmp_fp), 0);
+	ret = ftruncate(fileno(pc->tmp_fp), 0);
 	rewind(pc->tmp_fp);
 
 	pc->tmpfile = pc->tmp_fp;
@@ -1066,9 +1068,11 @@ open_tmpfile(void)
 void
 close_tmpfile(void)
 {
+	int ret;
+
 	if (pc->tmpfile) {
 		fflush(pc->tmpfile);
-		ftruncate(fileno(pc->tmpfile), 0);
+		ret = ftruncate(fileno(pc->tmpfile), 0);
 		rewind(pc->tmpfile);
 		pc->tmpfile = NULL;
 		fp = pc->saved_fp;
@@ -1274,6 +1278,8 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 		
 	s_dirty = OFFSET(super_block_s_dirty);
 
+	dirp = dentry = mnt_parent = sb_s_files = 0;
+	dentry_list = NULL;
 	mntlist = 0;
 	ld = &list_data;
 
@@ -1543,8 +1549,10 @@ display_dentry_info(ulong dentry)
         if (inode) {
                 inode_buf = fill_inode_cache(inode);
                 superblock = ULONG(inode_buf + OFFSET(inode_i_sb));
-	} else
+	} else {
+		inode_buf = NULL;
 		superblock = 0;
+	}
 
 	if (!inode || !superblock)
 		goto nopath;
@@ -1954,6 +1962,7 @@ cmd_files(void)
 	char *refarg;
 
         ref = NULL;
+        refarg = NULL;
 	flag = 0;
 
         while ((c = getopt(argcnt, args, "d:lR:")) != EOF) {
@@ -2082,6 +2091,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 	char *files_struct_buf, *fdtable_buf = NULL;
 	ulong fs_struct_addr;
 	char *dentry_buf, *fs_struct_buf;
+	char *ret;
 	ulong root_dentry, pwd_dentry;
 	ulong root_inode, pwd_inode;
 	ulong vfsmnt;
@@ -2325,7 +2335,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
                                             DUMP_FULL_NAME|DUMP_EMPTY_FILE)) {
 						BZERO(buf4, BUFSIZE);
 						rewind(pc->tmpfile);
-						fgets(buf4, BUFSIZE, 
+						ret = fgets(buf4, BUFSIZE, 
 							pc->tmpfile);
 						close_tmpfile();
 						ref->refp = buf4;
@@ -2534,6 +2544,8 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+
+	file_buf = NULL;
 
 	if (!dentry && file) {
 		file_buf = fill_file_cache(file);		
@@ -3008,6 +3020,7 @@ cmd_fuser(void)
 	sprintf(fuser_header, " PID   %s  COMM             USAGE\n",
 		mkstring(buf, VADDR_PRLEN, CENTER, "TASK"));
 
+	doing_lockd = doing_fds = doing_mmap = 0;
 	subsequent = 0;
 	while (args[optind]) {
                 spec_string = args[optind];
@@ -3184,6 +3197,7 @@ monitor_memory(long *freemem_pages,
 		return FALSE;
 
 	params = 0;
+	freemem = memtotal = freeswap = swaptotal = 0;
 
 	while (fgets(buf, BUFSIZE, mp)) {
 		if (strstr(buf, "SwapFree")) {
@@ -3639,6 +3653,8 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 	struct radix_tree_pair *r;
 	ulong root_rnode;
 	void *ret;
+
+	count = 0;
 
 	if (!VALID_STRUCT(radix_tree_root) || !VALID_STRUCT(radix_tree_node) ||
 	    !VALID_MEMBER(radix_tree_root_height) ||

@@ -684,6 +684,8 @@ find_pc_sect_psymtab (CORE_ADDR pc, asection *section)
   struct partial_symtab *pst;
   struct objfile *objfile;
   struct minimal_symbol *msymbol;
+  struct partial_symtab *best_pst = NULL;
+  struct partial_symbol *best_psym = NULL;
 
   /* If we know that this is not a text address, return failure.  This is
      necessary because we loop based on texthigh and textlow, which do
@@ -701,9 +703,7 @@ find_pc_sect_psymtab (CORE_ADDR pc, asection *section)
   {
     if (pc >= pst->textlow && pc < pst->texthigh)
       {
-	struct partial_symtab *tpst;
-	struct partial_symtab *best_pst = pst;
-	struct partial_symbol *best_psym = NULL;
+	struct partial_symbol *p;
 
 	/* An objfile that has its functions reordered might have
 	   many partial symbol tables containing the PC, but
@@ -717,23 +717,17 @@ find_pc_sect_psymtab (CORE_ADDR pc, asection *section)
 	  return (pst);
 
 	/* The code range of partial symtabs sometimes overlap, so, in
-	   the loop below, we need to check all partial symtabs and
+	   the code below, we need to check all partial symtabs and
 	   find the one that fits better for the given PC address. We
 	   select the partial symtab that contains a symbol whose
 	   address is closest to the PC address.  By closest we mean
 	   that find_pc_sect_symbol returns the symbol with address
 	   that is closest and still less than the given PC.  */
-	for (tpst = pst; tpst != NULL; tpst = tpst->next)
-	  {
-	    if (pc >= tpst->textlow && pc < tpst->texthigh)
-	      {
-		struct partial_symbol *p;
-
-		p = find_pc_sect_psymbol (tpst, pc, section);
+		p = find_pc_sect_psymbol (pst, pc, section);
 		if (p != NULL
 		    && SYMBOL_VALUE_ADDRESS (p)
 		    == SYMBOL_VALUE_ADDRESS (msymbol))
-		  return (tpst);
+		  return (pst);
 		if (p != NULL)
 		  {
 		    /* We found a symbol in this partial symtab which
@@ -754,16 +748,12 @@ find_pc_sect_psymtab (CORE_ADDR pc, asection *section)
 			> SYMBOL_VALUE_ADDRESS (best_psym))
 		      {
 			best_psym = p;
-			best_pst = tpst;
+			best_pst = pst;
 		      }
 		  }
-
-	      }
-	  }
-	return (best_pst);
       }
   }
-  return (NULL);
+  return (best_pst);
 }
 
 /* Find which partial symtab contains PC.  Return 0 if none. 

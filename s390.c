@@ -163,7 +163,7 @@ s390_dump_machdep_table(ulong arg)
 	fprintf(fp, "                 hz: %d\n", machdep->hz);
 	fprintf(fp, "                mhz: %ld\n", machdep->mhz);
 	fprintf(fp, "            memsize: %lld (0x%llx)\n", 
-		machdep->memsize, machdep->memsize);
+		(ulonglong)machdep->memsize, (ulonglong)machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
 	fprintf(fp, "            nr_irqs: %d\n", machdep->nr_irqs);
 	fprintf(fp, "      eframe_search: s390_eframe_search()\n");
@@ -458,13 +458,17 @@ s390_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 		if ((c = parse_line(buf, arglist)) != 3)
 			error(FATAL, "cannot determine swap location\n");
 
+		sprintf(ptebuf, "%lx", pte);
+		len1 = MAX(strlen(ptebuf), strlen("PTE"));
 		len2 = MAX(strlen(arglist[0]), strlen("SWAP"));
 		len3 = MAX(strlen(arglist[2]), strlen("OFFSET"));
 
-		fprintf(fp, "%s  %s\n",
+		fprintf(fp, "%s  %s  %s\n",
+			mkstring(ptebuf, len1, CENTER|LJUST, "PTE"),
 			mkstring(buf2, len2, CENTER|LJUST, "SWAP"),
 			mkstring(buf3, len3, CENTER|LJUST, "OFFSET"));
 
+		sprintf(ptebuf, "%lx", pte);
 		strcpy(buf2, arglist[0]);
 		strcpy(buf3, arglist[2]);
 		fprintf(fp, "%s  %s  %s\n",
@@ -614,6 +618,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 		error(WARNING,
 		"instruction pointer argument ignored on this architecture!\n");
 	}
+	async_end = async_start = 0;
 	ksp = bt->stkptr;
 
 	/* print lowcore and get async stack when task has cpu */

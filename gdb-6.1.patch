@@ -11752,3 +11752,14 @@ diff -urp gdb-6.1.orig/gdb/ChangeLog gdb-6.1/gdb/ChangeLog
 +
 +/* max size of register name in insn mnemonics.  */
 +#define MAX_REG_NAME_SIZE 8
+--- gdb-6.1/readline/misc.c.orig
++++ gdb-6.1/readline/misc.c
+@@ -299,7 +299,7 @@ _rl_history_set_point ()
+ 
+ #if defined (VI_MODE)
+   if (rl_editing_mode == vi_mode)
+-    rl_point = 0;
++    rl_point = rl_end;
+ #endif /* VI_MODE */
+ 
+   if (rl_editing_mode == emacs_mode)

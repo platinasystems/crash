@@ -677,6 +677,7 @@ save_offset(uint64_t paddr, off_t off)
 	int max_zones;
 	struct physmem_zone *zones;
 
+	ret = -1;
 	zone = paddr & lkcd->zone_mask;
 
 	page = (paddr & ~lkcd->zone_mask) >> lkcd->page_shift;
@@ -1063,6 +1064,8 @@ cache_page(void)
 	ulong type;
 	int found, newsz;
 	uint32_t rawsz;
+	ssize_t bytes;
+
 
         for (i = found = 0; i < LKCD_CACHED_PAGES; i++) {
                 if (LKCD_VALID_PAGE(lkcd->page_cache_hdr[i].pg_flags))
@@ -1092,7 +1095,7 @@ cache_page(void)
 		
 		newsz = 0;
 		BZERO(lkcd->compressed_page, lkcd->page_size);
-                read(lkcd->fd, lkcd->compressed_page, lkcd->get_dp_size());
+                bytes = read(lkcd->fd, lkcd->compressed_page, lkcd->get_dp_size());
 
 		switch (lkcd->compression)
 		{
@@ -1139,7 +1142,7 @@ cache_page(void)
 			BZERO(lkcd->page_cache_hdr[i].pg_bufptr, 
 				lkcd->page_size);
 		else if (rawsz == lkcd->page_size)
-			read(lkcd->fd, lkcd->page_cache_hdr[i].pg_bufptr, 
+			bytes = read(lkcd->fd, lkcd->page_cache_hdr[i].pg_bufptr, 
 				lkcd->page_size);
 		else {
 			lkcd_print("cache_page: "

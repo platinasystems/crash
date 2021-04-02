@@ -651,6 +651,7 @@ dump_blkdevs_v3(ulong flags)
 	fprintf(fp, "%s\n", mkstring(buf, VADDR_PRLEN, LJUST, "OPERATIONS"));
 
 	blk_major_name_buf = GETBUF(SIZE(blk_major_name));
+	gendisk = 0;
 
 	for (i = 0; i < len; i++) {
 		addr = symbol_value("major_names") + (i * sizeof(void *));
@@ -895,6 +896,8 @@ do_resource_list(ulong first_entry, char *resource_buf, int size)
 	int c, wrap, len;
 	char buf1[BUFSIZE];
 	char *fmt, *p1;
+
+	fmt = NULL;
 
 	switch (size)
 	{
