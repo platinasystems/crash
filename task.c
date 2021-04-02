@@ -56,13 +56,6 @@ static void dump_runq(void);
 static void dump_on_rq_timestamp(void);
 static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
-struct rb_root;
-static struct rb_node *rb_first(struct rb_root *);
-struct rb_node;
-static struct rb_node *rb_next(struct rb_node *);
-static struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
-static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
-static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
 static void dump_task_runq_entry(struct task_context *);
 static void print_group_header_fair(int, ulong, void *);
 static void print_parent_task_group_fair(void *, int);
@@ -7527,93 +7520,6 @@ dump_prio_array(int which, ulong k_prio_array, char *u_prio_array)
 		INDENT(5);
 		fprintf(fp, "[no tasks queued]\n");
 	}
-}
-
-/*
- *  CFS scheduler uses Red-Black trees to maintain run queue.
- */
-struct rb_node
-{
-        unsigned long  rb_parent_color;
-#define RB_RED          0
-#define RB_BLACK        1
-        struct rb_node *rb_right;
-        struct rb_node *rb_left;
-};
-
-struct rb_root
-{
-        struct rb_node *rb_node;
-};
-
-static struct rb_node *
-rb_first(struct rb_root *root)
-{
-        struct rb_root rloc;
-        struct rb_node *n;
-	struct rb_node nloc;
-
-	readmem((ulong)root, KVADDR, &rloc, sizeof(struct rb_root), 
-		"rb_root", FAULT_ON_ERROR);
-
-        n = rloc.rb_node;
-        if (!n)
-                return NULL;
-        while (rb_left(n, &nloc))
-		n = nloc.rb_left;
-
-        return n;
-}
-
-static struct rb_node *
-rb_parent(struct rb_node *node, struct rb_node *nloc)
-{
-	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
-		"rb_node", FAULT_ON_ERROR);
-
-	return (struct rb_node *)(nloc->rb_parent_color & ~3);
-}
-
-static struct rb_node *
-rb_right(struct rb_node *node, struct rb_node *nloc)
-{
-	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
-		"rb_node", FAULT_ON_ERROR);
-
-	return nloc->rb_right;
-}
-
-static struct rb_node *
-rb_left(struct rb_node *node, struct rb_node *nloc)
-{
-	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
-		"rb_node", FAULT_ON_ERROR);
-
-	return nloc->rb_left;
-}
-
-static struct rb_node *
-rb_next(struct rb_node *node)
-{
-	struct rb_node nloc;
-        struct rb_node *parent;
-
-	parent = rb_parent(node, &nloc);
-
-	if (parent == node)
-		return NULL;
-
-        if (nloc.rb_right) {
-		node = nloc.rb_right;
-		while (rb_left(node, &nloc))
-			node = nloc.rb_left;
-		return node;
-	}
-
-        while ((parent = rb_parent(node, &nloc)) && (node == rb_right(parent, &nloc)))
-                node = parent;
-
-        return parent;
 }
 
 #define MAX_GROUP_NUM 200

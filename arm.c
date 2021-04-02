@@ -30,6 +30,7 @@ static int arm_get_crash_notes(void);
 static int arm_verify_symbol(const char *, ulong, char);
 static int arm_is_module_addr(ulong);
 static int arm_is_kvaddr(ulong);
+static int arm_is_uvaddr(ulong, struct task_context *);
 static int arm_in_exception_text(ulong);
 static int arm_in_ret_from_syscall(ulong, int *);
 static void arm_back_trace(struct bt_info *);
@@ -227,7 +228,7 @@ arm_init(int when)
 	        machdep->kvbase = symbol_value("_stext") & 0xffff0000UL;
 		machdep->identity_map_base = machdep->kvbase;
 		machdep->is_kvaddr = arm_is_kvaddr;
-		machdep->is_uvaddr = generic_is_uvaddr;
+		machdep->is_uvaddr = arm_is_uvaddr;
 		machdep->eframe_search = arm_eframe_search;
 		machdep->back_trace = arm_back_trace_cmd;
 		machdep->processor_speed = arm_processor_speed;
@@ -265,12 +266,19 @@ arm_init(int when)
 		    STRUCT_EXISTS("pteval_t"))
 			machdep->flags |= PGTABLE_V2;
 
+		if (THIS_KERNEL_VERSION >= LINUX(3,3,0) ||
+		    symbol_exists("idmap_pgd"))
+			machdep->flags |= IDMAP_PGD;
+
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 					  "irq_desc", NULL, 0);
+		else if (kernel_symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(unsigned int),
+				&machdep->nr_irqs);
 		/*
 		 * Registers for idle threads are saved in
 		 * thread_info.cpu_context.
@@ -352,6 +360,8 @@ arm_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sPHYS_BASE", others++ ? "|" : "");
 	if (machdep->flags & PGTABLE_V2)
 		fprintf(fp, "%sPGTABLE_V2", others++ ? "|" : "");
+	if (machdep->flags & IDMAP_PGD)
+		fprintf(fp, "%sIDMAP_PGD", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -385,8 +395,8 @@ arm_dump_machdep_table(ulong arg)
 	fprintf(fp, "         dis_filter: arm_dis_filter()\n");
 	fprintf(fp, "           cmd_mach: arm_cmd_mach()\n");
 	fprintf(fp, "       get_smp_cpus: arm_get_smp_cpus()\n");
-	fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
-	fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
+	fprintf(fp, "          is_kvaddr: arm_is_kvaddr()\n");
+	fprintf(fp, "          is_uvaddr: arm_is_uvaddr()\n");
 	fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
 	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
         fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
@@ -672,6 +682,15 @@ arm_is_kvaddr(ulong vaddr)
 		return TRUE;
 
 	return (vaddr >= machdep->kvbase);
+}
+
+static int
+arm_is_uvaddr(ulong vaddr, struct task_context *unused)
+{
+	if (arm_is_module_addr(vaddr))
+		return FALSE;
+
+	return (vaddr < machdep->kvbase);
 }
 
 /*
@@ -1041,6 +1060,15 @@ arm_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
 
 	if (!tc)
 		error(FATAL, "current context invalid\n");
+
+	/*
+	 * Before idmap_pgd was introduced with upstream commit 2c8951ab0c
+	 * (ARM: idmap: use idmap_pgd when setting up mm for reboot), the
+	 * panic task pgd was overwritten by soft reboot code, so we can't do
+	 * any vtop translations.
+	 */
+	if (!(machdep->flags & IDMAP_PGD) && tc->task == tt->panic_task)
+		error(FATAL, "panic task pgd is trashed by soft reboot code\n");
 
 	*paddr = 0;
 

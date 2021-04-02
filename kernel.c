@@ -34,6 +34,13 @@ static void display_bh_1(void);
 static void display_bh_2(void);
 static void display_bh_3(void);
 static void display_bh_4(void);
+static void dump_hrtimer_data(void);
+static void dump_hrtimer_clock_base(const void *, const int);
+static void dump_hrtimer_base(const void *, const int);
+static void dump_active_timers(const void *, ulonglong);
+static int get_expires_len(const int, const ulong *, const int);
+static void print_timer(const void *);
+static ulonglong ktime_to_ns(const void *);
 static void dump_timer_data(void);
 static void dump_timer_data_tvec_bases_v1(void);
 static void dump_timer_data_tvec_bases_v2(void);
@@ -636,7 +643,61 @@ kernel_init()
 	STRUCT_SIZE_INIT(mem_section, "mem_section");
 
 	BUG_bytes_init();
-	
+
+	/*
+	 *  for hrtimer
+	 */
+	STRUCT_SIZE_INIT(hrtimer_clock_base, "hrtimer_clock_base");
+	if (VALID_STRUCT(hrtimer_clock_base)) {
+		MEMBER_OFFSET_INIT(hrtimer_clock_base_offset, 
+			"hrtimer_clock_base", "offset");
+		MEMBER_OFFSET_INIT(hrtimer_clock_base_active, 
+			"hrtimer_clock_base", "active");
+		MEMBER_OFFSET_INIT(hrtimer_clock_base_first, 
+			"hrtimer_clock_base", "first");
+		MEMBER_OFFSET_INIT(hrtimer_clock_base_get_time, 
+			"hrtimer_clock_base", "get_time");
+	}
+
+	STRUCT_SIZE_INIT(hrtimer_base, "hrtimer_base");
+	if (VALID_STRUCT(hrtimer_base)) {
+		MEMBER_OFFSET_INIT(hrtimer_base_first, 
+			"hrtimer_base", "first");
+		MEMBER_OFFSET_INIT(hrtimer_base_pending, 
+			"hrtimer_base", "pending");
+		MEMBER_OFFSET_INIT(hrtimer_base_get_time, 
+			"hrtimer_base", "get_time");
+	}
+
+	MEMBER_OFFSET_INIT(hrtimer_cpu_base_clock_base, "hrtimer_cpu_base",
+		"clock_base");
+
+	MEMBER_OFFSET_INIT(hrtimer_node, "hrtimer", "node");
+	MEMBER_OFFSET_INIT(hrtimer_list, "hrtimer", "list");
+	MEMBER_OFFSET_INIT(hrtimer_expires, "hrtimer", "expires");
+	if (INVALID_MEMBER(hrtimer_expires))
+		MEMBER_OFFSET_INIT(hrtimer_expires, "hrtimer", "_expires");
+	if (INVALID_MEMBER(hrtimer_expires)) {
+		MEMBER_OFFSET_INIT(timerqueue_head_next, 
+			"timerqueue_head", "next");
+		MEMBER_OFFSET_INIT(timerqueue_node_expires, 
+			"timerqueue_node", "expires");
+		MEMBER_OFFSET_INIT(timerqueue_node_node, 
+			"timerqueue_node_node", "node");
+	}
+	MEMBER_OFFSET_INIT(hrtimer_softexpires, "hrtimer", "_softexpires");
+	MEMBER_OFFSET_INIT(hrtimer_function, "hrtimer", "function");
+
+	MEMBER_OFFSET_INIT(ktime_t_tv64, "ktime", "tv64");
+	if (INVALID_MEMBER(ktime_t_tv64))
+		MEMBER_OFFSET_INIT(ktime_t_tv64, "ktime_t", "tv64");
+	MEMBER_OFFSET_INIT(ktime_t_sec, "ktime", "sec");
+	if (INVALID_MEMBER(ktime_t_sec))
+		MEMBER_OFFSET_INIT(ktime_t_sec, "ktime_t", "sec");
+	MEMBER_OFFSET_INIT(ktime_t_nsec, "ktime", "nsec");
+	if (INVALID_MEMBER(ktime_t_nsec))
+		MEMBER_OFFSET_INIT(ktime_t_nsec, "ktime_t", "nsec");
+
 	kt->flags &= ~PRE_KERNEL_INIT;
 }
 
@@ -6333,10 +6394,17 @@ void
 cmd_timer(void)
 {
         int c;
+	int rflag;
 
-        while ((c = getopt(argcnt, args, "")) != EOF) {
+	rflag = 0;
+
+        while ((c = getopt(argcnt, args, "r")) != EOF) {
                 switch(c)
                 {
+		case 'r':
+			rflag = 1;
+			break;
+
                 default:
                         argerrs++;
                         break;
@@ -6346,7 +6414,360 @@ cmd_timer(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	dump_timer_data();
+	if (rflag)
+		dump_hrtimer_data();
+	else
+		dump_timer_data();
+}
+
+static void
+dump_hrtimer_data(void)
+{
+	int i, j;
+	int hrtimer_max_clock_bases, max_hrtimer_bases;
+	struct syment * hrtimer_bases;
+
+	hrtimer_max_clock_bases = 0;
+	max_hrtimer_bases = 0;
+
+	/* 
+	 * deside whether hrtimer is available and
+	 * set hrtimer_max_clock_bases or max_hrtimer_bases.
+	 * if both are not available, hrtimer is not available.
+	 */
+	if (VALID_STRUCT(hrtimer_clock_base)) {
+		hrtimer_max_clock_bases = 2;
+		if (symbol_exists("ktime_get_boottime"))
+			hrtimer_max_clock_bases = 3;
+	} else if (VALID_STRUCT(hrtimer_base)) {
+		max_hrtimer_bases = 2;
+	} else
+		option_not_supported('r');
+
+	hrtimer_bases = per_cpu_symbol_search("hrtimer_bases");
+	for (i = 0; i < kt->cpus; i++) {
+		if (i)
+			fprintf(fp, "\n");
+		fprintf(fp, "CPU: %d  ", i);
+		if (VALID_STRUCT(hrtimer_clock_base)) {
+			fprintf(fp, "HRTIMER_CPU_BASE: %lx\n",
+				(ulong)(hrtimer_bases->value +
+				kt->__per_cpu_offset[i]));
+
+			for (j = 0; j < hrtimer_max_clock_bases; j++) {
+				if (j)
+					fprintf(fp, "\n");
+				dump_hrtimer_clock_base(
+					(void *)(hrtimer_bases->value) +
+					kt->__per_cpu_offset[i], j);
+			}
+		} else {
+			fprintf(fp, "\n");
+			for (j = 0; j < max_hrtimer_bases; j++) {
+				if (j)
+					fprintf(fp, "\n");
+				dump_hrtimer_base(
+					(void *)(hrtimer_bases->value) +
+					kt->__per_cpu_offset[i], j);
+			}
+		}
+	}
+}
+
+static int expires_len = -1;
+static int softexpires_len = -1;
+
+static void
+dump_hrtimer_clock_base(const void *hrtimer_bases, const int num)
+{
+	void *base;
+	ulonglong current_time, now;
+	ulonglong offset;
+	ulong get_time;
+	char buf[BUFSIZE];
+
+	base = (void *)hrtimer_bases + OFFSET(hrtimer_cpu_base_clock_base) +
+		SIZE(hrtimer_clock_base) * num;
+	readmem((ulong)(base + OFFSET(hrtimer_clock_base_get_time)), KVADDR,
+		&get_time, sizeof(get_time), "hrtimer_clock_base get_time",
+		FAULT_ON_ERROR);
+	fprintf(fp, "  CLOCK: %d  HRTIMER_CLOCK_BASE: %lx  [%s]\n", num, 
+		(ulong)base, value_to_symstr(get_time, buf, 0));
+
+	/* get current time(uptime) */
+	get_uptime(NULL, &current_time);
+
+	offset = 0;
+	if (VALID_MEMBER(hrtimer_clock_base_offset))
+		offset = ktime_to_ns(base + OFFSET(hrtimer_clock_base_offset));
+	now = current_time * 1000000000LL / machdep->hz + offset;
+
+	dump_active_timers(base, now);
+}
+
+static void
+dump_hrtimer_base(const void *hrtimer_bases, const int num)
+{
+	void *base;
+	ulonglong current_time, now;
+	ulong get_time;
+	char buf[BUFSIZE];
+	
+	base = (void *)hrtimer_bases + SIZE(hrtimer_base) * num;
+	readmem((ulong)(base + OFFSET(hrtimer_base_get_time)), KVADDR,
+		&get_time, sizeof(get_time), "hrtimer_base get_time",
+		FAULT_ON_ERROR);
+	fprintf(fp, "  CLOCK: %d  HRTIMER_BASE: %lx  [%s]\n", num, 
+		(ulong)base, value_to_symstr(get_time, buf, 0));
+
+	/* get current time(uptime) */
+	get_uptime(NULL, &current_time);
+	now = current_time * 1000000000LL / machdep->hz;
+
+	dump_active_timers(base, now);
+}
+
+static void
+dump_active_timers(const void *base, ulonglong now)
+{
+	int next, i, t;
+	struct rb_node *curr;
+	int timer_cnt;
+	ulong *timer_list;
+	void  *timer;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+
+	next = 0;
+	timer_list = 0;
+
+	/* search hrtimers */
+	hq_open();
+	timer_cnt = 0;
+next_one:
+	i = 0;
+
+	/* get the first node */
+	if (VALID_MEMBER(hrtimer_base_pending))
+		readmem((ulong)(base + OFFSET(hrtimer_base_pending) -
+			OFFSET(hrtimer_list) + OFFSET(hrtimer_node)),
+			KVADDR, &curr, sizeof(curr), "hrtimer_base pending",
+			FAULT_ON_ERROR);
+	else if (VALID_MEMBER(hrtimer_base_first))
+		readmem((ulong)(base + OFFSET(hrtimer_base_first)),
+			KVADDR, &curr, sizeof(curr), "hrtimer_base first",
+			FAULT_ON_ERROR);
+	else if (VALID_MEMBER(hrtimer_clock_base_first))
+		readmem((ulong)(base + OFFSET(hrtimer_clock_base_first)),
+			KVADDR,	&curr, sizeof(curr), "hrtimer_clock_base first",
+			FAULT_ON_ERROR);
+	else
+		readmem((ulong)(base + OFFSET(hrtimer_clock_base_active) +
+				OFFSET(timerqueue_head_next)),
+			KVADDR, &curr, sizeof(curr), "hrtimer_clock base",
+			FAULT_ON_ERROR);
+
+	while (curr && i < next) {
+		curr = rb_next(curr);
+		i++;
+	}
+
+	if (curr) {
+		if (!hq_enter((ulong)curr)) {
+			error(INFO, "duplicate rb_node: %lx\n", curr);
+			return;
+		}
+
+		timer_cnt++;
+		next++;
+		goto next_one;
+	}
+
+	if (timer_cnt) {
+		timer_list = (ulong *)GETBUF(timer_cnt * sizeof(long));
+		timer_cnt = retrieve_list(timer_list, timer_cnt);
+	}
+	hq_close();
+
+	if (!timer_cnt) {
+		fprintf(fp, "  (empty)\n");
+		return;
+	}
+
+	/* dump hrtimers */
+	/* print header */
+	expires_len = get_expires_len(timer_cnt, timer_list, 0);
+	if (expires_len < 7)
+		expires_len = 7;
+	softexpires_len = get_expires_len(timer_cnt, timer_list, 1);
+
+	if (softexpires_len > -1) {
+		if (softexpires_len < 11)
+			softexpires_len = 11;
+		fprintf(fp, "  %s\n", mkstring(buf1, softexpires_len, CENTER|RJUST,
+			"CURRENT")); 
+		sprintf(buf1, "%lld", now);
+		fprintf(fp, "  %s\n", mkstring(buf1, softexpires_len, 
+			CENTER|RJUST, NULL));
+		fprintf(fp, "  %s  %s  %s  %s\n",
+			mkstring(buf1, softexpires_len, CENTER|RJUST, "SOFTEXPIRES"),
+			mkstring(buf2, expires_len, CENTER|RJUST, "EXPIRES"),
+			mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "HRTIMER"),
+			mkstring(buf4, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
+	} else {
+		fprintf(fp, "  %s\n", mkstring(buf1, expires_len, CENTER|RJUST, 
+			"CURRENT"));
+		sprintf(buf1, "%lld", now);
+		fprintf(fp, "  %s\n", mkstring(buf1, expires_len, CENTER|RJUST, NULL));
+		fprintf(fp, "  %s  %s  %s\n",
+			mkstring(buf1, expires_len, CENTER|RJUST, "EXPIRES"),
+			mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "HRTIMER"),
+			mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
+	}
+
+	/* print timers */
+	for (t = 0; t < timer_cnt; t++) {
+		if (VALID_MEMBER(timerqueue_node_node))
+			timer = (void *)(timer_list[t] -
+				OFFSET(timerqueue_node_node) -
+				OFFSET(hrtimer_node));
+		else
+			timer = (void *)(timer_list[t] - OFFSET(hrtimer_node));
+
+		print_timer(timer);
+	}
+}
+
+static int
+get_expires_len(const int timer_cnt, const ulong *timer_list, const int getsoft)
+{
+	void *last_timer;
+	char buf[BUFSIZE];
+	ulonglong softexpires, expires;
+	int len;
+
+	len = -1;
+
+	if (!timer_cnt)
+		return len;
+
+	if (VALID_MEMBER(timerqueue_node_node))
+		last_timer = (void *)(timer_list[timer_cnt - 1] -
+			OFFSET(timerqueue_node_node) -
+			OFFSET(hrtimer_node));
+	else
+		last_timer = (void *)(timer_list[timer_cnt -1] -
+			OFFSET(hrtimer_node));
+
+	if (getsoft) {
+		/* soft expires exist*/
+		if (VALID_MEMBER(hrtimer_softexpires)) {
+			softexpires = ktime_to_ns(last_timer + 
+				OFFSET(hrtimer_softexpires));
+			sprintf(buf, "%lld", softexpires);
+			len = strlen(buf);
+		}
+	} else {
+		if (VALID_MEMBER(hrtimer_expires))
+			expires = ktime_to_ns(last_timer + OFFSET(hrtimer_expires));
+		else
+			expires = ktime_to_ns(last_timer + OFFSET(hrtimer_node) +
+				OFFSET(timerqueue_node_expires));
+
+		sprintf(buf, "%lld", expires);
+		len = strlen(buf);
+	}
+
+	return len;
+}
+
+/*
+ * print hrtimer and its related information
+ */
+static void
+print_timer(const void *timer)
+{
+	ulonglong softexpires, expires;
+	
+	ulong function;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+
+	/* align information */
+	fprintf(fp, "  ");
+
+	if (!accessible((ulong)timer)) {
+		fprintf(fp, "(destroyed timer)\n");
+		return;
+	}
+
+	if (VALID_MEMBER(hrtimer_expires))
+		expires = ktime_to_ns(timer + OFFSET(hrtimer_expires));
+	else
+		expires = ktime_to_ns(timer + OFFSET(hrtimer_node) +
+			OFFSET(timerqueue_node_expires));
+
+	if (VALID_MEMBER(hrtimer_softexpires)) {
+		softexpires = ktime_to_ns(timer + OFFSET(hrtimer_softexpires));
+		sprintf(buf1, "%lld-%lld", softexpires, expires);
+	}
+
+	if (VALID_MEMBER(hrtimer_softexpires)) {
+		softexpires = ktime_to_ns(timer + OFFSET(hrtimer_softexpires));
+		sprintf(buf1, "%lld", softexpires);
+		fprintf(fp, "%s  ",
+			mkstring(buf2, softexpires_len, CENTER|RJUST, buf1));
+	}
+
+	sprintf(buf1, "%lld", expires);
+	fprintf(fp, "%s  ", mkstring(buf2, expires_len, CENTER|RJUST, buf1));
+
+	fprintf(fp, "%lx  ", (ulong)timer);
+
+	if (readmem((ulong)(timer + OFFSET(hrtimer_function)), KVADDR, &function,
+		sizeof(function), "hrtimer function", QUIET|RETURN_ON_ERROR)) {
+		fprintf(fp, "%lx  ", function);
+		fprintf(fp ,"<%s>", value_to_symstr(function, buf3, 0));
+	}
+
+	fprintf(fp, "\n");
+}
+
+/*
+ * convert ktime to ns, only need the address of ktime
+ */
+static ulonglong
+ktime_to_ns(const void *ktime)
+{
+	ulonglong ns;
+
+	ns = 0;
+
+	if (!accessible((ulong)ktime)) 
+		return ns;
+
+	if (VALID_MEMBER(ktime_t_tv64)) {
+		readmem((ulong)ktime + OFFSET(ktime_t_tv64), KVADDR, &ns,
+			sizeof(ns), "ktime_t tv64", QUIET|RETURN_ON_ERROR);
+	} else {
+		uint32_t sec, nsec;
+
+		sec = 0;
+		nsec = 0;
+
+		readmem((ulong)ktime + OFFSET(ktime_t_sec), KVADDR, &sec,
+			sizeof(sec), "ktime_t sec", QUIET|RETURN_ON_ERROR);
+
+		readmem((ulong)ktime + OFFSET(ktime_t_nsec), KVADDR, &nsec,
+			sizeof(nsec), "ktime_t nsec", QUIET|RETURN_ON_ERROR);
+
+		ns = sec * 1000000000L + nsec;
+	}
+
+	return ns;
 }
 
 /*

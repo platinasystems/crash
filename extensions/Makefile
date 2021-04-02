@@ -1,8 +1,8 @@
 #
 # Makefile for building crash shared object extensions
 #
-# Copyright (C) 2005, 2007, 2009, 2011 David Anderson
-# Copyright (C) 2005, 2007, 2009, 2011 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2005, 2007, 2009, 2011, 2013 David Anderson
+# Copyright (C) 2005, 2007, 2009, 2011, 2013 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -36,8 +36,15 @@ $(CONTRIB_SO): %.so: %.c defs.h
 	@if [ -f $*.mk ]; then \
 		make -f $*.mk; \
 	else \
-		echo "gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS)"; \
-		gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS); \
+		grep '((constructor))' $*.c > .constructor; \
+		if [ -s .constructor ]; then \
+			echo "gcc -Wall -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS)"; \
+			gcc -Wall -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS); \
+		fi; \
+		if [ ! -s .constructor ]; then \
+			echo "gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS)"; \
+			gcc -Wall -nostartfiles -shared -rdynamic -o $@ $*.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS); \
+		fi; \
 	fi
 
 clean:

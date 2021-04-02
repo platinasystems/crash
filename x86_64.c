@@ -5346,7 +5346,8 @@ x86_64_framepointer_init(void)
 		    "framepointer check", RETURN_ON_ERROR))
 			return;
 
-		if (push_rbp_mov_rsp_rbp == 0x66666666) {
+		if ((push_rbp_mov_rsp_rbp == 0x66666666) ||
+		    (push_rbp_mov_rsp_rbp == 0x00441f0f)) {
 			if (!readmem(symbol_value(checkfuncs[i]) + 5, 
 			    KVADDR, &push_rbp_mov_rsp_rbp, sizeof(uint),
 			    "framepointer check", RETURN_ON_ERROR))

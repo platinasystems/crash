@@ -506,6 +506,42 @@ get_text_init_space(void)
 }
 
 /*
+ *  Strip gcc-generated cloned text symbol name endings.
+ */
+static char *
+strip_symbol_end(const char *name, char *buf)
+{
+	char *p;
+
+	if (st->flags & NO_STRIP)
+		return (char *)name;
+
+	if ((p = strstr(name, ".isra."))) {
+		if (buf) {
+			strcpy(buf, name);
+			buf[p-name] = NULLCHAR;
+			return buf;
+		} else {
+			*p = NULLCHAR;
+			return (char *)name;
+		}
+	}
+
+	if ((p = strstr(name, ".part."))) {
+		if (buf) {
+			strcpy(buf, name);
+			buf[p-name] = NULLCHAR;
+			return buf;
+		} else {
+			*p = NULLCHAR;
+			return (char *)name;
+		}
+	}
+
+	return (char *)name;
+}
+
+/*
  *  Store the symbols gathered by symtab_init().  The symbols are stored
  *  in increasing numerical order.
  */
@@ -518,6 +554,8 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
   	bfd_byte *from, *fromend;
         symbol_info syminfo;
 	struct syment *sp;
+	char buf[BUFSIZE];
+	char *name;
 	int first;
 
   	if ((store = bfd_make_empty_symbol(abfd)) == NULL)
@@ -554,7 +592,9 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 			error(FATAL, "bfd_minisymbol_to_symbol() failed\n");
 
       		bfd_get_symbol_info(abfd, sym, &syminfo);
-		if (machdep->verify_symbol(syminfo.name, syminfo.value, 
+		name = strip_symbol_end(syminfo.name, buf);
+
+		if (machdep->verify_symbol(name, syminfo.value, 
 		    syminfo.type)) {
 			if (kt->flags & (RELOC_SET|RELOC_FORCE))
 				sp->value = relocate(syminfo.value,
@@ -563,7 +603,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 				sp->value = syminfo.value;
 			sp->type = syminfo.type;
 			namespace_ctl(NAMESPACE_INSTALL, &st->kernel_namespace,
-				sp, (char *)syminfo.name); 
+				sp, name); 
 			sp++;
 			st->symcnt++;
 		}
@@ -587,6 +627,7 @@ store_sysmap_symbols(void)
 	int c, first;
 	long symcount;
 	char buf[BUFSIZE];
+	char name[BUFSIZE];
 	FILE *map;
         char *mapitems[MAXARGS];
 	struct syment *sp, syment;
@@ -626,7 +667,10 @@ store_sysmap_symbols(void)
 		syment.type = mapitems[1][0];
 		syment.name = mapitems[2];
 
-                if (machdep->verify_symbol(syment.name, syment.value, 
+		strcpy(name, syment.name);
+		strip_symbol_end(name, NULL);
+
+                if (machdep->verify_symbol(name, syment.value, 
 		    syment.type)) {
 			if (kt->flags & RELOC_SET)
 				sp->value = relocate(syment.value,
@@ -635,7 +679,7 @@ store_sysmap_symbols(void)
 				sp->value = syment.value;
                         sp->type = syment.type;
                         namespace_ctl(NAMESPACE_INSTALL, &st->kernel_namespace,
-                                sp, syment.name);
+                                sp, name);
                         sp++;
                         st->symcnt++;
                 }
@@ -1232,9 +1276,10 @@ store_module_symbols_v1(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].type = '?'; 
 				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
-                		namespace_ctl(NAMESPACE_INSTALL, 
+				strip_symbol_end(buf1, NULL);
+				namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
-                        	    &st->ext_module_symtable[mcnt], buf1);
+				    &st->ext_module_symtable[mcnt], buf1);
 
 				if (strstr(buf1, rodata))
 					lm->mod_etext_guess = modsym->value;
@@ -1535,9 +1580,10 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].type = '?'; 
 				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
-                		namespace_ctl(NAMESPACE_INSTALL, 
+				strip_symbol_end(buf1, NULL);
+				namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
-                        	    &st->ext_module_symtable[mcnt], buf1);
+				    &st->ext_module_symtable[mcnt], buf1);
 
 				mcnt++;
 			}
@@ -1609,9 +1655,10 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].type = '?'; 
 				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
-                		namespace_ctl(NAMESPACE_INSTALL, 
+				strip_symbol_end(buf1, NULL);
+				namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
-                        	    &st->ext_module_symtable[mcnt], buf1);
+				    &st->ext_module_symtable[mcnt], buf1);
 
 				mcnt++;
 			}
@@ -1794,14 +1841,16 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
                 if (!IN_MODULE_BUF_V1(nameptr)) {
                         if (CRASHDEBUG(7))
                                 error(INFO,
-                 "%s: invalid nameptr: %lx  (stringptr: %lx + name_off: %lx)\n",                                        lm->mod_name, nameptr,
+                 "%s: invalid nameptr: %lx  (stringptr: %lx + name_off: %lx)\n",
+                                        lm->mod_name, nameptr,
                                         stringptr, name_off);
                         continue;
                 }
                 if (!IN_MODULE_BUF_V1(secnameptr)) {
                         if (CRASHDEBUG(7))
                                 error(INFO,
-           "%s: invalid secnameptr: %lx (stringptr: %lx + sec_name_off: %lx)\n",                                        lm->mod_name, secnameptr,
+           "%s: invalid secnameptr: %lx (stringptr: %lx + sec_name_off: %lx)\n",
+                                        lm->mod_name, secnameptr,
                                         stringptr, sec_name_off);
                         continue;
                 }
@@ -1819,6 +1868,7 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
 				continue;
 
 			strip_module_symbol_end(nameptr);
+			strip_symbol_end(nameptr, NULL);
 
 			if (CRASHDEBUG(7))
 				fprintf(fp,"  symbol: %lx \"%s\" section: %s\n",
@@ -2004,11 +2054,21 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 		if (*nameptr == '\0')
 			continue;
 
+		/*
+		 * On ARM we have linker mapping symbols like '$a' and '$d'.
+		 * Make sure that these don't end up into our symbol list.
+		 */
+		if (machine_type("ARM") &&
+		    !machdep->verify_symbol(nameptr, ec->st_value, ec->st_info))
+			continue;
+
 		if (CRASHDEBUG(7))
 			fprintf(fp, 
 	          "%s: st_name: %ld st_value: %lx st_shndx: %ld st_info: %c\n",
 				nameptr, ec->st_name, ec->st_value, 
 				ec->st_shndx, ec->st_info);
+
+		strip_symbol_end(nameptr, NULL);
 
                 for (found = 0, j = start; j < curr; j++) {
                         sp = &st->ext_module_symtable[j];
@@ -2623,6 +2683,8 @@ dump_symbol_table(void)
                 fprintf(fp, "%sMODSECT_V3", others++ ? "|" : "");
         if (st->flags & MODSECT_UNKNOWN)
                 fprintf(fp, "%sMODSECT_UNKNOWN", others++ ? "|" : "");
+        if (st->flags & NO_STRIP)
+                fprintf(fp, "%sNO_STRIP", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "                 bfd: %lx\n", (ulong)st->bfd);
@@ -5056,7 +5118,8 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 
 	FREEBUF(req);
 
-        if (dm && (dm != MEMBER_SIZE_REQUEST) && (dm != MEMBER_TYPE_REQUEST)) {
+        if (dm && (dm != MEMBER_SIZE_REQUEST) && (dm != MEMBER_TYPE_REQUEST) &&
+	    (dm != STRUCT_SIZE_REQUEST)) {
                 dm->type = type_found;
                 dm->size = size;
 		dm->member_size = member_size;
@@ -5078,9 +5141,20 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 		return member_size;
 	else if (dm == MEMBER_TYPE_REQUEST)
 		return member_typecode;
-        else if (member)
-		return offset;
-	else
+	else if (dm == STRUCT_SIZE_REQUEST) {
+		if ((req->typecode == TYPE_CODE_STRUCT) || 
+		    (req->typecode == TYPE_CODE_UNION) ||
+		     req->is_typedef)
+			return size;
+		else
+			return -1;
+        } else if (member) {
+		if ((req->typecode == TYPE_CODE_STRUCT) || 
+		    (req->typecode == TYPE_CODE_UNION))
+			return offset;
+		else
+			return -1;
+	} else
                 return size;
 }
 
@@ -8860,6 +8934,44 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(rt_rq_highest_prio));
 	fprintf(fp, "           rt_rq_rt_nr_running: %ld\n",
 		OFFSET(rt_rq_rt_nr_running));
+	fprintf(fp, "   hrtimer_cpu_base_clock_base: %ld\n",
+		OFFSET(hrtimer_cpu_base_clock_base));
+	fprintf(fp, "     hrtimer_clock_base_offset: %ld\n",
+		OFFSET(hrtimer_clock_base_offset));
+	fprintf(fp, "     hrtimer_clock_base_active: %ld\n",
+		OFFSET(hrtimer_clock_base_active));
+	fprintf(fp, "      hrtimer_clock_base_first: %ld\n",
+		OFFSET(hrtimer_clock_base_first));
+	fprintf(fp, "   hrtimer_clock_base_get_time: %ld\n",
+		OFFSET(hrtimer_clock_base_get_time));
+	fprintf(fp, "            hrtimer_base_first: %ld\n",
+		OFFSET(hrtimer_base_first));
+	fprintf(fp, "          hrtimer_base_pending: %ld\n",
+		OFFSET(hrtimer_base_pending));
+	fprintf(fp, "         hrtimer_base_get_time: %ld\n",
+		OFFSET(hrtimer_base_get_time));
+	fprintf(fp, "                  hrtimer_node: %ld\n",
+		OFFSET(hrtimer_node));
+	fprintf(fp, "                  hrtimer_list: %ld\n",
+		OFFSET(hrtimer_list));
+	fprintf(fp, "           hrtimer_softexpires: %ld\n",
+		OFFSET(hrtimer_softexpires));
+	fprintf(fp, "               hrtimer_expires: %ld\n",
+		OFFSET(hrtimer_expires));
+	fprintf(fp, "              hrtimer_function: %ld\n",
+		OFFSET(hrtimer_function));
+	fprintf(fp, "          timerqueue_head_next: %ld\n",
+		OFFSET(timerqueue_head_next));
+	fprintf(fp, "       timerqueue_node_expires: %ld\n",
+		OFFSET(timerqueue_node_expires));
+	fprintf(fp, "          timerqueue_node_node: %ld\n",
+		OFFSET(timerqueue_node_node));
+	fprintf(fp, "                  ktime_t_tv64: %ld\n",
+		OFFSET(ktime_t_tv64));
+	fprintf(fp, "                   ktime_t_sec: %ld\n",
+		OFFSET(ktime_t_sec));
+	fprintf(fp, "                  ktime_t_nsec: %ld\n",
+		OFFSET(ktime_t_nsec));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -9081,6 +9193,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(task_group));
 	fprintf(fp, "                     vmap_area: %ld\n",
 		SIZE(vmap_area));
+	fprintf(fp, "            hrtimer_clock_base: %ld\n",
+		SIZE(hrtimer_clock_base));
+	fprintf(fp, "                  hrtimer_base: %ld\n",
+		SIZE(hrtimer_base));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -10494,7 +10610,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
                 if (found) {
                         strcpy(name, syminfo.name);
                         strip_module_symbol_end(name);
-
+			strip_symbol_end(name, NULL);
                         if (machdep->verify_symbol(name, syminfo.value,
                             syminfo.type)) {
                                 sp->value = syminfo.value;

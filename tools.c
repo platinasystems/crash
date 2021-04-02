@@ -3162,7 +3162,7 @@ cmd_list(void)
 	ld = &list_data;
 	BZERO(ld, sizeof(struct list_data));
 
-        while ((c = getopt(argcnt, args, "Hhs:e:o:xd")) != EOF) {
+        while ((c = getopt(argcnt, args, "Hhrs:e:o:xd")) != EOF) {
                 switch(c)
 		{
 		case 'H':
@@ -3172,6 +3172,10 @@ cmd_list(void)
 
 		case 'h':
 			ld->flags |= LIST_HEAD_FORMAT;
+			break;
+
+		case 'r':
+			ld->flags |= LIST_HEAD_REVERSE;
 			break;
 
 		case 's':
@@ -3363,12 +3367,15 @@ next_arg:
 
 	if (ld->flags & LIST_HEAD_FORMAT) {
 		ld->list_head_offset = ld->member_offset;
-		ld->member_offset = 0;
+		if (ld->flags & LIST_HEAD_REVERSE)
+			ld->member_offset = sizeof(void *);
+		else
+			ld->member_offset = 0;
 		if (ld->flags & LIST_HEAD_POINTER) {
 			if (!ld->end)
 				ld->end = ld->start;
-        		readmem(ld->start, KVADDR, &ld->start, sizeof(void *),
-				"LIST_HEAD contents", FAULT_ON_ERROR);
+			readmem(ld->start + ld->member_offset, KVADDR, &ld->start,
+				sizeof(void *), "LIST_HEAD contents", FAULT_ON_ERROR);
 			if (ld->start == ld->end) {
 				fprintf(fp, "(empty)\n");
 				return;
@@ -5548,3 +5555,131 @@ strlcpy(char *dest, char *src, size_t size)
 	return ret;
 }
 
+struct rb_node *
+rb_first(struct rb_root *root)
+{
+        struct rb_root rloc;
+        struct rb_node *n;
+	struct rb_node nloc;
+
+	readmem((ulong)root, KVADDR, &rloc, sizeof(struct rb_root), 
+		"rb_root", FAULT_ON_ERROR);
+
+        n = rloc.rb_node;
+        if (!n)
+                return NULL;
+        while (rb_left(n, &nloc))
+		n = nloc.rb_left;
+
+        return n;
+}
+
+struct rb_node *
+rb_parent(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return (struct rb_node *)(nloc->rb_parent_color & ~3);
+}
+
+struct rb_node *
+rb_right(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return nloc->rb_right;
+}
+
+struct rb_node *
+rb_left(struct rb_node *node, struct rb_node *nloc)
+{
+	readmem((ulong)node, KVADDR, nloc, sizeof(struct rb_node), 
+		"rb_node", FAULT_ON_ERROR);
+
+	return nloc->rb_left;
+}
+
+struct rb_node *
+rb_next(struct rb_node *node)
+{
+	struct rb_node nloc;
+        struct rb_node *parent;
+
+	/* node is destroyed */
+	if (!accessible((ulong)node))
+		return NULL;
+
+	parent = rb_parent(node, &nloc);
+
+	if (parent == node)
+		return NULL;
+
+        if (nloc.rb_right) {
+		/* rb_right is destroyed */
+		if (!accessible((ulong)nloc.rb_right))
+			return NULL;
+
+		node = nloc.rb_right;
+		while (rb_left(node, &nloc)) {
+			/* rb_left is destroyed */
+			if (!accessible((ulong)nloc.rb_left))
+				return NULL;
+			node = nloc.rb_left;
+		}
+		return node;
+	}
+
+	while ((parent = rb_parent(node, &nloc))) {
+		/* parent is destroyed */
+                if (!accessible((ulong)parent))
+                        return NULL;
+
+
+		if (node != rb_right(parent, &nloc))
+			break;
+
+		node = parent;
+	}
+
+        return parent;
+}
+
+struct rb_node *
+rb_last(struct rb_root *root)
+{
+	struct rb_node *node;
+	struct rb_node nloc;
+
+	/* meet destroyed data */
+	if (!accessible((ulong)(root + OFFSET(rb_root_rb_node))))
+		return NULL;
+
+	readmem((ulong)(root + OFFSET(rb_root_rb_node)), KVADDR, &node,
+		sizeof(node), "rb_root node", FAULT_ON_ERROR);
+
+	while (1) {
+		if (!node)
+			break;
+
+		/* meet destroyed data */
+		if (!accessible((ulong)node))
+			return NULL;
+
+		readmem((ulong)node, KVADDR, &nloc, sizeof(struct rb_node),
+		"rb_node last", FAULT_ON_ERROR);
+
+		/*  meet the last one  */
+		if (!nloc.rb_right)
+			break;
+
+		/* meet destroyed data */
+		if (!!accessible((ulong)nloc.rb_right))
+			break;
+
+		node = nloc.rb_right;
+	}
+
+	return node;
+}
