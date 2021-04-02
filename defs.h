@@ -807,6 +807,7 @@ struct machdep_table {
 #define VM_4_LEVEL       (0x2000000)
 #define MCA              (0x1000000)
 #define PAE               (0x800000)
+#define VMEMMAP           (0x400000)
 
 extern struct machdep_table *machdep;
 
@@ -1789,6 +1790,7 @@ struct vm_table {                /* kernel VM-related data */
 #define CONFIG_NUMA             (0x20000)
 #define VM_EVENT                (0x40000)
 #define PGCNT_ADJ               (0x80000)
+#define VM_INIT                (0x100000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -3932,7 +3934,6 @@ struct machine_specific {
 #define SCHED_TEXT    (0x40)
 #define PHYS_BASE     (0x80)
 #define VM_XEN_RHEL4 (0x100)
-#define VMEMMAP      (0x200)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 
@@ -4021,6 +4022,10 @@ void ppc64_dump_machdep_table(ulong);
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
 #define VM_ORIG     (0x2)
+
+#define REGION_SHIFT       (60UL)
+#define REGION_ID(addr)    (((unsigned long)(addr)) >> REGION_SHIFT)
+#define VMEMMAP_REGION_ID  (0xfUL)
 #endif
 
 /*

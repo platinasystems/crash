@@ -2436,7 +2436,8 @@ char *help_mount[] = {
 "  filesystems.  The per-filesystem dirty inode list or list of open",
 "  files for the filesystem may also be displayed.\n",
 "     -f  dump dentries and inodes for open files in each filesystem.",
-"     -i  dump all dirty inodes associated with each filesystem.\n",
+"     -i  dump all dirty inodes associated with each filesystem; only",
+"         supported on kernels with super_block.s_dirty linked list.\n",
 "  For kernels supporting namespaces, the -n option may be used to",
 "  display the mounted filesystems with respect to the namespace of a",
 "  specified task:\n",
@@ -5287,7 +5288,7 @@ display_version(void)
 static 
 char *version_info[] = {
 
-"Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009  Red Hat, Inc.",
+"Copyright (C) 2002-2010  Red Hat, Inc.",
 "Copyright (C) 2004, 2005, 2006  IBM Corporation", 
 "Copyright (C) 1999-2006  Hewlett-Packard Co",
 "Copyright (C) 2005, 2006  Fujitsu Limited",

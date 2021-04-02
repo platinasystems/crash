@@ -3168,6 +3168,7 @@ char *rlim_names[] = {
 	/* 12 */ "MSGQUEUE",
 	/* 13 */ "NICE",
 	/* 14 */ "RTPRIO",
+	/* 15 */ "RTTIME",
 	NULL,
 };
 
@@ -3217,6 +3218,8 @@ show_task_rlimit(struct task_context *tc)
 		error(FATAL, "cannot determine rlimit array size\n");
 
 	for (i = len1 = 0; i < rlimit_index; i++) {
+		if (rlim_names[i] == NULL)
+			continue;
 		if ((j = strlen(rlim_names[i])) > len1)
 			len1 = j;
 	}

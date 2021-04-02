@@ -3512,6 +3512,13 @@ value_search(ulong value, ulong *offset)
  
         for ( ; sp < st->symend; sp++) {
                 if (value == sp->value) {
+#ifdef GDB_7_0
+			if (STRNEQ(sp->name, ".text.")) {
+				spnext = sp+1;
+				if (spnext->value == value)
+					sp = spnext;
+			}
+#endif
                         if (offset) 
 				*offset = 0;
                         return((struct syment *)sp);

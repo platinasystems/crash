@@ -35,10 +35,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=gdb-6.1
-GDB_FILES=${GDB_6.1_FILES}
+GDB=gdb-7.0
+GDB_FILES=${GDB_7.0_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=gdb-6.1.patch
+GDB_PATCH_FILES=gdb-7.0.patch
 
 #
 # Default installation directory
@@ -229,7 +229,7 @@ TARGET_CFLAGS=
 
 CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${CFLAGS}
 
-GPL_FILES=COPYING
+GPL_FILES=COPYING3
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
@@ -515,7 +515,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=4.1.2
+VERSION=5.0.0
 RELEASE=0
 
 release: make_configure
