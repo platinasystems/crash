@@ -260,6 +260,9 @@ arm_init(int when)
 		    STRUCT_EXISTS("pteval_t"))
 			machdep->flags |= PGTABLE_V2;
 
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+
 		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 					  "irq_desc", NULL, 0);

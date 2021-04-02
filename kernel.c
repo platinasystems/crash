@@ -1031,7 +1031,8 @@ verify_namelist()
 	found = FALSE;
 	sprintf(buffer3, "(unknown)");
         while (fgets(buffer, BUFSIZE-1, pipe)) {
-		if (!strstr(buffer, "Linux version 2."))
+		if (!strstr(buffer, "Linux version 2.") &&
+		    !strstr(buffer, "Linux version 3."))
 			continue;
 
                 if (strstr(buffer, kt->proc_version)) {
@@ -2184,7 +2185,7 @@ back_trace(struct bt_info *bt)
 	ulong *up;
 	char buf[BUFSIZE];
 	ulong eip, esp;
-	struct bt_info btsave;
+	struct bt_info btsave = { 0 };
 
 	if (bt->flags & BT_RAW) {
 		if (bt->hp && bt->hp->esp)

@@ -2184,7 +2184,8 @@ struct load_module {
 #define _SECTIONS_PER_ROOT()	(1)
 
 #define SECTION_NR_TO_ROOT(sec)	((sec) / SECTIONS_PER_ROOT())
-#define NR_SECTION_ROOTS()	(NR_MEM_SECTIONS() / SECTIONS_PER_ROOT())
+#define DIV_ROUND_UP(n,d)	(((n) + (d) - 1) / (d))
+#define NR_SECTION_ROOTS()	(DIV_ROUND_UP(NR_MEM_SECTIONS(), SECTIONS_PER_ROOT()))
 #define SECTION_ROOT_MASK()	(SECTIONS_PER_ROOT() - 1)
 
 /*
@@ -3705,6 +3706,7 @@ long OFFSET_option(long, long, char *, char *, int, char *, char *);
 long SIZE_option(long, long, char *, char *, int, char *, char *);
 void dump_trace(void **);
 int enumerator_value(char *, long *);
+int dump_enumerator_list(char *);
 struct load_module *init_module_function(ulong);
 
 /*  

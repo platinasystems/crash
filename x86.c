@@ -3985,6 +3985,7 @@ x86_cmd_mach(void)
 static void
 x86_display_machine_stats(void)
 {
+	int c;
         struct new_utsname *uts;
 	char buf[BUFSIZE];
 	ulong mhz;
@@ -4005,6 +4006,27 @@ x86_display_machine_stats(void)
 	fprintf(fp, "KERNEL VIRTUAL BASE: %lx\n", machdep->kvbase);
 	fprintf(fp, "KERNEL VMALLOC BASE: %lx\n", vt->vmalloc_start);
 	fprintf(fp, "  KERNEL STACK SIZE: %ld\n", STACKSIZE());
+
+	if (tt->flags & IRQSTACKS) {
+		fprintf(fp, "HARD IRQ STACK SIZE: %ld\n", STACKSIZE());
+		fprintf(fp, "    HARD IRQ STACKS:\n");
+	
+		for (c = 0; c < kt->cpus; c++) {
+			if (!tt->hardirq_ctx[c])
+				break;
+			sprintf(buf, "CPU %d", c);
+			fprintf(fp, "%19s: %lx\n", buf, tt->hardirq_ctx[c]);
+		}
+
+		fprintf(fp, "SOFT IRQ STACK SIZE: %ld\n", STACKSIZE());
+		fprintf(fp, "    SOFT IRQ STACKS:\n");
+		for (c = 0; c < kt->cpus; c++) {
+			if (!tt->softirq_ctx)
+				break;
+			sprintf(buf, "CPU %d", c);
+			fprintf(fp, "%19s: %lx\n", buf, tt->softirq_ctx[c]);
+		}
+	}
 }
 
 static void

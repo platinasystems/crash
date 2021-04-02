@@ -124,7 +124,6 @@ static void print_struct(char *, ulong);
 static void print_union(char *, ulong);
 static void dump_datatype_member(FILE *, struct datatype_member *);
 static void dump_datatype_flags(ulong, FILE *);
-static void dump_enumerator_list(char *);
 static long anon_member_offset(char *, char *);
 static int gdb_whatis(char *);
 static void do_datatype_declaration(struct datatype_member *, ulong);
@@ -5779,12 +5778,18 @@ gdb_whatis(char *s)
 }
 
 /*
- *  Given the name of an enum, have gdb dump its enumertor list.
+ *  Given the name of an enum, have gdb dump its enumerator list.
  */
-static void
+int
 dump_enumerator_list(char *e)
 {
         struct gnu_request *req;
+        struct datatype_member datatype_member, *dm;
+        dm = &datatype_member;
+
+        if (!arg_to_datatype(e, dm, RETURN_ON_ERROR) ||
+	    (dm->size < 0) || (dm->type != ENUM) || dm->tagname)
+		return FALSE;
 
         req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
         req->command = GNU_GET_DATATYPE;
@@ -5794,6 +5799,8 @@ dump_enumerator_list(char *e)
         gdb_interface(req);
 
 	FREEBUF(req);
+
+	return TRUE;
 }
 
 /*

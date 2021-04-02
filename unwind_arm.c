@@ -185,8 +185,10 @@ init_kernel_unwind_table(void)
 
 	/* now read in the index table */
 	if (!readmem(idx_start, KVADDR, kernel_unwind_table->idx, idx_size,
-		     "master kernel unwind table", RETURN_ON_ERROR))
+		     "master kernel unwind table", RETURN_ON_ERROR)) {
+		free(kernel_unwind_table->idx);
 		goto fail;
+	}
 
 	kernel_unwind_table->start = kernel_unwind_table->idx;
 	kernel_unwind_table->end = (struct unwind_idx *)
@@ -210,7 +212,6 @@ init_kernel_unwind_table(void)
 	return TRUE;
 
 fail:
-	free(kernel_unwind_table->idx);
 	free(kernel_unwind_table);
 	return FALSE;
 }
@@ -283,7 +284,6 @@ read_module_unwind_table(struct unwind_table *tbl, ulong addr)
 
 fail:
 	FREEBUF(buf);
-	free(tbl->idx);
 	return FALSE;
 }
 
