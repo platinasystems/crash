@@ -51,6 +51,7 @@
 #define _ASM_VMDUMP_H
 
 /* necessary header files */
+typedef unsigned int u32;
 #include <asm/ptrace.h>                          /* for pt_regs             */
 
 /* definitions */
@@ -101,6 +102,7 @@ typedef struct _dump_header_asm_s {
  */
 
 #ifndef IA64
+typedef unsigned int u32;
 #include <asm/ptrace.h>                          /* for pt_regs             */
 #endif
 

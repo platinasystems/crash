@@ -386,8 +386,18 @@ kernel_init()
 			"tvec_root_s", "vec");
 	        STRUCT_SIZE_INIT(tvec_s, "tvec_s");
 	        MEMBER_OFFSET_INIT(tvec_s_vec, "tvec_s", "vec");
+	} else {
+		STRUCT_SIZE_INIT(tvec_root_s, "tvec_root");
+        	if (VALID_STRUCT(tvec_root_s)) {
+               		STRUCT_SIZE_INIT(tvec_t_base_s, "tvec_base");
+                	MEMBER_OFFSET_INIT(tvec_t_base_s_tv1,
+                        	"tvec_base", "tv1");
+	        	MEMBER_OFFSET_INIT(tvec_root_s_vec, 
+				"tvec_root", "vec");
+	        	STRUCT_SIZE_INIT(tvec_s, "tvec");
+	        	MEMBER_OFFSET_INIT(tvec_s_vec, "tvec", "vec");
+		}
 	}
-
         STRUCT_SIZE_INIT(__wait_queue, "__wait_queue");
         if (VALID_STRUCT(__wait_queue)) {
 		if (MEMBER_EXISTS("__wait_queue", "task"))
@@ -4977,8 +4987,20 @@ dump_timer_data_tvec_bases_v2(void)
          */
         vec_root_size = (i = ARRAY_LENGTH(tvec_root_s_vec)) ?
                 i : get_array_length("tvec_root_s.vec", NULL, SIZE(list_head));
+	if (!vec_root_size && 
+	    (i = get_array_length("tvec_root.vec", NULL, SIZE(list_head))))
+		vec_root_size = i;
+	if (!vec_root_size)
+		error(FATAL, "cannot determine tvec_root.vec[] array size\n");
+
         vec_size = (i = ARRAY_LENGTH(tvec_s_vec)) ?
                 i : get_array_length("tvec_s.vec", NULL, SIZE(list_head));
+	if (!vec_size &&
+	    (i = get_array_length("tvec.vec", NULL, SIZE(list_head))))
+		vec_size = i;
+	if (!vec_size)
+		error(FATAL, "cannot determine tvec.vec[] array size\n");
+
         vec = (ulong *)GETBUF(SIZE(list_head) * MAX(vec_root_size, vec_size));
 	cpu = 0;
 

@@ -154,6 +154,15 @@ task_init(void)
 			"thread_struct", "eip");
 		esp_offset = MEMBER_OFFSET_INIT(thread_struct_esp,
 			"thread_struct", "esp");
+		/*
+		 *  Handle x86/x86_64 merger.
+		 */
+		if (eip_offset == INVALID_OFFSET)
+			eip_offset = MEMBER_OFFSET_INIT(thread_struct_eip,
+				"thread_struct", "ip");
+		if (esp_offset == INVALID_OFFSET)
+			esp_offset = MEMBER_OFFSET_INIT(thread_struct_esp,
+				"thread_struct", "sp");
 		ksp_offset = MEMBER_OFFSET_INIT(thread_struct_ksp,
 			"thread_struct", "ksp");
 	        ASSIGN_OFFSET(task_struct_thread_eip) = 

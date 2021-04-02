@@ -254,8 +254,23 @@ x86_64_init(int when)
 		MEMBER_OFFSET_INIT(thread_struct_rip, "thread_struct", "rip");
 		MEMBER_OFFSET_INIT(thread_struct_rsp, "thread_struct", "rsp");
 		MEMBER_OFFSET_INIT(thread_struct_rsp0, "thread_struct", "rsp0");
+		if (INVALID_MEMBER(thread_struct_rip))
+			MEMBER_OFFSET_INIT(thread_struct_rip, "thread_struct", "ip");
+		if (INVALID_MEMBER(thread_struct_rsp))
+			MEMBER_OFFSET_INIT(thread_struct_rsp, "thread_struct", "sp");
+		if (INVALID_MEMBER(thread_struct_rsp0))
+			MEMBER_OFFSET_INIT(thread_struct_rsp0, "thread_struct", "sp0");
 		STRUCT_SIZE_INIT(tss_struct, "tss_struct");
 		MEMBER_OFFSET_INIT(tss_struct_ist, "tss_struct", "ist");
+		if (INVALID_MEMBER(tss_struct_ist)) {
+			long x86_tss_offset, ist_offset;
+			x86_tss_offset = MEMBER_OFFSET("tss_struct", "x86_tss");
+			ist_offset = MEMBER_OFFSET("x86_hw_tss", "ist");
+			if ((x86_tss_offset != INVALID_OFFSET) &&
+			    (ist_offset != INVALID_OFFSET))
+				ASSIGN_OFFSET(tss_struct_ist) = x86_tss_offset + 
+					ist_offset;
+		}
 		MEMBER_OFFSET_INIT(user_regs_struct_rip,
 			"user_regs_struct", "rip");
 		MEMBER_OFFSET_INIT(user_regs_struct_rsp,
@@ -3108,33 +3123,68 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 			INVALID_OFFSET);
 		err |= ((ms->pto.r8 = MEMBER_OFFSET("pt_regs", "r8")) == 
 			INVALID_OFFSET);
-		err |= ((ms->pto.rax = MEMBER_OFFSET("pt_regs", "rax")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rbx = MEMBER_OFFSET("pt_regs", "rbx")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rcx = MEMBER_OFFSET("pt_regs", "rcx")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rdx = MEMBER_OFFSET("pt_regs", "rdx")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rsi = MEMBER_OFFSET("pt_regs", "rsi")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rdi = MEMBER_OFFSET("pt_regs", "rdi")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rip = MEMBER_OFFSET("pt_regs", "rip")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rsp = MEMBER_OFFSET("pt_regs", "rsp")) == 
-			INVALID_OFFSET);
 		err |= ((ms->pto.cs = MEMBER_OFFSET("pt_regs", "cs")) == 
 			INVALID_OFFSET);
 		err |= ((ms->pto.ss = MEMBER_OFFSET("pt_regs", "ss")) == 
 			INVALID_OFFSET);
-		err |= ((ms->pto.eflags = MEMBER_OFFSET("pt_regs", "eflags")) ==
-			INVALID_OFFSET);
-		err |= ((ms->pto.orig_rax = 
-			MEMBER_OFFSET("pt_regs", "orig_rax")) == 
-			INVALID_OFFSET);
-		err |= ((ms->pto.rbp = MEMBER_OFFSET("pt_regs", "rbp")) == 
-			INVALID_OFFSET);
+		/*
+		 *  x86/x86_64 merge changed traditional register names.
+		 */
+		if (((ms->pto.rbp = MEMBER_OFFSET("pt_regs", "rbp")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rbp = MEMBER_OFFSET("pt_regs", "bp")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rax = MEMBER_OFFSET("pt_regs", "rax")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rax = MEMBER_OFFSET("pt_regs", "ax")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rbx = MEMBER_OFFSET("pt_regs", "rbx")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rbx = MEMBER_OFFSET("pt_regs", "bx")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rcx = MEMBER_OFFSET("pt_regs", "rcx")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rcx = MEMBER_OFFSET("pt_regs", "cx")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rdx = MEMBER_OFFSET("pt_regs", "rdx")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rdx = MEMBER_OFFSET("pt_regs", "dx")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rsi = MEMBER_OFFSET("pt_regs", "rsi")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rsi = MEMBER_OFFSET("pt_regs", "si")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rdi = MEMBER_OFFSET("pt_regs", "rdi")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rdi = MEMBER_OFFSET("pt_regs", "di")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rip = MEMBER_OFFSET("pt_regs", "rip")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rip = MEMBER_OFFSET("pt_regs", "ip")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.rsp = MEMBER_OFFSET("pt_regs", "rsp")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.rsp = MEMBER_OFFSET("pt_regs", "sp")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.eflags = MEMBER_OFFSET("pt_regs", "eflags")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.eflags = MEMBER_OFFSET("pt_regs", "flags")) == 
+		    INVALID_OFFSET))
+			err++; 
+		if (((ms->pto.orig_rax = MEMBER_OFFSET("pt_regs", "orig_rax")) == 
+		    INVALID_OFFSET) &&
+		    ((ms->pto.orig_rax = MEMBER_OFFSET("pt_regs", "orig_ax")) == 
+		    INVALID_OFFSET))
+			err++; 
 
 		if (err)
 			error(WARNING, "pt_regs structure has changed\n");
