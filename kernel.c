@@ -53,6 +53,7 @@ static void BUG_bytes_init(void);
 static int BUG_x86(void);
 static int BUG_x86_64(void);
 static void cpu_maps_init(void);
+static void get_xtime(struct timespec *);
 
 
 /*
@@ -164,7 +165,8 @@ kernel_init()
 	    (sp2->value > sp1->value))
 		kt->flags |= SMP|PER_CPU_OFF;
 	
-	get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
+	MEMBER_OFFSET_INIT(timekeeper_xtime, "timekeeper", "xtime");
+	get_xtime(&kt->date);
 	
 	if (pc->flags & GET_TIMESTAMP) {
         	fprintf(fp, "%s\n\n", 
@@ -4113,7 +4115,7 @@ display_sys_stats(void)
 	fprintf(fp, "        CPUS: %d\n",
 		machine_type("PPC64") ? get_cpus_to_display() : kt->cpus);
 	if (ACTIVE())
-        	get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
+		get_xtime(&kt->date);
         fprintf(fp, "        DATE: %s\n", 
 		strip_linefeeds(ctime(&kt->date.tv_sec))); 
         fprintf(fp, "      UPTIME: %s\n", get_uptime(buf, NULL)); 
@@ -4579,7 +4581,7 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "   module_tree: %s\n", kt->module_tree ? 
 		kt->module_tree : "(not used)");
 	if (!(pc->flags & KERNEL_DEBUG_QUERY) && ACTIVE()) 
-                get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
+		get_xtime(&kt->date);
         fprintf(fp, "          date: %s\n",
                 strip_linefeeds(ctime(&kt->date.tv_sec)));
         fprintf(fp, "  proc_version: %s\n", strip_linefeeds(kt->proc_version));
@@ -7750,4 +7752,21 @@ paravirt_init(void)
 			error(INFO, "pv_init_ops exists: ARCH_PVOPS\n");
 		kt->flags |= ARCH_PVOPS;
 	}
+}
+
+/*
+ *  Get the kernel's xtime timespec from its relevant location.
+ */
+static void
+get_xtime(struct timespec *date)
+{
+	struct syment *sp;
+
+	if (VALID_MEMBER(timekeeper_xtime) &&
+	    (sp = kernel_symbol_search("timekeeper"))) {
+                readmem(sp->value + OFFSET(timekeeper_xtime), KVADDR, 
+			date, sizeof(struct timespec),
+                        "timekeeper xtime", RETURN_ON_ERROR);
+	} else if (kernel_symbol_exists("xtime"))
+		get_symbol_data("xtime", sizeof(struct timespec), date);
 }

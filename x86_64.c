@@ -35,6 +35,7 @@ static int is_vsyscall_addr(ulong);
 struct syment *x86_64_value_to_symbol(ulong, ulong *);
 static int x86_64_eframe_search(struct bt_info *);
 static int x86_64_eframe_verify(struct bt_info *, long, long, long, long, long, long);
+
 #define EFRAME_PRINT  (0x1)
 #define EFRAME_VERIFY (0x2)
 #define EFRAME_CS     (0x4)
@@ -83,6 +84,7 @@ static void x86_64_post_init(void);
 static void parse_cmdline_args(void);
 static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
+static ulong x86_64_irq_eframe_link(ulong, struct bt_info *, FILE *);
 static ulong search_for_switch_to(ulong, ulong);
 static void x86_64_thread_return_init(void);
 static void x86_64_framepointer_init(void);
@@ -3128,7 +3130,7 @@ in_exception_stack:
                  */
                 up = (ulong *)(&bt->stackbuf[stacktop - bt->stackbase]);
                 up -= 1;
-                irq_eframe = rsp = bt->stkptr = (*up) - ms->irq_eframe_link;
+                irq_eframe = rsp = bt->stkptr = x86_64_irq_eframe_link(*up, bt, ofp);
 		up -= 1;
                 bt->instptr = *up;
 		/*
@@ -3911,10 +3913,9 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
         if (!verified && ((flags & (EFRAME_VERIFY|EFRAME_PRINT)) == 
 	    (EFRAME_VERIFY|EFRAME_PRINT))) 
 		flags &= ~EFRAME_PRINT;
-
-	if (CRASHDEBUG(2)) 
-		fprintf(ofp, "< exception frame at: %lx >\n", kvaddr ?  kvaddr :
-			(local - bt->stackbuf) + bt->stackbase);
+ 	else if (CRASHDEBUG(1) && verified && (flags != EFRAME_VERIFY)) 
+		fprintf(ofp, "< exception frame at: %lx >\n", kvaddr ?
+			kvaddr : (local - bt->stackbuf) + bt->stackbase);
 
 	if (flags & EFRAME_PRINT) {
 		if (flags & EFRAME_SEARCH) {
@@ -5417,6 +5418,29 @@ x86_64_irq_eframe_link_init(void)
 		machdep->machspec->irq_eframe_link = 40;
 	else if (THIS_KERNEL_VERSION >= LINUX(2,6,29)) 
 		machdep->machspec->irq_eframe_link = 40;
+}
+
+/*
+ *  Calculate and verify the IRQ exception frame location from the 
+ *  stack reference at the top of the IRQ stack, possibly adjusting
+ *  the ms->irq_eframe_link value.
+ */
+static ulong
+x86_64_irq_eframe_link(ulong stkref, struct bt_info *bt, FILE *ofp)
+{
+	ulong irq_eframe;
+
+	irq_eframe = stkref - machdep->machspec->irq_eframe_link;
+
+	if (x86_64_exception_frame(EFRAME_VERIFY, irq_eframe, 0, bt, ofp))
+		return irq_eframe;
+
+	if (x86_64_exception_frame(EFRAME_VERIFY, irq_eframe+8, 0, bt, ofp)) {
+		machdep->machspec->irq_eframe_link -= 8;
+		return (irq_eframe + 8);
+	}
+
+	return irq_eframe;
 }
 
 #include "netdump.h"

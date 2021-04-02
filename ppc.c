@@ -74,42 +74,41 @@ static struct line_number_hook ppc_line_number_hooks[];
 static struct machine_specific ppc_machine_specific = { 0 };
 static int probe_default_platform(char *);
 static int probe_ppc44x_platform(char *);
+static int probe_ppce500_platform(char *);
 static void ppc_probe_base_platform(void);
 
 typedef int (*probe_func_t) (char *);
 
 probe_func_t probe_platforms[] = {
 	probe_ppc44x_platform,	/* 44x chipsets */
+	probe_ppce500_platform, /* E500 chipsets */
 	probe_default_platform, /* This should be at the end */
 	NULL
 };
 
+/* Don't forget page flags definitions for each platform */
+#define PLATFORM_PAGE_FLAGS_SETUP(PLT)		\
+do {						\
+	_PAGE_PRESENT = PLT##_PAGE_PRESENT;	\
+	_PAGE_USER = PLT##_PAGE_USER;		\
+	_PAGE_RW = PLT##_PAGE_RW;		\
+	_PAGE_GUARDED = PLT##_PAGE_GUARDED;	\
+	_PAGE_COHERENT = PLT##_PAGE_COHERENT;	\
+	_PAGE_NO_CACHE = PLT##_PAGE_NO_CACHE;	\
+	_PAGE_WRITETHRU = PLT##_PAGE_WRITETHRU;	\
+	_PAGE_DIRTY = PLT##_PAGE_DIRTY;		\
+	_PAGE_ACCESSED = PLT##_PAGE_ACCESSED;	\
+	_PAGE_HWWRITE = PLT##_PAGE_HWWRITE;	\
+	_PAGE_SHARED = PLT##_PAGE_SHARED;	\
+} while (0)
+
 static int
 probe_ppc44x_platform(char *name)
 {
-	struct machine_specific *machspec = machdep->machspec;
-
 	/* 44x include ppc440* and ppc470 */
 	if (STRNEQ(name, "ppc440") || STREQ(name, "ppc470")) {
-
-		machspec->platform 		= strdup(name);
-
-		machspec->pgdir_shift		= PPC44x_PGDIR_SHIFT;
-		machspec->ptrs_per_pgd 		= PPC44x_PTRS_PER_PGD;
-		machspec->ptrs_per_pte		= PPC44x_PTRS_PER_PTE;
-		machspec->pte_size 		= PPC44x_PTE_SIZE;
-
-		machspec->_page_present		= PPC44x_PAGE_PRESENT;
-		machspec->_page_user 		= PPC44x_PAGE_USER;
-		machspec->_page_rw 		= PPC44x_PAGE_RW;
-		machspec->_page_guarded		= PPC44x_PAGE_GUARDED;
-		machspec->_page_coherent 	= PPC44x_PAGE_COHERENT;
-		machspec->_page_no_cache 	= PPC44x_PAGE_NO_CACHE;
-		machspec->_page_writethru 	= PPC44x_PAGE_WRITETHRU;
-		machspec->_page_dirty 		= PPC44x_PAGE_DIRTY;
-		machspec->_page_accessed 	= PPC44x_PAGE_ACCESSED;
-		machspec->_page_hwwrite 	= PPC44x_PAGE_HWWRITE;
-		machspec->_page_shared 		= PPC44x_PAGE_SHARED;
+		PPC_PLATFORM = strdup(name);
+		PLATFORM_PAGE_FLAGS_SETUP(PPC44x);
 
 		return TRUE;
 	}
@@ -117,34 +116,140 @@ probe_ppc44x_platform(char *name)
 	return FALSE;
 }
 
+struct fsl_booke_tlbcam {
+#define NUM_TLBCAMS	(64)
+#define LAST_TLBCAM	(0x40)
+	uint index;
+	struct {
+		ulong start;
+		ulong limit;
+		physaddr_t phys;
+	} tlbcamrange;
+	struct {
+		uint MAS0;
+		uint MAS1;
+		ulong MAS2;
+		uint MAS3;
+		uint MAS7;
+	} tlbcam;
+};
+
+static int
+fsl_booke_vtop(ulong vaddr, physaddr_t *paddr, int verbose)
+{
+	struct fsl_booke_tlbcam *fsl_mmu;
+	int i, found;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "[Searching tlbcam address mapping]\n");
+	fsl_mmu = MMU_SPECIAL;
+	for (i = 0, found = FALSE;;i++, fsl_mmu++) {
+		if (vaddr >= fsl_mmu->tlbcamrange.start &&
+		    vaddr < fsl_mmu->tlbcamrange.limit) {
+			*paddr = fsl_mmu->tlbcamrange.phys +
+				 (vaddr - fsl_mmu->tlbcamrange.start);
+			found = TRUE;
+			break;
+		}
+		if (fsl_mmu->index & LAST_TLBCAM)
+			break;
+	}
+	if (found && verbose) {
+		/* TLBCAM segment attributes */
+		fprintf(fp, "\n  TLBCAM[%u]: MAS0     MAS1     MAS2     "
+			"MAS3     MAS7\n",
+			(fsl_mmu->index & ~LAST_TLBCAM));
+		fprintf(fp, "             %-8x %-8x %-8lx %-8x %-8x\n",
+			fsl_mmu->tlbcam.MAS0, fsl_mmu->tlbcam.MAS1,
+			fsl_mmu->tlbcam.MAS2, fsl_mmu->tlbcam.MAS3,
+			fsl_mmu->tlbcam.MAS7);
+		/* TLBCAM range */
+		fprintf(fp, "             VIRTUAL RANGE : %lx - %lx\n",
+			fsl_mmu->tlbcamrange.start, fsl_mmu->tlbcamrange.limit);
+		fprintf(fp, "             PHYSICAL RANGE: %llx - %llx\n",
+			fsl_mmu->tlbcamrange.phys,
+			fsl_mmu->tlbcamrange.phys + (fsl_mmu->tlbcamrange.limit
+				- fsl_mmu->tlbcamrange.start));
+		/* translated addr and its tlbcam's offset. */
+		fprintf(fp, "  => VIRTUAL  PHYSICAL TLBCAM-OFFSET\n");
+		fprintf(fp, "     %-8lx %-8llx %lu\n", vaddr, *paddr,
+			vaddr - fsl_mmu->tlbcamrange.start);
+	}
+	if (CRASHDEBUG(1))
+		fprintf(fp, "[tlbcam search end]\n");
+
+	return found;
+}
+
+static void
+fsl_booke_mmu_setup(void)
+{
+	struct fsl_booke_tlbcam *fsl_mmu;
+	uint i, tlbcam_index;
+	ulong tlbcam_addrs, TLBCAM;
+
+	readmem(symbol_value("tlbcam_index"), KVADDR, &tlbcam_index,
+		sizeof(uint), "tlbcam_index", FAULT_ON_ERROR);
+	if (tlbcam_index != 0 && tlbcam_index < NUM_TLBCAMS) {
+		fsl_mmu = calloc(tlbcam_index, sizeof(*fsl_mmu));
+		if (!fsl_mmu) {
+			error(FATAL, "fsl_mmu calloc() failed\n");
+			return;
+		}
+		tlbcam_addrs = symbol_value("tlbcam_addrs");
+		TLBCAM = symbol_value("TLBCAM");
+		for (i = 0; i < tlbcam_index; i++) {
+			fsl_mmu[i].index = i;
+			readmem(tlbcam_addrs +
+					i * sizeof(fsl_mmu[i].tlbcamrange),
+				KVADDR, &fsl_mmu[i].tlbcamrange,
+				sizeof(fsl_mmu[i].tlbcamrange), "tlbcam_addrs",
+				FAULT_ON_ERROR);
+			readmem(TLBCAM + i * sizeof(fsl_mmu[i].tlbcam), KVADDR,
+				&fsl_mmu[i].tlbcam, sizeof(fsl_mmu[i].tlbcam),
+				"TLBCAM", FAULT_ON_ERROR);
+		}
+		fsl_mmu[i - 1].index |= LAST_TLBCAM;
+		MMU_SPECIAL = fsl_mmu;
+		VTOP_SPECIAL = fsl_booke_vtop;
+	} else
+		error(INFO, "[%s]: can't setup tlbcam: tlbcam_index=%u\n",
+			PPC_PLATFORM, tlbcam_index);
+}
+
+static int
+probe_ppce500_platform(char *name)
+{
+	if (STRNEQ(name, "ppce500mc")) {
+		PPC_PLATFORM = strdup(name);
+		if (IS_PAE()) {
+			PTE_RPN_SHIFT = BOOKE3E_PTE_RPN_SHIFT;
+			PLATFORM_PAGE_FLAGS_SETUP(BOOK3E);
+		} else
+			PLATFORM_PAGE_FLAGS_SETUP(FSL_BOOKE);
+		fsl_booke_mmu_setup();
+
+		return TRUE;
+	}
+	return FALSE;
+}
+
 static int
 probe_default_platform(char *name)
 {
-	struct machine_specific *machspec = machdep->machspec;
+	if (IS_PAE()) {
+		error(INFO, "platform \"%s\" 64bit PTE fall through\n", name);
+		error(INFO, "vmalloc translation could not work!\n");
+	}
 
 	/* Use the default definitions */
-	machspec->platform = strdup(name);
-
-	machspec->pgdir_shift 	= DEFAULT_PGDIR_SHIFT;
-	machspec->ptrs_per_pgd 	= DEFAULT_PTRS_PER_PGD;
-	machspec->ptrs_per_pte 	= DEFAULT_PTRS_PER_PTE;
-	machspec->pte_size 	= DEFAULT_PTE_SIZE;
-
-	machspec->_page_present		= DEFAULT_PAGE_PRESENT;
-	machspec->_page_user 		= DEFAULT_PAGE_USER;
-	machspec->_page_rw 		= DEFAULT_PAGE_RW;
-	machspec->_page_guarded 	= DEFAULT_PAGE_GUARDED;
-	machspec->_page_coherent 	= DEFAULT_PAGE_COHERENT;
-	machspec->_page_no_cache 	= DEFAULT_PAGE_NO_CACHE;
-	machspec->_page_writethru 	= DEFAULT_PAGE_WRITETHRU;
-	machspec->_page_dirty 		= DEFAULT_PAGE_DIRTY;
-	machspec->_page_accessed 	= DEFAULT_PAGE_ACCESSED;
-	machspec->_page_hwwrite 	= DEFAULT_PAGE_HWWRITE;
-	machspec->_page_shared 		= DEFAULT_PAGE_SHARED;
-	
+	PPC_PLATFORM = strdup(name);
+	PLATFORM_PAGE_FLAGS_SETUP(DEFAULT);
 
 	return TRUE;
 }
+
+#undef PLATFORM_PAGE_FLAGS_SETUP
 
 /*
  * Find the platform of the crashing system and set the
@@ -179,6 +284,9 @@ ppc_init(int when)
 {
 	uint cpu_features;
 	ulong cur_cpu_spec;
+	struct datatype_member pte = {
+		.name = "pte_t",
+	};
 
 	switch (when)
 	{
@@ -231,16 +339,22 @@ ppc_init(int when)
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
                 machdep->init_kernel_pgd = NULL;
 
-		/* Find the platform where we crashed */
-		ppc_probe_base_platform();
-		machdep->ptrs_per_pgd = PTRS_PER_PGD;
-		/* Check if we have 64bit PTE on 32bit system */
-		if (PTE_SIZE == sizeof(ulonglong))
-			machdep->flags |= PAE;
-
 		break;
 
 	case POST_GDB:
+		/* gdb interface got available, resolve PTE right now. */
+		PTE_SIZE = DATATYPE_SIZE(&pte);
+		if (PTE_SIZE < 0)
+			error(FATAL,
+			      "gdb could not handle \"pte_t\" size request\n");
+		/* Check if we have 64bit PTE on 32bit system */
+		if (PTE_SIZE == sizeof(ulonglong))
+			machdep->flags |= PAE;
+		/* Find the platform where we crashed */
+		ppc_probe_base_platform();
+		if (!PTE_RPN_SHIFT)
+			PTE_RPN_SHIFT = PAGE_SHIFT;
+
 		machdep->vmalloc_start = ppc_vmalloc_start;
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables, 
  			"thread_struct", "pg_tables");
@@ -299,6 +413,7 @@ ppc_init(int when)
 		if ((THIS_KERNEL_VERSION >= LINUX(2,6,0)) &&
 			symbol_exists("hardirq_ctx"))
 			STRUCT_SIZE_INIT(irq_ctx, "hardirq_ctx");
+
 		break;
 
 	case POST_INIT:
@@ -332,6 +447,7 @@ ppc_dump_machdep_table(ulong arg)
 	fprintf(fp, "       ptrs_per_pgd: %d\n", PTRS_PER_PGD);
 	fprintf(fp, "       ptrs_per_pte: %d\n", PTRS_PER_PTE);
 	fprintf(fp, "           pte_size: %d\n", PTE_SIZE);
+	fprintf(fp, "      pte_rpn_shift: %d\n", PTE_RPN_SHIFT);
 	fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
         fprintf(fp, "                 hz: %d\n", machdep->hz);
         fprintf(fp, "                mhz: %ld\n", machdep->mhz);
@@ -378,13 +494,20 @@ ppc_dump_machdep_table(ulong arg)
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
+static ulonglong
+ppc_pte_physaddr(ulonglong pte)
+{
+	pte = pte >> PTE_RPN_SHIFT;	/* pfn */
+	pte = pte << PAGE_SHIFT;	/* physaddr */
+
+	return pte;
+}
+
 static int
 ppc_pgd_vtop(ulong *pgd, ulong vaddr, physaddr_t *paddr, int verbose)
 {
 	ulong *page_dir;
-	ulong *page_middle;
-	ulong *page_table;
-	ulong pgd_pte;
+	ulong pgd_pte, page_table, pte_index;
 	ulonglong pte;
 
 	if (verbose)
@@ -403,31 +526,31 @@ ppc_pgd_vtop(ulong *pgd, ulong vaddr, physaddr_t *paddr, int verbose)
 	if (verbose)
 		fprintf(fp, "  PGD: %lx => %lx\n", (ulong)page_dir, pgd_pte);
 
-	if (!pgd_pte)
+	if (!pgd_pte) {
+		if (VTOP_SPECIAL)
+			/*
+			 * This ppc platform have special address mapping
+			 * between vaddr and paddr which can not search from
+			 * standard page table.
+			 */
+			return VTOP_SPECIAL(vaddr, paddr, verbose);
 		goto no_page;
-
-	page_middle = (ulong *)pgd_pte;
-
-	if (machdep->flags & CPU_BOOKE)
-		page_table = (ulong *)((ulong)page_middle + ((ulong)BTOP(vaddr) & (PTRS_PER_PTE - 1)) * PTE_SIZE);
-	else {
-		page_table = (ulong *)((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase);
-		page_table = (ulong *)((ulong)page_table + ((ulong)BTOP(vaddr) & (PTRS_PER_PTE-1)) * PTE_SIZE);
 	}
 
-	if (verbose)
-		fprintf(fp, "  PMD: %lx => %lx\n", (ulong)page_middle, 
-			(ulong)page_table);
+	page_table = pgd_pte;
+	if (IS_BOOKE())
+		page_table = VTOP(page_table);
 
-        FILL_PTBL(PAGEBASE((ulong)page_table), KVADDR, PAGESIZE());
-	if (PTE_SIZE == sizeof(ulonglong))
-		pte = ULONGLONG(machdep->ptbl + PAGEOFFSET((ulong)page_table));
+        FILL_PTBL(PAGEBASE((ulong)page_table), PHYSADDR, PAGESIZE());
+	pte_index = (vaddr >> PAGE_SHIFT) & (PTRS_PER_PTE - 1);
+	if (IS_PAE())
+		pte = ULONGLONG(machdep->ptbl + PTE_SIZE * pte_index);
 
-	else	/* Defaults to ulong */
-	        pte = ULONG(machdep->ptbl + PAGEOFFSET((ulong)page_table));
+	else
+	        pte = ULONG(machdep->ptbl + PTE_SIZE * pte_index);
 
 	if (verbose) 
-		fprintf(fp, "  PTE: %lx => %llx\n", (ulong)page_table, pte);
+		fprintf(fp, "  PTE: %lx => %llx\n", pgd_pte, pte);
 
 	if (!(pte & _PAGE_PRESENT)) { 
 		if (pte && verbose) {
@@ -438,11 +561,11 @@ ppc_pgd_vtop(ulong *pgd, ulong vaddr, physaddr_t *paddr, int verbose)
 	}
 
 	if (verbose) {
-		fprintf(fp, " PAGE: %llx\n\n", PAGEBASE(pte));
+		fprintf(fp, " PAGE: %llx\n\n", PAGEBASE(ppc_pte_physaddr(pte)));
 		ppc_translate_pte((ulong)pte, 0, pte);
 	}
 
-	*paddr = PAGEBASE(pte) + PAGEOFFSET(vaddr);
+	*paddr = PAGEBASE(ppc_pte_physaddr(pte)) + PAGEOFFSET(vaddr);
 
 	return TRUE;
 
@@ -575,7 +698,7 @@ ppc_processor_speed(void)
 	ulong res, value, ppc_md, md_setup_res;
 	ulong prep_setup_res;
 	ulong node, type, name, properties;
-	char str_buf[16];
+	char str_buf[32];
 	ulong len, mhz = 0;
 
 	if (machdep->mhz)
@@ -762,10 +885,10 @@ ppc_translate_pte(ulong pte32, void *physaddr, ulonglong pte64)
         char *arglist[MAXARGS];
 	ulonglong paddr;
 
-	if (!(machdep->flags & PAE))
+	if (!IS_PAE())
 		pte64 = pte32;
 
-        paddr = PAGEBASE(pte64);
+        paddr = PAGEBASE(ppc_pte_physaddr(pte64));
 	page_present = (pte64 & _PAGE_PRESENT);
 
 	if (physaddr) {

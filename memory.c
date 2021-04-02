@@ -3051,16 +3051,18 @@ cmd_vm(void)
 	int c;
 	ulong flag;
 	ulong value;
+	ulong single_vma;
 	ulonglong llvalue;
 	struct task_context *tc;
 	struct reference reference, *ref;
 	int subsequent;
 
 	flag = 0;
+	single_vma = 0;
 	ref = NULL;
 	BZERO(&reference, sizeof(struct reference));
 
-        while ((c = getopt(argcnt, args, "f:pmvR:")) != EOF) {
+        while ((c = getopt(argcnt, args, "f:pmvR:P:")) != EOF) {
                 switch(c)
 		{
 		case 'f':
@@ -3105,6 +3107,15 @@ cmd_vm(void)
 			}
 			break;
 
+		case 'P':
+			if (flag)
+				argerrs++;
+			else {
+				flag |= PRINT_SINGLE_VMA;
+				single_vma = htol(optarg, FAULT_ON_ERROR, NULL);
+			}
+			break;
+
 		default:
 			argerrs++;
 			break;
@@ -3117,7 +3128,7 @@ cmd_vm(void)
 	if (!args[optind]) {
 		if (!ref)
 			print_task_header(fp, CURRENT_CONTEXT(), 0);
-		vm_area_dump(CURRENT_TASK(), flag, 0, ref);
+		vm_area_dump(CURRENT_TASK(), flag, single_vma, ref);
 		return;
 	}
 
@@ -3130,14 +3141,14 @@ cmd_vm(void)
 			for (tc = pid_to_context(value); tc; tc = tc->tc_next) {
                                 if (!ref)
                                         print_task_header(fp, tc, subsequent++);
-                                vm_area_dump(tc->task, flag, 0, ref);
+                                vm_area_dump(tc->task, flag, single_vma, ref);
                         }
 			break;
 
 		case STR_TASK:
 			if (!ref)
                                 print_task_header(fp, tc, subsequent++);
-                        vm_area_dump(tc->task, flag, 0, ref);
+                        vm_area_dump(tc->task, flag, single_vma, ref);
 			break;
 
 		case STR_INVALID:
@@ -3403,6 +3414,8 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 	ulonglong vm_flags;
 	ulong vm_file, inode;
 	ulong dentry, vfsmnt;
+	ulong single_vma;
+	int single_vma_found;
 	int found;
 	struct task_mem_usage task_mem_usage, *tm;
 	char buf1[BUFSIZE];
@@ -3415,6 +3428,13 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
         tc = task_to_context(task);
 	tm = &task_mem_usage;
 	get_task_mem_usage(task, tm);
+
+	single_vma = 0;
+	single_vma_found = FALSE;
+	if (flag & PRINT_SINGLE_VMA) {
+		single_vma = vaddr;
+		vaddr = 0;
+	}
 
 	if (ref) {
 		ref->cmdflags = VM_REF_SEARCH;
@@ -3435,7 +3455,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
                 return (ulong)NULL;
         }
 
-        if (!(flag & (UVADDR|PRINT_MM_STRUCT|PRINT_VMA_STRUCTS)) &&
+        if (!(flag & (UVADDR|PRINT_MM_STRUCT|PRINT_VMA_STRUCTS|PRINT_SINGLE_VMA)) &&
 	    !DO_REF_SEARCH(ref)) 
 		PRINT_VM_DATA();
 
@@ -3458,7 +3478,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
                 mkstring(buf3, UVADDR_PRLEN, CENTER|RJUST, "END"),
 		space(MINSPACE));
 
-	if (!(flag & (PHYSADDR|VERIFY_ADDR|PRINT_VMA_STRUCTS)) && 
+	if (!(flag & (PHYSADDR|VERIFY_ADDR|PRINT_VMA_STRUCTS|PRINT_SINGLE_VMA)) && 
 	    !DO_REF_SEARCH(ref)) 
 		fprintf(fp, vma_header);
 
@@ -3477,6 +3497,13 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		vm_start = ULONG(vma_buf + OFFSET(vm_area_struct_vm_start));
 		vm_flags = get_vm_flags(vma_buf);
 		vm_file = ULONG(vma_buf + OFFSET(vm_area_struct_vm_file));
+		
+		if (flag & PRINT_SINGLE_VMA) {
+			if (vma != single_vma)
+				continue;
+			fprintf(fp, "%s", vma_header);
+			single_vma_found = TRUE;
+		}
 
 		if (flag & PRINT_VMA_STRUCTS) {
 			dump_struct("vm_area_struct", vma, 0);
@@ -3566,7 +3593,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 			} else {
 				PRINT_VMA_DATA();
 				     
-				if (flag & PHYSADDR) 
+				if (flag & (PHYSADDR|PRINT_SINGLE_VMA)) 
 					vm_area_page_dump(vma, task,
 						vm_start, vm_end, vm_mm, ref);
 			}
@@ -3578,6 +3605,9 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 
 	if (flag & VERIFY_ADDR)
 		return (ulong)NULL;
+
+	if ((flag & PRINT_SINGLE_VMA) && !single_vma_found)
+		fprintf(fp, "(not found)\n");
 
 	if ((flag & UVADDR) && !found) 
 		fprintf(fp, "(not found)\n");
@@ -11233,44 +11263,30 @@ phys_to_page(physaddr_t phys, ulong *pp)
 
 
 /*
- *  Try to read a string of non-NULL characters from a memory location, 
- *  returning the number of characters read.
+ *  Fill the caller's buffer with up to maxlen non-NULL bytes 
+ *  starting from kvaddr, returning the number of consecutive 
+ *  non-NULL bytes found.  If the buffer gets filled with
+ *  maxlen bytes without a NULL, then the caller is reponsible 
+ *  for handling it. 
  */
 int
 read_string(ulong kvaddr, char *buf, int maxlen)
 {
-	char strbuf[MIN_PAGE_SIZE];
-        ulong kp;
-	char *bufptr;
-	long cnt, size;
+	int i;
 
         BZERO(buf, maxlen);
-	BZERO(strbuf, MIN_PAGE_SIZE);
 
-	kp = kvaddr;
-	bufptr = strbuf;
-	size = maxlen;
+	readmem(kvaddr, KVADDR, buf, maxlen,
+	    "read_string characters", QUIET|RETURN_ON_ERROR);
 
-	while (size > 0) {
-        	cnt = MIN_PAGE_SIZE - (kp & (MIN_PAGE_SIZE-1)); 
- 
-        	if (cnt > size)
-                        cnt = size;
-
-                if (!readmem(kp, KVADDR, bufptr, cnt,
-                    "readstring characters", QUIET|RETURN_ON_ERROR))
-                        break;
-
-		if (count_buffer_chars(bufptr, NULLCHAR, cnt))
+	for (i = 0; i < maxlen; i++) {
+		if (buf[i] == NULLCHAR) {
+			BZERO(&buf[i], maxlen-i);
 			break;
-
-                kp += cnt;
-                bufptr += cnt;
-                size -= cnt;
+		}
 	}
 
-	strcpy(buf, strbuf);
-	return (strlen(buf));
+	return i;
 }
 
 /*

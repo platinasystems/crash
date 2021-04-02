@@ -796,8 +796,23 @@ reattempt:
 struct command_table_entry *
 get_command_table_entry(char *name)
 {       
+	int i;
         struct command_table_entry *cp;
         struct extension_table *ext;
+
+	if (pc->flags2 & GDB_CMD_MODE) {
+		if (STREQ(name, "crash")) {
+			if (argcnt == 1)
+				error(FATAL, 
+				    "a crash command must follow "
+				    "the \"crash\" directive\n");
+			for (i = 1; i <= argcnt; i++)
+				args[i-1] = args[i];
+			argcnt--;
+			name = args[0];
+		} else
+			name = "gdb";
+	}
 	
 	if ((pc->flags & MINIMAL_MODE) && !minimal_functions(name)) 
 		return NULL;
@@ -1486,6 +1501,8 @@ dump_program_context(void)
 		fprintf(fp, "%sMOD_READNOW", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
+	fprintf(fp, "      cmd_cleanup: %lx\n", (ulong)pc->cmd_cleanup);
+	fprintf(fp, "  cmd_cleanup_arg: %lx\n", (ulong)pc->cmd_cleanup_arg);
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);
 	fprintf(fp, "    gdb_sigaction: %lx\n", (ulong)&pc->gdb_sigaction);

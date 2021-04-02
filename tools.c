@@ -1962,6 +1962,40 @@ cmd_set(void)
                                	    tt->flags & TASK_REFRESH ?  "on" : "off");
 			return;
 
+               } else if (STREQ(args[optind], "gdb")) {
+                        if (args[optind+1]) {
+                                optind++;
+				if (!runtime)
+					defer();
+                                else if (STREQ(args[optind], "on")) {
+					if (pc->flags & MINIMAL_MODE)
+						goto invalid_set_command;
+					else
+                                        	pc->flags2 |= GDB_CMD_MODE;
+                                } else if (STREQ(args[optind], "off"))
+                                        pc->flags2 &= ~GDB_CMD_MODE;
+                                else if (IS_A_NUMBER(args[optind])) {
+                                        value = stol(args[optind],
+                                                FAULT_ON_ERROR, NULL);
+                                        if (value) {
+						if (pc->flags & MINIMAL_MODE)
+							goto invalid_set_command;
+						else
+                                                	pc->flags2 |= GDB_CMD_MODE;
+                                        } else
+                                                pc->flags2 &= ~GDB_CMD_MODE;
+                                } else
+					goto invalid_set_command;
+
+				set_command_prompt(pc->flags2 & GDB_CMD_MODE ?
+					"gdb> " : NULL);
+                        }
+
+                        if (runtime)
+                                fprintf(fp, "gdb: %s\n",
+                               	    pc->flags2 & GDB_CMD_MODE ?  "on" : "off");
+			return;
+
                } else if (STREQ(args[optind], "scroll")) {
                         if (args[optind+1] && pc->scroll_command) {
                                 optind++;
@@ -2379,6 +2413,7 @@ show_options(void)
 	fprintf(fp, "        unwind: %s\n", kt->flags & DWARF_UNWIND ? "on" : "off");
 	fprintf(fp, " zero_excluded: %s\n", *diskdump_flags & ZERO_EXCLUDED ? "on" : "off");
 	fprintf(fp, "     null-stop: %s\n", *gdb_stop_print_at_null ? "on" : "off");
+	fprintf(fp, "           gdb: %s\n", pc->flags2 & GDB_CMD_MODE ? "on" : "off");
 }
 
 
@@ -4441,6 +4476,26 @@ highest_bit_long(ulong val)
         }
 
         return highest;
+}
+
+int
+lowest_bit_long(ulong val)
+{
+        int i, cnt;
+	int lowest;
+
+	lowest = -1;
+	cnt = sizeof(long) * 8;
+
+        for (i = 0; i < cnt; i++) {
+                if (val & 1) {
+                        lowest = i;
+			break;
+		}
+                val >>= 1;
+        }
+
+	return lowest;
 }
 
 /*

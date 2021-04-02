@@ -1345,3 +1345,15 @@
  	            for (i = 0; i < lm->mod_sections; i++) {
  	                    secname = lm->mod_section_data[i].name;
  	                    if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
+--- gdb-7.3.1/gdb/c-typeprint.c.orig
++++ gdb-7.3.1/gdb/c-typeprint.c
+@@ -956,7 +956,8 @@ c_type_print_base (struct type *type, struct ui_file *stream,
+ 		fprintf_filtered (stream, "static ");
+ 	      c_print_type (TYPE_FIELD_TYPE (type, i),
+ 			    TYPE_FIELD_NAME (type, i),
+-			    stream, show - 1, level + 4);
++			    stream, strlen(TYPE_FIELD_NAME (type, i)) ?
++			    show - 1 : show, level + 4);
+ 	      if (!field_is_static (&TYPE_FIELD (type, i))
+ 		  && TYPE_FIELD_PACKED (type, i))
+ 		{
