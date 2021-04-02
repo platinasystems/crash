@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -171,6 +171,10 @@ parse_line(char *str, char *argv[])
 	        case ' ':
 	        case '\t':
 	            str[i++] = NULLCHAR;
+
+	            while (str[i] == ' ' || str[i] == '\t') {
+	                i++;
+	            }
 	
 	            if (str[i] == '"') {    
 	                str[i] = ' ';
@@ -178,13 +182,10 @@ parse_line(char *str, char *argv[])
 	                i++;
 	            }
 
-                    if (str[i] == '(') {     
+                    if (!string && str[i] == '(') {     
                         expression = TRUE;
                     }
 	
-	            while (str[i] == ' ' || str[i] == '\t') {
-	                i++;
-	            }
 	
 	            if (str[i] != NULLCHAR && str[i] != '\n') {
 	                argv[j++] = &str[i];
@@ -1526,7 +1527,6 @@ shift_string_left(char *s, int cnt)
 char *
 shift_string_right(char *s, int cnt)
 {
-	int i;
         int origlen;
 
 	if (!cnt)
@@ -1534,12 +1534,8 @@ shift_string_right(char *s, int cnt)
 
         origlen = strlen(s);
         memmove(s+cnt, s, origlen);
-        *(s+(origlen+cnt)) = NULLCHAR;
-
-	for (i = 0; i < cnt; i++)
-		s[i] = ' ';
-
-        return(s);
+        s[origlen+cnt] = NULLCHAR;
+	return(memset(s, ' ', cnt));
 }
 
 /*
@@ -1553,12 +1549,10 @@ shift_string_right(char *s, int cnt)
 char *
 mkstring(char *s, int size, ulong flags, const char *opt)
 {
-	int i;
 	int len;
 	int extra;
 	int left;
 	int right;
-	char buf[BUFSIZE];
 
 	switch (flags & (LONG_DEC|LONG_HEX|INT_HEX|INT_DEC|LONGLONG_HEX|ZERO_FILL)) 
 	{
@@ -1623,21 +1617,19 @@ mkstring(char *s, int size, ulong flags, const char *opt)
 		}
 		else 
 			left = right = extra/2;
+
+		shift_string_right(s, left);
+		len = strlen(s);
+		memset(s + len, ' ', right);
+		s[len + right] = NULLCHAR;
 	
-		bzero(buf, BUFSIZE);
-		for (i = 0; i < left; i++)
-			strcat(buf, " ");
-		strcat(buf, s);
-		for (i = 0; i < right; i++)
-			strcat(buf, " ");
-	
-		strcpy(s, buf);
 		return(s);
 	}
 
 	if (flags & LJUST) {
-		for (i = 0; i < extra; i++)
-			strcat(s, " ");
+		len = strlen(s);
+		memset(s + len, ' ', extra);
+		s[len + extra] = NULLCHAR;
 	} else if (flags & RJUST) 
 		shift_string_right(s, extra);
 
@@ -2355,7 +2347,7 @@ show_options(void)
 void 
 cmd_eval(void)
 {
-	int expression, flags;
+	int flags;
 	int bitflag, longlongflag, longlongflagforce;
 	struct number_option nopt;
 	char buf1[BUFSIZE];
@@ -2402,7 +2394,6 @@ cmd_eval(void)
 	if(!BITS32())
 		longlongflagforce = 0;
 
-	expression = TRUE;
 	BZERO(buf1, BUFSIZE);
 	buf1[0] = '(';
 
@@ -2416,7 +2407,6 @@ cmd_eval(void)
 			return;
                 }
 		else {
-			expression = FALSE;
 			strcat(buf1, args[optind]);
 			strcat(buf1, " ");
 		}
@@ -4412,7 +4402,7 @@ void
 drop_core(char *s)
 {
 	volatile int *nullptr;
-	int i;
+	int i ATTRIBUTE_UNUSED;
 
 	if (s && ascii_string(s))
 		fprintf(stderr, "%s", s);
@@ -4708,10 +4698,13 @@ option_not_supported(int c)
 		(char)c);
 }
 
+static int please_wait_len = 0;
+
 void
 please_wait(char *s)
 {
 	int fd;
+	char buf[BUFSIZE];
 
 	if ((pc->flags & SILENT) || !DUMPFILE() || (pc->flags & RUNTIME))
 		return;
@@ -4725,7 +4718,8 @@ please_wait(char *s)
 
 	pc->flags |= PLEASE_WAIT;
 
-        fprintf(fp, "\rplease wait... (%s)", s);
+        please_wait_len = sprintf(buf, "\rplease wait... (%s)", s);
+	fprintf(fp, buf);
         fflush(fp);
 }
 
@@ -4737,7 +4731,9 @@ please_wait_done(void)
 
 	pc->flags &= ~PLEASE_WAIT;
 
-	fprintf(fp, "\r                                                \r");
+	fprintf(fp, "\r");
+	pad_line(fp, please_wait_len, ' ');
+	fprintf(fp, "\r");
 	fflush(fp);
 }
 

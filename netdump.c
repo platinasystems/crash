@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -121,16 +121,16 @@ is_netdump(char *file, ulong source_query)
 	}
 
 	size = MIN_NETDUMP_ELF_HEADER_SIZE;
-        if (read(fd, eheader, size) != size) {
-                sprintf(buf, "%s: read", file);
-                perror(buf);
-		goto bailout;
-	}
 
-        if (lseek(fd, 0, SEEK_SET) != 0) {
-                sprintf(buf, "%s: lseek", file);
-                perror(buf);
-                goto bailout;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(fd, 0, eheader, size))
+			goto bailout;
+	} else {
+		if (read(fd, eheader, size) != size) {
+			sprintf(buf, "%s: read", file);
+			perror(buf);
+			goto bailout;
+		}
 	}
 
 	load32 = NULL;
@@ -290,12 +290,24 @@ is_netdump(char *file, ulong source_query)
 		clean_exit(1);
 	}
 
-        if (read(fd, tmp_elf_header, size) != size) {
-                sprintf(buf, "%s: read", file);
-                perror(buf);
-		free(tmp_elf_header);
-                goto bailout;
-        }
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(fd, 0, tmp_elf_header, size)) {
+			free(tmp_elf_header);
+			goto bailout;
+		}
+	} else {
+		if (lseek(fd, 0, SEEK_SET) != 0) {
+			sprintf(buf, "%s: lseek", file);
+			perror(buf);
+			goto bailout;
+		}
+		if (read(fd, tmp_elf_header, size) != size) {
+			sprintf(buf, "%s: read", file);
+			perror(buf);
+			free(tmp_elf_header);
+			goto bailout;
+		}
+	}
 
 	nd->ndfd = fd;
 	nd->elf_header = tmp_elf_header;
@@ -523,11 +535,15 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 		break;
 	}	
 
-        if (lseek(nd->ndfd, offset, SEEK_SET) == -1)
-                return SEEK_ERROR;
-
-        if (read(nd->ndfd, bufptr, cnt) != cnt)
-                return READ_ERROR;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(nd->ndfd, offset, bufptr, cnt))
+			return READ_ERROR;
+	} else {
+		if (lseek(nd->ndfd, offset, SEEK_SET) == -1)
+			return SEEK_ERROR;
+		if (read(nd->ndfd, bufptr, cnt) != cnt)
+			return READ_ERROR;
+	}
 
         return cnt;
 }
@@ -854,6 +870,9 @@ netdump_memory_dump(FILE *fp)
 	fpsave = nd->ofp;
 	nd->ofp = fp;
 
+	if (FLAT_FORMAT())
+		dump_flat_header(nd->ofp);
+
 	netdump_print("vmcore_data: \n");
 	netdump_print("                  flags: %lx (", nd->flags);
 	others = 0;
@@ -873,7 +892,7 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
-	netdump_print(")\n");
+	netdump_print(") %s\n", FLAT_FORMAT() ? "[FLAT]" : "");
 	if ((pc->flags & RUNTIME) && symbol_exists("dump_level")) {
 		int dump_level;
                 if (readmem(symbol_value("dump_level"), KVADDR, &dump_level,

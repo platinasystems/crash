@@ -1287,3 +1287,267 @@
  
    /* Existing PSYMTABS_ADDRMAP mapping is present even for PARTIAL_SYMTABs
       which still have no corresponding full SYMTABs read.  But it is not
+--- gdb-7.0/gdb/symtab.c.orig
++++ gdb-7.0/gdb/symtab.c
+@@ -5200,8 +5200,6 @@ gdb_add_symbol_file(struct gnu_request *
+ 	register struct objfile *objfile;
+ 	register struct minimal_symbol *m;
+ 	struct load_module *lm;
+-	struct syment *sp;
+-	struct syment *spx;
+ 	int external, subsequent, found;
+ 	off_t offset;
+ 	ulong value, adjusted;
+--- gdb-7.0/bfd/verilog.c.orig
++++ gdb-7.0/bfd/verilog.c
+@@ -222,13 +222,13 @@ verilog_write_section (bfd *abfd,
+   verilog_write_address (abfd, list->where);
+   while (octets_written < list->size)
+     {
+-      bfd_vma address;
++//    bfd_vma address;
+       unsigned int octets_this_chunk = list->size - octets_written;
+ 
+       if (octets_this_chunk > 16)
+ 	octets_this_chunk = 16;
+ 
+-      address = list->where + octets_written / bfd_octets_per_byte (abfd);
++//    address = list->where + octets_written / bfd_octets_per_byte (abfd);
+ 
+       if (! verilog_write_record (abfd,
+ 				  location,
+--- gdb-7.0/bfd/elf64-x86-64.c.orig
++++ gdb-7.0/bfd/elf64-x86-64.c
+@@ -2628,7 +2628,7 @@ elf64_x86_64_relocate_section (bfd *outp
+ 	}
+       else
+ 	{
+-	  bfd_boolean warned;
++	  bfd_boolean warned ATTRIBUTE_UNUSED;
+ 
+ 	  RELOC_FOR_GLOBAL_SYMBOL (info, input_bfd, input_section, rel,
+ 				   r_symndx, symtab_hdr, sym_hashes,
+@@ -3284,10 +3284,9 @@ elf64_x86_64_relocate_section (bfd *outp
+ 		     movl $x@tpoff, %rax
+ 		   */
+ 
+-		  unsigned int val, type, type2;
++		  unsigned int val, type;
+ 
+ 		  type = bfd_get_8 (input_bfd, contents + roff - 3);
+-		  type2 = bfd_get_8 (input_bfd, contents + roff - 2);
+ 		  val = bfd_get_8 (input_bfd, contents + roff - 1);
+ 		  bfd_put_8 (output_bfd, 0x48 | ((type >> 2) & 1),
+ 			     contents + roff - 3);
+@@ -3532,12 +3531,6 @@ elf64_x86_64_relocate_section (bfd *outp
+ 		     movq x@gottpoff(%rip), %rax # before xchg %ax,%ax
+ 		   */
+ 
+-		  unsigned int val, type, type2;
+-
+-		  type = bfd_get_8 (input_bfd, contents + roff - 3);
+-		  type2 = bfd_get_8 (input_bfd, contents + roff - 2);
+-		  val = bfd_get_8 (input_bfd, contents + roff - 1);
+-
+ 		  /* Now modify the instruction as appropriate. To
+ 		     turn a leaq into a movq in the form we use it, it
+ 		     suffices to change the second byte from 0x8d to
+@@ -3563,10 +3556,6 @@ elf64_x86_64_relocate_section (bfd *outp
+ 		     Change it to:
+ 		     xchg %ax,%ax.  */
+ 
+-		  unsigned int val, type;
+-
+-		  type = bfd_get_8 (input_bfd, contents + roff);
+-		  val = bfd_get_8 (input_bfd, contents + roff + 1);
+ 		  bfd_put_8 (output_bfd, 0x66, contents + roff);
+ 		  bfd_put_8 (output_bfd, 0x90, contents + roff + 1);
+ 		  continue;
+--- gdb-7.0/bfd/elf.c.orig
++++ gdb-7.0/bfd/elf.c
+@@ -4832,7 +4832,6 @@ static bfd_boolean
+ prep_headers (bfd *abfd)
+ {
+   Elf_Internal_Ehdr *i_ehdrp;	/* Elf file header, internal form */
+-  Elf_Internal_Phdr *i_phdrp = 0; /* Program header table, internal form */
+   struct elf_strtab_hash *shstrtab;
+   const struct elf_backend_data *bed = get_elf_backend_data (abfd);
+ 
+@@ -4900,7 +4899,6 @@ prep_headers (bfd *abfd)
+   else
+     {
+       i_ehdrp->e_phentsize = 0;
+-      i_phdrp = 0;
+       i_ehdrp->e_phoff = 0;
+     }
+ 
+@@ -4948,7 +4946,6 @@ bfd_boolean
+ _bfd_elf_write_object_contents (bfd *abfd)
+ {
+   const struct elf_backend_data *bed = get_elf_backend_data (abfd);
+-  Elf_Internal_Ehdr *i_ehdrp;
+   Elf_Internal_Shdr **i_shdrp;
+   bfd_boolean failed;
+   unsigned int count, num_sec;
+@@ -4958,7 +4955,6 @@ _bfd_elf_write_object_contents (bfd *abf
+     return FALSE;
+ 
+   i_shdrp = elf_elfsections (abfd);
+-  i_ehdrp = elf_elfheader (abfd);
+ 
+   failed = FALSE;
+   bfd_map_over_sections (abfd, bed->s->write_relocs, &failed);
+--- gdb-7.0/bfd/elf-eh-frame.c.orig
++++ gdb-7.0/bfd/elf-eh-frame.c
+@@ -1241,8 +1241,6 @@ _bfd_elf_eh_frame_section_offset (bfd *o
+ 				  bfd_vma offset)
+ {
+   struct eh_frame_sec_info *sec_info;
+-  struct elf_link_hash_table *htab;
+-  struct eh_frame_hdr_info *hdr_info;
+   unsigned int lo, hi, mid;
+ 
+   if (sec->sec_info_type != ELF_INFO_TYPE_EH_FRAME)
+@@ -1252,9 +1250,6 @@ _bfd_elf_eh_frame_section_offset (bfd *o
+   if (offset >= sec->rawsize)
+     return offset - sec->rawsize + sec->size;
+ 
+-  htab = elf_hash_table (info);
+-  hdr_info = &htab->eh_info;
+-
+   lo = 0;
+   hi = sec_info->count;
+   mid = 0;
+--- gdb-7.0/bfd/elf-eh-frame.c.orig
++++ gdb-7.0/bfd/elf-eh-frame.c
+@@ -1236,7 +1236,7 @@ _bfd_elf_maybe_strip_eh_frame_hdr (struc
+ 
+ bfd_vma
+ _bfd_elf_eh_frame_section_offset (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info,
++				  struct bfd_link_info *info ATTRIBUTE_UNUSED,
+ 				  asection *sec,
+ 				  bfd_vma offset)
+ {
+--- gdb-7.0/bfd/elf32-i386.c.orig
++++ gdb-7.0/bfd/elf32-i386.c
+@@ -2909,7 +2909,7 @@ elf_i386_relocate_section (bfd *output_b
+ 	}
+       else
+ 	{
+-	  bfd_boolean warned;
++	  bfd_boolean warned ATTRIBUTE_UNUSED;
+ 
+ 	  RELOC_FOR_GLOBAL_SYMBOL (info, input_bfd, input_section, rel,
+ 				   r_symndx, symtab_hdr, sym_hashes,
+--- gdb-7.0/bfd/aoutx.h.orig
++++ gdb-7.0/bfd/aoutx.h
+@@ -5233,8 +5233,6 @@ aout_link_write_symbols (struct aout_fin
+ static bfd_boolean
+ aout_link_input_bfd (struct aout_final_link_info *finfo, bfd *input_bfd)
+ {
+-  bfd_size_type sym_count;
+-
+   BFD_ASSERT (bfd_get_format (input_bfd) == bfd_object);
+ 
+   /* If this is a dynamic object, it may need special handling.  */
+@@ -5248,8 +5246,6 @@ aout_link_input_bfd (struct aout_final_l
+   if (! aout_get_external_symbols (input_bfd))
+     return FALSE;
+ 
+-  sym_count = obj_aout_external_sym_count (input_bfd);
+-
+   /* Write out the symbols and get a map of the new indices.  The map
+      is placed into finfo->symbol_map.  */
+   if (! aout_link_write_symbols (finfo, input_bfd))
+--- gdb-7.0/bfd/peXXigen.c.orig
++++ gdb-7.0/bfd/peXXigen.c
+@@ -1919,7 +1919,6 @@ pe_print_reloc (bfd * abfd, void * vfile
+   FILE *file = (FILE *) vfile;
+   bfd_byte *data = 0;
+   asection *section = bfd_get_section_by_name (abfd, ".reloc");
+-  bfd_size_type datasize;
+   bfd_size_type i;
+   bfd_size_type start, stop;
+ 
+@@ -1932,7 +1931,6 @@ pe_print_reloc (bfd * abfd, void * vfile
+   fprintf (file,
+ 	   _("\n\nPE File Base Relocations (interpreted .reloc section contents)\n"));
+ 
+-  datasize = section->size;
+   if (! bfd_malloc_and_get_section (abfd, section, &data))
+     {
+       if (data != NULL)
+--- gdb-7.0/bfd/archive64.c.orig
++++ gdb-7.0/bfd/archive64.c
+@@ -43,7 +43,6 @@ bfd_elf64_archive_slurp_armap (bfd *abfd
+ {
+   struct artdata *ardata = bfd_ardata (abfd);
+   char nextname[17];
+-  file_ptr arhdrpos;
+   bfd_size_type i, parsed_size, nsymz, stringsize, carsym_size, ptrsize;
+   struct areltdata *mapdata;
+   bfd_byte int_buf[8];
+@@ -55,7 +54,6 @@ bfd_elf64_archive_slurp_armap (bfd *abfd
+   ardata->symdefs = NULL;
+ 
+   /* Get the name of the first element.  */
+-  arhdrpos = bfd_tell (abfd);
+   i = bfd_bread (nextname, 16, abfd);
+   if (i == 0)
+     return TRUE;
+--- gdb-7.0/opcodes/i386-dis.c.orig
++++ gdb-7.0/opcodes/i386-dis.c
+@@ -9410,7 +9410,6 @@ print_insn (bfd_vma pc, disassemble_info
+   int sizeflag;
+   const char *p;
+   struct dis_private priv;
+-  unsigned char op;
+   char prefix_obuf[32];
+   char *prefix_obufp;
+ 
+@@ -9607,8 +9606,6 @@ print_insn (bfd_vma pc, disassemble_info
+       return 1;
+     }
+ 
+-  op = 0;
+-
+   if (*codep == 0x0f)
+     {
+       unsigned char threebyte;
+@@ -11595,7 +11592,6 @@ static void
+ OP_sI (int bytemode, int sizeflag)
+ {
+   bfd_signed_vma op;
+-  bfd_signed_vma mask = -1;
+ 
+   switch (bytemode)
+     {
+@@ -11604,7 +11600,6 @@ OP_sI (int bytemode, int sizeflag)
+       op = *codep++;
+       if ((op & 0x80) != 0)
+ 	op -= 0x100;
+-      mask = 0xffffffff;
+       break;
+     case v_mode:
+       USED_REX (REX_W);
+@@ -11613,11 +11608,9 @@ OP_sI (int bytemode, int sizeflag)
+       else if (sizeflag & DFLAG)
+ 	{
+ 	  op = get32s ();
+-	  mask = 0xffffffff;
+ 	}
+       else
+ 	{
+-	  mask = 0xffffffff;
+ 	  op = get16 ();
+ 	  if ((op & 0x8000) != 0)
+ 	    op -= 0x10000;
+@@ -11626,7 +11619,6 @@ OP_sI (int bytemode, int sizeflag)
+       break;
+     case w_mode:
+       op = get16 ();
+-      mask = 0xffffffff;
+       if ((op & 0x8000) != 0)
+ 	op -= 0x10000;
+       break;

@@ -815,8 +815,9 @@ try_eh_frame:
 
 		if (read(fd, unwind_table, unwind_table_size) !=
 		    unwind_table_size) {
-			error(WARNING, "cannot read %s data from %s\n",
-			      is_ehframe ? ".eh_frame" : ".debug_frame", pc->namelist);
+			if (CRASHDEBUG(1))
+				error(WARNING, "cannot read %s data from %s\n",
+			        	is_ehframe ? ".eh_frame" : ".debug_frame", pc->namelist);
 			free(unwind_table);
 			return;
 		}

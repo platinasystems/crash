@@ -66,6 +66,7 @@ struct kvmdump_data {
 	ulong *debug;
 	uint32_t cpu_devices;
 	struct register_set *registers;
+	uint64_t iohole;
 };
 
 #define TMPFILE              (0x2)

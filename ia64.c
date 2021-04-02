@@ -1,8 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -57,6 +57,7 @@ static ulong ia64_get_stackbase(ulong);
 static ulong ia64_get_stacktop(ulong);
 static void parse_cmdline_args(void);
 static void ia64_calc_phys_start(void);
+static int ia64_get_kvaddr_ranges(struct vaddr_range *);
 
 struct unw_frame_info;
 static void dump_unw_frame_info(struct unw_frame_info *);
@@ -143,6 +144,7 @@ ia64_init(int when)
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
 		machdep->verify_paddr = ia64_verify_paddr;
+		machdep->get_kvaddr_ranges = ia64_get_kvaddr_ranges;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
                 machdep->machspec->phys_start = UNKNOWN_PHYS_START;
                 if (machdep->cmdline_args[0]) 
@@ -575,6 +577,7 @@ ia64_dump_machdep_table(ulong arg)
         fprintf(fp, "         dis_filter: ia64_dis_filter()\n");
         fprintf(fp, "           cmd_mach: ia64_cmd_mach()\n");
         fprintf(fp, "       get_smp_cpus: ia64_get_smp_cpus()\n");
+	fprintf(fp, "  get_kvaddr_ranges: ia64_get_kvaddr_ranges()\n");
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: %s()\n",
@@ -710,6 +713,9 @@ ia64_verify_symbol(const char *name, ulong value, char type)
 
 	if (!name || !strlen(name))
 		return FALSE;
+
+	if (XEN_HYPER_MODE() && STREQ(name, "__per_cpu_shift"))
+		return TRUE;
 
         if (CRASHDEBUG(8))
                 fprintf(fp, "%016lx %s\n", value, name);
@@ -3567,6 +3573,59 @@ ia64_IS_VMALLOC_ADDR(ulong vaddr)
         	(vaddr < (ulong)KERNEL_UNCACHED_BASE));
 }
 
+static int
+compare_kvaddr(const void *v1, const void *v2)
+{
+	struct vaddr_range *r1, *r2;
+
+	r1 = (struct vaddr_range *)v1;
+	r2 = (struct vaddr_range *)v2;
+
+	return (r1->start < r2->start ? -1 :
+		r1->start == r2->start ? 0 : 1);
+}
+
+static int 
+ia64_get_kvaddr_ranges(struct vaddr_range *vrp)
+{
+	int cnt;
+
+	cnt = 0;
+
+	vrp[cnt].type = KVADDR_UNITY_MAP;
+	vrp[cnt].start = machdep->identity_map_base;
+	vrp[cnt++].end = vt->high_memory;
+
+	if (machdep->machspec->kernel_start != machdep->identity_map_base) {
+		vrp[cnt].type = KVADDR_START_MAP;
+		vrp[cnt].start = machdep->machspec->kernel_start;
+		vrp[cnt++].end = kt->end;
+	}
+
+	vrp[cnt].type = KVADDR_VMALLOC;
+	vrp[cnt].start = machdep->machspec->vmalloc_start;
+	vrp[cnt++].end = (ulong)KERNEL_UNCACHED_REGION << REGION_SHIFT;
+
+	if (VADDR_REGION(vt->node_table[0].mem_map) == KERNEL_VMALLOC_REGION) {
+		vrp[cnt].type = KVADDR_VMEMMAP;
+		vrp[cnt].start = vt->node_table[0].mem_map;
+		vrp[cnt].end = vt->node_table[vt->numnodes-1].mem_map +
+			(vt->node_table[vt->numnodes-1].size *  
+			 SIZE(page));
+		/*
+		 * Prevent overlap with KVADDR_VMALLOC range.
+		 */
+		if (vrp[cnt].start > vrp[cnt-1].start)
+			vrp[cnt-1].end = vrp[cnt].start;
+		cnt++;
+	}
+
+	qsort(vrp, cnt, sizeof(struct vaddr_range), compare_kvaddr);
+
+	return cnt;
+}
+
+
 /* Generic abstraction to translate user or kernel virtual
  * addresses to physical using a 4 level page table.
  */
@@ -3761,8 +3820,8 @@ ia64_calc_phys_start(void)
 	char *p1;
 	ulong kernel_code_start;
 	struct vmcore_data *vd;
-	Elf64_Phdr *phdr;
 	ulong phys_start, text_start;
+	Elf64_Phdr *phdr = NULL;
 
 	/*
 	 *  Default to 64MB.

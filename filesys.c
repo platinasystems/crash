@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1037,7 +1037,7 @@ is_a_tty(char *filename)
 void
 open_tmpfile(void)
 {
-	int ret;
+	int ret ATTRIBUTE_UNUSED;
 
         if (pc->tmpfile)
                 error(FATAL, "recursive temporary file usage\n");
@@ -1079,7 +1079,7 @@ open_tmpfile(void)
 void
 close_tmpfile(void)
 {
-	int ret;
+	int ret ATTRIBUTE_UNUSED;
 
 	if (pc->tmpfile) {
 		fflush(pc->tmpfile);
@@ -1935,7 +1935,7 @@ vfs_init(void)
 		error(FATAL, "cannot malloc inode cache\n");
 
 	if (symbol_exists("height_to_maxindex")) {
-		int tmp;
+		int tmp ATTRIBUTE_UNUSED;
 		if (LKCD_KERNTYPES())
 			ARRAY_LENGTH_INIT_ALT(tmp, "height_to_maxindex",
 				"radix_tree_preload.nodes", NULL, 0);
@@ -2169,7 +2169,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 	char *files_struct_buf, *fdtable_buf = NULL;
 	ulong fs_struct_addr;
 	char *dentry_buf, *fs_struct_buf;
-	char *ret;
+	char *ret ATTRIBUTE_UNUSED;
 	ulong root_dentry, pwd_dentry;
 	ulong root_inode, pwd_inode;
 	ulong vfsmnt;
@@ -3071,7 +3071,6 @@ void
 cmd_fuser(void)
 {
 	int c;
-	int subsequent;
 	char *spec_string, *tmp;
 	struct foreach_data foreach_data, *fd;
 	char task_buf[BUFSIZE];
@@ -3103,7 +3102,6 @@ cmd_fuser(void)
 		mkstring(buf, VADDR_PRLEN, CENTER, "TASK"));
 
 	doing_lockd = doing_fds = doing_mmap = 0;
-	subsequent = 0;
 	while (args[optind]) {
                 spec_string = args[optind];
 		if (STRNEQ(spec_string, "0x") && hexadecimal(spec_string, 0))
@@ -3269,7 +3267,8 @@ monitor_memory(long *freemem_pages,
 	FILE *mp;
 	char buf[BUFSIZE];
         char *arglist[MAXARGS];
-        int argc, params;
+        int argc ATTRIBUTE_UNUSED;
+        int params;
 	ulong freemem, memtotal, freeswap, swaptotal;
 
 	if (!file_exists("/proc/meminfo", NULL))

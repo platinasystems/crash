@@ -7,8 +7,8 @@
  * netdump dumpfiles, the facilities in netdump.c are used.  For
  * compressed dumpfiles, the facilities in this file are used.
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005  FUJITSU LIMITED
  * Copyright (C) 2005  NEC Corporation
  *
@@ -207,16 +207,22 @@ restart:
 	if ((header = realloc(header, block_size)) == NULL)
 		error(FATAL, "diskdump / compressed kdump: cannot malloc block_size buffer\n");
 
-	if (lseek(dd->dfd, 0, SEEK_SET) == failed) {
-		if (CRASHDEBUG(1))
-			error(INFO, "diskdump / compressed kdump: cannot lseek dump header\n");
-		goto err;
-	}
-
-	if (read(dd->dfd, header, block_size) < block_size) {
-		if (CRASHDEBUG(1))
-			error(INFO, "diskdump / compressed kdump: cannot read dump header\n");
-		goto err;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, 0, header, block_size)) {
+			error(FATAL, "diskdump / compressed kdump: cannot read header\n");
+			goto err;
+		}
+	} else {
+		if (lseek(dd->dfd, 0, SEEK_SET) == failed) {
+			if (CRASHDEBUG(1))
+				error(INFO, "diskdump / compressed kdump: cannot lseek dump header\n");
+			goto err;
+		}
+		if (read(dd->dfd, header, block_size) < block_size) {
+			if (CRASHDEBUG(1))
+				error(INFO, "diskdump / compressed kdump: cannot read dump header\n");
+			goto err;
+		}
 	}
 
 	/* validate dump header */
@@ -280,31 +286,45 @@ restart:
 
 	/* read sub header */
 	offset = (off_t)block_size;
-	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-		error(INFO, "%s: cannot lseek dump sub header\n",
-			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
-
-		goto err;
-	}
 
 	if (DISKDUMP_VALID()) {
 		if ((sub_header = malloc(block_size)) == NULL)
 			error(FATAL, "diskdump: cannot malloc sub_header buffer\n");
 
-		if (read(dd->dfd, sub_header, block_size)
-		  < block_size) {
-			error(INFO, "diskdump: cannot read dump sub header\n");
-			goto err;
+		if (FLAT_FORMAT()) {
+			if (!read_flattened_format(dd->dfd, offset, sub_header, block_size)) {
+				error(INFO, "diskdump: cannot read dump sub header\n");
+				goto err;
+			}
+		} else {
+			if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+				error(INFO, "diskdump: cannot lseek dump sub header\n");
+				goto err;
+			}
+			if (read(dd->dfd, sub_header, block_size) < block_size) {
+				error(INFO, "diskdump: cannot read dump sub header\n");
+				goto err;
+			}
 		}
 		dd->sub_header = sub_header;
 	} else if (KDUMP_CMPRS_VALID()) {
 		if ((sub_header_kdump = malloc(block_size)) == NULL)
 			error(FATAL, "compressed kdump: cannot malloc sub_header_kdump buffer\n");
 
-		if (read(dd->dfd, sub_header_kdump, block_size)
-		  < block_size) {
-			error(INFO, "compressed kdump: cannot read dump sub header\n");
-			goto err;
+		if (FLAT_FORMAT()) {
+			if (!read_flattened_format(dd->dfd, offset, sub_header_kdump, block_size)) {
+				error(INFO, "compressed kdump: cannot read dump sub header\n");
+				goto err;
+			}
+		} else {
+			if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+				error(INFO, "compressed kdump: cannot lseek dump sub header\n");
+				goto err;
+			}
+			if (read(dd->dfd, sub_header_kdump, block_size) < block_size) {
+				error(INFO, "compressed kdump: cannot read dump sub header\n");
+				goto err;
+			}
 		}
 		dd->sub_header_kdump = sub_header_kdump;
 	}
@@ -314,22 +334,30 @@ restart:
 	dd->bitmap_len = bitmap_len;
 
 	offset = (off_t)block_size * (1 + header->sub_hdr_size);
-	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-		error(INFO, "%s: cannot lseek memory bitmap\n",
-			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
-
-		goto err;
-	}
 
 	if ((dd->bitmap = malloc(bitmap_len)) == NULL)
 		error(FATAL, "%s: cannot malloc bitmap buffer\n",
 			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 
 	dd->dumpable_bitmap = calloc(bitmap_len, 1);
-	if (read(dd->dfd, dd->bitmap, bitmap_len) < bitmap_len) {
-		error(INFO, "%s: cannot read memory bitmap\n",
-			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
-		goto err;
+
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, offset, dd->bitmap, bitmap_len)) {
+			error(INFO, "%s: cannot read memory bitmap\n",
+				DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+			goto err;
+		}
+	} else {
+		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+			error(INFO, "%s: cannot lseek memory bitmap\n",
+				DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+			goto err;
+		}
+		if (read(dd->dfd, dd->bitmap, bitmap_len) < bitmap_len) {
+			error(INFO, "%s: cannot read memory bitmap\n",
+				DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+			goto err;
+		}
 	}
 
 	if (dump_is_partial(header))
@@ -370,21 +398,28 @@ restart:
 		size = sub_header_kdump->size_note;
 		offset = sub_header_kdump->offset_note;
 
-		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-			error(INFO, "compressed kdump: cannot lseek dump elf"
-				" notes\n");
-			goto err;
-		}
-
 		if ((notes_buf = malloc(size)) == NULL)
 			error(FATAL, "compressed kdump: cannot malloc notes"
 				" buffer\n");
 
-		if (read(dd->dfd, notes_buf, size) < size) {
-			error(INFO, "compressed kdump: cannot read notes data"
-				"\n");
-			goto err;
+		if (FLAT_FORMAT()) {
+			if (!read_flattened_format(dd->dfd, offset, notes_buf, size)) {
+				error(INFO, "compressed kdump: cannot read notes data"
+					"\n");
+				goto err;
+			}
+		} else {
+			if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+				error(INFO, "compressed kdump: cannot lseek notes data\n");
+				goto err;
+			}
+			if (read(dd->dfd, notes_buf, size) < size) {
+				error(INFO, "compressed kdump: cannot read notes data"
+					"\n");
+				goto err;
+			}
 		}
+
 		machdep->process_elf_notes(notes_buf, size);
 	}
 
@@ -624,22 +659,32 @@ cache_page(physaddr_t paddr)
 	desc_pos = pfn_to_pos(pfn);
 	seek_offset = dd->data_offset
 			+ (off_t)(desc_pos - 1)*sizeof(page_desc_t);
-	lseek(dd->dfd, seek_offset, SEEK_SET);
 
 	/* read page descriptor */
-	if (read(dd->dfd, &pd, sizeof(pd)) != sizeof(pd))
-		return READ_ERROR;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, seek_offset, &pd, sizeof(pd)))
+			return READ_ERROR;
+	} else {
+		if (lseek(dd->dfd, seek_offset, SEEK_SET) == failed)
+			return SEEK_ERROR;
+		if (read(dd->dfd, &pd, sizeof(pd)) != sizeof(pd))
+			return READ_ERROR;
+	}
 
 	/* sanity check */
 	if (pd.size > block_size)
 		return READ_ERROR;
 
-	if (lseek(dd->dfd, pd.offset, SEEK_SET) == failed)
-		return SEEK_ERROR;
-
 	/* read page data */
-	if (read(dd->dfd, dd->compressed_page, pd.size) != pd.size)
-		return READ_ERROR;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, pd.offset, dd->compressed_page, pd.size))
+			return READ_ERROR;
+	} else {
+		if (lseek(dd->dfd, pd.offset, SEEK_SET) == failed)
+			return SEEK_ERROR;
+		if (read(dd->dfd, dd->compressed_page, pd.size) != pd.size)
+			return READ_ERROR;
+	}
 
 	if (pd.flags & DUMP_DH_COMPRESSED) {
 		retlen = block_size;
@@ -833,19 +878,25 @@ static void dump_vmcoreinfo(FILE *fp)
 	off_t offset = dd->sub_header_kdump->offset_vmcoreinfo;
 	const off_t failed = (off_t)-1;
 
-	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-		error(INFO, "compressed kdump: cannot lseek dump vmcoreinfo\n");
-		return;
-	}
-
 	if ((buf = malloc(size_vmcoreinfo)) == NULL) {
 		error(FATAL, "compressed kdump: cannot malloc vmcoreinfo"
 				" buffer\n");
 	}
 
-	if (read(dd->dfd, buf, size_vmcoreinfo) < size_vmcoreinfo) {
-		error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
-		goto err;
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, offset, buf, size_vmcoreinfo)) {
+			error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
+			goto err;
+		}
+	} else {
+		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+			error(INFO, "compressed kdump: cannot lseek dump vmcoreinfo\n");
+			return;
+		}
+		if (read(dd->dfd, buf, size_vmcoreinfo) < size_vmcoreinfo) {
+			error(INFO, "compressed kdump: cannot read vmcoreinfo data\n");
+			goto err;
+		}
 	}
 
 	fprintf(fp, "                      ");
@@ -876,6 +927,9 @@ __diskdump_memory_dump(FILE *fp)
 	struct kdump_sub_header *kdsh;
 	ulong *tasks;
 
+	if (FLAT_FORMAT())
+		dump_flat_header(fp);
+
         fprintf(fp, "diskdump_data: \n");
 	fprintf(fp, "          filename: %s\n", dd->filename);
         fprintf(fp, "             flags: %lx (", dd->flags);
@@ -888,7 +942,7 @@ __diskdump_memory_dump(FILE *fp)
                 fprintf(fp, "%sERROR_EXCLUDED", others++ ? "|" : "");
         if (dd->flags & ZERO_EXCLUDED)
                 fprintf(fp, "%sZERO_EXCLUDED", others++ ? "|" : "");
-        fprintf(fp, ")\n");
+        fprintf(fp, ") %s\n", FLAT_FORMAT() ? "[FLAT]" : "");
         fprintf(fp, "               dfd: %d\n", dd->dfd);
         fprintf(fp, "               ofp: %lx\n", (ulong)dd->ofp);
         fprintf(fp, "      machine_type: %d ", dd->machine_type);

@@ -1,8 +1,8 @@
 /* 
  * xendump.c 
  * 
- * Copyright (C) 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -678,7 +678,7 @@ xc_save_read(void *bufptr, int cnt, ulong addr, physaddr_t paddr)
                 switch (batch_count)
                 {
                 case 0:
-                        if (CRASHDEBUG(1)) {
+                        if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search")) {
                             	fprintf(xd->ofp,
                                     "batch[%d]: has count of zero -- bailing out on pfn %ld\n",
 					 b, reqpfn);
@@ -1701,7 +1701,8 @@ xc_core_pfn_to_page_index(ulong pfn)
 	mfn = *up;
 
 	if ((mfn_idx = xc_core_mfn_to_page_index(mfn)) == MFN_NOT_FOUND) {
-		error(INFO, "cannot find mfn in page index\n");
+		if (!STREQ(pc->curcmd, "search"))	
+			error(INFO, "cannot find mfn in page index\n");
 		return PFN_NOT_FOUND;
 	}
 
@@ -1830,7 +1831,7 @@ xc_core_pfn_valid(ulong pfn)
 	 *  to display an error message (unless debugging).
 	 */
 	if (mfn == INVALID_MFN) {
-		if (CRASHDEBUG(1))
+		if (CRASHDEBUG(1) && !STREQ(pc->curcmd, "search"))
 			error(INFO, 
 		    	    "xendump: pfn %lx contains INVALID_MFN\n", 
 				pfn);

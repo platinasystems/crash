@@ -1,8 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -786,7 +786,8 @@ get_sock_info(ulong sock, char *buf)
 {
 	uint32_t daddr, rcv_saddr;
 	uint16_t dport, sport;
-	ushort num, family, type;
+	ushort family, type;
+	ushort num ATTRIBUTE_UNUSED;
 	char *sockbuf, *inet_sockbuf;
 	ulong ipv6_pinfo, ipv6_rcv_saddr, ipv6_daddr;
 	uint16_t u6_addr16_src[8];

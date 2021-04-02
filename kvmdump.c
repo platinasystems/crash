@@ -1,8 +1,8 @@
 /*
  * kvmdump.c
  *
- * Copyright (C) 2009, 2010 David Anderson
- * Copyright (C) 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -297,6 +297,10 @@ kvmdump_memory_dump(FILE *ofp)
 	}
 
 	fprintf(ofp, "      cpu_devices: %d\n", kvm->cpu_devices);
+	fprintf(ofp, "           iohole: %llx (%llx - %llx)\n", 
+		(ulonglong)kvm->iohole, 0x100000000ULL - kvm->iohole,
+		0x100000000ULL);
+
 	fprintf(ofp, "        registers: %s\n",
 		kvm->registers ? "" : "(not used)");
 	for (i = 0; i < kvm->cpu_devices; i++) {
@@ -610,27 +614,42 @@ store_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 int 
 load_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 {
-	if (physaddr >= 0xe0000000) {
-		if (physaddr < 0x100000000ULL)
-			return SEEK_ERROR;   /* In 512MB I/O hole */
-		physaddr -= 0x20000000;
+	uint64_t kvm_addr = physaddr;
+
+	switch (kvm->iohole)
+	{
+	case 0x20000000ULL:
+		if (physaddr >= 0xe0000000ULL) {
+			if (physaddr < 0x100000000ULL)
+				return SEEK_ERROR;   /* In 512MB I/O hole */
+			kvm_addr -= kvm->iohole;
+		}
+		break;
+
+	case 0x40000000ULL:
+		if (physaddr >= 0xc0000000ULL) {
+			if (physaddr < 0x100000000ULL)
+				return SEEK_ERROR;   /* In 1GB I/O hole */
+			kvm_addr -= kvm->iohole;
+		}
+		break;
 	}
  
-	if (lseek(kvm->mapfd, mapfile_offset(physaddr), SEEK_SET) < 0) {
+	if (lseek(kvm->mapfd, mapfile_offset(kvm_addr), SEEK_SET) < 0) {
 		if (CRASHDEBUG(1))
 			error(INFO, "load_mapfile_offset: "
-		    	    "lseek error: physaddr: %llx  %s offset: %llx\n", 
+		    	    "lseek error: physical: %llx  %s offset: %llx\n", 
 				(unsigned long long)physaddr, mapfile_in_use(),
-				(unsigned long long)mapfile_offset(physaddr));
+				(unsigned long long)mapfile_offset(kvm_addr));
 		return SEEK_ERROR;
 	}
 
 	if (read(kvm->mapfd, entry_ptr, sizeof(off_t)) != sizeof(off_t)) {
 		if (CRASHDEBUG(1)) 
 			error(INFO, "load_mapfile_offset: "
-		    	    "read error: physaddr: %llx  %s offset: %llx\n", 
+		    	    "read error: physical: %llx  %s offset: %llx\n", 
 				(unsigned long long)physaddr, mapfile_in_use(),
-				(unsigned long long)mapfile_offset(physaddr));
+				(unsigned long long)mapfile_offset(kvm_addr));
 		return READ_ERROR;
 	}
 
@@ -936,7 +955,7 @@ static void
 write_mapfile_registers(void)
 {
 	size_t regs_size;
-	uint64_t ncpus, magic;
+	uint64_t magic;
 
         if (lseek(kvm->mapfd, 0, SEEK_END) < 0)
 		error(FATAL, "%s: lseek: %s\n", mapfile_in_use(), strerror(errno));
@@ -945,7 +964,6 @@ write_mapfile_registers(void)
 	if (write(kvm->mapfd, &kvm->registers[0], regs_size) != regs_size)
 		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
 
-	ncpus = kvm->cpu_devices;
 	if (write(kvm->mapfd, &kvm->cpu_devices, sizeof(uint64_t)) != sizeof(uint64_t))
 		error(FATAL, "%s: write: %s\n", mapfile_in_use(), strerror(errno));
 
@@ -1043,6 +1061,90 @@ set_kvmhost_type(char *host)
 		kvm->flags |= KVMHOST_64;
 	} else
 		error(INFO, "invalid --kvmhost argument: %s\n", host);
+}
+
+/*
+ *  set_kvm_iohole() is called from main() with a command line argument,
+ *  or from the x86/x86_64_init functions for assistance in determining
+ *  the I/O hole size.
+ */
+void
+set_kvm_iohole(char *optarg)
+{
+#define DEFAULT_IOHOLE() \
+	((kvm->mapinfo.cpu_version_id <= 9) ? 0x40000000 : 0x20000000)
+#define E820_RAM 1
+
+	if (optarg) {
+		ulong flags;
+		ulonglong iohole;
+		char *arg;
+	
+		flags = LONG_LONG;
+		if (IS_A_NUMBER(&LASTCHAR(optarg)))
+			flags |= HEX_BIAS;
+	
+		arg = strdup(optarg);
+	
+		if (!calculate(arg, NULL, &iohole, flags))
+			error(FATAL, 
+			    "invalid --kvm_iohole argument: %s\n", optarg);
+	
+		free(arg);
+	
+		/*
+		 *  Only 512MB or 1GB have been used to date.
+		 */
+		if ((iohole != 0x20000000ULL) && (iohole != 0x40000000ULL))
+			error(WARNING, "questionable --kvmio argument: %s\n", 
+				optarg);
+
+		kvm->iohole = iohole;
+
+	} else {
+	        int nr_map, i;
+	        char *buf, *e820entry;
+	        ulonglong addr, size, ending_addr;
+	        uint type;
+
+		if (kvm->iohole)
+			return;   /* set by command line option below */
+
+		kvm->iohole = DEFAULT_IOHOLE();
+
+		if (!symbol_exists("e820"))
+			return;
+
+	        buf = (char *)GETBUF(SIZE(e820map));
+	        if (!readmem(symbol_value("e820"), KVADDR, &buf[0], 
+		    SIZE(e820map), "e820map", RETURN_ON_ERROR|QUIET)) {
+			FREEBUF(buf);
+			return;
+		}
+
+		nr_map = INT(buf + OFFSET(e820map_nr_map));
+
+		for (i = 0; i < nr_map; i++) {
+                	e820entry = buf + sizeof(int) + (SIZE(e820entry) * i);
+                	addr = ULONGLONG(e820entry + OFFSET(e820entry_addr));
+			size = ULONGLONG(e820entry + OFFSET(e820entry_size));
+                	type = UINT(e820entry + OFFSET(e820entry_type));
+
+			if (type != E820_RAM)
+				continue;
+			if (addr >= 0x100000000ULL)
+				break;
+			
+			ending_addr = addr + size;
+			if ((ending_addr > 0xc0000000ULL) && 
+			    (ending_addr <= 0xe0000000ULL)) {
+				kvm->iohole = 0x20000000ULL;
+				break;
+			}
+        	}
+
+		FREEBUF(buf);
+	}
 }
 
 #include "qemu-load.h"

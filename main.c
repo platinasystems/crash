@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -61,6 +61,7 @@ static struct option long_options[] = {
 	{"minimal", 0, 0, 0},
 	{"mod", required_argument, 0, 0},
 	{"kvmhost", required_argument, 0, 0},
+	{"kvmio", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -68,6 +69,7 @@ int
 main(int argc, char **argv)
 {
 	int i, c, option_index;
+	char *tmpname;
 
 	setup_environment(argc, argv);
 
@@ -223,6 +225,9 @@ main(int argc, char **argv)
 		        else if (STREQ(long_options[option_index].name, "kvmhost"))
 				set_kvmhost_type(optarg);
 
+		        else if (STREQ(long_options[option_index].name, "kvmio"))
+				set_kvm_iohole(optarg);
+
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
 					long_options[option_index].name);
@@ -377,7 +382,29 @@ main(int argc, char **argv)
 			} else
 				pc->namelist = argv[optind];
 
+		} else if (is_compressed_kernel(argv[optind], &tmpname)) {
+			if (pc->namelist) {
+				if (!select_namelist(tmpname)) {
+					error(INFO, 
+					    "too many namelist arguments\n");
+					program_usage(SHORT_FORM);
+				}
+				if (pc->namelist_debug == tmpname) {
+					pc->namelist_debug_orig = argv[optind];
+				} else {
+					pc->namelist_debug_orig = pc->namelist_orig;
+					pc->namelist_orig = argv[optind];
+				}
+			} else {
+				pc->namelist = tmpname;
+				pc->namelist_orig = argv[optind];
+			}
+			pc->cleanup = NULL;
+
 		} else if (!(pc->flags & KERNEL_DEBUG_QUERY)) {
+
+			if (is_flattened_format(argv[optind]))
+				pc->flags2 |= FLAT;
 
 			if (STREQ(argv[optind], "/dev/mem")) {
                         	if (pc->flags & MEMORY_SOURCES) {
@@ -878,6 +905,7 @@ setup_environment(int argc, char **argv)
 	pc->memory_device = MEMORY_DRIVER_DEVICE;
 	machdep->bits = sizeof(long) * 8;
 	machdep->verify_paddr = generic_verify_paddr;
+	machdep->get_kvaddr_ranges = generic_get_kvaddr_ranges;
 	pc->redhat_debug_loc = DEFAULT_REDHAT_DEBUG_LOCATION;
 	pc->cmdgencur = 0;
 	pc->cmd_table = linux_command_table;
@@ -1198,12 +1226,20 @@ dump_program_context(void)
 			fprintf(fp, "%s\n", buf);
 	}
 
+	others = 0;
+	fprintf(fp, "           flags2: %llx (", pc->flags2);
+	if (pc->flags2 & FLAT)
+		fprintf(fp, "%sFLAT", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
 	fprintf(fp, "         dumpfile: %s\n", pc->dumpfile);
 	fprintf(fp, "      live_memsrc: %s\n", pc->live_memsrc);
 	fprintf(fp, "       system_map: %s\n", pc->system_map);
 	fprintf(fp, "   namelist_debug: %s\n", pc->namelist_debug);
 	fprintf(fp, "   debuginfo_file: %s\n", pc->debuginfo_file);
+	fprintf(fp, "    namelist_orig: %s\n", pc->namelist_orig);
+	fprintf(fp, "namelist_dbg_orig: %s\n", pc->namelist_debug_orig);
 	fprintf(fp, "  kvmdump_mapfile: %s\n", pc->kvmdump_mapfile);
 	fprintf(fp, "    memory_module: %s\n", pc->memory_module);
 	fprintf(fp, "    memory_device: %s\n", pc->memory_device);
@@ -1451,6 +1487,7 @@ dump_program_context(void)
 		dumpfile_memory(DUMPFILE_MEM_USED)); 
 	fprintf(fp, "           curext: %lx\n", (ulong)pc->curext); 
 	fprintf(fp, "             sbrk: %lx\n", (ulong)pc->sbrk); 
+	fprintf(fp, "          cleanup: %s\n", pc->cleanup);
 }
 
 /*
@@ -1474,6 +1511,13 @@ clean_exit(int status)
 {
 	if (pc->flags & MEMMOD)
 		cleanup_memory_driver();
+
+	if ((pc->namelist_orig) && file_exists(pc->namelist, NULL))
+		unlink(pc->namelist);
+	if ((pc->namelist_debug_orig) && file_exists(pc->namelist_debug, NULL))
+		unlink(pc->namelist_debug);
+	if (pc->cleanup && file_exists(pc->cleanup, NULL))
+		unlink(pc->cleanup);
 
 	exit(status);
 }
