@@ -275,6 +275,51 @@ bailout:
 }
 
 /*
+ *  Return the e_version number of an ELF file
+ *  (or -1 if its not readable ELF file)
+ */
+int
+file_elf_version(char *file)
+{
+	int fd, size;
+	Elf32_Ehdr *elf32;
+	Elf64_Ehdr *elf64;
+	char header[MIN_NETDUMP_ELF_HEADER_SIZE];
+	char buf[BUFSIZE];
+
+	if ((fd = open(file, O_RDONLY)) < 0) {
+		sprintf(buf, "%s: open", file);
+		perror(buf);
+		return -1;
+	}
+
+	size = MIN_NETDUMP_ELF_HEADER_SIZE;
+        if (read(fd, header, size) != size) {
+                sprintf(buf, "%s: read", file);
+                perror(buf);
+		close(fd);
+		return -1;
+	}
+	close(fd);
+
+	elf32 = (Elf32_Ehdr *)&header[0];
+	elf64 = (Elf64_Ehdr *)&header[0];
+
+        if (STRNEQ(elf32->e_ident, ELFMAG) &&
+	    (elf32->e_ident[EI_CLASS] == ELFCLASS32) &&
+  	    (elf32->e_ident[EI_DATA] == ELFDATA2LSB) &&
+    	    (elf32->e_ident[EI_VERSION] == EV_CURRENT)) {
+		return (elf32->e_version);
+	} else if (STRNEQ(elf64->e_ident, ELFMAG) &&
+	    (elf64->e_ident[EI_CLASS] == ELFCLASS64) &&
+	    (elf64->e_ident[EI_VERSION] == EV_CURRENT)) {
+		return (elf64->e_version);
+	} 
+	
+	return -1;
+}
+
+/*
  *  Perform any post-dumpfile determination stuff here.
  */
 int

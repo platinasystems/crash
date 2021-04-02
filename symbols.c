@@ -21,6 +21,8 @@
 
 static void store_symbols(bfd *, int, void *, long, unsigned int);
 static void store_sysmap_symbols(void);
+static ulong relocate(ulong, char *, int);
+static int relocate_force(ulong, char *);
 static void strip_module_symbol_end(char *s);
 static int compare_syms(const void *, const void *);
 static int compare_mods(const void *, const void *);
@@ -70,6 +72,8 @@ static int display_per_cpu_info(struct syment *);
 #define KERNEL_SECTIONS  (void *)(1)
 #define MODULE_SECTIONS  (void *)(2) 
 #define VERIFY_SECTIONS  (void *)(3)
+
+#define EV_DWARFEXTRACT  101010101
 
 #define PARSE_FOR_DATA        (1)
 #define PARSE_FOR_DECLARATION (2)
@@ -144,6 +148,12 @@ symtab_init(void)
   	if (!bfd_check_format_matches(st->bfd, bfd_object, &matching))
 		error(FATAL, "cannot determine object file format: %s\n",
 			pc->namelist);
+	/*
+	 *  Check whether the namelist is a kerntypes file built by
+	 *  dwarfextract, which places a magic number in e_version.
+	 */
+	if (file_elf_version(pc->namelist) == EV_DWARFEXTRACT)
+		pc->flags |= KERNTYPES;
 
 	if (pc->flags & SYSMAP) {
 		bfd_map_over_sections(st->bfd, section_header_info, 
@@ -158,13 +168,16 @@ symtab_init(void)
 		}
 		store_sysmap_symbols();
 		return;
-	} 
+	} else if (LKCD_KERNTYPES())
+		error(FATAL, "%s: use of kerntypes requires a system map\n",
+			pc->namelist);
 
 	/*
 	 *  Pull a bait-and-switch on st->bfd if we've got a separate
-         *  .gnu_debuglink file that matches the CRC.
+         *  .gnu_debuglink file that matches the CRC. Not done for kerntypes.
 	 */
-	if (!(bfd_get_file_flags(st->bfd) & HAS_SYMS)) {
+	if (!(LKCD_KERNTYPES()) &&
+	    !(bfd_get_file_flags(st->bfd) & HAS_SYMS)) {
 		if (!check_gnu_debuglink(st->bfd))
 			no_debugging_data(FATAL);
 	}
@@ -476,6 +489,11 @@ get_text_init_space(void)
         kt->stext_init = (ulong)bfd_get_section_vma(st->bfd, section);
         kt->etext_init = kt->stext_init +
         	(ulong)bfd_section_size(st->bfd, section);
+
+	if (kt->relocate) {
+		kt->stext_init -= kt->relocate;
+		kt->etext_init -= kt->relocate;
+	}
 }
 
 /*
@@ -491,6 +509,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
   	bfd_byte *from, *fromend;
         symbol_info syminfo;
 	struct syment *sp;
+	int first;
 
   	if ((store = bfd_make_empty_symbol(abfd)) == NULL)
 		error(FATAL, "bfd_make_empty_symbol() failed\n");
@@ -510,6 +529,13 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 	st->symcnt = 0;
 	sp = st->symtable;
 
+	if (machine_type("X86")) {
+		if (!(kt->flags & RELOC_SET))
+			kt->flags |= RELOC_FORCE;
+	} else
+		kt->flags &= ~RELOC_SET;
+
+	first = 0;
   	from = (bfd_byte *) minisyms;
   	fromend = from + symcount * size;
   	for (; from < fromend; from += size)
@@ -521,7 +547,11 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
       		bfd_get_symbol_info(abfd, sym, &syminfo);
 		if (machdep->verify_symbol(syminfo.name, syminfo.value, 
 		    syminfo.type)) {
-			sp->value = syminfo.value;
+			if (kt->flags & (RELOC_SET|RELOC_FORCE))
+				sp->value = relocate(syminfo.value,
+					(char *)syminfo.name, !(first++));
+			else
+				sp->value = syminfo.value;
 			sp->type = syminfo.type;
 			namespace_ctl(NAMESPACE_INSTALL, &st->namespace,
 				sp, (char *)syminfo.name); 
@@ -545,7 +575,7 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 static void
 store_sysmap_symbols(void)
 {
-	int c;
+	int c, first;
 	long symcount;
 	char buf[BUFSIZE];
 	FILE *map;
@@ -569,6 +599,10 @@ store_sysmap_symbols(void)
                 error(FATAL, "symbol table namespace malloc: %s\n",
                         strerror(errno));
 
+	if (!machine_type("X86"))
+		kt->flags &= ~RELOC_SET;
+
+	first = 0;
         st->syment_size = symcount * sizeof(struct syment);
         st->symcnt = 0;
         sp = st->symtable;
@@ -585,7 +619,11 @@ store_sysmap_symbols(void)
 
                 if (machdep->verify_symbol(syment.name, syment.value, 
 		    syment.type)) {
-                        sp->value = syment.value;
+			if (kt->flags & RELOC_SET)
+				sp->value = relocate(syment.value,
+					syment.name, !(first++));
+			else
+				sp->value = syment.value;
                         sp->type = syment.type;
                         namespace_ctl(NAMESPACE_INSTALL, &st->namespace,
                                 sp, syment.name);
@@ -605,6 +643,96 @@ store_sysmap_symbols(void)
 
 	symname_hash_init();
 	symval_hash_init();
+}
+
+/*
+ *  Handle x86 kernels configured such that the vmlinux symbols
+ *  are not as loaded into the kernel (not unity-mapped).
+ */
+static ulong
+relocate(ulong symval, char *symname, int first_symbol)
+{
+	switch (kt->flags & (RELOC_SET|RELOC_FORCE))
+	{
+	case RELOC_SET: 
+		break;
+
+	case RELOC_FORCE:
+		if (first_symbol && !relocate_force(symval, symname))
+			kt->flags &= ~RELOC_FORCE;
+		break;
+	}
+
+	return (symval - kt->relocate);
+}
+
+/*
+ *  If no --reloc argument was passed, try to figure it out
+ *  by comparing the first vmlinux kernel symbol with the
+ *  first /proc/kallsyms symbol.  (should be "_text")
+ *
+ *  Live system only (at least for now).
+ */
+static int
+relocate_force(ulong symval, char *symname)
+{
+        FILE *kp;
+	char buf[BUFSIZE];
+        char *kallsyms[MAXARGS];
+	ulong first;
+
+	if (!ACTIVE() || !file_exists("/proc/kallsyms", NULL)) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "cannot determine relocation value: %s\n",
+				!ACTIVE() ? "not a live system" : 
+				"/proc/kallsyms does not exist");
+		return FALSE;
+	}
+
+ 	if ((kp = fopen("/proc/kallsyms", "r")) == NULL) {
+		if (CRASHDEBUG(1))
+                	fprintf(fp, 
+			    "cannot open /proc/kallsyms to determine relocation\n");
+                return FALSE;
+        }
+
+	if (!fgets(buf, BUFSIZE, kp) ||
+	    (parse_line(buf, kallsyms) != 3) ||
+	    !hexadecimal(kallsyms[0], 0)) {
+		fclose(kp);
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "malformed /proc/kallsyms: cannot determine relocation value\n");
+		return FALSE;
+	}
+	fclose(kp);
+
+	first = htol(kallsyms[0], RETURN_ON_ERROR, NULL);
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, 
+		    "RELOCATE: %s @ %lx %s\n"
+		    "          %s @ %lx /proc/kallsyms\n",
+			symname, symval, pc->namelist,
+			kallsyms[2], first);
+
+	/*
+	 *  If the symbols match and have different values,
+	 *  force the relocation.
+	 */
+	if (STREQ(symname, kallsyms[2])) {
+		if (symval > first) {
+			kt->relocate = symval - first;
+			return TRUE;
+		}
+	}
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, 
+		    "cannot determine relocation value from first symbol\n");
+
+	return FALSE;
 }
 
 /*
@@ -3806,6 +3934,7 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
                 dm->size = size;
 		dm->member_size = member_size;
 		dm->member_typecode = member_typecode;
+		dm->member_offset = offset;
 		if (req->is_typedef) {
 			dm->flags |= TYPEDEF;
 		}
@@ -5338,7 +5467,8 @@ get_array_length(char *s, int *two_dim, long entry_size)
 	if ((retval = builtin_array_length(s, 0, two_dim)))
 		return retval;
 
-	if (symbol_search(s)) {
+	/* symbol_search cannot be done with just kernel type information */
+	if (!(LKCD_KERNTYPES()) && symbol_search(s)) {
 		if (!two_dim) {
 			req = &gnu_request;
 			if ((get_symbol_type(copy, NULL, req) == 
@@ -5448,6 +5578,23 @@ store_builtin:
 }
 
 /*
+ *   Get and store the size of a "known" array.
+ *   A wrapper for get_array_length(), for cases in which
+ *   the name of the result to be stored is different from the
+ *   structure.member to be evaluated.
+ */
+int
+get_array_length_alt(char *name, char *s, int *two_dim, long entry_size)
+{
+	int retval;
+
+	retval = get_array_length(s, two_dim, entry_size);
+	if (retval)
+		retval = builtin_array_length(name, retval, two_dim);
+	return retval;
+}
+
+/*
  *  Designed for use by non-debug kernels, but used by all.
  */
 int
@@ -5502,6 +5649,8 @@ builtin_array_length(char *s, int len, int *two_dim)
                 lenptr = &array_table.prio_array_queue;
 	else if (STREQ(s, "height_to_maxindex"))
 		lenptr = &array_table.height_to_maxindex;
+	else if (STREQ(s, "pid_hash"))
+		lenptr = &array_table.pid_hash;
         else if (STREQ(s, "free_area")) {
                 lenptr = &array_table.free_area;
 		if (two_dim)
@@ -6819,6 +6968,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 get_array_length("prio_array.queue", NULL, SIZE(list_head)));
 	fprintf(fp, "            height_to_maxindex: %d\n",
 		ARRAY_LENGTH(height_to_maxindex));
+	fprintf(fp, "                      pid_hash: %d\n",
+		ARRAY_LENGTH(pid_hash));
 
 	if (spec) {
 		int in_size_table, in_array_table, arrays, offsets, sizes;
@@ -8399,6 +8550,10 @@ patch_kernel_symbol(struct gnu_request *req)
 	struct syment *sp_array[200], *sp;
 
 	if (req->name == PATCH_KERNEL_SYMBOLS_START) {
+		if (kt->flags & RELOC_FORCE)
+			error(WARNING, 
+			    "\nkernel relocated [%ldMB]: patching %ld gdb minimal_symbol values\n",
+				kt->relocate >> 20, st->symcnt);
                 fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ? "" :
                  "\nplease wait... (patching %ld gdb minimal_symbol values) ",
 			st->symcnt);

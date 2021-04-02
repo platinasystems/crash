@@ -1829,8 +1829,12 @@ vfs_init(void)
 
 	if (symbol_exists("height_to_maxindex")) {
 		int tmp;
-		ARRAY_LENGTH_INIT(tmp, height_to_maxindex,
-                        "height_to_maxindex", NULL, 0);
+		if (LKCD_KERNTYPES())
+			ARRAY_LENGTH_INIT_ALT(tmp, "height_to_maxindex",
+				"radix_tree_preload.nodes", NULL, 0);
+		else
+			ARRAY_LENGTH_INIT(tmp, height_to_maxindex,
+                        	"height_to_maxindex", NULL, 0);
 		STRUCT_SIZE_INIT(radix_tree_root, "radix_tree_root");
 		STRUCT_SIZE_INIT(radix_tree_node, "radix_tree_node");
 		MEMBER_OFFSET_INIT(radix_tree_root_height, 

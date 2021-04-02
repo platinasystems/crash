@@ -69,7 +69,7 @@
      After the kernel is re-compiled, the uncompressed "vmlinux" kernel
      that is created in the top-level kernel build directory must be saved.
 
-  To build this utility, simply uncompress the tar file, enter the crash-4.0-4.3
+  To build this utility, simply uncompress the tar file, enter the crash-4.0-4.5
   subdirectory, and type "make".  The initial build will take several minutes 
   because the gdb module must be configured and and built.  Alternatively, the
   crash source RPM file may be installed and built, and the resultant crash
@@ -89,14 +89,14 @@
 
     $ crash
     
-    crash 4.0-4.3
+    crash 4.0-4.5
     Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007  Red Hat, Inc.
     Copyright (C) 2004, 2005, 2006  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
     Copyright (C) 2005, 2006  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
     Copyright (C) 2005  NEC Corporation
-    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
+    Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
     and you are welcome to change it and/or distribute copies of it under
@@ -114,7 +114,7 @@
           KERNEL: /boot/vmlinux
         DUMPFILE: /dev/mem
             CPUS: 1
-            DATE: Fri Jun 22 14:49:16 2007
+            DATE: Fri Jul 27 15:17:41 2007
           UPTIME: 10 days, 22:55:18
     LOAD AVERAGE: 0.08, 0.03, 0.01
            TASKS: 42
@@ -142,7 +142,7 @@
     exit           log            rd             task           
     extend         mach           repeat         timer          
     
-    crash version: 4.0-4.3   gdb version: 6.1
+    crash version: 4.0-4.5   gdb version: 6.1
     For help on any command above, enter "help <command>".
     For help on input options, enter "help input".
     For help on output options, enter "help output".
@@ -155,14 +155,14 @@
 
     $ crash vmlinux vmcore
  
-    crash 4.0-4.3
+    crash 4.0-4.5
     Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007  Red Hat, Inc.
     Copyright (C) 2004, 2005, 2006  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
     Copyright (C) 2005, 2006  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
     Copyright (C) 2005  NEC Corporation
-    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
+    Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
     and you are welcome to change it and/or distribute copies of it under
@@ -202,14 +202,14 @@
 
     $ crash vmlinux.17 lcore.cr.17
 
-    crash 4.0-4.3
+    crash 4.0-4.5
     Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007  Red Hat, Inc.
     Copyright (C) 2004, 2005, 2006  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
     Copyright (C) 2005, 2006  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
     Copyright (C) 2005  NEC Corporation
-    Copyright (C) 1999, 2002  Silicon Graphics, Inc.
+    Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
     and you are welcome to change it and/or distribute copies of it under

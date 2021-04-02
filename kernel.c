@@ -51,7 +51,6 @@ static int BUG_x86(void);
 static int BUG_x86_64(void);
 
 
-
 /*
  *  Gather a few kernel basics.
  */
@@ -62,6 +61,7 @@ kernel_init()
 	char *p1, *p2, buf[BUFSIZE];
 	struct syment *sp1, *sp2;
 	char *rqstruct;
+	char *irq_desc_type_name;	
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
@@ -165,11 +165,14 @@ kernel_init()
 	verify_version();
 
 	if (symbol_exists("__per_cpu_offset")) {
-		i = get_array_length("__per_cpu_offset", NULL, 0);
-		get_symbol_data("__per_cpu_offset", 
-			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
-			&kt->__per_cpu_offset[0]); 
-		kt->flags |= PER_CPU_OFF;
+		if (LKCD_KERNTYPES())
+			i = get_cpus_possible();
+		else
+			i = get_array_length("__per_cpu_offset", NULL, 0);
+		get_symbol_data("__per_cpu_offset",
+			sizeof(long)*((i && (i <= NR_CPUS)) ? i : NR_CPUS),
+			&kt->__per_cpu_offset[0]);
+                kt->flags |= PER_CPU_OFF;
 	}
 	if (STRUCT_EXISTS("runqueue"))
 		rqstruct = "runqueue";
@@ -278,13 +281,19 @@ kernel_init()
 	STRUCT_SIZE_INIT(hlist_head, "hlist_head"); 
 	STRUCT_SIZE_INIT(hlist_node, "hlist_node"); 
 
-	MEMBER_OFFSET_INIT(irq_desc_t_status,  "irq_desc_t", "status");
-	if (MEMBER_EXISTS("irq_desc_t", "handler"))
-		MEMBER_OFFSET_INIT(irq_desc_t_handler, "irq_desc_t", "handler");
+	if (STRUCT_EXISTS("irq_desc_t"))
+		irq_desc_type_name = "irq_desc_t";
 	else
-		MEMBER_OFFSET_INIT(irq_desc_t_chip, "irq_desc_t", "chip");
-	MEMBER_OFFSET_INIT(irq_desc_t_action, "irq_desc_t", "action");
-	MEMBER_OFFSET_INIT(irq_desc_t_depth, "irq_desc_t", "depth");
+		irq_desc_type_name = "irq_desc";
+
+	STRUCT_SIZE_INIT(irq_desc_t, irq_desc_type_name);
+	MEMBER_OFFSET_INIT(irq_desc_t_status, irq_desc_type_name, "status");
+	if (MEMBER_EXISTS(irq_desc_type_name, "handler"))
+		MEMBER_OFFSET_INIT(irq_desc_t_handler, irq_desc_type_name, "handler");
+	else
+		MEMBER_OFFSET_INIT(irq_desc_t_chip, irq_desc_type_name, "chip");
+	MEMBER_OFFSET_INIT(irq_desc_t_action, irq_desc_type_name, "action");
+	MEMBER_OFFSET_INIT(irq_desc_t_depth, irq_desc_type_name, "depth");
 	if (STRUCT_EXISTS("hw_interrupt_type")) {
 		MEMBER_OFFSET_INIT(hw_interrupt_type_typename,
 			"hw_interrupt_type", "typename");
@@ -345,8 +354,6 @@ kernel_init()
 	MEMBER_OFFSET_INIT(irqaction_name, "irqaction", "name");
 	MEMBER_OFFSET_INIT(irqaction_dev_id, "irqaction", "dev_id");
 	MEMBER_OFFSET_INIT(irqaction_next, "irqaction", "next");
-
-	STRUCT_SIZE_INIT(irq_desc_t, "irq_desc_t");
 
         STRUCT_SIZE_INIT(irq_cpustat_t, "irq_cpustat_t");
         MEMBER_OFFSET_INIT(irq_cpustat_t___softirq_active, 
@@ -715,6 +722,10 @@ verify_namelist()
 	int target_smp;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
+		return;
+
+	/* the kerntypes may not match in terms of gcc version or SMP */
+	if (LKCD_KERNTYPES())
 		return;
 
 	if (!strlen(kt->utsname.version))
@@ -3669,7 +3680,7 @@ dump_kernel_table(int verbose)
         others = 0;
         uts = &kt->utsname;
 
-        fprintf(fp, "         flags: %lx  (", kt->flags);
+        fprintf(fp, "         flags: %lx\n  (", kt->flags);
 	if (kt->flags & NO_MODULE_ACCESS)
 		fprintf(fp, "%sNO_MODULE_ACCESS", others++ ? "|" : "");
 	if (kt->flags & TVEC_BASES_V1)
@@ -3722,6 +3733,10 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sDWARF_UNWIND_MODULES", others++ ? "|" : "");
 	if (kt->flags & BUGVERBOSE_OFF)
 		fprintf(fp, "%sBUGVERBOSE_OFF", others++ ? "|" : "");
+	if (kt->flags & RELOC_SET)
+		fprintf(fp, "%sRELOC_SET", others++ ? "|" : "");
+	if (kt->flags & RELOC_FORCE)
+		fprintf(fp, "%sRELOC_FORCE", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -3763,6 +3778,7 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "   gcc_version: %d.%d.%d\n", kt->gcc_version[0], 
 		kt->gcc_version[1], kt->gcc_version[2]);
 	fprintf(fp, "     BUG_bytes: %d\n", kt->BUG_bytes);
+	fprintf(fp, "      relocate: %lx\n", kt->relocate);
 	fprintf(fp, " runq_siblings: %d\n", kt->runq_siblings);
 	fprintf(fp, "  __rq_idx[NR_CPUS]: ");
 	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
@@ -3852,7 +3868,7 @@ cmd_irq(void)
 	if (machine_type("S390") || machine_type("S390X"))
 		command_not_supported();
 
-        while ((c = getopt(argcnt, args, "db")) != EOF) {
+        while ((c = getopt(argcnt, args, "dbu")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -3882,6 +3898,17 @@ cmd_irq(void)
 			kt->display_bh();
 			return;
 
+		case 'u':
+			pc->curcmd_flags |= IRQ_IN_USE;
+			if (kernel_symbol_exists("no_irq_chip"))
+				pc->curcmd_private = (ulonglong)symbol_value("no_irq_chip");
+			else if (kernel_symbol_exists("no_irq_type"))
+				pc->curcmd_private = (ulonglong)symbol_value("no_irq_type");
+			else
+				error(WARNING, 
+       "irq: -u option ignored: \"no_irq_chip\" or \"no_irq_type\" symbols do not exist\n");
+			break;
+
                 default:
                         argerrs++;
                         break;
@@ -3899,6 +3926,8 @@ cmd_irq(void)
 			machdep->dump_irq(i);
 		return;
 	}
+
+	pc->curcmd_flags &= ~IRQ_IN_USE;
 
 	while (args[optind]) {
 		i = dtoi(args[optind], FAULT_ON_ERROR, NULL);
@@ -3952,6 +3981,9 @@ generic_dump_irq(int irq)
                 sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
         readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
                 sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+
+	if (!action && (handler == (ulong)pc->curcmd_private))
+		return;
 
 	fprintf(fp, "    IRQ: %d\n", irq);
 	fprintf(fp, " STATUS: %x %s", status, status ? "(" : "");
@@ -5467,8 +5499,12 @@ get_cpus_online()
 	if (!symbol_exists("cpu_online_map")) 
 		return 0;
 
-	len = get_symbol_type("cpu_online_map", NULL, &req) == TYPE_CODE_UNDEF ?
-		sizeof(ulong) : req.length;
+	if (LKCD_KERNTYPES()) {
+		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+			error(FATAL, "cannot determine type cpumask_t\n");
+	} else
+		len = get_symbol_type("cpu_online_map", NULL, &req) ==
+			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
 	buf = GETBUF(len);
 
 	online = 0;
@@ -5486,6 +5522,47 @@ get_cpus_online()
 	}
 
 	return online;
+}
+
+/*
+ *  For kernels containing at least the cpu_possible_map, used
+ *  to determine the cpu count (of online and offline cpus).
+ */
+int
+get_cpus_possible()
+{
+	int i, len, possible;
+	struct gnu_request req;
+	char *buf;
+	ulong *maskptr;
+
+	if (!symbol_exists("cpu_possible_map"))
+		return 0;
+
+	if (LKCD_KERNTYPES()) {
+		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+			error(FATAL, "cannot determine type cpumask_t\n");
+	} else
+		len = get_symbol_type("cpu_possible_map", NULL, &req) ==
+			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+	buf = GETBUF(len);
+
+	possible = 0;
+
+	if (readmem(symbol_value("cpu_possible_map"), KVADDR, buf, len,
+		"cpu_possible_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
+			possible += count_bits_long(*maskptr);
+
+		FREEBUF(buf);
+		if (CRASHDEBUG(1))
+			error(INFO, "get_cpus_possible: possible: %d\n",
+				possible);
+	}
+
+	return possible;
 }
 
 /*

@@ -323,11 +323,24 @@ task_init(void)
                 	tt->refresh_task_table = refresh_pid_hash_task_table;
 		} else {
                 	tt->pidhash_addr = symbol_value("pid_hash");
-			if (!get_array_length("pid_hash", NULL, sizeof(void *)) &&
-			    VALID_STRUCT(pid_link))
-                		tt->refresh_task_table = refresh_hlist_task_table_v2;
-			else
-                		tt->refresh_task_table = refresh_hlist_task_table;
+			if (LKCD_KERNTYPES()) {
+				if (VALID_STRUCT(pid_link))
+					tt->refresh_task_table =
+						refresh_hlist_task_table_v2;
+ 				else
+					tt->refresh_task_table =
+						refresh_hlist_task_table;
+				builtin_array_length("pid_hash",
+					tt->pidhash_len, NULL);
+			} else {
+				if (!get_array_length("pid_hash", NULL,
+				    sizeof(void *)) && VALID_STRUCT(pid_link))
+                			tt->refresh_task_table =
+						refresh_hlist_task_table_v2;
+				else
+                			tt->refresh_task_table =
+						refresh_hlist_task_table;
+			}
 		}
 
                 tt->flags |= PID_HASH;

@@ -178,6 +178,7 @@ struct number_option {
 #define XEN_CORE      (0x100000000000000ULL)
 #define PLEASE_WAIT   (0x200000000000000ULL)
 #define IFILE_ERROR   (0x400000000000000ULL)
+#define KERNTYPES     (0x800000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
@@ -196,6 +197,7 @@ struct number_option {
 #define XEN_HYPER_MODE()    (pc->flags & XEN_HYPER)
 #define SYSRQ_TASK(X)       ((pc->flags & SYSRQ) && is_task_active(X))
 #define XEN_CORE_DUMPFILE() (pc->flags & XEN_CORE)
+#define LKCD_KERNTYPES()    (pc->flags & KERNTYPES)
 
 #define NETDUMP_LOCAL    (0x1)  /* netdump_data flags */
 #define NETDUMP_REMOTE   (0x2)  
@@ -347,6 +349,7 @@ struct program_context {
 #define SCROLL_NONE 0
 #define SCROLL_LESS 1
 #define SCROLL_MORE 2
+#define SCROLL_CRASHPAGER 3
 	ulong redirect;			/* per-cmd origin and output flags */
 	pid_t stdpipe_pid;              /* per-cmd standard output pipe's pid */
 	pid_t pipe_pid;                 /* per-cmd output pipe's pid */
@@ -366,6 +369,7 @@ struct program_context {
 #define HEADER_PRINTED     (0x40)
 #define BAD_INSTRUCTION    (0x80)
 #define UD2A_INSTRUCTION  (0x100)
+#define IRQ_IN_USE        (0x200)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -457,6 +461,8 @@ struct new_utsname {
 #define DWARF_UNWIND_CAPABLE  (DWARF_UNWIND_MEMORY|DWARF_UNWIND_EH_FRAME)
 #define DWARF_UNWIND_MODULES  (0x800000)
 #define BUGVERBOSE_OFF       (0x1000000)
+#define RELOC_SET            (0x2000000)
+#define RELOC_FORCE          (0x4000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
@@ -521,6 +527,7 @@ struct kernel_table {                   /* kernel data */
 	ulong p2m_pages_searched;
 	ulong p2m_mfn_cache_hits;
 	ulong p2m_page_cache_hits;
+	ulong relocate;
 };
 
 /*
@@ -1503,6 +1510,7 @@ struct array_table {
 	int free_area_DIMENSION;
 	int prio_array_queue;
 	int height_to_maxindex;
+	int pid_hash;
 };
 
 /*
@@ -1541,6 +1549,7 @@ struct array_table {
 #define MEMBER_OFFSET_INIT(X, Y, Z) (ASSIGN_OFFSET(X) = MEMBER_OFFSET(Y, Z))
 #define STRUCT_SIZE_INIT(X, Y) (ASSIGN_SIZE(X) = STRUCT_SIZE(Y))
 #define ARRAY_LENGTH_INIT(A, B, C, D, E) ((A) = get_array_length(C, D, E))
+#define ARRAY_LENGTH_INIT_ALT(A, B, C, D, E) ((A) = get_array_length_alt(B, C, D, E))
 #define MEMBER_SIZE_INIT(X, Y, Z) (ASSIGN_SIZE(X) = MEMBER_SIZE(Y, Z))
 
 /*
@@ -1644,6 +1653,7 @@ struct vm_table {                /* kernel VM-related data */
 #define KMEM_CACHE_DELAY         (0x2000)
 #define NODES_ONLINE             (0x4000)
 #define VM_STAT                  (0x8000)
+#define KMALLOC_SLUB            (0x10000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2627,9 +2637,10 @@ struct efi_memory_desc_t {
 
 #define MINSPACE  (-100)
 
-#define SYNOPSIS      (0x1)
-#define COMPLETE_HELP (0x2)
-#define PIPE_TO_LESS  (0x4)
+#define SYNOPSIS       (0x1)
+#define COMPLETE_HELP  (0x2)
+#define PIPE_TO_SCROLL (0x4)
+#define MUST_HELP      (0x8)
 
 #define LEFT_JUSTIFY   (1)
 #define RIGHT_JUSTIFY  (2)
@@ -3027,6 +3038,8 @@ void close_output(void);
 int interruptible(void);
 int received_SIGINT(void);
 void debug_redirect(char *);
+int CRASHPAGER_valid(void);
+char *setup_scroll_command(void);
 
 /*
  *  tools.c
@@ -3125,6 +3138,7 @@ void option_not_supported(int);
 void please_wait(char *);
 void please_wait_done(void);
 int pathcmp(char *, char *);
+int calculate(char *, ulong *, ulonglong *, ulong);
 
 
 /* 
@@ -3180,9 +3194,11 @@ void dump_symbol_table(void);
 void dump_struct_table(ulong);
 void dump_offset_table(char *, ulong);
 int is_elf_file(char *);
+int file_elf_version(char *);
 int is_system_map(char *);
 int select_namelist(char *);
 int get_array_length(char *, int *, long);
+int get_array_length_alt(char *, char *, int *, long);
 int builtin_array_length(char *, int, int *);
 char *get_line_number(ulong, char *, int);
 char *get_build_directory(char *);
@@ -3483,6 +3499,7 @@ void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
 int get_cpus_online(void);
+int get_cpus_possible(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
 void back_trace(struct bt_info *);
 #define BT_RAW                     (0x1ULL)
