@@ -250,6 +250,10 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "_rss");
 	MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "_anon_rss");
 	MEMBER_OFFSET_INIT(mm_struct_file_rss, "mm_struct", "_file_rss");
+	if (!VALID_MEMBER(mm_struct_anon_rss)) {
+		MEMBER_OFFSET_INIT(mm_struct_rss_stat, "mm_struct", "rss_stat");
+		MEMBER_OFFSET_INIT(mm_rss_stat_count, "mm_rss_stat", "count");
+	}
 	MEMBER_OFFSET_INIT(mm_struct_total_vm, "mm_struct", "total_vm");
 	MEMBER_OFFSET_INIT(mm_struct_start_code, "mm_struct", "start_code");
         MEMBER_OFFSET_INIT(vm_area_struct_vm_mm, "vm_area_struct", "vm_mm");
@@ -1018,7 +1022,7 @@ cmd_rd(void)
                 addr = (ulonglong)sp->value;
         else {
 		fprintf(fp, "symbol not found: %s\n", args[optind]);
-                fprintf(fp, "possible aternatives:\n");
+                fprintf(fp, "possible alternatives:\n");
                 if (!symbol_query(args[optind], "  ", NULL))
                       	fprintf(fp, "  (none found)\n");
 		return;
@@ -1495,7 +1499,7 @@ cmd_wr(void)
                         addr = sp->value;
                 else {
 			fprintf(fp, "symbol not found: %s\n", args[optind]);
-                        fprintf(fp, "possible aternatives:\n");
+                        fprintf(fp, "possible alternatives:\n");
                         if (!symbol_query(args[optind], "  ", NULL))
                         	fprintf(fp, "  (none found)\n");
 			return;
@@ -3454,6 +3458,26 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 		 */
         	tm->rss = ULONG(tt->mm_struct + OFFSET(mm_struct_rss));
 	else {
+		/*
+		 *  Latest kernels have mm_struct.mm_rss_stat[].
+		 */ 
+		if (VALID_MEMBER(mm_struct_rss_stat)) {
+			long anonpages, filepages;
+
+			if (!enumerator_value("MM_FILEPAGES", &filepages) ||
+			    !enumerator_value("MM_ANONPAGES", &anonpages)) {
+				filepages = 0;
+				anonpages = 1;
+			}
+			tm->rss += ULONG(tt->mm_struct + 
+				OFFSET(mm_struct_rss_stat) +
+				OFFSET(mm_rss_stat_count) +
+				(filepages * sizeof(ulong)));
+			tm->rss += ULONG(tt->mm_struct + 
+				OFFSET(mm_struct_rss_stat) +
+				OFFSET(mm_rss_stat_count) +
+				(anonpages * sizeof(ulong)));
+		}
 		/*  
 		 *  mm_struct._anon_rss and mm_struct._file_rss should exist. 
 		 */
@@ -5015,8 +5039,7 @@ dump_page_hash_table(struct meminfo *hi)
 
 	if (!vt->page_hash_table) {
 		if (hi->flags & VERBOSE)
-			error(FATAL, 
-			 "address_space page cache radix tree not supported\n");
+			option_not_supported('C');
 		
         	if (symbol_exists("nr_pagecache")) {
 			buffer_pages = nr_blockdev_pages();
@@ -5025,11 +5048,9 @@ dump_page_hash_table(struct meminfo *hi)
 			page_cache_size -= buffer_pages;
         		fprintf(fp, "page cache size: %ld\n", page_cache_size);
 			if (hi->flags & ADDRESS_SPECIFIED)
-				error(INFO, 
-    "address_space page cache radix tree not supported: %lx: ignored\n",
-					hi->spec_addr);
+				option_not_supported('c');
 		} else
-			error(FATAL, "cannot determine page cache size\n");
+			option_not_supported('c');
 		return;
 	}
 
@@ -11553,8 +11574,8 @@ static int
 dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 {
 	int i, j;
-	int flags, swap_device, pages, prio, usedswap;
-	ulong swap_file, max, swap_map, pct;
+	int swap_device, pages, prio, usedswap;
+	ulong flags, swap_file, max, swap_map, pct;
 	ulong vfsmnt;
 	ulong swap_info, swap_info_ptr;
 	ushort *smap;
@@ -11590,8 +11611,12 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 		} else
 			fill_swap_info(swap_info);
 
-		flags = INT(vt->swap_info_struct + 
-			OFFSET(swap_info_struct_flags));
+		if (MEMBER_SIZE("swap_info_struct", "flags") == sizeof(uint))
+			flags = UINT(vt->swap_info_struct +
+				OFFSET(swap_info_struct_flags));
+		else
+			flags = ULONG(vt->swap_info_struct +
+				OFFSET(swap_info_struct_flags));
 
 		if (!(flags & SWP_USED))
 			continue;
@@ -13030,14 +13055,13 @@ nr_to_section(ulong nr)
 		}
 	}
 
-	if ((mem_sec[SECTION_NR_TO_ROOT(nr)] == 0) || 
-	    !IS_KVADDR(mem_sec[SECTION_NR_TO_ROOT(nr)]))
-		return 0;
-
-	if (IS_SPARSEMEM_EX())
+	if (IS_SPARSEMEM_EX()) {
+		if ((mem_sec[SECTION_NR_TO_ROOT(nr)] == 0) || 
+	    	    !IS_KVADDR(mem_sec[SECTION_NR_TO_ROOT(nr)]))
+			return 0;
 		addr = mem_sec[SECTION_NR_TO_ROOT(nr)] + 
 		    (nr & SECTION_ROOT_MASK()) * SIZE(mem_section);
-	else
+	} else
 		addr = symbol_value("mem_section") +
 		    (SECTIONS_PER_ROOT() * SECTION_NR_TO_ROOT(nr) +
 			(nr & SECTION_ROOT_MASK())) * SIZE(mem_section);
@@ -13558,7 +13582,7 @@ dump_page_states(void)
 	struct stat stat;
 	char *namebuf, *nameptr;
 
-	if (!(sp = symbol_search("per_cpu__page_states"))) {
+	if (!(sp = per_cpu_symbol_search("per_cpu__page_states"))) {
 		if (CRASHDEBUG(1))
 			error(INFO, "per_cpu__page_states"
 			    "not available in this kernel\n");
@@ -13666,7 +13690,7 @@ dump_vm_event_state(void)
 	events = (ulong *)GETBUF((sizeof(ulong) * vt->nr_vm_event_items) * 2);
 	cumulative = &events[vt->nr_vm_event_items];
 
-        sp = symbol_search("per_cpu__vm_event_states");
+        sp = per_cpu_symbol_search("per_cpu__vm_event_states");
 
         for (c = 0; c < kt->cpus; c++) {
                 addr = sp->value + kt->__per_cpu_offset[c];
@@ -13704,7 +13728,7 @@ vm_event_state_init(void)
 		return TRUE;
 
         if ((vt->nr_vm_event_items == -1) || 
-	    !symbol_exists("per_cpu__vm_event_states"))
+	    !per_cpu_symbol_search("per_cpu__vm_event_states"))
                 goto bailout;
 
 	if (!enumerator_value("NR_VM_EVENT_ITEMS", &count))

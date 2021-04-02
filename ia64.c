@@ -2359,15 +2359,15 @@ ia64_display_cpu_data(void)
         int cpu;
 	ulong cpu_data;
 	int array_location_known;
+	struct syment *sp;
 
 	if (!(cpu_data = machdep->machspec->cpu_data_address)) {
 		error(FATAL, "cannot find cpuinfo_ia64 location\n");
 		return;
 	}
 
-	array_location_known = symbol_exists("cpu_data") || 
-		symbol_exists("_cpu_data") || 
-		symbol_exists("per_cpu__cpu_info");
+	array_location_known = per_cpu_symbol_search("per_cpu__cpu_info") ||
+		symbol_exists("cpu_data") || symbol_exists("_cpu_data");
 
         for (cpu = 0; cpu < kt->cpus; cpu++) {
                 fprintf(fp, "%sCPU %d: %s\n", cpu ? "\n" : "", cpu,
@@ -2377,12 +2377,11 @@ ia64_display_cpu_data(void)
 		if (!array_location_known)
 			break;
 		
-		if (symbol_exists("per_cpu__cpu_info")) {
-                       if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-                                cpu_data =
-                                        symbol_value("per_cpu__cpu_info") +
-                                        kt->__per_cpu_offset[cpu+1];
-                       } else
+		if ((sp = per_cpu_symbol_search("per_cpu__cpu_info"))) {
+                       if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+                                cpu_data = sp->value + 
+					kt->__per_cpu_offset[cpu+1];
+                       else
 				break;   /* we've already done cpu 0 */
 		} else
 			cpu_data += SIZE(cpuinfo_ia64);
@@ -2843,6 +2842,7 @@ ia64_post_init(void)
 {
 	struct machine_specific *ms;
 	struct gnu_request req;
+	struct syment *sp;
 	ulong flag;
 
 	ms = &ia64_machine_specific;
@@ -2887,15 +2887,13 @@ ia64_post_init(void)
 				&ms->cpu_data_address);
 		else if (symbol_exists("cpu_data"))
 			ms->cpu_data_address = symbol_value("cpu_data");
-		else if (symbol_exists("per_cpu__cpu_info"))
-                       if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-                                ms->cpu_data_address = 
-					symbol_value("per_cpu__cpu_info") +
-                                        kt->__per_cpu_offset[0];
-                        } else
-				ms->cpu_data_address = 
-					symbol_value("per_cpu__cpu_info");
-		else {
+		else if ((sp = per_cpu_symbol_search("per_cpu__cpu_info"))) {
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				ms->cpu_data_address = sp->value +
+					kt->__per_cpu_offset[0];
+				else
+					ms->cpu_data_address = sp->value;
+		} else {
 			error(WARNING, "cannot find cpuinfo_ia64 location\n");
 			ms->cpu_data_address = 0;
 		}

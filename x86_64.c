@@ -798,40 +798,42 @@ x86_64_per_cpu_init(void)
 {
 	int i, cpus, cpunumber;
 	struct machine_specific *ms;
+	struct syment *irq_sp, *curr_sp, *cpu_sp;
 
 	ms = machdep->machspec;
+
+	irq_sp = per_cpu_symbol_search("per_cpu__irq_stack_union");
+	cpu_sp = per_cpu_symbol_search("per_cpu__cpu_number");
+	curr_sp = per_cpu_symbol_search("per_cpu__current_task");
 
 	if (!(kt->flags & PER_CPU_OFF)) {
 		/*
 		 * Presume kernel is !CONFIG_SMP.
 		 */
-		if (symbol_exists("per_cpu__irq_stack_union")) { 
-			ms->stkinfo.ibase[0] = 
-				symbol_value("per_cpu__irq_stack_union");  
+		if (irq_sp) { 
+			ms->stkinfo.ibase[0] = irq_sp->value;
 			if ((ms->stkinfo.isize = 
 		    	    MEMBER_SIZE("irq_stack_union", "irq_stack")) <= 0)
 				ms->stkinfo.isize = 16384;
 		}
-		if (DUMPFILE() && symbol_exists("per_cpu__current_task")) {
+		if (DUMPFILE() && curr_sp) {
 			if (!(ms->current = calloc(kt->cpus, sizeof(ulong))))
 				error(FATAL, 
 			    	    "cannot calloc"
 				    " %d x86_64 current pointers!\n",
 					kt->cpus);
-			get_symbol_data("per_cpu__current_task", sizeof(ulong),
+			get_symbol_data(curr_sp->name, sizeof(ulong),
 				&ms->current[0]);
 		}
 
 		return;
 	}
 
-	if (!symbol_exists("per_cpu__cpu_number") || 
-	    !symbol_exists("per_cpu__irq_stack_union"))
+	if (!cpu_sp || !irq_sp) 
 		return;
 
 	for (i = cpus = 0; i < NR_CPUS; i++) {
-		if (!readmem(symbol_value("per_cpu__cpu_number") + 
-		    kt->__per_cpu_offset[i],
+		if (!readmem(cpu_sp->value + kt->__per_cpu_offset[i],
 		    KVADDR, &cpunumber, sizeof(int),
 		    "cpu number (per_cpu)", QUIET|RETURN_ON_ERROR))
 			break;
@@ -840,9 +842,7 @@ x86_64_per_cpu_init(void)
 			break;
 		cpus++;
 
-		ms->stkinfo.ibase[i] = 
-			symbol_value("per_cpu__irq_stack_union") + 
-			kt->__per_cpu_offset[i];
+		ms->stkinfo.ibase[i] = irq_sp->value + kt->__per_cpu_offset[i];
 	}
 
 	if ((ms->stkinfo.isize = 
@@ -861,15 +861,14 @@ x86_64_per_cpu_init(void)
 	else
 		kt->cpus = cpus;
 
-	if (DUMPFILE() && symbol_exists("per_cpu__current_task")) {
+	if (DUMPFILE() && curr_sp) {
 		if ((ms->current = calloc(kt->cpus, sizeof(ulong))) == NULL)
 			error(FATAL, 
 			    "cannot calloc %d x86_64 current pointers!\n",
 				kt->cpus);
 		for (i = 0; i < kt->cpus; i++)
-			if (!readmem(symbol_value("per_cpu__current_task") +
-			    kt->__per_cpu_offset[i], KVADDR, 
-			    &ms->current[i], sizeof(ulong),
+			if (!readmem(curr_sp->value + kt->__per_cpu_offset[i], 
+			    KVADDR, &ms->current[i], sizeof(ulong),
 			    "current_task (per_cpu)", RETURN_ON_ERROR))
 				continue;
 	}
@@ -898,10 +897,13 @@ x86_64_ist_init(void)
 	ulong vaddr, offset;
 	ulong init_tss;
 	struct machine_specific *ms;
-	struct syment *sp;
+	struct syment *boot_sp, *tss_sp, *ist_sp;
 
         ms = machdep->machspec;
-	if (symbol_exists("init_tss")) {
+	tss_sp = per_cpu_symbol_search("per_cpu__init_tss");
+	ist_sp = per_cpu_symbol_search("per_cpu__orig_ist");
+
+	if (!tss_sp && symbol_exists("init_tss")) {
 		init_tss = symbol_value("init_tss");
 	
 		for (c = cpus = 0; c < NR_CPUS; c++) {
@@ -913,15 +915,14 @@ x86_64_ist_init(void)
 			if (ms->stkinfo.ebase[c][0] == 0)
 				break;
 		}
-	} else if (symbol_exists("per_cpu__init_tss")) {
+	} else if (tss_sp) {
 		for (c = 0; c < kt->cpus; c++) {
                 	if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 				if (kt->__per_cpu_offset[c] == 0)
 					break;
-                		vaddr = symbol_value("per_cpu__init_tss") +
-                                        kt->__per_cpu_offset[c];
+				vaddr = tss_sp->value + kt->__per_cpu_offset[c];
 			} else 
-				vaddr = symbol_value("per_cpu__init_tss");
+				vaddr = tss_sp->value;
 
 			vaddr += OFFSET(tss_struct_ist);
 
@@ -933,16 +934,15 @@ x86_64_ist_init(void)
                                 break;
 		}
 
-		if (symbol_exists("per_cpu__orig_ist")) {
+		if (ist_sp) {
 			for (c = 0; c < kt->cpus; c++) {
 				ulong estacks[MAX_EXCEPTION_STACKS];
 				if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 					if (kt->__per_cpu_offset[c] == 0)
 						break;
-					vaddr = symbol_value("per_cpu__orig_ist") +
-						kt->__per_cpu_offset[c];
+					vaddr = ist_sp->value + kt->__per_cpu_offset[c];
 				} else 
-					vaddr = symbol_value("per_cpu__orig_ist");
+					vaddr = ist_sp->value;
 	
 				readmem(vaddr, KVADDR, &estacks[0],
 				    sizeof(ulong) * MAX_EXCEPTION_STACKS, 
@@ -993,16 +993,15 @@ x86_64_ist_init(void)
 	 *  Sanity check cpu 0's first exception stack, which should be
 	 *  located at: &boot_exception_stacks[0]
 	 */
-        sp = value_search(ms->stkinfo.ebase[0][0], &offset);
-       	if (!sp || offset || !STREQ(sp->name, "boot_exception_stacks")) {
-		if (symbol_exists("boot_exception_stacks")) {
+        boot_sp = value_search(ms->stkinfo.ebase[0][0], &offset);
+       	if (!boot_sp || offset || 
+	    !STREQ(boot_sp->name, "boot_exception_stacks")) {
+		if ((boot_sp = symbol_search("boot_exception_stacks"))) {
                 	error(WARNING,
     "cpu 0 first exception stack: %lx\n         boot_exception_stacks: %lx\n\n",
-                        	ms->stkinfo.ebase[0][0], 
-				symbol_value("boot_exception_stacks"));
+                        	ms->stkinfo.ebase[0][0], boot_sp->value);
 			if (!ms->stkinfo.ebase[0][0])
-				ms->stkinfo.ebase[0][0] = 
-					symbol_value("boot_exception_stacks");
+				ms->stkinfo.ebase[0][0] = boot_sp->value;
 		} else if (STRUCT_EXISTS("x8664_pda"))
 			error(WARNING, 
 	      "boot_exception_stacks: symbol does not exist in this kernel!\n");
@@ -1974,6 +1973,8 @@ x86_64_verify_symbol(const char *name, ulong value, char type)
 		} else if (st->flags & PERCPU_SYMS) {
 			if (STRNEQ(name, "per_cpu") || 
 			    STREQ(name, "__per_cpu_end"))
+				return TRUE;
+			if (type == 'V')
 				return TRUE;
 		}
 
@@ -4292,18 +4293,18 @@ x86_64_get_smp_cpus(void)
 	int i, cpus, nr_pda, cpunumber, _cpu_pda, _boot_cpu_pda;
 	char *cpu_pda_buf;
 	ulong level4_pgt, cpu_pda_addr;
+	struct syment *sp;
 
 	if (!VALID_STRUCT(x8664_pda)) {
-		if (!(kt->flags & PER_CPU_OFF) ||
-		    !symbol_exists("per_cpu__cpu_number"))
+		if (!(sp = per_cpu_symbol_search("per_cpu__cpu_number")) ||
+		    !(kt->flags & PER_CPU_OFF))
 			return 1;
 
 		for (i = cpus = 0; i < NR_CPUS; i++) {
 			if (kt->__per_cpu_offset[i] == 0)
 				break;
-			if (!readmem(symbol_value("per_cpu__cpu_number") + 
-			    kt->__per_cpu_offset[i], KVADDR, 
-			    &cpunumber, sizeof(int),
+			if (!readmem(sp->value + kt->__per_cpu_offset[i], 
+			    KVADDR, &cpunumber, sizeof(int),
 			    "cpu number (per_cpu)", QUIET|RETURN_ON_ERROR))
 				break;
 			if (cpunumber != cpus)
@@ -4441,23 +4442,23 @@ x86_64_display_machine_stats(void)
 static void 
 x86_64_display_cpu_data(void)
 {
-        int cpu, cpus, boot_cpu, _cpu_pda, per_cpu;
+        int cpu, cpus, boot_cpu, _cpu_pda;
         ulong cpu_data;
 	ulong cpu_pda, cpu_pda_addr;
+	struct syment *per_cpu;
 
 	boot_cpu = _cpu_pda = FALSE;
 	cpu_data = cpu_pda = 0;
 	cpus = 0;
-	per_cpu = FALSE;
+	per_cpu = NULL;
 
 	if (symbol_exists("cpu_data")) {
         	cpu_data = symbol_value("cpu_data");
 		cpus = kt->cpus;
 		boot_cpu = FALSE;
-	} else if (symbol_exists("per_cpu__cpu_info")) {
+	} else if ((per_cpu = per_cpu_symbol_search("per_cpu__cpu_info"))) {
 		cpus = kt->cpus;
 		boot_cpu = FALSE;
-		per_cpu = TRUE;
 	} else if (symbol_exists("boot_cpu_data")) {
         	cpu_data = symbol_value("boot_cpu_data");
 		boot_cpu = TRUE;
@@ -4478,8 +4479,7 @@ x86_64_display_cpu_data(void)
                 	fprintf(fp, "%sCPU %d:\n", cpu ? "\n" : "", cpu);
 
 		if (per_cpu)
-			cpu_data = symbol_value("per_cpu__cpu_info") +
-				kt->__per_cpu_offset[cpu];
+			cpu_data = per_cpu->value + kt->__per_cpu_offset[cpu];
 
                 dump_struct("cpuinfo_x86", cpu_data, 0);
 

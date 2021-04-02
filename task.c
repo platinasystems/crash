@@ -479,6 +479,7 @@ irqstacks_init(void)
 {
 	int i;
 	char *thread_info_buf;
+	struct syment *hard_sp, *soft_sp;
 
 	if (!(tt->hardirq_ctx = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
 		error(FATAL, "cannot malloc hardirq_ctx space.");
@@ -491,23 +492,21 @@ irqstacks_init(void)
 
 	thread_info_buf = GETBUF(SIZE(irq_ctx));
 
-	if (symbol_exists("hardirq_ctx")) {
-		i = get_array_length("hardirq_ctx", NULL, 0);
-		get_symbol_data("hardirq_ctx",
-			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
-			&tt->hardirq_ctx[0]);
-	} else if (symbol_exists("per_cpu__hardirq_ctx")) {
+	if ((hard_sp = per_cpu_symbol_search("per_cpu__hardirq_ctx"))) {
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 			for (i = 0; i < NR_CPUS; i++) {
 				if (!kt->__per_cpu_offset[i])
 					continue;
-				tt->hardirq_ctx[i] =
-					symbol_value("per_cpu__hardirq_ctx") +
+				tt->hardirq_ctx[i] = hard_sp->value +
 					kt->__per_cpu_offset[i];
 			}
 		} else 
-			tt->hardirq_ctx[0] =
-				symbol_value("per_cpu__hardirq_ctx");
+			tt->hardirq_ctx[0] = hard_sp->value;
+	} else if (symbol_exists("hardirq_ctx")) {
+		i = get_array_length("hardirq_ctx", NULL, 0);
+		get_symbol_data("hardirq_ctx",
+			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
+			&tt->hardirq_ctx[0]);
 	} else 
 		error(WARNING, "cannot determine hardirq_ctx addresses\n");
 
@@ -527,23 +526,21 @@ irqstacks_init(void)
 			ULONG(thread_info_buf+OFFSET(thread_info_task));
 	}
 
-	if (symbol_exists("softirq_ctx")) {
-		i = get_array_length("softirq_ctx", NULL, 0);
-		get_symbol_data("softirq_ctx",
-			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
-			&tt->softirq_ctx[0]);
-	} else if (symbol_exists("per_cpu__softirq_ctx")) {
+	if ((soft_sp = per_cpu_symbol_search("per_cpu__softirq_ctx"))) {
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 			for (i = 0; i < NR_CPUS; i++) {
 				if (!kt->__per_cpu_offset[i])
 					continue;
-				tt->softirq_ctx[i] =
-					symbol_value("per_cpu__softirq_ctx") +
+				tt->softirq_ctx[i] = soft_sp->value +
 					kt->__per_cpu_offset[i];
 			}
 		} else 
-			 tt->softirq_ctx[0] =
-				symbol_value("per_cpu__softirq_ctx");
+			 tt->softirq_ctx[0] = soft_sp->value;
+	} else if (symbol_exists("softirq_ctx")) {
+		i = get_array_length("softirq_ctx", NULL, 0);
+		get_symbol_data("softirq_ctx",
+			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
+			&tt->softirq_ctx[0]);
 	} else
 		error(WARNING, "cannot determine softirq_ctx addresses\n");
 
@@ -6107,20 +6104,20 @@ get_idle_threads(ulong *tasklist, int nr_cpus)
 	int i, cnt;
 	ulong runq, runqaddr;
 	char *runqbuf;
+	struct syment *rq_sp;
 
 	BZERO(tasklist, sizeof(ulong) * NR_CPUS);
 	runqbuf = NULL;
 	cnt = 0;
 
-	if (symbol_exists("per_cpu__runqueues") && 
+	if ((rq_sp = per_cpu_symbol_search("per_cpu__runqueues")) && 
 	    VALID_MEMBER(runqueue_idle)) {
 		runqbuf = GETBUF(SIZE(runqueue));
 		for (i = 0; i < nr_cpus; i++) {
-			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-				runq = symbol_value("per_cpu__runqueues") +
-					kt->__per_cpu_offset[i];
-			} else
-				runq = symbol_value("per_cpu__runqueues");
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				runq = rq_sp->value + kt->__per_cpu_offset[i];
+			else
+				runq = rq_sp->value;
 
 			readmem(runq, KVADDR, runqbuf,
                         	SIZE(runqueue), "runqueues entry (per_cpu)",
@@ -6254,26 +6251,25 @@ get_curr_task(int cpu, char *runqbuf)
 int
 get_active_set(void)
 {
-        int i, cnt, per_cpu;
+        int i, cnt;
         ulong runq, runqaddr;
         char *runqbuf;
+	struct syment *rq_sp;
 
         if (tt->flags & ACTIVE_SET)
                 return TRUE;
 
-	per_cpu = FALSE;
+	runq = 0;
+	rq_sp = per_cpu_symbol_search("per_cpu__runqueues");
 
-	if (symbol_exists("runqueues")) {
-		runq = symbol_value("runqueues");
-		per_cpu = FALSE;
-	} else if (symbol_exists("per_cpu__runqueues")) {
-		runq = symbol_value("per_cpu__runqueues");
-		per_cpu = TRUE;
-	} else if (OPENVZ())
-		runq = symbol_value("pcpu_info");
-	else
-		return FALSE;
-
+	if (!rq_sp) {
+		if (symbol_exists("runqueues"))
+			runq = symbol_value("runqueues");
+		else if (OPENVZ())
+			runq = symbol_value("pcpu_info");
+		else
+			return FALSE;
+	}
 
 	if (!tt->active_set &&
 	    !(tt->active_set = (ulong *)calloc(NR_CPUS, sizeof(ulong))))	
@@ -6304,13 +6300,12 @@ get_active_set(void)
 		}
 		FREEBUF(pcpu_info_buf);
 		FREEBUF(vcpu_struct_buf);
-	} else if (VALID_MEMBER(runqueue_curr) && per_cpu) {
+	} else if (VALID_MEMBER(runqueue_curr) && rq_sp) {
                	for (i = 0; i < kt->cpus; i++) {
-                        if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-                                runq = symbol_value("per_cpu__runqueues") +
-                                        kt->__per_cpu_offset[i];
-                        } else
-                                runq = symbol_value("per_cpu__runqueues");
+                        if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+                                runq = rq_sp->value + kt->__per_cpu_offset[i];
+                        else
+                                runq = rq_sp->value;
 
                         readmem(runq, KVADDR, runqbuf, SIZE(runqueue), 
 				"active runqueues entry (per_cpu)",
@@ -6661,7 +6656,7 @@ start_again:
 		next = runqueue_head = symbol_value("init_task_union");
 	} else
 		error(FATAL, 
-		    "cannot determine run queue structures being used\n");
+		    "cannot determine run queue structures\n");
 
 	cnt = 0;
 	do {
@@ -6707,29 +6702,27 @@ dump_runqueues(void)
 	char *runqbuf;
 	ulong active, expired, arrays;
 	struct task_context *tc;
-	int per_cpu;
+	struct syment *rq_sp;
 
-        if (symbol_exists("runqueues")) {
-                runq = symbol_value("runqueues");
-                per_cpu = FALSE;
-        } else if (symbol_exists("per_cpu__runqueues")) {
-                runq = symbol_value("per_cpu__runqueues");
-                per_cpu = TRUE;
-        } else {
-		runq = 0;
-		per_cpu = FALSE;
-	}
+	runq = 0;
+
+        rq_sp = per_cpu_symbol_search("per_cpu__runqueues");
+	if (!rq_sp) {
+		if (symbol_exists("runqueues"))
+			runq = symbol_value("runqueues");
+		else
+			error(FATAL, "cannot determine run queue structures\n"); 
+        }
 
 	get_active_set();
         runqbuf = GETBUF(SIZE(runqueue));
 
 	for (cpu = 0; cpu < kt->cpus; cpu++, runq += SIZE(runqueue)) {
-		if (per_cpu) {
-			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-                 		runq = symbol_value("per_cpu__runqueues") +
-                        		kt->__per_cpu_offset[cpu];
-                 	} else
-                 		runq = symbol_value("per_cpu__runqueues");
+		if (rq_sp) {
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				runq = rq_sp->value + kt->__per_cpu_offset[cpu];
+			else
+				runq = rq_sp->value;
 		}
 
 		fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "", 
@@ -6937,6 +6930,7 @@ dump_CFS_runqueues(void)
 	long nr_running, cfs_rq_nr_running;
 	struct rb_root *root;
 	struct rb_node *node;
+	struct syment *rq_sp, *init_sp;
 
 	if (!VALID_STRUCT(cfs_rq)) {
 		STRUCT_SIZE_INIT(cfs_rq, "cfs_rq");
@@ -6956,23 +6950,22 @@ dump_CFS_runqueues(void)
                         "prio");
 	}
 
-	if (!symbol_exists("per_cpu__runqueues"))
-		error(FATAL, "per_cpu__runqueues does not exist\n");
-
-        runq = symbol_value("per_cpu__runqueues");
+	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
+		error(FATAL, "per-cpu runqueues does not exist\n");
 
         runqbuf = GETBUF(SIZE(runqueue));
-	cfs_rq_buf = symbol_exists("per_cpu__init_cfs_rq") ?
-		GETBUF(SIZE(cfs_rq)) : NULL;
+	if ((init_sp = per_cpu_symbol_search("per_cpu__init_cfs_rq")))
+		cfs_rq_buf = GETBUF(SIZE(cfs_rq));
+	else
+		cfs_rq_buf = NULL;
 
 	get_active_set();
 
         for (cpu = 0; cpu < kt->cpus; cpu++) {
-		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-			runq = symbol_value("per_cpu__runqueues") +
-				kt->__per_cpu_offset[cpu];
-		} else
-			runq = symbol_value("per_cpu__runqueues");
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
+		else
+			runq = rq_sp->value;
 
                 fprintf(fp, "%sCPU %d RUNQUEUE: %lx\n", cpu ? "\n" : "",
 			cpu, runq);
@@ -6991,11 +6984,10 @@ dump_CFS_runqueues(void)
 			/*
 		 	 *  Use default task group's cfs_rq on each cpu.
 		 	 */
-			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
-				cfs_rq = symbol_value("per_cpu__init_cfs_rq") +
-					kt->__per_cpu_offset[cpu];
-			} else
-				cfs_rq = symbol_value("per_cpu__init_cfs_rq");
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF))
+				cfs_rq = init_sp->value + kt->__per_cpu_offset[cpu];
+			else
+				cfs_rq = init_sp->value;
 
 			readmem(cfs_rq, KVADDR, cfs_rq_buf, SIZE(cfs_rq),
 				"per-cpu cfs_rq", FAULT_ON_ERROR);
