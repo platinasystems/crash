@@ -301,8 +301,8 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 	if (machdep->flags & CPU_BOOKE)
 		page_table = page_middle + (BTOP(vaddr) & (PTRS_PER_PTE - 1));
 	else
-		page_table = ((page_middle & machdep->pagemask) + machdep->kvbase) +
-			(BTOP(vaddr) & (PTRS_PER_PTE-1));
+		page_table = (ulong *)(((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase) +
+			((ulong)BTOP(vaddr) & (PTRS_PER_PTE-1)));
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n",(ulong)page_middle, 
@@ -389,8 +389,8 @@ ppc_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 	if (machdep->flags & CPU_BOOKE)
 		page_table = page_middle + (BTOP(kvaddr) & (PTRS_PER_PTE - 1));
 	else
-		page_table = ((page_middle & machdep->pagemask) + machdep->kvbase) +
-			(BTOP(kvaddr) & (PTRS_PER_PTE-1));
+		page_table = (ulong *)(((pgd_pte & (ulong)machdep->pagemask) + machdep->kvbase) +
+			((ulong)BTOP(kvaddr) & (PTRS_PER_PTE-1)));
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n", (ulong)page_middle, 

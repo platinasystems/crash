@@ -48,6 +48,7 @@ static struct option long_options[] = {
         {"no_ikconfig", 0, 0, 0},
         {"hyper", 0, 0, 0},
 	{"p2m_mfn", 1, 0, 0},
+	{"zero_excluded", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -151,6 +152,9 @@ main(int argc, char **argv)
 
 		        if (STREQ(long_options[option_index].name, "p2m_mfn")) 
 				xen_kdump_p2m_mfn(optarg);
+
+		        if (STREQ(long_options[option_index].name, "zero_excluded")) 
+				*diskdump_flags |= ZERO_EXCLUDED;
 
 			break;
 
@@ -720,6 +724,7 @@ setup_environment(int argc, char **argv)
 	pc->redhat_debug_loc = DEFAULT_REDHAT_DEBUG_LOCATION;
 	pc->cmdgencur = 0;
 	pc->cmd_table = linux_command_table;
+	kt->BUG_bytes = -1;
 
 	/*
 	 *  Get gdb version before initializing it since this might be one 
@@ -1152,6 +1157,10 @@ dump_program_context(void)
 		fprintf(fp, "%sMEMTYPE_FILEADDR", others ? "|" : "");
         if (pc->curcmd_flags & HEADER_PRINTED)
 		fprintf(fp, "%sHEADER_PRINTED", others ? "|" : "");
+        if (pc->curcmd_flags & BAD_INSTRUCTION)
+		fprintf(fp, "%sBAD_INSTRUCTION", others ? "|" : "");
+        if (pc->curcmd_flags & UD2A_INSTRUCTION)
+		fprintf(fp, "%sUD2A_INSTRUCTION", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

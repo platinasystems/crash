@@ -4250,6 +4250,21 @@ x86_64_calc_phys_base(void)
 
 		return;
 	}
+
+	if (XENDUMP_DUMPFILE() && (text_start == __START_KERNEL_map)) {
+		/* 
+		 *  Xen kernels are not relocable (yet) and don't have the
+		 *  "phys_base" entry point, so this must be a xendump of a 
+		 *  fully-virtualized relocatable kernel.  No clues exist in 
+		 *  the xendump header, so hardwire phys_base to 2MB and hope
+		 *  for the best.
+		 */
+		machdep->machspec->phys_base = 0x200000;
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "default relocatable default phys_base: %lx\n",
+				machdep->machspec->phys_base);
+	}
 }
 
 /*

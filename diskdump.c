@@ -58,10 +58,14 @@ struct diskdump_data {
 	ulong	evictions;		/* total evictions done */
 	ulong	cached_reads;
 	ulong  *valid_pages;
+	ulong   accesses;
 };
 
 static struct diskdump_data diskdump_data = { 0 };
 static struct diskdump_data *dd = &diskdump_data;
+static int get_dump_level(void);
+
+ulong *diskdump_flags = &diskdump_data.flags;
 
 static inline int get_bit(char *map, int byte, int bit)
 {
@@ -134,6 +138,8 @@ static int read_dump_header(void)
 	} else if (!memcmp(header->signature, KDUMP_SIGNATURE,
 				sizeof(header->signature))) {
 		dd->flags |= KDUMP_CMPRS_LOCAL;
+		if (header->header_version >= 1)
+			dd->flags |= ERROR_EXCLUDED;
 	} else {
 		if (CRASHDEBUG(1))
 			error(INFO, "diskdump: dump does not have panic dump header\n");
@@ -292,6 +298,9 @@ is_diskdump(char *file)
 	if ((dd->compressed_page = (char *)malloc(dd->block_size)) == NULL)
 		error(FATAL, "diskdump: cannot malloc compressed page space\n");
 
+	if (CRASHDEBUG(1))
+		diskdump_memory_dump(fp);
+
 	return TRUE;
 }
 
@@ -331,6 +340,8 @@ page_is_cached(physaddr_t paddr)
 {
 	int i;
 	struct page_cache_hdr *pgc;
+
+	dd->accesses++;
 
 	for (i = 0; i < DISKDUMP_CACHED_PAGES; i++) {
 
@@ -452,6 +463,9 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	if ((pfn >= dd->header->max_mapnr) || !page_is_ram(pfn))
 		return SEEK_ERROR;
 	if (!page_is_dumpable(pfn)) {
+		if ((dd->flags & (ZERO_EXCLUDED|ERROR_EXCLUDED)) ==
+		    ERROR_EXCLUDED)
+			return PAGE_EXCLUDED;
 		memset(bufptr, 0, cnt);
 		return cnt;
 	}
@@ -566,6 +580,197 @@ int diskdump_memory_used(void)
 int
 diskdump_memory_dump(FILE *fp)
 {
+	int i, others, dump_level;
+	struct disk_dump_header *dh;
+	struct disk_dump_sub_header *dsh;
+	struct kdump_sub_header *kdsh;
+	ulong *tasks;
+
+        fprintf(fp, "diskdump_data: \n");
+        fprintf(fp, "             flags: %lx (", dd->flags);
+        others = 0;
+        if (dd->flags & DISKDUMP_LOCAL)
+                fprintf(fp, "%sDISKDUMP_LOCAL", others++ ? "|" : "");
+        if (dd->flags & KDUMP_CMPRS_LOCAL)
+                fprintf(fp, "%sKDUMP_CMPRS_LOCAL", others++ ? "|" : "");
+        if (dd->flags & ERROR_EXCLUDED)
+                fprintf(fp, "%sERROR_EXCLUDED", others++ ? "|" : "");
+        if (dd->flags & ZERO_EXCLUDED)
+                fprintf(fp, "%sZERO_EXCLUDED", others++ ? "|" : "");
+        fprintf(fp, ")\n");
+        fprintf(fp, "               dfd: %d\n", dd->dfd);
+        fprintf(fp, "               ofp: %lx\n", (ulong)dd->ofp);
+        fprintf(fp, "      machine_type: %d ", dd->machine_type);
+	switch (dd->machine_type)
+	{
+	case EM_386:
+		fprintf(fp, "(EM_386)\n"); break;
+	case EM_X86_64:
+		fprintf(fp, "(EM_X86_64)\n"); break;
+	case EM_IA_64:
+		fprintf(fp, "(EM_IA_64)\n"); break;
+	case EM_PPC64:
+		fprintf(fp, "(EM_PPC64)\n"); break;
+	default:
+		fprintf(fp, "(unknown)\n"); break;
+	}
+
+        fprintf(fp, "\n            header: %lx\n", (ulong)dd->header);
+	dh = dd->header;
+	fprintf(fp, "           signature: \"");
+	for (i = 0; i < SIG_LEN; i++)
+		if (dh->signature[i])
+			fprintf(fp, "%c", dh->signature[i]);
+	fprintf(fp, "\"\n");
+	fprintf(fp, "      header_version: %d\n", dh->header_version);
+	fprintf(fp, "             utsname:\n");
+	fprintf(fp, "               sysname: %s\n", dh->utsname.sysname);
+	fprintf(fp, "              nodename: %s\n", dh->utsname.nodename);
+	fprintf(fp, "               release: %s\n", dh->utsname.release);
+	fprintf(fp, "               version: %s\n", dh->utsname.version);
+	fprintf(fp, "               machine: %s\n", dh->utsname.machine);
+	fprintf(fp, "            domainname: %s\n", dh->utsname.domainname);
+	fprintf(fp, "           timestamp:\n");
+	fprintf(fp, "                tv_sec: %lx\n", dh->timestamp.tv_sec);
+	fprintf(fp, "               tv_usec: %lx\n", dh->timestamp.tv_usec);
+	fprintf(fp, "              status: %x (", dh->status);
+        others = 0;
+        if (dh->status & DUMP_HEADER_COMPLETED)
+                fprintf(fp, "%sDUMP_HEADER_COMPLETED", others++ ? "|" : "");
+        if (dh->status & DUMP_HEADER_INCOMPLETED)
+                fprintf(fp, "%sDUMP_HEADER_INCOMPLETED", others++ ? "|" : "");
+        if (dh->status & DUMP_HEADER_COMPRESSED)
+                fprintf(fp, "%sDUMP_HEADER_COMPRESSED", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+	fprintf(fp, "          block_size: %d\n", dh->block_size);
+	fprintf(fp, "        sub_hdr_size: %d\n", dh->sub_hdr_size);
+	fprintf(fp, "       bitmap_blocks: %u\n", dh->bitmap_blocks);
+	fprintf(fp, "           max_mapnr: %u\n", dh->max_mapnr);
+	fprintf(fp, "    total_ram_blocks: %u\n", dh->total_ram_blocks);
+	fprintf(fp, "       device_blocks: %u\n", dh->device_blocks);
+	fprintf(fp, "      written_blocks: %u\n", dh->written_blocks);
+	fprintf(fp, "         current_cpu: %u\n", dh->current_cpu);
+	fprintf(fp, "             nr_cpus: %d\n", dh->nr_cpus);
+	tasks = (ulong *)&dh->tasks[0];
+	fprintf(fp, "      tasks[nr_cpus]: %lx\n", *tasks);
+	for (tasks++, i = 1; i < dh->nr_cpus; i++) {
+		fprintf(fp, "                      %lx\n", *tasks);
+		tasks++;
+	}
+        fprintf(fp, "\n");
+	fprintf(fp, "        sub_header: %lx ", (ulong)dd->sub_header);
+	if ((dsh = dd->sub_header)) {
+		fprintf(fp, "\n            elf_regs: %lx\n", 
+			(ulong)&dsh->elf_regs);
+		fprintf(fp, "          dump_level: ");
+		if ((pc->flags & RUNTIME) && 
+		    ((dump_level = get_dump_level()) >= 0)) {
+			fprintf(fp, "%d (0x%x) %s", dump_level, dump_level, 
+				dump_level ? "(" : "");
+
+#define DUMP_EXCLUDE_CACHE 0x00000001   /* Exclude LRU & SwapCache pages*/
+#define DUMP_EXCLUDE_CLEAN 0x00000002   /* Exclude all-zero pages */
+#define DUMP_EXCLUDE_FREE  0x00000004   /* Exclude free pages */
+#define DUMP_EXCLUDE_ANON  0x00000008   /* Exclude Anon pages */
+#define DUMP_SAVE_PRIVATE  0x00000010   /* Save private pages */
+
+		        others = 0;
+        		if (dump_level & DUMP_EXCLUDE_CACHE)
+                		fprintf(fp, "%sDUMP_EXCLUDE_CACHE", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_CLEAN)
+                		fprintf(fp, "%sDUMP_EXCLUDE_CLEAN", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_FREE)
+                		fprintf(fp, "%sDUMP_EXCLUDE_FREE", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_ANON)
+                		fprintf(fp, "%sDUMP_EXCLUDE_ANON", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_SAVE_PRIVATE)
+                		fprintf(fp, "%sDUMP_SAVE_PRIVATE", 
+					others++ ? "|" : "");
+			fprintf(fp, "%s\n\n", dump_level ? ")" : "");
+		} else
+			fprintf(fp, "%s\n\n", pc->flags & RUNTIME ? 
+				"(unknown)" : "(undetermined)");
+
+	} else
+        	fprintf(fp, "(n/a)\n\n");
+
+	fprintf(fp, "  sub_header_kdump: %lx ", (ulong)dd->sub_header_kdump);
+	if ((kdsh = dd->sub_header_kdump)) {
+		fprintf(fp, "\n           phys_base: %lx\n", 
+			(ulong)kdsh->phys_base);
+		fprintf(fp, "          dump_level: ");
+		if ((dump_level = get_dump_level()) >= 0) {
+			fprintf(fp, "%d (0x%x) %s", dump_level, dump_level, 
+				dump_level ? "(" : "");
+
+#define DL_EXCLUDE_ZERO         (0x001) /* Exclude Pages filled with Zeros */
+#define DL_EXCLUDE_CACHE        (0x002) /* Exclude Cache Pages without Private Pages */
+#define DL_EXCLUDE_CACHE_PRI    (0x004) /* Exclude Cache Pages with Private Pages */
+#define DL_EXCLUDE_USER_DATA    (0x008) /* Exclude UserProcessData Pages */
+#define DL_EXCLUDE_FREE         (0x010) /* Exclude Free Pages */
+
+        		if (dump_level & DL_EXCLUDE_ZERO)
+                		fprintf(fp, "%sDUMP_EXCLUDE_ZERO", 
+					others++ ? "|" : "");
+        		if (dump_level & DL_EXCLUDE_CACHE)
+                		fprintf(fp, "%sDUMP_EXCLUDE_CACHE", 
+					others++ ? "|" : "");
+        		if (dump_level & DL_EXCLUDE_CACHE_PRI)
+                		fprintf(fp, "%sDUMP_EXCLUDE_CACHE_PRI", 
+					others++ ? "|" : "");
+        		if (dump_level & DL_EXCLUDE_USER_DATA)
+                		fprintf(fp, "%sDUMP_EXCLUDE_USER_DATA", 
+					others++ ? "|" : "");
+        		if (dump_level & DL_EXCLUDE_FREE)
+                		fprintf(fp, "%sDUMP_EXCLUDE_FREE", 
+					others++ ? "|" : "");
+			others = 0;
+
+			fprintf(fp, "%s\n\n", dump_level ? ")" : "");
+		} else
+			fprintf(fp, "(unknown)\n\n");
+	} else
+        	fprintf(fp, "(n/a)\n\n");
+
+	fprintf(fp, "       data_offset: %lx\n", (ulong)dd->data_offset);
+	fprintf(fp, "        block_size: %d\n", dd->block_size);
+	fprintf(fp, "       block_shift: %d\n", dd->block_shift);
+	fprintf(fp, "            bitmap: %lx\n", (ulong)dd->bitmap);
+	fprintf(fp, "        bitmap_len: %d\n", dd->bitmap_len);
+	fprintf(fp, "   dumpable_bitmap: %lx\n", (ulong)dd->dumpable_bitmap);
+	fprintf(fp, "              byte: %d\n", dd->byte);
+	fprintf(fp, "               bit: %d\n", dd->bit);
+	fprintf(fp, "   compressed_page: %lx\n", (ulong)dd->compressed_page);
+	fprintf(fp, "         curbufptr: %lx\n\n", (ulong)dd->curbufptr);
+
+	for (i = 0; i < DISKDUMP_CACHED_PAGES; i++) {
+		fprintf(fp, "%spage_cache_hdr[%d]:\n", i < 10 ? " " : "", i);
+		fprintf(fp, "            pg_flags: %x (", dd->page_cache_hdr[i].pg_flags);
+		others = 0;
+		if (dd->page_cache_hdr[i].pg_flags & PAGE_VALID)
+                	fprintf(fp, "%sPAGE_VALID", others++ ? "|" : "");
+		fprintf(fp, ")\n");
+		fprintf(fp, "             pg_addr: %llx\n", (ulonglong)dd->page_cache_hdr[i].pg_addr);
+		fprintf(fp, "           pg_bufptr: %lx\n", (ulong)dd->page_cache_hdr[i].pg_bufptr);
+		fprintf(fp, "        pg_hit_count: %ld\n", dd->page_cache_hdr[i].pg_hit_count);
+	}
+
+	fprintf(fp, "\n    page_cache_buf: %lx\n", (ulong)dd->page_cache_buf);
+	fprintf(fp, "       evict_index: %d\n", dd->evict_index);
+	fprintf(fp, "         evictions: %ld\n", dd->evictions);
+	fprintf(fp, "          accesses: %ld\n", dd->accesses);
+	fprintf(fp, "      cached_reads: %ld ", dd->cached_reads);
+	if (dd->accesses)
+		fprintf(fp, "(%ld%%)\n",
+			dd->cached_reads * 100 / dd->accesses);
+	else
+		fprintf(fp, "\n");
+	fprintf(fp, "       valid_pages: %lx\n", (ulong)dd->valid_pages);
+
 	return 0;
 }
 
@@ -576,4 +781,37 @@ ulong
 get_diskdump_switch_stack(ulong task)
 {
 	return 0;
+}
+
+/*
+ *  Versions of disk_dump that support it contain the "dump_level" symbol.
+ *  Version 1 and later compressed kdump dumpfiles contain the dump level
+ *  in an additional field of the sub_header_kdump structure.
+ */
+static int 
+get_dump_level(void)
+{
+	int dump_level;
+
+	if (DISKDUMP_VALID()) {
+		if (symbol_exists("dump_level") &&
+		    readmem(symbol_value("dump_level"), KVADDR, &dump_level,
+		    sizeof(dump_level), "dump_level", QUIET|RETURN_ON_ERROR))
+                 	return dump_level;
+	} else if (KDUMP_CMPRS_VALID()) {
+		if (dd->header->header_version >= 1)
+			return dd->sub_header_kdump->dump_level;
+	}
+
+	return -1;
+}
+
+/*
+ *  Used by the "sys" command to display [PARTIAL DUMP] 
+ *  after the dumpfile name.
+ */
+int 
+is_partial_diskdump(void) 
+{
+	return (get_dump_level() > 0 ? TRUE : FALSE);
 }

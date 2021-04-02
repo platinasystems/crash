@@ -5153,6 +5153,8 @@ get_instr_info(kaddr_t pc, instr_rec_t *irp)
 		} else {
 			codeptr++;
 		}
+		if (STREQ(op->name, "ud2a")) 
+			codeptr += kt->BUG_bytes;
 	} else {
 		opcode = *codeptr;
 		op = &op_386[*codeptr];

@@ -672,6 +672,42 @@ netdump_memory_dump(FILE *fp)
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
 	netdump_print(")\n");
+	if ((pc->flags & RUNTIME) && symbol_exists("dump_level")) {
+		int dump_level;
+                if (readmem(symbol_value("dump_level"), KVADDR, &dump_level,
+                    sizeof(dump_level), "dump_level", QUIET|RETURN_ON_ERROR)) {
+			netdump_print("             dump_level: %d (0x%x) %s", 
+				dump_level, dump_level, 
+				dump_level > 0 ? "(" : "");
+
+#define DUMP_EXCLUDE_CACHE 0x00000001   /* Exclude LRU & SwapCache pages*/
+#define DUMP_EXCLUDE_CLEAN 0x00000002   /* Exclude all-zero pages */
+#define DUMP_EXCLUDE_FREE  0x00000004   /* Exclude free pages */
+#define DUMP_EXCLUDE_ANON  0x00000008   /* Exclude Anon pages */
+#define DUMP_SAVE_PRIVATE  0x00000010   /* Save private pages */
+
+		        others = 0;
+        		if (dump_level & DUMP_EXCLUDE_CACHE)
+                		netdump_print("%sDUMP_EXCLUDE_CACHE", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_CLEAN)
+                		netdump_print("%sDUMP_EXCLUDE_CLEAN", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_FREE)
+                		netdump_print("%sDUMP_EXCLUDE_FREE", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_EXCLUDE_ANON)
+                		netdump_print("%sDUMP_EXCLUDE_ANON", 
+					others++ ? "|" : "");
+        		if (dump_level & DUMP_SAVE_PRIVATE)
+                		netdump_print("%sDUMP_SAVE_PRIVATE", 
+					others++ ? "|" : "");
+			netdump_print("%s\n", dump_level > 0 ? ")" : "");
+		} else
+			netdump_print("             dump_level: (unknown)\n");
+	} else if (!(pc->flags & RUNTIME) && symbol_exists("dump_level"))
+		netdump_print("             dump_level: (undetermined)\n");
+
 	netdump_print("                   ndfd: %d\n", nd->ndfd);
 	netdump_print("                    ofp: %lx\n", nd->ofp);
 	netdump_print("            header_size: %d\n", nd->header_size);
