@@ -80,6 +80,8 @@ struct vmcore_data {
 	ulonglong backup_offset;
 };
 
+#define DUMP_ELF_INCOMPLETE  0x1   /* dumpfile is incomplete */
+
 /*
  *  ELF note types for Xen dom0/hypervisor kdumps.
  *  The comments below are from xen/include/public/elfnote.h.
@@ -165,6 +167,20 @@ struct xen_kdump_data {
  */
 #ifndef NT_S390_PREFIX
 #define NT_S390_PREFIX 0x305
+#endif
+
+/*
+ * S390 vector registers 0-15 upper half note (16 * u64)
+ */
+#ifndef NT_S390_VXRS_LOW
+#define NT_S390_VXRS_LOW 0x309
+#endif
+
+/*
+ * S390 vector registers 16-31 note (16 * u128)
+ */
+#ifndef NT_S390_VXRS_HIGH
+#define NT_S390_VXRS_HIGH 0x30a
 #endif
 
 #define MAX_KCORE_ELF_HEADER_SIZE (32768)

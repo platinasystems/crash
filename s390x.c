@@ -41,6 +41,7 @@
 #define KERNEL_STACK_SIZE STACKSIZE() // can be 8192 or 16384
 
 #define LOWCORE_SIZE 8192
+#define VX_SA_SIZE (32 * 16)
 
 #define S390X_PSW_MASK_PSTATE	0x0001000000000000UL
 
@@ -72,6 +73,11 @@ struct s390x_nt_fpregset {
 	uint64_t	fprs[16];
 } __attribute__ ((packed));
 
+struct s390x_vxrs {
+	uint64_t	low;
+	uint64_t	high;
+} __attribute__ ((packed));
+
 /*
  * s390x CPU info
  */
@@ -87,6 +93,8 @@ struct s390x_cpu
 	uint64_t	timer;
 	uint64_t	todcmp;
 	uint32_t	todpreg;
+	uint64_t		vxrs_low[16];
+	struct s390x_vxrs	vxrs_high[16];
 };
 
 /*
@@ -104,7 +112,6 @@ static int s390x_translate_pte(ulong, void *, ulonglong);
 static ulong s390x_processor_speed(void);
 static int s390x_eframe_search(struct bt_info *);
 static void s390x_back_trace_cmd(struct bt_info *);
-static void s390x_dump_irq(int);
 static void s390x_get_stack_frame(struct bt_info *, ulong *, ulong *);
 static int s390x_dis_filter(ulong, char *, unsigned int);
 static void s390x_cmd_mach(void);
@@ -130,6 +137,27 @@ static unsigned long readmem_ul(unsigned long addr)
 
 	readmem(addr, KVADDR, &rc, sizeof(rc), "readmem_ul", FAULT_ON_ERROR);
 	return rc;
+}
+
+/*
+ * Print hex data
+ */
+static void print_hex_buf(void *buf, int len, int cols, char *tag)
+{
+	int j, first = 1;
+
+	for (j = 0; j < len; j += 8) {
+		if (j % (cols * 8) == 0) {
+			if (first)
+				first = 0;
+			else
+				fprintf(fp, "\n");
+			fprintf(fp, "%s", tag);
+		}
+		fprintf(fp, "%#018lx ", *((unsigned long *)(buf + j)));
+	}
+	if (len)
+		fprintf(fp, "\n");
 }
 
 /*
@@ -271,6 +299,16 @@ static void s390x_elf_nt_prefix_add(struct s390x_cpu *cpu, void *desc)
 	memcpy(&cpu->prefix, desc, sizeof(cpu->prefix));
 }
 
+static void s390x_elf_nt_vxrs_low_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->vxrs_low, desc, sizeof(cpu->vxrs_low));
+}
+
+static void s390x_elf_nt_vxrs_high_add(struct s390x_cpu *cpu, void *desc)
+{
+	memcpy(&cpu->vxrs_high, desc, sizeof(cpu->vxrs_high));
+}
+
 static void *get_elf_note_desc(Elf64_Nhdr *note)
 {
 	void *ptr = note;
@@ -314,6 +352,12 @@ static void s390x_elf_note_add(int elf_cpu_nr, void *note_ptr)
 		break;
 	case NT_S390_PREFIX:
 		s390x_elf_nt_prefix_add(cpu, desc);
+		break;
+	case NT_S390_VXRS_LOW:
+		s390x_elf_nt_vxrs_low_add(cpu, desc);
+		break;
+	case NT_S390_VXRS_HIGH:
+		s390x_elf_nt_vxrs_high_add(cpu, desc);
 		break;
 	}
 }
@@ -412,9 +456,17 @@ s390x_init(int when)
 		break;
 
 	case POST_GDB:
-		machdep->nr_irqs = 0;  /* TBD */
+		if (symbol_exists("irq_desc"))
+			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
+				"irq_desc", NULL, 0);
+		else if (kernel_symbol_exists("nr_irqs"))
+			get_symbol_data("nr_irqs", sizeof(unsigned int),
+				&machdep->nr_irqs);
+		else
+			machdep->nr_irqs = 0;
+
 		machdep->vmalloc_start = s390x_vmalloc_start;
-		machdep->dump_irq = s390x_dump_irq;
+		machdep->dump_irq = generic_dump_irq;
 		if (!machdep->hz)
 			machdep->hz = HZ;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
@@ -462,7 +514,7 @@ s390x_dump_machdep_table(ulong arg)
 	fprintf(fp, "              uvtop: s390x_uvtop()\n");
 	fprintf(fp, "              kvtop: s390x_kvtop()\n");
 	fprintf(fp, "       get_task_pgd: s390x_get_task_pgd()\n");
-	fprintf(fp, "           dump_irq: s390x_dump_irq()\n");
+	fprintf(fp, "           dump_irq: generic_dump_irq()\n");
 	fprintf(fp, "    get_stack_frame: s390x_get_stack_frame()\n");
 	fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
 	fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
@@ -916,6 +968,59 @@ s390x_get_lowcore(struct bt_info *bt, char* lowcore)
 }
 
 /*
+ * Copy VX registers out of s390x cpu
+ */
+static void vx_copy(void *buf, struct s390x_cpu *s390x_cpu)
+{
+	char *_buf = buf;
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		memcpy(&_buf[i * 16], &s390x_cpu->fprs[i], 8);
+		memcpy(&_buf[i * 16 + 8], &s390x_cpu->vxrs_low[i], 8);
+	}
+	memcpy(&_buf[16 * 16], &s390x_cpu->vxrs_high[0], 16 * 16);
+}
+
+/*
+ * Check if VX registers are available
+ */
+static int has_vx_regs(char *lowcore)
+{
+	unsigned long addr = *((uint64_t *)(lowcore + 0x11b0));
+
+	if (addr == 0 || addr % 1024)
+		return 0;
+	return 1;
+}
+
+/*
+ * Print vector registers for cpu
+ */
+static void
+s390x_print_vx_sa(struct bt_info *bt, char *lc)
+{
+	char vx_sa[VX_SA_SIZE];
+	uint64_t addr;
+
+	if (!(bt->flags & BT_SHOW_ALL_REGS))
+		return;
+	if (!has_vx_regs(lc))
+		return;
+	if (!s390x_cpu_vec) {
+		/* Pointer to save area */
+		addr = *((uint64_t *)(lc + 0x11b0));
+		readmem(addr, KVADDR, vx_sa, sizeof(vx_sa), "vx_sa",
+			FAULT_ON_ERROR);
+	} else {
+		/* Get data from s390x cpu */
+		vx_copy(vx_sa, s390x_cpu_get(bt));
+	}
+	fprintf(fp, "  -vector registers:\n");
+	print_hex_buf(vx_sa, sizeof(vx_sa), 2, "     ");
+}
+
+/*
  * Get stack address for interrupt stack using the pcpu array
  */
 static unsigned long get_int_stack_pcpu(char *stack_name, int cpu)
@@ -1180,9 +1285,11 @@ static void s390x_back_trace_cmd(struct bt_info *bt)
 		if (psw_flags & S390X_PSW_MASK_PSTATE) {
 			fprintf(fp,"Task runs in userspace\n");
 			s390x_print_lowcore(lowcore,bt,0);
+			s390x_print_vx_sa(bt, lowcore);
 			return;
 		}
 		s390x_print_lowcore(lowcore,bt,1);
+		s390x_print_vx_sa(bt, lowcore);
 		fprintf(fp,"\n");
 		if (symbol_exists("restart_stack")) {
 			get_int_stack("restart_stack",
@@ -1243,14 +1350,16 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	fprintf(fp,"  -prefix   : %#010lx\n", tmp[0]);
 	
 	ptr = lc + MEMBER_OFFSET(lc_struct, "cpu_timer_save_area");
-	tmp[0]=UINT(ptr);
-	tmp[1]=UINT(ptr + S390X_WORD_SIZE);
-	fprintf(fp,"  -cpu timer: %#010lx %#010lx\n", tmp[0],tmp[1]);
+	tmp[0]=ULONG(ptr);
+	fprintf(fp,"  -cpu timer: %#018lx\n", tmp[0]);
 
 	ptr = lc + MEMBER_OFFSET(lc_struct, "clock_comp_save_area");
-	tmp[0]=UINT(ptr);
-	tmp[1]=UINT(ptr + S390X_WORD_SIZE);
-	fprintf(fp,"  -clock cmp: %#010lx %#010lx\n", tmp[0], tmp[1]);
+	/*
+	 * Shift clock comparator by 8 because we got bit positions 0-55
+	 * in byte 1 to 8. The first byte is always zero.
+	 */
+	tmp[0]=ULONG(ptr) << 8;
+	fprintf(fp,"  -clock cmp: %#018lx\n", tmp[0]);
 
 	fprintf(fp,"  -general registers:\n");
 	ptr = lc + MEMBER_OFFSET(lc_struct, "gpregs_save_area");
@@ -1408,15 +1517,6 @@ s390x_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 			FAULT_ON_ERROR);
 		*eip=r14; 
 	}
-}
-
-/*
- *  cmd_irq() is not implemented for s390x.
- */
-static void 
-s390x_dump_irq(int irq)
-{
-	error(FATAL, "s390x_dump_irq: TBD\n");
 }
 
 /*

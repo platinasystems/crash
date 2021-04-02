@@ -218,7 +218,12 @@ xen_hyper_domain_init(void)
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_polling, "domain", "is_polling");
 
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_dying, "domain", "is_dying");
+	/*
+	 * With Xen 4.2.5 is_paused_by_controller changed to
+	 * controller_pause_count.
+	 */
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_paused_by_controller, "domain", "is_paused_by_controller");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_controller_pause_count, "domain", "controller_pause_count");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_shutting_down, "domain", "is_shutting_down");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_shut_down, "domain", "is_shut_down");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_vcpu, "domain", "vcpu");
@@ -1031,7 +1036,9 @@ xen_hyper_get_domains(void)
 	long domain_next_in_list;
 	int i, j;
 
-	get_symbol_data("dom0", sizeof(void *), &domain);
+	if (!try_get_symbol_data("dom0", sizeof(void *), &domain))
+		get_symbol_data("hardware_domain", sizeof(void *), &domain);
+
 	domain_next_in_list = MEMBER_OFFSET("domain", "next_in_list");
 	i = 0;
 	while (domain != 0) {
@@ -1072,7 +1079,8 @@ xen_hyper_get_domain_next(int mod, ulong *next)
 		if (xhdt->dom0) {
 			*next = xhdt->dom0->domain;
 		} else {
-			get_symbol_data("dom0", sizeof(void *), next);
+			if (!try_get_symbol_data("dom0", sizeof(void *), next))
+				get_symbol_data("hardware_domain", sizeof(void *), next);
 		}
 		return xhdt->domain_struct;
 		break;
@@ -1269,7 +1277,12 @@ xen_hyper_store_domain_context(struct xen_hyper_domain_context *dc,
 				*(dp + XEN_HYPER_OFFSET(domain_is_polling))) {
 			dc->domain_flags |= XEN_HYPER_DOMS_polling;
 		}
-		if (*(dp + XEN_HYPER_OFFSET(domain_is_paused_by_controller))) {
+		if (XEN_HYPER_VALID_MEMBER(domain_is_paused_by_controller) &&
+			*(dp + XEN_HYPER_OFFSET(domain_is_paused_by_controller))) {
+			dc->domain_flags |= XEN_HYPER_DOMS_ctrl_pause;
+		}
+		if (XEN_HYPER_VALID_MEMBER(domain_controller_pause_count) &&
+			*(dp + XEN_HYPER_OFFSET(domain_controller_pause_count))) {
 			dc->domain_flags |= XEN_HYPER_DOMS_ctrl_pause;
 		}
 		if (*(dp + XEN_HYPER_OFFSET(domain_is_dying))) {

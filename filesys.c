@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@ static int find_booted_kernel(void);
 static int find_booted_system_map(void);
 static int verify_utsname(char *);
 static char **build_searchdirs(int, int *);
+static int build_kernel_directory(char *);
 static int redhat_kernel_directory_v1(char *);
 static int redhat_kernel_directory_v2(char *);
 static int redhat_debug_directory(char *);
@@ -47,6 +48,7 @@ static int create_memory_device(dev_t);
 static void *radix_tree_lookup(ulong, ulong, int);
 static int match_file_string(char *, char *, char *);
 static ulong get_root_vfsmount(char *);
+static void check_live_arch_mismatch(void);
 
 
 #define DENTRY_CACHE (20)
@@ -112,6 +114,8 @@ fd_init(void)
 				error(INFO, "namelist argument required\n");
 				program_usage(SHORT_FORM);
 			}
+			if (!pc->dumpfile)
+				check_live_arch_mismatch();
 			if (!find_booted_kernel())
 	                	program_usage(SHORT_FORM);
 		}
@@ -239,6 +243,10 @@ memory_source_init(void)
 					pc->dumpfile);
 		} else if (pc->flags & S390D) { 
 			if (!s390_dump_init(pc->dumpfile))
+				error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
+		} else if (pc->flags & VMWARE_VMSS) {
+			if (!vmware_vmss_init(pc->dumpfile, fp))
 				error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
 		}
@@ -393,6 +401,18 @@ build_searchdirs(int create, int *preferred)
 		cnt = DEFAULT_SEARCHDIRS;
 	}
 
+	if (build_kernel_directory(dirbuf)) {
+		if ((searchdirs[cnt] = (char *)
+		    malloc(strlen(dirbuf)+2)) == NULL) {
+			error(INFO,
+			    "/lib/modules/ directory entry malloc: %s\n",
+				strerror(errno));
+		} else {
+			sprintf(searchdirs[cnt], "%s/", dirbuf);
+			cnt++;
+		}
+	}
+
         if (redhat_kernel_directory_v1(dirbuf)) {
                 if ((searchdirs[cnt] = (char *) 
 		    malloc(strlen(dirbuf)+2)) == NULL) {
@@ -447,6 +467,27 @@ build_searchdirs(int create, int *preferred)
 	}
 
 	return searchdirs;
+}
+
+static int
+build_kernel_directory(char *buf)
+{
+	char *p1, *p2;
+
+	if (!strstr(kt->proc_version, "Linux version "))
+		return FALSE;
+
+	BZERO(buf, BUFSIZE);
+	sprintf(buf, "/lib/modules/");
+
+	p1 = &kt->proc_version[strlen("Linux version ")];
+	p2 = &buf[strlen(buf)];
+
+	while (*p1 != ' ')
+		*p2++ = *p1++;
+
+	strcat(buf, "/build");
+	return TRUE;
 }
 
 static int
@@ -1240,6 +1281,8 @@ cmd_mount(void)
 	show_mounts(0, MOUNT_PRINT_FILES | 
 		(VALID_MEMBER(super_block_s_dirty) ? MOUNT_PRINT_INODES : 0), 
 		namespace_context);
+
+	pc->curcmd_flags &= ~HEADER_PRINTED;
 
 	do {
 		spec_string = args[optind];
@@ -4094,4 +4137,31 @@ get_root_vfsmount(char *file_buf)
 	}
 
 	return vfsmnt;
+}
+
+void
+check_live_arch_mismatch(void)
+{
+	struct utsname utsname;
+
+	if (machine_type("X86") && (uname(&utsname) == 0) &&
+	    STRNEQ(utsname.machine, "x86_64"))
+                error(FATAL, "compiled for the X86 architecture\n");
+
+#if defined(__i386__) || defined(__x86_64__) 
+	if (machine_type("ARM"))
+		error(FATAL, "compiled for the ARM architecture\n");
+#endif
+#ifdef __x86_64__
+	if (machine_type("ARM64"))
+		error(FATAL, "compiled for the ARM64 architecture\n");
+#endif
+#ifdef __x86_64__ 
+	if (machine_type("PPC64"))
+		error(FATAL, "compiled for the PPC64 architecture\n");
+#endif
+#ifdef __powerpc64__
+	if (machine_type("PPC"))
+		error(FATAL, "compiled for the PPC architecture\n");
+#endif
 }

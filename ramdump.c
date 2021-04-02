@@ -1,7 +1,9 @@
 /*
  * ramdump.c - core analysis suite
  *
- * Copyright (c) 2014 Vinayak Menon <vinayakm.list@gmail.com>
+ * Copyright (c) 2014  Broadcom Corporation
+ *                     Oza Pawandeep <oza@broadcom.com>
+ *                     Vikram Prakash <vikramp@broadcom.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +15,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * Author: Vinayak Menon <vinayakm.list@gmail.com>
+ * Author: Oza Pawandeep <oza@broadcom.com>
  */
 
 #define _LARGEFILE64_SOURCE 1  /* stat64() */
@@ -62,7 +64,7 @@ static int alloc_program_headers(Elf64_Phdr *phdr)
 	unsigned int i;
 	struct stat64 st;
 
-	for (i = 0; i < nodes; i++, phdr++) {
+	for (i = 0; i < nodes; i++) {
 		phdr[i].p_type = PT_LOAD;
 
 		if (0 > stat64(ramdump[i].path, &st)) {
@@ -88,7 +90,8 @@ static char *write_elf(Elf64_Phdr *load, Elf64_Ehdr *e_head, size_t data_offset)
 	int fd1, fd2, i, err = 1;
 	char *buf;
 	char *out_elf;
-	size_t rd, len, offset;
+	size_t offset;
+	ssize_t rd, len;
 
 	buf = (char *)malloc(CPY_BUF_SZ);
 
@@ -191,12 +194,14 @@ char *ramdump_to_elf(void)
 		e_machine = EM_ARM;
 	else if (machine_type("ARM64"))
 		e_machine = EM_AARCH64;
+	else if (machine_type("MIPS"))
+		e_machine = EM_MIPS;
 	else
 		error(FATAL, "ramdump: unsupported machine type: %s\n", 
 			MACHINE_TYPE);
 
-	e_head = (Elf64_Ehdr *)malloc(sizeof(Elf64_Ehdr) +
-		nodes * sizeof(Elf64_Phdr) + CPY_BUF_SZ * 2);
+	e_head = (Elf64_Ehdr *)malloc(sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) +
+		(nodes * sizeof(Elf64_Phdr)) + (CPY_BUF_SZ * 2));
 	ptr = (char *)e_head;
 	offset = 0;
 

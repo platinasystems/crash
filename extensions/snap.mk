@@ -21,6 +21,10 @@ ifeq ($(shell arch), ppc64)
   TARGET=PPC64
   TARGET_CFLAGS=-m64
 endif
+ifeq ($(shell arch), ppc64le)
+  TARGET=PPC64
+  TARGET_CFLAGS=-m64
+endif
 ifeq ($(shell arch), ia64)
   TARGET=IA64
   TARGET_CFLAGS=
@@ -43,4 +47,4 @@ endif
 all: snap.so
 	
 snap.so: $(INCDIR)/defs.h snap.c 
-	gcc -Wall -I$(INCDIR) -shared -rdynamic -o snap.so snap.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS)
+	gcc -Wall -g -I$(INCDIR) -shared -rdynamic -o snap.so snap.c -fPIC -D$(TARGET) $(TARGET_CFLAGS) $(GDB_FLAGS)

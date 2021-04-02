@@ -1,8 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2015 David Anderson
+ * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@ static int allocate_alias(int);
 static int alias_exists(char *);
 static void resolve_aliases(void);
 static int setup_redirect(int);
+int multiple_pipes(char **);
 static int output_command_to_pids(void);
 static void set_my_tty(void);
 static char *signame(int);
@@ -199,25 +200,33 @@ check_special_handling(char *s)
 static int
 is_executable_in_PATH(char *filename)
 {
-	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
+	char *buf1, *buf2;
 	char *tok, *path;
+	int retval;
 
-        if ((path = getenv("PATH")))
+        if ((path = getenv("PATH"))) {
+		buf1 = GETBUF(strlen(path)+1);
+		buf2 = GETBUF(strlen(path)+1);
 		strcpy(buf2, path);
-	else
+	} else
 		return FALSE;
 
+	retval = FALSE;
 	tok = strtok(buf2, ":");
 	while (tok) {
 		sprintf(buf1, "%s/%s", tok, filename);
 		if (file_exists(buf1, NULL) && 
-		    (access(buf1, X_OK) == 0))
-			return TRUE;
+		    (access(buf1, X_OK) == 0)) {
+			retval = TRUE;
+			break;
+		}
 		tok = strtok(NULL, ":");
 	}
 
-	return FALSE;
+	FREEBUF(buf1);
+	FREEBUF(buf2);
+
+	return retval;
 }
 
 /*
@@ -453,7 +462,7 @@ setup_scroll_command(void)
  *  Care is taken to segregate:
  *
  *   1. expressions encompassed by parentheses, or
- *   2. strings encompassed by apostrophes. 
+ *   2. strings encompassed by single or double quotation marks
  *
  *  When either of the above are in affect, no redirection is done.
  *
@@ -488,15 +497,16 @@ setup_redirect(int origin)
 	if (FIRSTCHAR(p) == '|' || FIRSTCHAR(p) == '!')
 		pc->redirect |= REDIRECT_SHELL_COMMAND;
 
-	expression = string = FALSE;
+	expression = 0;
+	string = FALSE;
 
 	while (*p) {
 		if (*p == '(')
-			expression = TRUE;
+			expression++;
 		if (*p == ')')
-			expression = FALSE;
+			expression--;
 
-		if (*p == '"')
+		if ((*p == '"') || (*p == '\''))
 			string = !string;
 
 		if (!(expression || string) && 
@@ -538,11 +548,8 @@ setup_redirect(int origin)
 				break;
 			}
 
-			if (strstr(p, "|")) {
-				p = rindex(p, '|') + 1;
-				p = first_nonspace(p);
+			if (multiple_pipes(&p))
 				pc->redirect |= REDIRECT_MULTI_PIPE;
-			}
 
 			strcpy(pc->pipe_command, p);
 			null_first_space(pc->pipe_command);
@@ -649,6 +656,40 @@ setup_redirect(int origin)
 	pc->redirect |= REDIRECT_NOT_DONE;
 
 	return REDIRECT_NOT_DONE;
+}
+
+/*
+ *  Find the last command in an input line that possibly contains 
+ *  multiple pipes.
+ */
+int
+multiple_pipes(char **input)
+{
+	char *p, *found;
+	int quote;
+
+	found = NULL;
+	quote = FALSE;
+
+	for (p = *input; *p; p++) {
+		if ((*p == '\'') || (*p == '"')) {
+			quote = !quote;
+			continue;
+		} else if (quote)
+			continue;
+
+		if (*p == '|') {
+			if (STRNEQ(p, "||"))
+				break;
+                        found = first_nonspace(p+1);
+		}
+	}
+
+	if (found) {
+		*input = found;
+		return TRUE;
+	} else
+		return FALSE;
 }
 
 void

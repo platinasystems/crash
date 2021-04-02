@@ -190,6 +190,8 @@ void
 arm_init(int when)
 {
 	ulong vaddr;
+	char *string;
+	struct syment *sp;
 
 #if defined(__i386__) || defined(__x86_64__)
 	if (ACTIVE())
@@ -229,8 +231,13 @@ arm_init(int when)
 		 * LPAE requires an additional page for the PGD, 
 		 * so PG_DIR_SIZE = 0x5000 for LPAE
 		 */
-		if ((symbol_value("_text") - symbol_value("swapper_pg_dir")) == 0x5000)
+		if ((string = pc->read_vmcoreinfo("CONFIG_ARM_LPAE"))) {
 			machdep->flags |= PAE;
+			free(string);
+		} else if ((sp = next_symbol("swapper_pg_dir", NULL)) &&
+		         (sp->value - symbol_value("swapper_pg_dir")) == 0x5000)
+                         machdep->flags |= PAE;
+
 		machdep->kvbase = symbol_value("_stext") & ~KVBASE_MASK;
 		machdep->identity_map_base = machdep->kvbase;
 		machdep->is_kvaddr = arm_is_kvaddr;
@@ -315,6 +322,9 @@ arm_init(int when)
 				   "pr_pid");
 		MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus",
 				   "pr_reg");
+	
+		if (!machdep->hz)
+			machdep->hz = 100;
 		break;
 
 	case POST_VM:
@@ -1085,6 +1095,18 @@ arm_lpae_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 	pmd_t pmd_pte;
 	pte_t pte;
 
+	if (!vt->vmalloc_start) {
+		*paddr = LPAE_VTOP(vaddr);
+		return TRUE;
+	}
+
+	if (!IS_VMALLOC_ADDR(vaddr)) {
+		*paddr = LPAE_VTOP(vaddr);
+		if (!verbose)
+			return TRUE;
+	}
+
+
 	if (verbose)
 		fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)pgd);
 
@@ -1221,6 +1243,11 @@ arm_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 	if (!IS_KVADDR(kvaddr))
 		return FALSE;
 
+	if (machdep->flags & PAE)
+		return arm_lpae_vtop(kvaddr, (ulong *)vt->kernel_pgd[0],
+			paddr, verbose);
+
+
 	if (!vt->vmalloc_start) {
 		*paddr = VTOP(kvaddr);
 		return TRUE;
@@ -1232,9 +1259,6 @@ arm_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 			return TRUE;
 	}
 
-	if (machdep->flags & PAE)
-		return arm_lpae_vtop(kvaddr, (ulong *)vt->kernel_pgd[0], 
-			paddr, verbose);
 
 	return arm_vtop(kvaddr, (ulong *)vt->kernel_pgd[0], paddr, verbose);
 }
@@ -1632,7 +1656,12 @@ arm_display_machine_stats(void)
 static int
 arm_get_smp_cpus(void)
 {
-	return MAX(get_cpus_active(), get_cpus_online());
+	int cpus;
+	
+	if ((cpus = get_cpus_present()))
+		return cpus;
+	else
+		return MAX(get_cpus_online(), get_highest_cpu_online()+1);
 }
 
 /*

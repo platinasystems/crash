@@ -114,6 +114,7 @@ static void x86_64_get_active_set(void);
 static int x86_64_get_kvaddr_ranges(struct vaddr_range *);
 static int x86_64_verify_paddr(uint64_t);
 static void GART_init(void);
+static void x86_64_exception_stacks_init(void);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -798,6 +799,14 @@ x86_64_dump_machdep_table(ulong arg)
 		ms->stkinfo.esize[5], 
 		ms->stkinfo.esize[6], 
 		machdep->flags & NO_TSS ? " (NO TSS) " : " ");
+
+	fprintf(fp, "                           NMI_stack_index: %d\n", 
+		ms->stkinfo.NMI_stack_index);
+        fprintf(fp, "                           exception_stacks:\n");
+        for (i = 0; i < MAX_EXCEPTION_STACKS; i++)
+		fprintf(fp, "                             [%d]: %s\n", i, 
+			ms->stkinfo.exception_stacks[i]);
+
 	fprintf(fp, "                           ebase[%s][%d]:",
 		arg ? "NR_CPUS" : "cpus", MAX_EXCEPTION_STACKS);
 	cpus = arg ? NR_CPUS : kt->cpus;
@@ -1059,17 +1068,6 @@ x86_64_per_cpu_init(void)
 	verify_spinlock();
 }
 
-static char *
-x86_64_exception_stacks[MAX_EXCEPTION_STACKS] = {
-	"STACKFAULT",
-	"DOUBLEFAULT",
-	"NMI",
-	"DEBUG",
-	"MCE",
-	"(unknown)",
-	"(unknown)"
-};
-
 /*
  *  Gather the ist addresses for each CPU.
  */
@@ -1085,6 +1083,8 @@ x86_64_ist_init(void)
         ms = machdep->machspec;
 	tss_sp = per_cpu_symbol_search("per_cpu__init_tss");
 	ist_sp = per_cpu_symbol_search("per_cpu__orig_ist");
+
+	x86_64_exception_stacks_init();
 
 	if (!tss_sp && symbol_exists("init_tss")) {
 		init_tss = symbol_value("init_tss");
@@ -1135,7 +1135,7 @@ x86_64_ist_init(void)
 					if (ms->stkinfo.ebase[c][i] != estacks[i])
 						error(WARNING, 
 						    "cpu %d %s stack: init_tss: %lx orig_ist: %lx\n", c,  
-							x86_64_exception_stacks[i],
+							ms->stkinfo.exception_stacks[i],
 							ms->stkinfo.ebase[c][i], estacks[i]);
 					ms->stkinfo.ebase[c][i] = estacks[i];
 				}
@@ -1165,21 +1165,11 @@ x86_64_ist_init(void)
                                 break;
 			cnt++;
 			if ((THIS_KERNEL_VERSION >= LINUX(2,6,18)) &&
-			    (i == DEBUG_STACK))
+			    STREQ(ms->stkinfo.exception_stacks[i], "DEBUG"))
 				ms->stkinfo.esize[i] = esize*2;
 			else
 				ms->stkinfo.esize[i] = esize;
 			ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
-		}
-		/*
-		 * RT kernel only uses 3 exception stacks for the 5 types.
-		 */
-		if ((c == 0) && (cnt == 3)) {
-			x86_64_exception_stacks[0] = "RT";
-			x86_64_exception_stacks[1] = "RT";
-			x86_64_exception_stacks[2] = "RT";
-			x86_64_exception_stacks[3] = "(unknown)";
-			x86_64_exception_stacks[4] = "(unknown)";
 		}
 	}
 
@@ -2322,10 +2312,20 @@ x86_64_eframe_search(struct bt_info *bt)
         	ms = machdep->machspec;
 
         	for (c = 0; c < kt->cpus; c++) {
+			if ((bt->flags & BT_CPUMASK) && 
+			    !(NUM_IN_BITMAP(bt->cpumask, c)))
+				continue;
                 	if (ms->stkinfo.ibase[c] == 0)
                         	break;
                                 bt->hp->esp = ms->stkinfo.ibase[c];
-                                fprintf(fp, "CPU %d IRQ STACK:\n", c);
+                                fprintf(fp, "CPU %d IRQ STACK:", c);
+
+				if (hide_offline_cpu(c)) {
+					fprintf(fp, " [OFFLINE]\n\n");
+					continue;
+				} else
+					fprintf(fp, "\n");
+
                                 if ((cnt = x86_64_eframe_search(bt)))
 					fprintf(fp, "\n");
 				else
@@ -2333,12 +2333,22 @@ x86_64_eframe_search(struct bt_info *bt)
                 }
 
         	for (c = 0; c < kt->cpus; c++) {
+			if ((bt->flags & BT_CPUMASK) && 
+			    !(NUM_IN_BITMAP(bt->cpumask, c)))
+				continue;
                 	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
                         	if (ms->stkinfo.ebase[c][i] == 0)
                                 	break;
                                 bt->hp->esp = ms->stkinfo.ebase[c][i];
-                                fprintf(fp, "CPU %d %s EXCEPTION STACK:\n", 
-					c, x86_64_exception_stacks[i]);
+                                fprintf(fp, "CPU %d %s EXCEPTION STACK:",
+					c, ms->stkinfo.exception_stacks[i]);
+
+				if (hide_offline_cpu(c)) {
+					fprintf(fp, " [OFFLINE]\n\n");
+					continue;
+				} else
+					fprintf(fp, "\n");
+
                                 if ((cnt = x86_64_eframe_search(bt)))
 					fprintf(fp, "\n");
 				else
@@ -2656,6 +2666,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 				break;
 			}
 		}
+		if (x86_64_in_irqstack(bt) && strstr(name, "_interrupt"))
+			eframe_check = 0;
 	}
 
 	if (bt->flags & BT_SCHEDULE)
@@ -2941,11 +2953,13 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			diskdump_display_regs(bt->tc->processor, ofp);
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, ofp);
+		else if (pc->flags2 & QEMU_MEM_DUMP_ELF)
+			display_regs_from_elf_notes(bt->tc->processor, ofp);
 		return;
 	} else if ((bt->flags & BT_KERNEL_SPACE) &&
 		   (KVMDUMP_DUMPFILE() ||
 		    (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE()) ||
-		    SADUMP_DUMPFILE())) {
+		    SADUMP_DUMPFILE() || (pc->flags2 & QEMU_MEM_DUMP_ELF))) {
 		fprintf(ofp, "    [exception RIP: ");
 		if ((sp = value_search(bt->instptr, &offset))) {
 			fprintf(ofp, "%s", sp->name);
@@ -2961,6 +2975,9 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			diskdump_display_regs(bt->tc->processor, ofp);
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, ofp);
+		else if (pc->flags2 & QEMU_MEM_DUMP_ELF)
+			display_regs_from_elf_notes(bt->tc->processor, ofp);
+
         } else if (bt->flags & BT_START) {
                 x86_64_print_stack_entry(bt, ofp, level,
                         0, bt->instptr);
@@ -3057,7 +3074,7 @@ in_exception_stack:
 
 		if (!BT_REFERENCE_CHECK(bt))
 			fprintf(fp, "--- <%s exception stack> ---\n",
-				x86_64_exception_stacks[estack_index]);
+				ms->stkinfo.exception_stacks[estack_index]);
 
 		/*
 		 * Find the CPU-saved, or handler-saved registers
@@ -3106,7 +3123,7 @@ in_exception_stack:
 				fprintf(ofp, 
      				    "    [ %s exception stack recursion: "
 				    "prior stack location overwritten ]\n",
-					x86_64_exception_stacks[estack_index]);
+					ms->stkinfo.exception_stacks[estack_index]);
 				return;
 			}
 
@@ -4513,12 +4530,12 @@ skip_stage:
 		bt->stacktop = ms->stkinfo.ebase[bt->tc->processor][estack] +
                 	ms->stkinfo.esize[estack];
 		console("x86_64_get_dumpfile_stack_frame: searching %s estack at %lx\n", 
-			x86_64_exception_stacks[estack], bt->stackbase);
+			ms->stkinfo.exception_stacks[estack], bt->stackbase);
 		if (!(bt->stackbase)) 
 			goto skip_stage;
 		bt->stackbuf = ms->irqstack;
 		alter_stackbuf(bt);
-		in_nmi_stack = STREQ(x86_64_exception_stacks[estack], "NMI");
+		in_nmi_stack = STREQ(ms->stkinfo.exception_stacks[estack], "NMI");
 		goto next_stack;
 
 	}
@@ -4543,7 +4560,7 @@ skip_stage:
         	*rip = ur_rip;
 		*rsp = ur_rsp;
 		if (is_kernel_text(ur_rip) &&
-		    (INSTACK(ur_rsp, bt) ||
+		    (INSTACK(ur_rsp, bt_in) ||
 		     in_alternate_stack(bt->tc->processor, ur_rsp)))
 			bt_in->flags |= BT_KERNEL_SPACE;
 		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
@@ -4574,14 +4591,14 @@ skip_stage:
 		ur_rip = ULONG(user_regs + OFFSET(user_regs_struct_rip));
 		ur_rsp = ULONG(user_regs + OFFSET(user_regs_struct_rsp));
 		if (!in_alternate_stack(bt->tc->processor, ur_rsp) && 
-		    !stkptr_to_task(bt->task)) {
+		    !stkptr_to_task(ur_rsp)) {
 			if (CRASHDEBUG(1))
 				error(INFO, 
 				    "x86_64_get_dumpfile_stack_frame: "
 				    "ELF mismatch: RSP: %lx task: %lx\n",
 					ur_rsp, bt->task);
 		} else {
-			if (is_kernel_text(ur_rip) && (INSTACK(ur_rsp, bt) || 
+			if (is_kernel_text(ur_rip) && (INSTACK(ur_rsp, bt_in) || 
 			    in_alternate_stack(bt->tc->processor, ur_rsp)))
 				bt_in->flags |= BT_KERNEL_SPACE;
 			if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
@@ -4744,6 +4761,69 @@ x86_64_display_idt_table(void)
 
 	FREEBUF(idt_table_buf);
 }
+
+static void
+x86_64_exception_stacks_init(void)
+{
+        char *idt_table_buf;
+        char buf[BUFSIZE];
+	int i;
+        ulong *ip, ist;
+	long size;
+	struct machine_specific *ms;
+
+	ms = machdep->machspec;
+
+	ms->stkinfo.NMI_stack_index = -1;
+	for (i = 0; i < MAX_EXCEPTION_STACKS; i++)
+		ms->stkinfo.exception_stacks[i] = "(unknown)";
+
+	if (!kernel_symbol_exists("idt_table"))
+		return;
+
+        if (INVALID_SIZE(gate_struct))
+                size = 16;
+	else
+		size = SIZE(gate_struct);
+
+        idt_table_buf = GETBUF(size * 256);
+        readmem(symbol_value("idt_table"), KVADDR, idt_table_buf,
+                size * 256, "idt_table", FAULT_ON_ERROR);
+        ip = (ulong *)idt_table_buf;
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "exception IST:\n");
+
+	for (i = 0; i < 256; i++, ip += 2) {
+		ist = ((*ip) >> 32) & 0x7;
+		if (ist) {
+                        x86_64_extract_idt_function(ip, buf, NULL);
+			if (CRASHDEBUG(1))
+				fprintf(fp, "  %ld: %s\n", ist, buf);
+			if (strstr(buf, "nmi")) {
+				ms->stkinfo.NMI_stack_index = ist-1; 
+				ms->stkinfo.exception_stacks[ist-1] = "NMI";
+			}
+			if (strstr(buf, "debug"))
+				ms->stkinfo.exception_stacks[ist-1] = "DEBUG";
+			if (strstr(buf, "stack"))
+				ms->stkinfo.exception_stacks[ist-1] = "STACKFAULT";
+			if (strstr(buf, "double"))
+				ms->stkinfo.exception_stacks[ist-1] = "DOUBLEFAULT";
+			if (strstr(buf, "machine"))
+				ms->stkinfo.exception_stacks[ist-1] = "MCE";
+		}
+	}
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "exception stacks:\n");
+		for (i = 0; i < MAX_EXCEPTION_STACKS; i++) 
+			fprintf(fp, "  [%d]: %s\n", i, ms->stkinfo.exception_stacks[i]);
+	}
+
+	FREEBUF(idt_table_buf);
+}
+
 
 /*
  *  Extract the function name out of the IDT entry.
@@ -5033,7 +5113,12 @@ x86_64_display_machine_stats(void)
 
 	fprintf(fp, "          MACHINE TYPE: %s\n", uts->machine);
 	fprintf(fp, "           MEMORY SIZE: %s\n", get_memory_size(buf));
-	fprintf(fp, "                  CPUS: %d\n", kt->cpus);
+	fprintf(fp, "                  CPUS: %d", kt->cpus);
+	if (kt->cpus - get_cpus_to_display())
+		fprintf(fp, " [OFFLINE: %d]\n",
+			kt->cpus - get_cpus_to_display());
+	else
+		fprintf(fp, "\n");
 	if (!STREQ(kt->hypervisor, "(undetermined)") &&
 	    !STREQ(kt->hypervisor, "bare hardware"))
 		fprintf(fp, "            HYPERVISOR: %s\n",  kt->hypervisor);
@@ -5057,24 +5142,36 @@ x86_64_display_machine_stats(void)
 	fprintf(fp, "            IRQ STACKS:\n");
 	for (c = 0; c < kt->cpus; c++) {
 		sprintf(buf, "CPU %d", c);
-		fprintf(fp, "%22s: %016lx\n", 
+		
+		fprintf(fp, "%22s: %016lx",
 			buf, machdep->machspec->stkinfo.ibase[c]);
+
+		if (hide_offline_cpu(c))
+			fprintf(fp, " [OFFLINE]\n");
+		else
+			fprintf(fp, "\n");
 	}
 
 	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
 		if (machdep->machspec->stkinfo.ebase[0][i] == 0)
 			break;
 		fprintf(fp, "%11s STACK SIZE: %d\n",
-			x86_64_exception_stacks[i],
+			machdep->machspec->stkinfo.exception_stacks[i],
 			machdep->machspec->stkinfo.esize[i]);
-		sprintf(buf, "%s STACKS:\n", x86_64_exception_stacks[i]);
+		sprintf(buf, "%s STACKS:\n", machdep->machspec->stkinfo.exception_stacks[i]);
 		fprintf(fp, "%24s", buf);
 		for (c = 0; c < kt->cpus; c++) {
 			if (machdep->machspec->stkinfo.ebase[c][i] == 0)
 				break;
 			sprintf(buf, "CPU %d", c);
-			fprintf(fp, "%22s: %016lx\n", 
+
+			fprintf(fp, "%22s: %016lx",
 				buf, machdep->machspec->stkinfo.ebase[c][i]);
+
+			if (hide_offline_cpu(c))
+				fprintf(fp, " [OFFLINE]\n");
+			else
+				fprintf(fp, "\n");
 		}
 	}
 }
@@ -5118,8 +5215,13 @@ x86_64_display_cpu_data(unsigned int radix)
         for (cpu = 0; cpu < cpus; cpu++) {
 		if (boot_cpu)
                 	fprintf(fp, "BOOT CPU:\n");
-		else
-                	fprintf(fp, "%sCPU %d:\n", cpu ? "\n" : "", cpu);
+		else {
+			if (hide_offline_cpu(cpu)) {
+				fprintf(fp, "%sCPU %d: [OFFLINE]\n", cpu ? "\n" : "", cpu);
+				continue;
+			} else
+				fprintf(fp, "%sCPU %d:\n", cpu ? "\n" : "", cpu);
+		}
 
 		if (per_cpu)
 			cpu_data = per_cpu->value + kt->__per_cpu_offset[cpu];
@@ -5995,6 +6097,12 @@ x86_64_calc_phys_base(void)
 	if (DISKDUMP_DUMPFILE()) {
 		if (diskdump_phys_base(&phys_base)) {
 			machdep->machspec->phys_base = phys_base;
+			if ((pc->flags2 & QEMU_MEM_DUMP_COMPRESSED) && 
+			    !x86_64_virt_phys_base())
+				error(WARNING,
+				    "cannot determine physical base address:"
+				    " defaulting to %lx\n\n",
+					machdep->machspec->phys_base);
 			if (CRASHDEBUG(1))
 				fprintf(fp, "compressed kdump: phys_base: %lx\n",
 					phys_base);
@@ -6055,7 +6163,7 @@ x86_64_calc_phys_base(void)
 			}
 		}
 
-		if ((pc->flags2 & QEMU_MEM_DUMP) && !x86_64_virt_phys_base())
+		if ((pc->flags2 & QEMU_MEM_DUMP_ELF) && !x86_64_virt_phys_base())
 			error(WARNING,
 			    "cannot determine physical base address:"
 			    " defaulting to %lx\n\n",
