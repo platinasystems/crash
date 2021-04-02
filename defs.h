@@ -223,7 +223,7 @@ struct number_option {
 #define DEVMEM                (0x2000000ULL)
 #define REM_LIVE_SYSTEM       (0x4000000ULL)
 #define NAMELIST_LOCAL        (0x8000000ULL)
-#define MEMSRC_LOCAL         (0x10000000ULL)
+#define LIVE_RAMDUMP         (0x10000000ULL)
 #define NAMELIST_SAVED       (0x20000000ULL)
 #define DUMPFILE_SAVED       (0x40000000ULL)
 #define UNLINK_NAMELIST      (0x80000000ULL) 
@@ -262,10 +262,11 @@ struct number_option {
 #define PROC_KCORE   (0x8000000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
+#define LOCAL_ACTIVE()      ((pc->flags & (LIVE_SYSTEM|LIVE_RAMDUMP)) == LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
 #define LIVE()              (pc->flags2 & LIVE_DUMP || pc->flags & LIVE_SYSTEM)
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP|VMWARE_VMSS)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP|VMWARE_VMSS)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP|VMWARE_VMSS|LIVE_RAMDUMP)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP|VMWARE_VMSS|LIVE_RAMDUMP)
 #define REMOTE()            (pc->flags2 & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
@@ -534,6 +535,7 @@ struct program_context {
 #define SNAP        (0x20000ULL)
 #define EXCLUDED_VMEMMAP (0x40000ULL)
 #define is_excluded_vmemmap() (pc->flags2 & EXCLUDED_VMEMMAP)
+#define MEMSRC_LOCAL         (0x80000ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -614,6 +616,7 @@ struct new_utsname {
 #define TVEC_BASES_V2 (0x4000)
 #define GCC_3_3_3     (0x8000)
 #define USE_OLD_BT   (0x10000)
+#define USE_OPT_BT   (0x10000)
 #define ARCH_XEN     (0x20000)
 #define NO_IKCONFIG  (0x40000)
 #define DWARF_UNWIND (0x80000)
@@ -639,6 +642,7 @@ struct new_utsname {
 #define KASLR_CHECK                 (0x4ULL)
 #define GET_TIMESTAMP               (0x8ULL)
 #define TVEC_BASES_V3              (0x10ULL)
+#define TIMER_BASES                (0x20ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
@@ -838,6 +842,8 @@ struct task_table {                      /* kernel/local task table data */
 	ulong tgid_cache_hits;
 	long filepages;
 	long anonpages;
+	ulong stack_end_magic;
+	ulong pf_kthread;
 };
 
 #define TASK_INIT_DONE       (0x1)
@@ -856,6 +862,7 @@ struct task_table {                      /* kernel/local task table data */
 #define NO_TIMESPEC       (0x2000)
 #define ACTIVE_ONLY       (0x4000)
 #define START_TIME_NSECS  (0x8000)
+#define THREAD_INFO_IN_TASK (0x10000)
 
 #define TASK_SLUSH (20)
 
@@ -1052,7 +1059,7 @@ extern struct machdep_table *machdep;
             readmem((ulonglong)((ulong)(PGD)), TYPE, machdep->pgd,          \
                     SIZE, "pgd page", FAULT_ON_ERROR);                      \
             machdep->last_pgd_read = (ulong)(PGD);                          \
-    }								            
+    }
 
 #define FILL_PUD(PUD, TYPE, SIZE) 					    \
     if (!IS_LAST_PUD_READ(PUD)) {                                           \
@@ -1066,7 +1073,7 @@ extern struct machdep_table *machdep;
             readmem((ulonglong)(PMD), TYPE, machdep->pmd,                   \
 	            SIZE, "pmd page", FAULT_ON_ERROR);                      \
             machdep->last_pmd_read = (ulong)(PMD);                          \
-    }					                                    
+    }
 
 #define FILL_PTBL(PTBL, TYPE, SIZE)			           	    \
     if (!IS_LAST_PTBL_READ(PTBL)) {                                         \
@@ -1082,6 +1089,7 @@ extern struct machdep_table *machdep;
 #define POST_INIT  (4)
 #define POST_VM    (5)
 #define LOG_ONLY   (6)
+#define POST_RELOC (7)
 
 #define FOREACH_BT     (1)
 #define FOREACH_VM     (2)
@@ -1963,6 +1971,12 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long page_compound_head;
 	long irq_desc_irq_data;
 	long kmem_cache_node_total_objects;
+	long timer_base_vectors;
+	long request_queue_mq_ops;
+	long request_queue_queue_ctx;
+	long blk_mq_ctx_rq_dispatched;
+	long blk_mq_ctx_rq_completed;
+	long task_struct_stack;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2105,6 +2119,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long tnt;
 	long trace_print_flags;
 	long task_struct_flags;
+	long timer_base;
 };
 
 struct array_table {
@@ -2403,6 +2418,8 @@ struct list_data {             /* generic structure used by do_list() to walk */
 #define LIST_ALLOCATE       (VERBOSE << 10)
 #define LIST_CALLBACK       (VERBOSE << 11)
 #define CALLBACK_RETURN     (VERBOSE << 12)
+#define LIST_PARSE_MEMBER   (VERBOSE << 13)
+#define LIST_READ_MEMBER    (VERBOSE << 14)
 
 struct tree_data {
 	ulong flags;
@@ -2419,6 +2436,8 @@ struct tree_data {
 #define TREE_POSITION_DISPLAY     (VERBOSE << 4)
 #define TREE_STRUCT_RADIX_10      (VERBOSE << 5)
 #define TREE_STRUCT_RADIX_16      (VERBOSE << 6)
+#define TREE_PARSE_MEMBER         (VERBOSE << 7)
+#define TREE_READ_MEMBER          (VERBOSE << 8)
 
 #define ALIAS_RUNTIME  (1)
 #define ALIAS_RCLOCAL  (2)
@@ -2844,8 +2863,8 @@ typedef u64 pte_t;
 
 #define PTOV(X) \
 	((unsigned long)(X)-(machdep->machspec->phys_offset)+(machdep->machspec->page_offset))
-#define VTOP(X) \
-	((unsigned long)(X)-(machdep->machspec->page_offset)+(machdep->machspec->phys_offset))
+
+#define VTOP(X)               arm64_VTOP((ulong)(X))
 
 #define USERSPACE_TOP   (machdep->machspec->userspace_top)
 #define PAGE_OFFSET     (machdep->machspec->page_offset)
@@ -2882,6 +2901,28 @@ typedef signed int s32;
 #define PMD_MASK_L3_4K       (~(PMD_SIZE_L3_4K-1))
 
 /*
+ * 4-levels / 4K pages
+ * 48-bit VA
+ */
+#define PTRS_PER_PGD_L4_4K   ((1UL) << (48 - 39))
+#define PTRS_PER_PUD_L4_4K   (512)
+#define PTRS_PER_PMD_L4_4K   (512)
+#define PTRS_PER_PTE_L4_4K   (512)
+#define PGDIR_SHIFT_L4_4K    (39)
+#define PGDIR_SIZE_L4_4K     ((1UL) << PGDIR_SHIFT_L4_4K)
+#define PGDIR_MASK_L4_4K     (~(PGDIR_SIZE_L4_4K-1))
+#define PUD_SHIFT_L4_4K      (30)
+#define PUD_SIZE_L4_4K       ((1UL) << PUD_SHIFT_L4_4K)
+#define PUD_MASK_L4_4K       (~(PUD_SIZE_L4_4K-1))
+#define PMD_SHIFT_L4_4K      (21)
+#define PMD_SIZE_L4_4K       (1UL << PMD_SHIFT_L4_4K)
+#define PMD_MASK_L4_4K       (~(PMD_SIZE_L4_4K-1))
+
+#define PGDIR_SIZE_48VA      (1UL << ((48 - 39) + 3))
+#define PGDIR_MASK_48VA      (~(PGDIR_SIZE_48VA - 1))
+#define PGDIR_OFFSET_48VA(X) (((ulong)(X)) & (PGDIR_SIZE_48VA - 1))
+
+/*
  * 3-levels / 64K pages
  */
 #define PTRS_PER_PGD_L3_64K  (64)
@@ -2893,6 +2934,7 @@ typedef signed int s32;
 #define PMD_SHIFT_L3_64K     (29)
 #define PMD_SIZE_L3_64K      (1UL << PMD_SHIFT_L3_64K)
 #define PMD_MASK_L3_64K      (~(PMD_SIZE_L3_64K-1))
+#define PGDIR_OFFSET_L3_64K(X) (((ulong)(X)) & ((PTRS_PER_PGD_L3_64K * 8) - 1))
 
 /*
  * 2-levels / 64K pages
@@ -2938,18 +2980,29 @@ typedef signed int s32;
 #define VM_L3_4K      (0x10)
 #define KDUMP_ENABLED (0x20)
 #define IRQ_STACKS    (0x40)
+#define NEW_VMEMMAP   (0x80)
+#define VM_L4_4K      (0x100)
+
+/*
+ * Get kimage_voffset from /dev/crash
+ */
+#define DEV_CRASH_ARCH_DATA _IOR('c', 1, unsigned long)
 
 /* 
  * sources: Documentation/arm64/memory.txt 
  *          arch/arm64/include/asm/memory.h 
  *          arch/arm64/include/asm/pgtable.h
  */
-
-#define ARM64_PAGE_OFFSET    ((0xffffffffffffffffUL) << (machdep->machspec->VA_BITS - 1))
+#define ARM64_VA_START       ((0xffffffffffffffffUL) \
+					<< machdep->machspec->VA_BITS)
+#define ARM64_PAGE_OFFSET    ((0xffffffffffffffffUL) \
+					<< (machdep->machspec->VA_BITS - 1))
 #define ARM64_USERSPACE_TOP  ((1UL) << machdep->machspec->VA_BITS)
-#define ARM64_MODULES_VADDR  (ARM64_PAGE_OFFSET - MEGABYTES(64))
-#define ARM64_MODULES_END    (ARM64_PAGE_OFFSET - 1)
-#define ARM64_VMALLOC_START  ((0xffffffffffffffffUL) << machdep->machspec->VA_BITS)
+
+/* only used for v4.6 or later */
+#define ARM64_MODULES_VSIZE     MEGABYTES(128)
+#define ARM64_KASAN_SHADOW_SIZE (1UL << (machdep->machspec->VA_BITS - 3))
+
 /*
  * The following 3 definitions are the original values, but are obsolete
  * for 3.17 and later kernels because they are now build-time calculations.
@@ -3028,6 +3081,18 @@ struct machine_specific {
 	ulong kernel_flags;
 	ulong irq_stack_size;
 	ulong *irq_stacks;
+	char  *irq_stackbuf;
+	ulong __irqentry_text_start;
+	ulong __irqentry_text_end;
+	/* for exception vector code */
+	ulong exp_entry1_start;
+	ulong exp_entry1_end;
+	ulong exp_entry2_start;
+	ulong exp_entry2_end;
+	/* only needed for v4.6 or later kernel */
+	ulong kimage_voffset;
+	ulong kimage_text;
+	ulong kimage_end;
 };
 
 struct arm64_stackframe {
@@ -3067,6 +3132,9 @@ struct arm64_stackframe {
 #define __swp_offset(entry)	SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING		(2)
+
+#define _SECTION_SIZE_BITS	26
+#define _MAX_PHYSMEM_BITS	32
 #endif  /* MIPS */
 
 #ifdef X86
@@ -3737,7 +3805,7 @@ struct efi_memory_desc_t {
 #define PMD_MASK        (~((1UL << PMD_SHIFT) - 1))
 
 /* shift to put page number into pte */
-#define PTE_SHIFT 16
+#define PTE_RPN_SHIFT_DEFAULT 16
 #define PMD_TO_PTEPAGE_SHIFT 2  /* Used for 2.6 or later */
 
 #define PTE_INDEX_SIZE  9
@@ -3759,7 +3827,15 @@ struct efi_memory_desc_t {
 #define PMD_INDEX_SIZE_L4_4K  7
 #define PUD_INDEX_SIZE_L4_4K  7
 #define PGD_INDEX_SIZE_L4_4K  9
-#define PTE_SHIFT_L4_4K  17
+#define PUD_INDEX_SIZE_L4_4K_3_7  9
+#define PTE_INDEX_SIZE_RADIX_4K  9
+#define PMD_INDEX_SIZE_RADIX_4K  9
+#define PUD_INDEX_SIZE_RADIX_4K  9
+#define PGD_INDEX_SIZE_RADIX_4K  13
+#define PTE_RPN_SHIFT_L4_4K  17
+#define PTE_RPN_SHIFT_L4_4K_4_5  18
+#define PGD_MASKED_BITS_4K  0
+#define PUD_MASKED_BITS_4K  0
 #define PMD_MASKED_BITS_4K  0
 
 /* 64K pagesize */
@@ -3770,24 +3846,52 @@ struct efi_memory_desc_t {
 #define PTE_INDEX_SIZE_L4_64K_3_10  8
 #define PMD_INDEX_SIZE_L4_64K_3_10  10
 #define PGD_INDEX_SIZE_L4_64K_3_10  12
-#define PTE_SHIFT_L4_64K_V1  32
-#define PTE_SHIFT_L4_64K_V2  30
-#define PTE_SHIFT_L4_BOOK3E_64K 28
-#define PTE_SHIFT_L4_BOOK3E_4K 24
+#define PMD_INDEX_SIZE_L4_64K_4_6  5
+#define PUD_INDEX_SIZE_L4_64K_4_6  5
+#define PTE_INDEX_SIZE_RADIX_64K  5
+#define PMD_INDEX_SIZE_RADIX_64K  9
+#define PUD_INDEX_SIZE_RADIX_64K  9
+#define PGD_INDEX_SIZE_RADIX_64K  13
+#define PTE_RPN_SHIFT_L4_64K_V1  32
+#define PTE_RPN_SHIFT_L4_64K_V2  30
+#define PTE_RPN_SHIFT_L4_BOOK3E_64K 28
+#define PTE_RPN_SHIFT_L4_BOOK3E_4K 24
+#define PGD_MASKED_BITS_64K  0
+#define PUD_MASKED_BITS_64K  0x1ff
 #define PMD_MASKED_BITS_64K  0x1ff
+#define PMD_MASKED_BITS_64K_3_11 0xfff
+#define PMD_MASKED_BITS_BOOK3E_64K_4_5 0x7ff
+#define PGD_MASKED_BITS_64K_4_6  0xc0000000000000ffUL
+#define PUD_MASKED_BITS_64K_4_6  0xc0000000000000ffUL
+#define PMD_MASKED_BITS_64K_4_6  0xc0000000000000ffUL
+
+#define PTE_RPN_MASK_DEFAULT  0xffffffffffffffffUL
+#define PTE_RPN_SIZE_L4_4_6   (PAGESIZE() == PPC64_64K_PAGE_SIZE ? 41 : 45)
+#define PTE_RPN_MASK_L4_4_6   (((1UL << PTE_RPN_SIZE_L4_4_6) - 1) << PAGESHIFT())
+#define PTE_RPN_SHIFT_L4_4_6  PAGESHIFT()
+
+#define PGD_MASKED_BITS_4_7  0xc0000000000000ffUL
+#define PUD_MASKED_BITS_4_7  0xc0000000000000ffUL
+#define PMD_MASKED_BITS_4_7  0xc0000000000000ffUL
 
 #define PD_HUGE           0x8000000000000000
 #define HUGE_PTE_MASK     0x03
 #define HUGEPD_SHIFT_MASK 0x3f
-#define L4_MASK           (THIS_KERNEL_VERSION >= LINUX(3,10,0) ? 0xfff : 0x1ff)
-#define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & L4_MASK)
+#define HUGEPD_ADDR_MASK  (0x0fffffffffffffffUL & ~HUGEPD_SHIFT_MASK)
+
+#define PGD_MASK_L4		\
+	(THIS_KERNEL_VERSION >= LINUX(3,10,0) ? (machdep->ptrs_per_pgd - 1) : 0x1ff)
 
 #define PGD_OFFSET_L4(vaddr)	\
+	((vaddr >> (machdep->machspec->l4_shift)) & PGD_MASK_L4)
+
+#define PUD_OFFSET_L4(vaddr)	\
 	((vaddr >> (machdep->machspec->l3_shift)) & (machdep->machspec->ptrs_per_l3 - 1))
 
 #define PMD_OFFSET_L4(vaddr)	\
 	((vaddr >> (machdep->machspec->l2_shift)) & (machdep->machspec->ptrs_per_l2 - 1))
 
+#define _PAGE_PTE       (machdep->machspec->_page_pte)          /* distinguishes PTEs from pointers */
 #define _PAGE_PRESENT   (machdep->machspec->_page_present)      /* software: pte contains a translation */
 #define _PAGE_USER      (machdep->machspec->_page_user)         /* matches one of the PP bits */
 #define _PAGE_RW        (machdep->machspec->_page_rw)           /* software: user write access allowed */
@@ -3797,6 +3901,9 @@ struct efi_memory_desc_t {
 #define _PAGE_WRITETHRU (machdep->machspec->_page_writethru)    /* W: cache write-through */
 #define _PAGE_DIRTY     (machdep->machspec->_page_dirty)        /* C: page changed */
 #define _PAGE_ACCESSED  (machdep->machspec->_page_accessed)     /* R: page referenced */
+
+#define PTE_RPN_MASK    (machdep->machspec->pte_rpn_mask)
+#define PTE_RPN_SHIFT   (machdep->machspec->pte_rpn_shift)
 
 #define TIF_SIGPENDING (2)
 
@@ -3985,6 +4092,8 @@ struct machine_specific {
 #define KILOBYTES(x)  ((x) * (1024))
 #define MEGABYTES(x)  ((x) * (1048576))
 #define GIGABYTES(x)  ((x) * (1073741824))
+#define TB_SHIFT (40)
+#define TERABYTES(x) ((x) * (1UL << TB_SHIFT))
 
 #define MEGABYTE_MASK (MEGABYTES(1)-1)
 
@@ -4400,7 +4509,11 @@ enum type_code {
 #endif
 };
 
+/*
+ * include/linux/sched.h
+ */
 #define PF_EXITING 0x00000004  /* getting shut down */
+#define PF_KTHREAD 0x00200000  /* I am a kernel thread */
 
 extern long _ZOMBIE_;
 #define IS_ZOMBIE(task)   (task_state(task) & _ZOMBIE_)
@@ -4720,7 +4833,7 @@ char *resizebuf(char *, long, long);
 char *strdupbuf(char *);
 #define GETBUF(X)   getbuf((long)(X))
 #define FREEBUF(X)  freebuf((char *)(X))
-#define RESIZEBUF(X,Y,Z) (X) = resizebuf((char *)(X), (long)(Y), (long)(Z));
+#define RESIZEBUF(X,Y,Z) (X) = (typeof(X))resizebuf((char *)(X), (long)(Y), (long)(Z));
 #define STRDUPBUF(X) strdupbuf((char *)(X))
 void sigsetup(int, void *, struct sigaction *, struct sigaction *);
 #define SIGACTION(s, h, a, o) sigsetup(s, h, a, o)
@@ -4740,6 +4853,7 @@ int calculate(char *, ulong *, ulonglong *, ulong);
 int endian_mismatch(char *, char, ulong);
 uint16_t swap16(uint16_t, int);
 uint32_t swap32(uint32_t, int);
+uint64_t swap64(uint64_t, int);
 ulong *get_cpumask_buf(void);
 int make_cpumask(char *, ulong *, int, int *);
 size_t strlcpy(char *, char *, size_t);
@@ -4870,6 +4984,7 @@ int fill_struct_member_data(struct struct_member_data *);
 void parse_for_member_extended(struct datatype_member *, ulong);
 void add_to_downsized(char *);
 int is_downsized(char *);
+int is_string(char *, char *);
 
 /*  
  *  memory.c 
@@ -5144,6 +5259,7 @@ void sort_context_array(void);
 void sort_tgid_array(void);
 int sort_by_tgid(const void *, const void *);
 int in_irq_ctx(ulonglong, int, ulong);
+void check_stack_overflow(void);
 
 /*
  *  extensions.c
@@ -5236,6 +5352,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_ERROR_MASK  (BT_LOOP_TRAP|BT_WRAP_TRAP|BT_KERNEL_THREAD|BT_CPU_IDLE)
 #define BT_UNWIND_ERROR      (0x2000000ULL)
 #define BT_OLD_BACK_TRACE    (0x4000000ULL)
+#define BT_OPT_BACK_TRACE    (0x4000000ULL)
 #define BT_FRAMESIZE_DEBUG   (0x8000000ULL)
 #define BT_CONTEXT_SWITCH   (0x10000000ULL)
 #define BT_HARDIRQ          (0x20000000ULL)
@@ -5385,6 +5502,7 @@ void unwind_backtrace(struct bt_info *);
 #ifdef ARM64
 void arm64_init(int);
 void arm64_dump_machdep_table(ulong);
+ulong arm64_VTOP(ulong);
 int arm64_IS_VMALLOC_ADDR(ulong);
 ulong arm64_swp_type(ulong);
 ulong arm64_swp_offset(ulong);
@@ -5512,6 +5630,7 @@ struct machine_specific {
 	ulong page_protnone;
 	ulong GART_start;
 	ulong GART_end;
+	ulong kernel_image_size;
 };
 
 #define KSYMS_START    (0x1)
@@ -5526,6 +5645,7 @@ struct machine_specific {
 #define FRAMEPOINTER (0x200)
 #define GART_REGION  (0x400)
 #define NESTED_NMI   (0x800)
+#define RANDOMIZED  (0x1000)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 
@@ -5608,14 +5728,13 @@ struct machine_specific {
         ulong hwintrstack[NR_CPUS];
         char *hwstackbuf;
         uint hwstacksize;
-        char *level4;
-        ulong last_level4_read;
 
 	uint l4_index_size;
 	uint l3_index_size;
 	uint l2_index_size;
 	uint l1_index_size;
 
+	uint ptrs_per_l4;
 	uint ptrs_per_l3;
 	uint ptrs_per_l2;
 	uint ptrs_per_l1;
@@ -5625,13 +5744,17 @@ struct machine_specific {
 	uint l2_shift;
 	uint l1_shift;
 
-	uint pte_shift;
-	uint l2_masked_bits;
+	uint pte_rpn_shift;
+	ulong pte_rpn_mask;
+	ulong pgd_masked_bits;
+	ulong pud_masked_bits;
+	ulong pmd_masked_bits;
 
 	int vmemmap_cnt;
 	int vmemmap_psize;
 	ulong vmemmap_base;
 	struct ppc64_vmemmap *vmemmap_list;
+	ulong _page_pte;
 	ulong _page_present;
 	ulong _page_user;
 	ulong _page_rw;
@@ -5645,23 +5768,21 @@ struct machine_specific {
 	int (*is_vmaddr)(ulong);
 };
 
-#define IS_LAST_L4_READ(l4)   ((ulong)(l4) == machdep->machspec->last_level4_read)
-
-#define FILL_L4(L4, TYPE, SIZE) 						\
-    if (!IS_LAST_L4_READ(L4)) {							\
-            readmem((ulonglong)((ulong)(L4)), TYPE, machdep->machspec->level4,	\
-                    SIZE, "level4 page", FAULT_ON_ERROR);			\
-            machdep->machspec->last_level4_read = (ulong)(L4);			\
-    }								            
-
 void ppc64_init(int);
 void ppc64_dump_machdep_table(ulong);
 #define display_idt_table() \
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
-#define KSYMS_START (0x1)
-#define VM_ORIG     (0x2)
-#define VMEMMAP_AWARE (0x4)
-#define BOOK3E (0x8)
+#define KSYMS_START     (0x1)
+#define VM_ORIG         (0x2)
+#define VMEMMAP_AWARE   (0x4)
+#define BOOK3E          (0x8)
+#define PHYS_ENTRY_L4   (0x10)
+#define SWAP_ENTRY_L4   (0x20)
+/*
+ * The flag bit for radix MMU in cpu_spec.mmu_features
+ * in the kernel is also 0x40.
+ */
+#define RADIX_MMU       (0x40)
 
 #define REGION_SHIFT       (60UL)
 #define REGION_ID(addr)    (((unsigned long)(addr)) >> REGION_SHIFT)
@@ -5820,6 +5941,11 @@ void s390x_dump_machdep_table(ulong);
 #define KSYMS_START (0x1)
 #endif
 
+/*
+ * mips.c
+ */
+void mips_display_regs_from_elf_notes(int, FILE *);
+
 #ifdef MIPS
 void mips_init(int);
 void mips_dump_machdep_table(ulong);
@@ -5879,6 +6005,8 @@ struct machine_specific {
 #define _PAGE_NO_EXEC   (machdep->machspec->_page_no_exec)
 #define _PAGE_DIRTY     (machdep->machspec->_page_dirty)
 #define _PFN_SHIFT      (machdep->machspec->_pfn_shift)
+
+	struct mips_regset *crash_task_regs;
 };
 #endif /* MIPS */
 

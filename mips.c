@@ -47,16 +47,27 @@ typedef ulong pte_t;
 
 #define MIPS_CPU_RIXI	0x00800000llu
 
-#define MIPS32_EF_R0	6
-#define MIPS32_EF_R29	35
-#define MIPS32_EF_R31	37
-#define MIPS32_EF_CPU0_EPC	40
+#define MIPS32_EF_R0		6
+#define MIPS32_EF_R29		35
+#define MIPS32_EF_R31		37
+#define MIPS32_EF_LO		38
+#define MIPS32_EF_HI		39
+#define MIPS32_EF_CP0_EPC	40
+#define MIPS32_EF_CP0_BADVADDR	41
+#define MIPS32_EF_CP0_STATUS	42
+#define MIPS32_EF_CP0_CAUSE	43
 
 static struct machine_specific mips_machine_specific = { 0 };
+
+/*
+ * Holds registers during the crash.
+ */
+static struct mips_regset *panic_task_regs;
 
 static void
 mips_display_machine_stats(void)
 {
+	fprintf(fp, "                 HZ: %d\n", machdep->hz);
         fprintf(fp, "          PAGE SIZE: %d\n", PAGESIZE());
 	fprintf(fp, "\n");
 
@@ -411,7 +422,7 @@ mips_dump_backtrace_entry(struct bt_info *bt, struct syment *sym,
 			  struct mips_unwind_frame *current,
 			  struct mips_unwind_frame *previous, int level)
 {
-	const char *name = sym->name;
+	const char *name = sym ? sym->name : "(invalid)";
 	struct load_module *lm;
 	char *name_plus_offset;
 	char buf[BUFSIZE];
@@ -445,7 +456,7 @@ mips_dump_backtrace_entry(struct bt_info *bt, struct syment *sym,
 			fprintf(fp, "    %s\n", buf);
 	}
 
-	if (mips_is_exception_entry(sym)) {
+	if (sym && mips_is_exception_entry(sym)) {
 		char pt_regs[SIZE(pt_regs)];
 
 		GET_STACK_DATA(current->sp, &pt_regs, SIZE(pt_regs));
@@ -531,6 +542,10 @@ mips_back_trace_cmd(struct bt_info *bt)
 {
 	struct mips_unwind_frame current, previous;
 	int level = 0;
+	int invalid_ok = 1;
+
+	if (bt->flags & BT_REGS_NOT_FOUND)
+		return;
 
 	previous.sp = previous.pc = previous.ra = 0;
 
@@ -544,21 +559,23 @@ mips_back_trace_cmd(struct bt_info *bt)
 	}
 
 	while (INSTACK(current.sp, bt)) {
-		struct syment *symbol;
+		struct syment *symbol = NULL;
 		ulong offset;
 
 		if (CRASHDEBUG(8))
 			fprintf(fp, "level %d pc %#lx ra %#lx sp %lx\n",
 				level, current.pc, current.ra, current.sp);
 
-		if (!IS_KVADDR(current.pc))
+		if (!IS_KVADDR(current.pc) && !invalid_ok)
 			return;
 
 		symbol = value_search(current.pc, &offset);
-		if (!symbol) {
+		if (!symbol && !invalid_ok) {
 			error(FATAL, "PC is unknown symbol (%lx)", current.pc);
 			return;
 		}
+
+		invalid_ok = 0;
 
 		/*
 		 * If we get an address which points to the start of a
@@ -581,7 +598,7 @@ mips_back_trace_cmd(struct bt_info *bt)
 		 *    * ret_from_fork
 		 *    * ret_from_kernel_thread
 		 */
-		if (!current.ra && !offset && !STRNEQ(symbol->name, "ret_from")) {
+		if (!current.ra && !offset && symbol && !STRNEQ(symbol->name, "ret_from")) {
 			if (CRASHDEBUG(8))
 				fprintf(fp, "zero offset at %s, try previous symbol\n",
 					symbol->name);
@@ -593,7 +610,7 @@ mips_back_trace_cmd(struct bt_info *bt)
 			}
 		}
 
-		if (mips_is_exception_entry(symbol)) {
+		if (symbol && mips_is_exception_entry(symbol)) {
 			struct mips_pt_regs_main *mains;
 			struct mips_pt_regs_cp0 *cp0;
 			char pt_regs[SIZE(pt_regs)];
@@ -612,38 +629,63 @@ mips_back_trace_cmd(struct bt_info *bt)
 			if (CRASHDEBUG(8))
 				fprintf(fp, "exception pc %#lx ra %#lx sp %lx\n",
 					previous.pc, previous.ra, previous.sp);
-		} else {
+
+			/* The PC causing the exception may have been invalid */
+			invalid_ok = 1;
+		} else if (symbol) {
 			mips_analyze_function(symbol->value, offset, &current, &previous);
+		} else {
+			/*
+			 * The current PC is invalid.  Assume that the code
+			 * jumped through a invalid pointer and that the SP has
+			 * not been adjusted.
+			 */
+			previous.sp = current.sp;
 		}
 
 		mips_dump_backtrace_entry(bt, symbol, &current, &previous, level++);
-		if (!current.ra)
-			break;
 
 		current.pc = current.ra;
 		current.sp = previous.sp;
 		current.ra = previous.ra;
 
+		if (CRASHDEBUG(8))
+			fprintf(fp, "next %d pc %#lx ra %#lx sp %lx\n",
+				level, current.pc, current.ra, current.sp);
+
 		previous.sp = previous.pc = previous.ra = 0;
 	}
 }
 
-static void
+static int
 mips_dumpfile_stack_frame(struct bt_info *bt, ulong *nip, ulong *ksp)
 {
+	const struct machine_specific *ms = machdep->machspec;
 	struct mips_regset *regs;
+	ulong epc, r29;
 
-	regs = bt->machdep;
-	if (!regs) {
-		fprintf(fp, "0%lx: Register values not available\n",
-			bt->task);
-		return;
+	if (!ms->crash_task_regs) {
+		bt->flags |= BT_REGS_NOT_FOUND;
+		return FALSE;
+	}
+
+	regs = &ms->crash_task_regs[bt->tc->processor];
+	epc = regs->regs[MIPS32_EF_CP0_EPC];
+	r29 = regs->regs[MIPS32_EF_R29];
+
+	if (!epc && !r29) {
+		bt->flags |= BT_REGS_NOT_FOUND;
+		return FALSE;
 	}
 
 	if (nip)
-		*nip = regs->regs[MIPS32_EF_CPU0_EPC];
+		*nip = epc;
 	if (ksp)
-		*ksp = regs->regs[MIPS32_EF_R29];
+		*ksp = r29;
+
+	bt->machdep = regs;
+
+	return TRUE;
 }
 
 static int
@@ -697,14 +739,20 @@ mips_stackframe_init(void)
 static void
 mips_get_stack_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 {
+	int ret;
+
 	*pcp = 0;
 	*spp = 0;
+	bt->machdep = NULL;
 
 	if (DUMPFILE() && is_task_active(bt->task))
-		mips_dumpfile_stack_frame(bt, pcp, spp);
+		ret = mips_dumpfile_stack_frame(bt, pcp, spp);
 	else
-		mips_get_frame(bt, pcp, spp);
+		ret = mips_get_frame(bt, pcp, spp);
 
+	if (!ret)
+		error(WARNING, "cannot determine starting stack frame for task %lx\n",
+			bt->task);
 }
 
 static int
@@ -746,6 +794,178 @@ mips_vmalloc_start(void)
 	return first_vmalloc_address();
 }
 
+/*
+ * Retrieve task registers for the time of the crash.
+ */
+static int
+mips_get_crash_notes(void)
+{
+	struct machine_specific *ms = machdep->machspec;
+	ulong crash_notes;
+	Elf32_Nhdr *note;
+	ulong offset;
+	char *buf, *p;
+	ulong *notes_ptrs;
+	ulong i;
+
+	if (!symbol_exists("crash_notes"))
+		return FALSE;
+
+	crash_notes = symbol_value("crash_notes");
+
+	notes_ptrs = (ulong *)GETBUF(kt->cpus*sizeof(notes_ptrs[0]));
+
+	/*
+	 * Read crash_notes for the first CPU. crash_notes are in standard ELF
+	 * note format.
+	 */
+	if (!readmem(crash_notes, KVADDR, &notes_ptrs[kt->cpus-1],
+	    sizeof(notes_ptrs[kt->cpus-1]), "crash_notes",
+		     RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read crash_notes\n");
+		FREEBUF(notes_ptrs);
+		return FALSE;
+	}
+
+	if (symbol_exists("__per_cpu_offset")) {
+
+		/* Add __per_cpu_offset for each cpu to form the pointer to the notes */
+		for (i = 0; i<kt->cpus; i++)
+			notes_ptrs[i] = notes_ptrs[kt->cpus-1] + kt->__per_cpu_offset[i];
+	}
+
+	buf = GETBUF(SIZE(note_buf));
+
+	if (!(panic_task_regs = calloc((size_t)kt->cpus, sizeof(*panic_task_regs))))
+		error(FATAL, "cannot calloc panic_task_regs space\n");
+
+	for  (i=0;i<kt->cpus;i++) {
+
+		if (!readmem(notes_ptrs[i], KVADDR, buf, SIZE(note_buf), "note_buf_t",
+			     RETURN_ON_ERROR)) {
+			error(WARNING, "failed to read note_buf_t\n");
+			goto fail;
+		}
+
+		/*
+		 * Do some sanity checks for this note before reading registers from it.
+		 */
+		note = (Elf32_Nhdr *)buf;
+		p = buf + sizeof(Elf32_Nhdr);
+
+		/*
+		 * dumpfiles created with qemu won't have crash_notes, but there will
+		 * be elf notes; dumpfiles created by kdump do not create notes for
+		 * offline cpus.
+		 */
+		if (note->n_namesz == 0 && (DISKDUMP_DUMPFILE() || KDUMP_DUMPFILE())) {
+			if (DISKDUMP_DUMPFILE())
+				note = diskdump_get_prstatus_percpu(i);
+			else if (KDUMP_DUMPFILE())
+				note = netdump_get_prstatus_percpu(i);
+			if (note) {
+				/*
+				 * SIZE(note_buf) accounts for a "final note", which is a
+				 * trailing empty elf note header.
+				 */
+				long notesz = SIZE(note_buf) - sizeof(Elf32_Nhdr);
+
+				if (sizeof(Elf32_Nhdr) + roundup(note->n_namesz, 4) +
+				    note->n_descsz == notesz)
+					BCOPY((char *)note, buf, notesz);
+			} else {
+				error(WARNING,
+					"cannot find NT_PRSTATUS note for cpu: %d\n", i);
+				continue;
+			}
+		}
+
+		if (note->n_type != NT_PRSTATUS) {
+			error(WARNING, "invalid note (n_type != NT_PRSTATUS)\n");
+			goto fail;
+		}
+		if (p[0] != 'C' || p[1] != 'O' || p[2] != 'R' || p[3] != 'E') {
+			error(WARNING, "invalid note (name != \"CORE\"\n");
+			goto fail;
+		}
+
+		/*
+		 * Find correct location of note data. This contains elf_prstatus
+		 * structure which has registers etc. for the crashed task.
+		 */
+		offset = sizeof(Elf32_Nhdr);
+		offset = roundup(offset + note->n_namesz, 4);
+		p = buf + offset; /* start of elf_prstatus */
+
+		BCOPY(p + OFFSET(elf_prstatus_pr_reg), &panic_task_regs[i],
+		      sizeof(panic_task_regs[i]));
+	}
+
+	/*
+	 * And finally we have the registers for the crashed task. This is
+	 * used later on when dumping backtrace.
+	 */
+	ms->crash_task_regs = panic_task_regs;
+
+	FREEBUF(buf);
+	FREEBUF(notes_ptrs);
+	return TRUE;
+
+fail:
+	FREEBUF(buf);
+	FREEBUF(notes_ptrs);
+	free(panic_task_regs);
+	return FALSE;
+}
+
+static int mips_get_elf_notes(void)
+{
+	struct machine_specific *ms = machdep->machspec;
+	int i;
+
+	if (!DISKDUMP_DUMPFILE() && !KDUMP_DUMPFILE())
+		return FALSE;
+
+	panic_task_regs = calloc(kt->cpus, sizeof(*panic_task_regs));
+	if (!panic_task_regs)
+		error(FATAL, "cannot calloc panic_task_regs space\n");
+
+	for (i = 0; i < kt->cpus; i++) {
+		Elf32_Nhdr *note = NULL;
+		size_t len;
+
+		if (DISKDUMP_DUMPFILE())
+			note = diskdump_get_prstatus_percpu(i);
+		else if (KDUMP_DUMPFILE())
+			note = netdump_get_prstatus_percpu(i);
+
+		if (!note)
+			error(WARNING,
+			      "cannot find NT_PRSTATUS note for cpu: %d\n", i);
+
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+
+		BCOPY((char *)note + len + OFFSET(elf_prstatus_pr_reg),
+		      &panic_task_regs[i], sizeof(panic_task_regs[i]));
+	}
+
+	ms->crash_task_regs = panic_task_regs;
+
+	return TRUE;
+}
+
+static int mips_init_active_task_regs(void)
+{
+	int retval;
+
+	retval = mips_get_crash_notes();
+	if (retval == TRUE)
+		return retval;
+
+	return mips_get_elf_notes();
+}
+
 static int
 mips_verify_symbol(const char *name, ulong value, char type)
 {
@@ -776,6 +996,7 @@ mips_dump_machdep_table(ulong arg)
 	fprintf(fp, "       ptrs_per_pgd: %lu\n", PTRS_PER_PGD);
 	fprintf(fp, "       ptrs_per_pte: %d\n", PTRS_PER_PTE);
 	fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
+	fprintf(fp, "                 hz: %d\n", machdep->hz);
 	fprintf(fp, "            memsize: %lld (0x%llx)\n",
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
@@ -901,11 +1122,115 @@ mips_init(int when)
 		machdep->dump_irq = generic_dump_irq;
 		machdep->show_interrupts = generic_show_interrupts;
 		machdep->get_irq_affinity = generic_get_irq_affinity;
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 			"irq_desc", NULL, 0);
 		mips_stackframe_init();
+
+		if (!machdep->hz)
+			machdep->hz = 100;
+
+		MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus",
+				   "pr_reg");
+
+		STRUCT_SIZE_INIT(note_buf, "note_buf_t");
 		break;
+	case POST_VM:
+		/*
+		 * crash_notes contains machine specific information about the
+		 * crash. In particular, it contains CPU registers at the time
+		 * of the crash. We need this information to extract correct
+		 * backtraces from the panic task.
+		 */
+		if (!ACTIVE() && !mips_init_active_task_regs())
+			error(WARNING,
+			    "cannot retrieve registers for active task%s\n\n",
+				kt->cpus > 1 ? "s" : "");
 	}
 }
 
-#endif /* MIPS */
+void
+mips_display_regs_from_elf_notes(int cpu, FILE *ofp)
+{
+	const struct machine_specific *ms = machdep->machspec;
+	struct mips_regset *regs;
+
+	if (!ms->crash_task_regs) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	regs = &ms->crash_task_regs[cpu];
+	if (!regs->regs[MIPS32_EF_R29] && !regs->regs[MIPS32_EF_CP0_EPC]) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	fprintf(ofp,
+		"     R0: %08lx   R1: %08lx   R2: %08lx\n"
+		"     R3: %08lx   R4: %08lx   R5: %08lx\n"
+		"     R6: %08lx   R7: %08lx   R8: %08lx\n"
+		"     R9: %08lx  R10: %08lx  R11: %08lx\n"
+		"    R12: %08lx  R13: %08lx  R14: %08lx\n"
+		"    R15: %08lx  R16: %08lx  R17: %08lx\n"
+		"    R18: %08lx  R19: %08lx  R20: %08lx\n"
+		"    R21: %08lx  R22: %08lx  R23: %08lx\n"
+		"    R24: %08lx  R25: %08lx  R26: %08lx\n"
+		"    R27: %08lx  R28: %08lx  R29: %08lx\n"
+		"    R30: %08lx  R31: %08lx\n"
+		"       LO: %08lx        HI: %08lx\n"
+		"      EPC: %08lx  BADVADDR: %08lx\n"
+		"   STATUS: %08lx     CAUSE: %08lx\n",
+		regs->regs[MIPS32_EF_R0],
+		regs->regs[MIPS32_EF_R0 + 1],
+		regs->regs[MIPS32_EF_R0 + 2],
+		regs->regs[MIPS32_EF_R0 + 3],
+		regs->regs[MIPS32_EF_R0 + 4],
+		regs->regs[MIPS32_EF_R0 + 5],
+		regs->regs[MIPS32_EF_R0 + 6],
+		regs->regs[MIPS32_EF_R0 + 7],
+		regs->regs[MIPS32_EF_R0 + 8],
+		regs->regs[MIPS32_EF_R0 + 9],
+		regs->regs[MIPS32_EF_R0 + 10],
+		regs->regs[MIPS32_EF_R0 + 11],
+		regs->regs[MIPS32_EF_R0 + 12],
+		regs->regs[MIPS32_EF_R0 + 13],
+		regs->regs[MIPS32_EF_R0 + 14],
+		regs->regs[MIPS32_EF_R0 + 15],
+		regs->regs[MIPS32_EF_R0 + 16],
+		regs->regs[MIPS32_EF_R0 + 17],
+		regs->regs[MIPS32_EF_R0 + 18],
+		regs->regs[MIPS32_EF_R0 + 19],
+		regs->regs[MIPS32_EF_R0 + 20],
+		regs->regs[MIPS32_EF_R0 + 21],
+		regs->regs[MIPS32_EF_R0 + 22],
+		regs->regs[MIPS32_EF_R0 + 23],
+		regs->regs[MIPS32_EF_R0 + 24],
+		regs->regs[MIPS32_EF_R0 + 25],
+		regs->regs[MIPS32_EF_R0 + 26],
+		regs->regs[MIPS32_EF_R0 + 27],
+		regs->regs[MIPS32_EF_R0 + 28],
+		regs->regs[MIPS32_EF_R0 + 29],
+		regs->regs[MIPS32_EF_R0 + 30],
+		regs->regs[MIPS32_EF_R0 + 31],
+		regs->regs[MIPS32_EF_LO],
+		regs->regs[MIPS32_EF_HI],
+		regs->regs[MIPS32_EF_CP0_EPC],
+		regs->regs[MIPS32_EF_CP0_BADVADDR],
+		regs->regs[MIPS32_EF_CP0_STATUS],
+		regs->regs[MIPS32_EF_CP0_CAUSE]);
+}
+#else
+
+#include "defs.h"
+
+void
+mips_display_regs_from_elf_notes(int cpu, FILE *ofp)
+{
+	return;
+}
+
+#endif /* !MIPS */
+
+

@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2015 David Anderson
- * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -227,9 +227,10 @@ main(int argc, char **argv)
 						optarg);
 				}
 			} else if (STREQ(long_options[option_index].name, "kaslr")) {
-				if (!machine_type("X86_64"))
-					error(INFO, "--kaslr only valid "
-						"with X86_64 machine type.\n");
+				if (!machine_type("X86_64") &&
+				    !machine_type("ARM64"))
+					error(INFO, "--kaslr not valid "
+						"with this machine type.\n");
 				else if (STREQ(optarg, "auto"))
 					kt->flags2 |= (RELOC_AUTO|KASLR);
 				else {
@@ -428,6 +429,15 @@ main(int argc, char **argv)
 					"too many dumpfile arguments\n");
 					program_usage(SHORT_FORM);
 			}
+
+			if (ACTIVE()) {
+				pc->flags |= LIVE_RAMDUMP;
+				pc->readmem = read_ramdump;
+				pc->writemem = NULL;
+				optind++;
+				continue;
+			}
+
 			pc->dumpfile = ramdump_to_elf();
 			if (is_kdump(pc->dumpfile, KDUMP_LOCAL)) {
 				pc->flags |= KDUMP;
@@ -742,6 +752,7 @@ main_loop(void)
 
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
+		machdep_init(POST_RELOC);
 		show_untrusted_files();
 		kdump_backup_region_init();
 		if (XEN_HYPER_MODE()) {
@@ -1294,7 +1305,7 @@ dump_program_context(void)
         if (pc->flags & REM_LIVE_SYSTEM)
                 sprintf(&buf[strlen(buf)],
                         "%sREM_LIVE_SYSTEM", others++ ? "|" : "");
-        if (pc->flags & MEMSRC_LOCAL)
+        if (pc->flags2 & MEMSRC_LOCAL)
                 sprintf(&buf[strlen(buf)],
                         "%sMEMSRC_LOCAL", others++ ? "|" : "");
         if (pc->flags & NAMELIST_LOCAL)
