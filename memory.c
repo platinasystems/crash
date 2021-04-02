@@ -75,7 +75,7 @@ struct meminfo {           /* general purpose memory information structure */
 	ulong container;
 	int *freelist;
 	int freelist_index_size;
-
+	ulong random;
 };
 
 /*
@@ -293,6 +293,7 @@ static void dump_per_cpu_offsets(void);
 static void dump_page_flags(ulonglong);
 static ulong kmem_cache_nodelists(ulong);
 static void dump_hstates(void);
+static ulong freelist_ptr(struct meminfo *, ulong, ulong);
 
 /*
  *  Memory display modes specific to this file.
@@ -726,6 +727,7 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_red_left_pad, "kmem_cache", "red_left_pad");
 		MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
 		MEMBER_OFFSET_INIT(kmem_cache_flags, "kmem_cache", "flags");
+		MEMBER_OFFSET_INIT(kmem_cache_random, "kmem_cache", "random");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_freelist, "kmem_cache_cpu", "freelist");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_page, "kmem_cache_cpu", "page");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_node, "kmem_cache_cpu", "node");
@@ -8234,7 +8236,44 @@ dump_kmeminfo(void)
 		char *swapper_space = GETBUF(SIZE(address_space));
 
 		swapper_space_nrpages = 0;
-		if (symbol_exists("swapper_spaces") && 
+		if (symbol_exists("nr_swapper_spaces") &&
+			(len = get_array_length("nr_swapper_spaces",
+				NULL, 0))) {
+			char *nr_swapper_space =
+				GETBUF(len * sizeof(unsigned int));
+			readmem(symbol_value("nr_swapper_spaces"), KVADDR,
+				nr_swapper_space,  len * sizeof(unsigned int),
+				"nr_swapper_space", RETURN_ON_ERROR);
+			for (i = 0; i < len; i++) {
+				int j;
+				unsigned long sa;
+				unsigned int banks = UINT(nr_swapper_space +
+					(i * sizeof(unsigned int)));
+
+				if (!banks)
+					continue;
+
+				readmem(symbol_value("swapper_spaces") +
+					(i * sizeof(void *)),KVADDR,
+					&sa, sizeof(void *),
+					"swapper_space", RETURN_ON_ERROR);
+
+				if (!sa)
+					continue;
+
+				for (j = 0; j < banks; j++) {
+					readmem(sa + j * SIZE(address_space),
+						KVADDR, swapper_space,
+						SIZE(address_space),
+						"swapper_space",
+						RETURN_ON_ERROR);
+					swapper_space_nrpages +=
+						ULONG(swapper_space +
+						OFFSET(address_space_nrpages));
+				}
+			}
+			FREEBUF(nr_swapper_space);
+		} else if (symbol_exists("swapper_spaces") &&
 		    (len = get_array_length("swapper_spaces", NULL, 0))) {
 			for (i = 0; i < len; i++) {
 		    		if (!readmem(symbol_value("swapper_spaces") + 
@@ -8251,7 +8290,7 @@ dump_kmeminfo(void)
 		    RETURN_ON_ERROR))
 			swapper_space_nrpages = ULONG(swapper_space + 
 				OFFSET(address_space_nrpages));
-			
+
 		page_cache_size = nr_file_pages - swapper_space_nrpages -
 			buffer_pages;
 		FREEBUF(swapper_space);
@@ -13882,7 +13921,7 @@ cmd_search(void)
 	ulong value, mask, len;
 	ulong uvaddr_start, uvaddr_end;
 	ulong kvaddr_start, kvaddr_end, range_end;
-	int sflag, Kflag, Vflag, pflag, tflag;
+	int sflag, Kflag, Vflag, pflag, Tflag, tflag;
 	struct searchinfo searchinfo;
 	struct syment *sp;
 	struct node_table *nt;
@@ -13896,7 +13935,7 @@ cmd_search(void)
 
 	context = max = 0;
 	start = end = 0;
-	value = mask = sflag = pflag = Kflag = Vflag = memtype = len = tflag = 0;
+	value = mask = sflag = pflag = Kflag = Vflag = memtype = len = Tflag = tflag = 0;
 	kvaddr_start = kvaddr_end = 0;
 	uvaddr_start = UNINITIALIZED;
 	uvaddr_end = COMMON_VADDR_SPACE() ? (ulong)(-1) : machdep->kvbase;
@@ -13933,7 +13972,7 @@ cmd_search(void)
 
 	searchinfo.mode = SEARCH_ULONG;	/* default search */
 
-        while ((c = getopt(argcnt, args, "tl:ukKVps:e:v:m:hwcx:")) != EOF) {
+        while ((c = getopt(argcnt, args, "Ttl:ukKVps:e:v:m:hwcx:")) != EOF) {
                 switch(c)
                 {
 		case 'u':
@@ -14038,12 +14077,19 @@ cmd_search(void)
 			context = dtoi(optarg, FAULT_ON_ERROR, NULL);
 			break;
 
+		case 'T':
 		case 't':
 			if (XEN_HYPER_MODE())
 				error(FATAL, 
- 			 	    "-t option is not applicable to the "
-				    "Xen hypervisor\n");
-			tflag++;
+ 			 	    "-%c option is not applicable to the "
+				    "Xen hypervisor\n", c);
+			if (c == 'T')
+				Tflag++;
+			else if (c == 't')
+				tflag++;
+			if (tflag && Tflag)
+				error(FATAL, 
+				    "-t and -T options are mutually exclusive\n");
 			break;
 
                 default:
@@ -14052,10 +14098,11 @@ cmd_search(void)
                 }
         }
 
-	if (tflag && (memtype || start || end || len)) 
+	if ((tflag || Tflag) && (memtype || start || end || len)) 
 		error(FATAL, 
-		    "-t option cannot be used with other "
-		    "memory-selection options\n");
+		    "-%c option cannot be used with other "
+		    "memory-selection options\n",
+		    tflag ? 't' : 'T');
 
 	if (XEN_HYPER_MODE()) {
 		memtype = KVADDR;
@@ -14328,10 +14375,12 @@ cmd_search(void)
 			break;
 		}
 
-		if (tflag) {
+		if (tflag || Tflag) {
 			searchinfo.tasks_found = 0;
 			tc = FIRST_CONTEXT();
 			for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+				if (Tflag && !is_task_active(tc->task))
+					continue;
 				searchinfo.vaddr_start = GET_STACKBASE(tc->task); 
 				searchinfo.vaddr_end = GET_STACKTOP(tc->task);
 				searchinfo.task_context = tc;
@@ -14455,7 +14504,7 @@ display_with_pre_and_post(void *bufptr, ulonglong addr, struct searchinfo *si)
 	}
 
 	amount = ctx * t;
-	addr_d = addr - amount < 0 ? 0 : addr - amount;
+	addr_d = addr - amount;
 
 	display_memory(addr_d, ctx, flag, memtype, NULL);
 
@@ -16879,7 +16928,7 @@ sparse_mem_init(void)
 {
 	ulong addr;
 	ulong mem_section_size;
-	int len, dimension;
+	int len, dimension, mem_section_is_ptr;
 
 	if (!IS_SPARSEMEM())
 		return;
@@ -16891,8 +16940,19 @@ sparse_mem_init(void)
 		error(FATAL, 
 		    "CONFIG_SPARSEMEM kernels not supported for this architecture\n");
 
+	/*
+	 *  The kernel's mem_section changed from array to pointer in this commit:
+	 *
+	 *   commit 83e3c48729d9ebb7af5a31a504f3fd6aff0348c4
+	 *   mm/sparsemem: Allocate mem_section at runtime for CONFIG_SPARSEMEM_EXTREME=y
+	 */
+	mem_section_is_ptr = 
+		get_symbol_type("mem_section", NULL, NULL) == TYPE_CODE_PTR ? 
+			TRUE : FALSE;
+
 	if (((len = get_array_length("mem_section", &dimension, 0)) ==
-	    (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME())) || !dimension)
+	    (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME())) || 
+	    mem_section_is_ptr || !dimension)
 		vt->flags |= SPARSEMEM_EX;
 
 	if (IS_SPARSEMEM_EX()) {
@@ -16911,7 +16971,7 @@ sparse_mem_init(void)
 		fprintf(fp, "SECTIONS_PER_ROOT = %ld\n", SECTIONS_PER_ROOT() );
 		fprintf(fp, "SECTION_ROOT_MASK = 0x%lx\n", SECTION_ROOT_MASK());
 		fprintf(fp, "PAGES_PER_SECTION = %ld\n", PAGES_PER_SECTION());
-		if (IS_SPARSEMEM_EX() && !len)
+		if (!mem_section_is_ptr && IS_SPARSEMEM_EX() && !len)
 			error(WARNING, "SPARSEMEM_EX: questionable section values\n");
 	}
 
@@ -16920,8 +16980,12 @@ sparse_mem_init(void)
 	if (!(vt->mem_section = (char *)malloc(SIZE(mem_section))))
 		error(FATAL, "cannot malloc mem_section cache\n");
 
-	addr = symbol_value("mem_section");
-	readmem(addr, KVADDR,vt->mem_sec ,mem_section_size,
+	if (mem_section_is_ptr)
+		get_symbol_data("mem_section", sizeof(void *), &addr);
+	else
+		addr = symbol_value("mem_section");
+
+	readmem(addr, KVADDR, vt->mem_sec, mem_section_size,
 		"memory section root table", FAULT_ON_ERROR);
 }
 
@@ -16991,8 +17055,8 @@ valid_section(ulong addr)
 
 	if ((mem_section = read_mem_section(addr)))
         	return (ULONG(mem_section + 
-			OFFSET(mem_section_section_mem_map)) && 
-			SECTION_MARKED_PRESENT);
+			OFFSET(mem_section_section_mem_map))
+			& SECTION_MARKED_PRESENT);
 	return 0;
 }
 
@@ -17000,11 +17064,17 @@ int
 section_has_mem_map(ulong addr)
 {
 	char *mem_section;
+	ulong kernel_version_bit;
+
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,24))
+		kernel_version_bit = SECTION_HAS_MEM_MAP;
+	else
+		kernel_version_bit = SECTION_MARKED_PRESENT;
 
 	if ((mem_section = read_mem_section(addr)))
 		return (ULONG(mem_section + 
 			OFFSET(mem_section_section_mem_map))
-			&& SECTION_HAS_MEM_MAP);
+			& kernel_version_bit);
 	return 0;
 }
 
@@ -17200,10 +17270,8 @@ next_online_node(int first)
 	int i, j, node;
 	ulong mask, *maskptr;
 
-	if ((first/BITS_PER_LONG) >= vt->node_online_map_len) {
-		error(INFO, "next_online_node: %d is too large!\n", first);
+	if ((first/BITS_PER_LONG) >= vt->node_online_map_len)
 		return -1;
-	}
 
 	maskptr = (ulong *)vt->node_online_map;
 	for (i = node = 0; i <  vt->node_online_map_len; i++, maskptr++) {
@@ -17324,30 +17392,43 @@ vm_stat_init(void)
 	int c ATTRIBUTE_UNUSED;
         struct gnu_request *req;
 	char *start;
-	long enum_value;
+	long enum_value, zc = -1;
+	int split_vmstat = 0, ni = 0;
 
 	if (vt->flags & VM_STAT)
 		return TRUE;
 
-	if ((vt->nr_vm_stat_items == -1) || !symbol_exists("vm_stat"))
+	if ((vt->nr_vm_stat_items == -1) ||
+		(!symbol_exists("vm_stat") && !symbol_exists("vm_zone_stat")))
 		goto bailout;
 
         /*
          *  look for type: type = atomic_long_t []
          */
 	if (LKCD_KERNTYPES()) {
-        	if (!symbol_exists("vm_stat"))
+		if ((!symbol_exists("vm_stat") &&
+				!symbol_exists("vm_zone_stat")))
 			goto bailout;
 		/* 
 		 *  Just assume that vm_stat is an array; there is
 		 *  no symbol info in a kerntypes file. 
 		 */
 	} else {
-		if (!symbol_exists("vm_stat") ||
-		    get_symbol_type("vm_stat", NULL, NULL) != TYPE_CODE_ARRAY)
+		if (symbol_exists("vm_stat") &&
+		    get_symbol_type("vm_stat", NULL, NULL) == TYPE_CODE_ARRAY) {
+			vt->nr_vm_stat_items =
+				get_array_length("vm_stat", NULL, 0);
+		} else if (symbol_exists("vm_zone_stat") &&
+			get_symbol_type("vm_zone_stat",
+			NULL, NULL) == TYPE_CODE_ARRAY) {
+			vt->nr_vm_stat_items =
+				get_array_length("vm_zone_stat", NULL, 0)
+				+ get_array_length("vm_node_stat", NULL, 0);
+			split_vmstat = 1;
+			enumerator_value("NR_VM_ZONE_STAT_ITEMS", &zc);
+		} else {
 			goto bailout;
-
-		vt->nr_vm_stat_items = get_array_length("vm_stat", NULL, 0);
+		}
 	}
 
         open_tmpfile();
@@ -17356,6 +17437,14 @@ vm_stat_init(void)
         req->name = "zone_stat_item";
         req->flags = GNU_PRINT_ENUMERATORS;
         gdb_interface(req);
+
+	if (split_vmstat) {
+		req->command = GNU_GET_DATATYPE;
+		req->name = "node_stat_item";
+		req->flags = GNU_PRINT_ENUMERATORS;
+		gdb_interface(req);
+	}
+
         FREEBUF(req);
 
 	stringlen = 1;
@@ -17367,11 +17456,17 @@ vm_stat_init(void)
 			continue;
 		clean_line(buf);
 		c = parse_line(buf, arglist);
-		if (STREQ(arglist[0], "NR_VM_ZONE_STAT_ITEMS")) {
+		if ((!split_vmstat &&
+			STREQ(arglist[0], "NR_VM_ZONE_STAT_ITEMS")) ||
+			(split_vmstat &&
+			STREQ(arglist[0], "NR_VM_NODE_STAT_ITEMS"))) {
 			if (LKCD_KERNTYPES())
 				vt->nr_vm_stat_items = 
 					MAX(atoi(arglist[2]), count);
 			break;
+		} else if (split_vmstat &&
+			STREQ(arglist[0], "NR_VM_ZONE_STAT_ITEMS")) {
+			continue;
 		} else {
 			stringlen += strlen(arglist[0]);
 			count++;
@@ -17393,18 +17488,24 @@ vm_stat_init(void)
                 if (strstr(buf, "{") || strstr(buf, "}"))
                         continue;
 		c = parse_line(buf, arglist);
-		if (enumerator_value(arglist[0], &enum_value))
-			i = enum_value;
-		else {
+		if (!enumerator_value(arglist[0], &enum_value)) {
 			close_tmpfile();
 			goto bailout;
 		}
+
+		i = ni + enum_value;
+		if (!ni && (enum_value == zc)) {
+			ni = zc;
+			continue;
+		}
+
 		if (i < vt->nr_vm_stat_items) {
 			vt->vm_stat_items[i] = start;
 			strcpy(start, arglist[0]);
 			start += strlen(arglist[0]) + 1;
 		}
         }
+
 	close_tmpfile();
 
 	vt->flags |= VM_STAT;
@@ -17427,39 +17528,61 @@ dump_vm_stat(char *item, long *retval, ulong zone)
 	ulong *vp;
 	ulong location;
 	int i, maxlen, len;
+	long tc, zc = 0, nc = 0;
+	int split_vmstat = 0;
 
 	if (!vm_stat_init()) {
 		if (!item)
 			if (CRASHDEBUG(1))
-				error(INFO, 
+				error(INFO,
 			    	    "vm_stat not available in this kernel\n");
 		return FALSE;
 	}
 
 	buf = GETBUF(sizeof(ulong) * vt->nr_vm_stat_items);
 
-	location = zone ? zone : symbol_value("vm_stat");
+	if (symbol_exists("vm_node_stat") && symbol_exists("vm_zone_stat"))
+		split_vmstat = 1;
+	else
+		location = zone ? zone : symbol_value("vm_stat");
 
-	readmem(location, KVADDR, buf, 
-	    sizeof(ulong) * vt->nr_vm_stat_items, 
-	    "vm_stat", FAULT_ON_ERROR);
+	if (split_vmstat) {
+		enumerator_value("NR_VM_ZONE_STAT_ITEMS", &zc);
+		location = zone ? zone : symbol_value("vm_zone_stat");
+		readmem(location, KVADDR, buf,
+			sizeof(ulong) * zc,
+			"vm_zone_stat", FAULT_ON_ERROR);
+		if (!zone) {
+			location = symbol_value("vm_node_stat");
+			enumerator_value("NR_VM_NODE_STAT_ITEMS", &nc);
+			readmem(location, KVADDR, buf + (sizeof(ulong) * zc),
+				sizeof(ulong) * nc,
+				"vm_node_stat", FAULT_ON_ERROR);
+		}
+		tc = zc + nc;
+	} else {
+		readmem(location, KVADDR, buf,
+			sizeof(ulong) * vt->nr_vm_stat_items,
+			"vm_stat", FAULT_ON_ERROR);
+		tc = vt->nr_vm_stat_items;
+	}
 
 	if (!item) {
 		if (!zone)
 			fprintf(fp, "  VM_STAT:\n");
-		for (i = maxlen = 0; i < vt->nr_vm_stat_items; i++)
+		for (i = maxlen = 0; i < tc; i++)
 			if ((len = strlen(vt->vm_stat_items[i])) > maxlen)
 				maxlen = len;
 		vp = (ulong *)buf;
-		for (i = 0; i < vt->nr_vm_stat_items; i++)
-			fprintf(fp, "%s%s: %ld\n", 
+		for (i = 0; i < tc; i++)
+			fprintf(fp, "%s%s: %ld\n",
 				space(maxlen - strlen(vt->vm_stat_items[i])),
 				 vt->vm_stat_items[i], vp[i]);
 		return TRUE;
 	}
 
 	vp = (ulong *)buf;
-	for (i = 0; i < vt->nr_vm_stat_items; i++) {
+	for (i = 0; i < tc; i++) {
 		if (STREQ(vt->vm_stat_items[i], item)) {
 			*retval = vp[i];
 			return TRUE;
@@ -17992,6 +18115,9 @@ dump_kmem_cache_slub(struct meminfo *si)
 		si->slabsize = (PAGESIZE() << order);
 		si->inuse = si->num_slabs = 0;
 		si->slab_offset = offset;
+		si->random = VALID_MEMBER(kmem_cache_random) ?
+			ULONG(si->cache_buf + OFFSET(kmem_cache_random)) : 0;
+
 		if (!get_kmem_cache_slub_data(GET_SLUB_SLABS, si) ||
 		    !get_kmem_cache_slub_data(GET_SLUB_OBJECTS, si))
 			si->flags |= SLAB_GATHER_FAILURE;
@@ -18579,6 +18705,15 @@ count_free_objects(struct meminfo *si, ulong freelist)
 	return c;
 }
 
+static ulong
+freelist_ptr(struct meminfo *si, ulong ptr, ulong ptr_addr)
+{
+	if (si->random)
+		/* CONFIG_SLAB_FREELIST_HARDENED */
+		return (ptr ^ si->random ^ ptr_addr);
+	else
+		return ptr;
+}
 
 static ulong
 get_freepointer(struct meminfo *si, void *object)
@@ -18593,7 +18728,7 @@ get_freepointer(struct meminfo *si, void *object)
 		return BADADDR;
 	}
 
-	return nextfree;
+	return (freelist_ptr(si, nextfree, vaddr));
 }
 
 static void

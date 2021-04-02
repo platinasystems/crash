@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -624,6 +624,9 @@ kaslr_init(void)
 			st->_stext_vmlinux = UNINITIALIZED;
 		}
 	}
+
+	if (SADUMP_DUMPFILE())
+		kt->flags2 |= KASLR_CHECK;
 }
 
 /*
@@ -636,6 +639,19 @@ derive_kaslr_offset(bfd *abfd, int dynamic, bfd_byte *start, bfd_byte *end,
 {
 	unsigned long relocate;
 	ulong _stext_relocated;
+
+	if (SADUMP_DUMPFILE()) {
+		ulong kaslr_offset = 0;
+
+		sadump_calc_kaslr_offset(&kaslr_offset);
+
+		if (kaslr_offset) {
+			kt->relocate = kaslr_offset * -1;
+			kt->flags |= RELOC_SET;
+		}
+
+		return;
+	}
 
 	if (ACTIVE()) {
 		_stext_relocated = symbol_value_from_proc_kallsyms("_stext");
@@ -988,10 +1004,9 @@ symbol_value_from_proc_kallsyms(char *symname)
 
 	found = FALSE;
 	while (!found && fgets(buf, BUFSIZE, kp) &&
-	    (parse_line(buf, kallsyms) == 3) && 
-	    hexadecimal(kallsyms[0], 0)) {
-
-		if (STREQ(kallsyms[2], symname)) {
+	    (parse_line(buf, kallsyms) == 3)) {
+		if (hexadecimal(kallsyms[0], 0) && 
+		    STREQ(kallsyms[2], symname)) {
 			kallsym = htol(kallsyms[0], RETURN_ON_ERROR, NULL);
 			found = TRUE;
 			break;
@@ -3052,6 +3067,20 @@ dump_symbol_table(void)
 	else
 		fprintf(fp, "\n");
 
+	if (SADUMP_DUMPFILE()) {
+		fprintf(fp, "divide_error_vmlinux: %lx\n", st->divide_error_vmlinux);
+		fprintf(fp, "   idt_table_vmlinux: %lx\n", st->idt_table_vmlinux);
+		fprintf(fp, "saved_command_line_vmlinux: %lx\n", st->saved_command_line_vmlinux);
+		fprintf(fp, "    pti_init_vmlinux: %lx\n", st->pti_init_vmlinux);
+		fprintf(fp, " kaiser_init_vmlinux: %lx\n", st->kaiser_init_vmlinux);
+	} else {
+		fprintf(fp, "divide_error_vmlinux: (unused)\n");
+		fprintf(fp, "   idt_table_vmlinux: (unused)\n");
+		fprintf(fp, "saved_command_line_vmlinux: (unused)\n");
+		fprintf(fp, "    pti_init_vmlinux: (unused)\n");
+		fprintf(fp, " kaiser_init_vmlinux: (unused)\n");
+	}
+
         fprintf(fp, "    symval_hash[%d]: %lx\n", SYMVAL_HASH,
                 (ulong)&st->symval_hash[0]);
 
@@ -3257,6 +3286,8 @@ dump_symbol_table(void)
 				lm->mod_section_data[s].offset,
 				lm->mod_section_data[s].size);
 		}
+
+		fprintf(fp, "        loaded_objfile: %lx\n", (ulong)lm->loaded_objfile);
 
 		if (CRASHDEBUG(1)) {
         		for (sp = lm->mod_load_symtable; 
@@ -4074,6 +4105,7 @@ get_line_number(ulong addr, char *buf, int reserved)
 	struct load_module *lm;
 
 	buf[0] = NULLCHAR;
+	lm = NULL;
 
 	if (NO_LINE_NUMBERS() || !is_kernel_text(addr))
 		return(buf);
@@ -4103,6 +4135,8 @@ get_line_number(ulong addr, char *buf, int reserved)
 		req->command = GNU_GET_LINE_NUMBER;
 		req->addr = addr;
 		req->buf = buf;
+		if (lm && lm->loaded_objfile)
+			req->lm = lm;
 		if ((sp = value_search(addr, NULL)))
 			req->name = sp->name;
 		gdb_interface(req);
@@ -8558,6 +8592,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_prio));
         fprintf(fp, "             task_struct_on_rq: %ld\n",
                 OFFSET(task_struct_on_rq));
+        fprintf(fp, "            task_struct_policy: %ld\n",
+                OFFSET(task_struct_policy));
 
 	fprintf(fp, "              thread_info_task: %ld\n",
                 OFFSET(thread_info_task));
@@ -8575,6 +8611,10 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "            mnt_namespace_list: %ld\n",
 		OFFSET(mnt_namespace_list));
 
+	fprintf(fp, "             pid_namespace_idr: %ld\n",
+		OFFSET(pid_namespace_idr));
+	fprintf(fp, "                    idr_idr_rt: %ld\n",
+		OFFSET(idr_idr_rt));
         fprintf(fp, "                  pid_link_pid: %ld\n",
                 OFFSET(pid_link_pid));
         fprintf(fp, "                pid_hash_chain: %ld\n",
@@ -9350,6 +9390,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(kmem_cache_cpu_cache));
         fprintf(fp, "                 kmem_cache_oo: %ld\n",
                 OFFSET(kmem_cache_oo));
+        fprintf(fp, "             kmem_cache_random: %ld\n",
+                OFFSET(kmem_cache_random));
 
         fprintf(fp, "    kmem_cache_node_nr_partial: %ld\n",
                 OFFSET(kmem_cache_node_nr_partial));
@@ -10185,6 +10227,7 @@ dump_offset_table(char *spec, ulong makestruct)
         fprintf(fp, "                       pt_regs: %ld\n", SIZE(pt_regs));
         fprintf(fp, "                   task_struct: %ld\n", SIZE(task_struct));
         fprintf(fp, "             task_struct_flags: %ld\n", SIZE(task_struct_flags));
+        fprintf(fp, "            task_struct_policy: %ld\n", SIZE(task_struct_policy));
         fprintf(fp, "                   thread_info: %ld\n", SIZE(thread_info));
         fprintf(fp, "                 softirq_state: %ld\n", 
 		SIZE(softirq_state));
@@ -10313,6 +10356,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(pid_link));
 	fprintf(fp, "                          upid: %ld\n", 
 		SIZE(upid));
+	fprintf(fp, "                           pid: %ld\n",
+		SIZE(pid));
 	fprintf(fp, "                  unwind_table: %ld\n", 
 		SIZE(unwind_table));
 	fprintf(fp, "                        rlimit: %ld\n", 
@@ -11994,6 +12039,7 @@ delete_load_module(ulong base_addr)
 			if (lm->mod_section_data)
 				free(lm->mod_section_data);
 			lm->mod_section_data = (struct mod_section_data *)0;
+			lm->loaded_objfile = NULL;
 		}
 		st->flags &= ~LOAD_MODULE_SYMS;
 		return;
@@ -12030,6 +12076,7 @@ delete_load_module(ulong base_addr)
 			if (lm->mod_section_data)
 				free(lm->mod_section_data);
 			lm->mod_section_data = (struct mod_section_data *)0;
+			lm->loaded_objfile = NULL;
                 } else if (lm->mod_flags & MOD_LOAD_SYMS)
 			st->flags |= LOAD_MODULE_SYMS;
         }
@@ -12244,6 +12291,29 @@ numeric_forward(const void *P_x, const void *P_y)
 			kt->flags2 &= ~KASLR_CHECK;
 			kt->flags2 |= (RELOC_AUTO|KASLR);
 		}
+	}
+
+	if (SADUMP_DUMPFILE()) {
+		/* Need for kaslr_offset and phys_base */
+		if (STREQ(x->name, "divide_error"))
+			st->divide_error_vmlinux = valueof(x);
+		else if (STREQ(y->name, "divide_error"))
+			st->divide_error_vmlinux = valueof(y);
+
+		if (STREQ(x->name, "idt_table"))
+			st->idt_table_vmlinux = valueof(x);
+		else if (STREQ(y->name, "idt_table"))
+			st->idt_table_vmlinux = valueof(y);
+
+		if (STREQ(x->name, "saved_command_line"))
+			st->saved_command_line_vmlinux = valueof(x);
+		else if (STREQ(y->name, "saved_command_line"))
+			st->saved_command_line_vmlinux = valueof(y);
+
+		if (STREQ(x->name, "pti_init"))
+			st->pti_init_vmlinux = valueof(x);
+		else if (STREQ(y->name, "kaiser_init"))
+			st->kaiser_init_vmlinux = valueof(y);
 	}
 
   	xs = bfd_get_section(x);

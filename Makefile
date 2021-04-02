@@ -560,7 +560,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.2.0
+VERSION=7.2.1
 RELEASE=0
 
 release: make_configure
