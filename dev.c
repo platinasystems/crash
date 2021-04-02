@@ -16,6 +16,7 @@
  */
 
 #include "defs.h"
+#include "vmcore.h"
 
 static void dump_blkdevs(ulong);
 static void dump_chrdevs(ulong);
@@ -104,12 +105,14 @@ dev_init(void)
 void
 cmd_dev(void)
 {
-        int c;
+	int c;
+	int dd_index = -1;
+	char *outputfile = NULL;
 	ulong flags;
 
 	flags = 0;
 
-        while ((c = getopt(argcnt, args, "dDpi")) != EOF) {
+	while ((c = getopt(argcnt, args, "dDpiVv:")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -137,6 +140,21 @@ cmd_dev(void)
 				option_not_supported(c);
 			return;
 
+		case 'V':
+			if (KDUMP_DUMPFILE())
+				kdump_device_dump_info(fp);
+			else if (DISKDUMP_DUMPFILE())
+				diskdump_device_dump_info(fp);
+			else if (ACTIVE())
+				error(INFO, "-V option not supported on a live system\n");
+			else
+				error(INFO, "-V option not supported on this dumpfile type\n");
+			return;
+
+		case 'v':
+			dd_index = atoi(optarg);
+			break;
+
                 default:
                         argerrs++;
                         break;
@@ -145,6 +163,29 @@ cmd_dev(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+        while (args[optind]) {
+		if (dd_index >= 0) {
+			if (!outputfile) 
+				outputfile = args[optind];
+			else
+				cmd_usage(pc->curcmd, SYNOPSIS);
+		} else
+			cmd_usage(pc->curcmd, SYNOPSIS);
+		optind++;
+	}
+
+	if (dd_index >= 0) {
+		if (KDUMP_DUMPFILE())
+			kdump_device_dump_extract(dd_index, outputfile, fp);
+		else if (DISKDUMP_DUMPFILE())
+			diskdump_device_dump_extract(dd_index, outputfile, fp);
+		else if (ACTIVE())
+			error(INFO, "-v option not supported on a live system\n");
+		else
+			error(INFO, "-v option not supported on this dumpfile type\n");
+		return;
+	}
 
 	dump_chrdevs(flags);
 	fprintf(fp, "\n");
@@ -4020,6 +4061,21 @@ get_gendisk_4(unsigned long entry)
 		OFFSET(gendisk_part0);
 }
 
+/* kernel version >= 5.1 */
+static unsigned long
+get_gendisk_5(unsigned long entry)
+{
+	unsigned long device_address;
+	unsigned long device_private_address;
+
+	device_private_address = entry - OFFSET(device_private_knode_class);
+	readmem(device_private_address + OFFSET(device_private_device),
+		KVADDR, &device_address, sizeof(device_address),
+		"device_private.device", FAULT_ON_ERROR);
+
+	return device_address - OFFSET(hd_struct_dev) - OFFSET(gendisk_part0);
+}
+
 /* 2.6.24 < kernel version <= 2.6.27 */
 static int 
 match_list(struct iter *i, unsigned long entry)
@@ -4042,8 +4098,18 @@ match_klist(struct iter *i, unsigned long entry)
 {
 	unsigned long device_address;
 	unsigned long device_type;
+	unsigned long device_private_address;
 
-	device_address = entry - OFFSET(device_knode_class);
+	if (VALID_MEMBER(device_knode_class))
+		device_address = entry - OFFSET(device_knode_class);
+	else {
+		/* kernel version >= 5.1 */
+		device_private_address = entry -
+			OFFSET(device_private_knode_class);
+		readmem(device_private_address + OFFSET(device_private_device),
+			KVADDR, &device_address, sizeof(device_address),
+			"device_private.device", FAULT_ON_ERROR);
+	}
 	readmem(device_address + OFFSET(device_type), KVADDR, &device_type,
 		sizeof(device_type), "device.type", FAULT_ON_ERROR);
 	if (device_type != i->type_address)
@@ -4348,8 +4414,10 @@ init_iter(struct iter *i)
 			i->match = match_klist;
 			if (VALID_MEMBER(gendisk_dev))
 				i->get_gendisk = get_gendisk_3;
-			else
+			else if (VALID_MEMBER(device_knode_class))
 				i->get_gendisk = get_gendisk_4;
+			else
+				i->get_gendisk = get_gendisk_5;
 		}
 	} else {
 		option_not_supported('d');
@@ -4470,6 +4538,9 @@ void diskio_init(void)
 	MEMBER_OFFSET_INIT(device_knode_class, "device", "knode_class");
 	MEMBER_OFFSET_INIT(device_node, "device", "node");
 	MEMBER_OFFSET_INIT(device_type, "device", "type");
+	MEMBER_OFFSET_INIT(device_private_device, "device_private", "device");
+	MEMBER_OFFSET_INIT(device_private_knode_class, "device_private",
+		"knode_class");
 	MEMBER_OFFSET_INIT(gendisk_dev, "gendisk", "dev");
 	if (INVALID_MEMBER(gendisk_dev))
 		MEMBER_OFFSET_INIT(gendisk_dev, "gendisk", "__dev");
@@ -4518,4 +4589,57 @@ diskio_option(ulong flags)
 {
 	diskio_init();
 	display_all_diskio(flags);
+}
+
+void
+devdump_extract(void *_note, ulonglong offset, char *dump_file, FILE *ofp)
+{
+	struct vmcoredd_header *vh = (struct vmcoredd_header *)_note;
+	ulong dump_size, count;
+	FILE *tmpfp;
+
+	if (vh->n_type != NT_VMCOREDD)
+		error(FATAL, "unsupported note type: 0x%x", vh->n_type);
+
+	dump_size = vh->n_descsz - VMCOREDD_MAX_NAME_BYTES;
+
+	if (dump_file) {
+		tmpfp = fopen(dump_file, "w");
+		if (!tmpfp) {
+			error(FATAL, "cannot open output file: %s\n",
+			      dump_file);
+			return;
+		}
+		set_tmpfile2(tmpfp);
+	}
+	fprintf(ofp, "DEVICE: %s\n", vh->dump_name);
+	
+	if (dump_file)
+		count = dump_size;
+	else 
+		count = dump_size/sizeof(uint64_t) +
+			(dump_size % sizeof(uint64_t) ? 1 : 0);
+	
+	display_memory_from_file_offset(offset + sizeof(struct vmcoredd_header),
+		count, dump_file);
+}
+
+void 
+devdump_info(void *_note, ulonglong offset, FILE *ofp)
+{
+	struct vmcoredd_header *vh = (struct vmcoredd_header *)_note;
+	char buf[BUFSIZE];
+	ulong dump_size;
+
+	if (vh->n_type != NT_VMCOREDD)
+		return;
+
+	dump_size = vh->n_descsz - VMCOREDD_MAX_NAME_BYTES;
+	offset += sizeof(struct vmcoredd_header);
+
+	fprintf(ofp, "0x%s ", mkstring(buf, LONG_LONG_PRLEN, LJUST | LONGLONG_HEX,
+		MKSTR(&offset)));
+	fprintf(ofp, "%s ", mkstring(buf, LONG_PRLEN, LJUST | LONG_DEC,
+		MKSTR(dump_size)));
+	fprintf(ofp, "%s\n", vh->dump_name);
 }

@@ -1698,10 +1698,10 @@ display_dentry_info(ulong dentry)
                 superblock = ULONG(inode_buf + OFFSET(inode_i_sb));
 	} else {
 		inode_buf = NULL;
-		superblock = 0;
+		superblock = ULONG(dentry_buf + OFFSET(dentry_d_sb));
 	}
 
-	if (!inode || !superblock)
+	if (!superblock)
 		goto nopath;
 
         if (VALID_MEMBER(file_f_vfsmnt)) {
@@ -2015,6 +2015,7 @@ vfs_init(void)
 	MEMBER_OFFSET_INIT(dentry_d_covers, "dentry", "d_covers");
 	MEMBER_OFFSET_INIT(dentry_d_name, "dentry", "d_name");
 	MEMBER_OFFSET_INIT(dentry_d_iname, "dentry", "d_iname");
+	MEMBER_OFFSET_INIT(dentry_d_sb, "dentry", "d_sb");
 	MEMBER_OFFSET_INIT(inode_i_mode, "inode", "i_mode");
 	MEMBER_OFFSET_INIT(inode_i_op, "inode", "i_op");
 	MEMBER_OFFSET_INIT(inode_i_sb, "inode", "i_sb");
@@ -2217,7 +2218,9 @@ dump_inode_page_cache_info(ulong inode)
 
 	xarray = root_rnode = count = 0;
 	if (MEMBER_EXISTS("address_space", "i_pages") &&
-	    STREQ(MEMBER_TYPE_NAME("address_space", "i_pages"), "xarray"))
+	    (STREQ(MEMBER_TYPE_NAME("address_space", "i_pages"), "xarray") ||
+	    (STREQ(MEMBER_TYPE_NAME("address_space", "i_pages"), "radix_tree_root") &&
+	     MEMBER_EXISTS("radix_tree_root", "xa_head"))))
 		xarray = i_mapping + OFFSET(address_space_page_tree);
 	else 
 		root_rnode = i_mapping + OFFSET(address_space_page_tree);

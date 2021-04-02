@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2018 David Anderson
- * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2019 David Anderson
+ * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -147,6 +147,8 @@
 #ifdef SPARC64
 #define NR_CPUS  (4096)
 #endif
+
+#define NR_DEVICE_DUMPS (64)
 
 /* Some architectures require memory accesses to be aligned.  */
 #if defined(SPARC64)
@@ -2066,6 +2068,9 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long xa_node_shift;
 	long hd_struct_dkstats;
 	long disk_stats_in_flight;
+	long cpu_context_save_r7;
+	long dentry_d_sb;
+	long device_private_knode_class;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -3076,7 +3081,7 @@ typedef signed int s32;
 #define PMD_SHIFT_L3_64K     (29)
 #define PMD_SIZE_L3_64K      (1UL << PMD_SHIFT_L3_64K)
 #define PMD_MASK_L3_64K      (~(PMD_SIZE_L3_64K-1))
-#define PGDIR_OFFSET_L3_64K(X) (((ulong)(X)) & ((PTRS_PER_PGD_L3_64K * 8) - 1))
+#define PGDIR_OFFSET_L3_64K(X) (((ulong)(X)) & ((machdep->ptrs_per_pgd * 8) - 1))
 
 /*
  * 2-levels / 64K pages
@@ -3138,9 +3143,17 @@ typedef signed int s32;
  */
 #define ARM64_VA_START       ((0xffffffffffffffffUL) \
 					<< machdep->machspec->VA_BITS)
+#define _VA_START(va)        ((0xffffffffffffffffUL) - \
+                             ((1UL) << ((va) - 1)) + 1)
+#define TEXT_OFFSET_MASK     (~((MEGABYTES(2UL))-1))
+
 #define ARM64_PAGE_OFFSET    ((0xffffffffffffffffUL) \
 					<< (machdep->machspec->VA_BITS - 1))
+#define ARM64_PAGE_OFFSET_ACTUAL ((0xffffffffffffffffUL) \
+					- ((1UL) << machdep->machspec->VA_BITS_ACTUAL) + 1)
+
 #define ARM64_USERSPACE_TOP  ((1UL) << machdep->machspec->VA_BITS)
+#define ARM64_USERSPACE_TOP_ACTUAL  ((1UL) << machdep->machspec->VA_BITS_ACTUAL)
 
 /* only used for v4.6 or later */
 #define ARM64_MODULES_VSIZE     MEGABYTES(128)
@@ -3163,6 +3176,7 @@ typedef signed int s32;
 #define _SECTION_SIZE_BITS      30
 #define _MAX_PHYSMEM_BITS       40
 #define _MAX_PHYSMEM_BITS_3_17  48
+#define _MAX_PHYSMEM_BITS_52    52
 
 typedef unsigned long long __u64;
 typedef unsigned long long u64;
@@ -3242,6 +3256,9 @@ struct machine_specific {
 	ulong kern_eframe_offset;
 	ulong machine_kexec_start;
 	ulong machine_kexec_end;
+	ulong VA_BITS_ACTUAL;
+	ulong CONFIG_ARM64_VA_BITS;
+	ulong VA_START;
 };
 
 struct arm64_stackframe {
@@ -3429,6 +3446,9 @@ struct arm64_stackframe {
 #define MODULES_END_5LEVEL         0xffffffffff5fffff
 #define VMEMMAP_VADDR_5LEVEL       0xffd4000000000000
 #define VMEMMAP_END_5LEVEL         0xffd5ffffffffffff
+
+#define PAGE_OFFSET_4LEVEL_4_20    0xffff888000000000
+#define PAGE_OFFSET_5LEVEL_4_20    0xff11000000000000
 
 #define VSYSCALL_START             0xffffffffff600000
 #define VSYSCALL_END               0xffffffffff601000
@@ -4903,6 +4923,7 @@ int clean_exit(int);
 int untrusted_file(FILE *, char *);
 char *readmem_function_name(void);
 char *writemem_function_name(void);
+char *no_vmcoreinfo(const char *);
 
 /*
  *  cmdline.c
@@ -5257,6 +5278,7 @@ char *format_stack_entry(struct bt_info *bt, char *, ulong, ulong);
 int in_user_stack(ulong, ulong);
 int dump_inode_page(ulong);
 ulong valid_section_nr(ulong);
+void display_memory_from_file_offset(ulonglong, long, void *);
 
 
 /*
@@ -5666,6 +5688,8 @@ enum {
  */
 void dev_init(void);
 void dump_dev_table(void);
+void devdump_extract(void *, ulonglong, char *, FILE *);
+void devdump_info(void *, ulonglong, FILE *);
 
 /*
  *  ipcs.c
@@ -5920,6 +5944,7 @@ struct machine_specific {
 	ulong ptrs_per_pgd;
 	ulong cpu_entry_area_start;
 	ulong cpu_entry_area_end;
+	ulong page_offset_force;
 };
 
 #define KSYMS_START    (0x1)
@@ -6377,7 +6402,10 @@ void display_regs_from_elf_notes(int, FILE *);
 void display_ELF_note(int, int, void *, FILE *);
 void *netdump_get_prstatus_percpu(int);
 int kdump_kaslr_check(void);
+void display_vmcoredd_note(void *ptr, FILE *ofp);
 QEMUCPUState *kdump_get_qemucpustate(int);
+void kdump_device_dump_info(FILE *);
+void kdump_device_dump_extract(int, char *, FILE *);
 #define PRSTATUS_NOTE (1)
 #define QEMU_NOTE     (2)
 
@@ -6423,6 +6451,8 @@ void process_elf64_notes(void *, ulong);
 void dump_registers_for_compressed_kdump(void);
 int diskdump_kaslr_check(void);
 QEMUCPUState *diskdump_get_qemucpustate(int);
+void diskdump_device_dump_info(FILE *);
+void diskdump_device_dump_extract(int, char *, FILE *);
 
 /*
  * makedumpfile.c

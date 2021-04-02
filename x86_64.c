@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004-2018 David Anderson
- * Copyright (C) 2004-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2019 David Anderson
+ * Copyright (C) 2004-2019 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -381,6 +381,23 @@ x86_64_init(int when)
 		break;
 
 	case POST_GDB:
+		if (!(machdep->flags & RANDOMIZED) &&
+		    ((THIS_KERNEL_VERSION >= LINUX(4,20,0)) || 
+		    ((THIS_KERNEL_VERSION >= LINUX(4,14,84)) && 
+		     (THIS_KERNEL_VERSION < LINUX(4,15,0))))) {
+			machdep->machspec->page_offset = machdep->flags & VM_5LEVEL ?
+				PAGE_OFFSET_5LEVEL_4_20 : PAGE_OFFSET_4LEVEL_4_20;
+			machdep->kvbase = machdep->machspec->page_offset; 
+			machdep->identity_map_base = machdep->machspec->page_offset; 
+		}
+		/* 
+		 * --machdep page_offset forced override 
+		 */
+		if (machdep->machspec->page_offset_force) {
+			machdep->machspec->page_offset = machdep->machspec->page_offset_force;
+			machdep->kvbase = machdep->machspec->page_offset; 
+			machdep->identity_map_base = machdep->machspec->page_offset; 
+		}
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,26) &&
 		    THIS_KERNEL_VERSION < LINUX(2,6,31)) {
 			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_26;
@@ -887,6 +904,11 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "           machspec: %016lx\n", (ulong)machdep->machspec);
 	fprintf(fp, "            userspace_top: %016lx\n", (ulong)ms->userspace_top);
 	fprintf(fp, "              page_offset: %016lx\n", (ulong)ms->page_offset);
+	fprintf(fp, "        page_offset_force: ");
+	if (ms->page_offset_force)
+		fprintf(fp, "%016lx\n", (ulong)ms->page_offset_force);
+	else
+		fprintf(fp, "(unused)\n");
 	fprintf(fp, "       vmalloc_start_addr: %016lx\n", (ulong)ms->vmalloc_start_addr);
 	fprintf(fp, "              vmalloc_end: %016lx\n", (ulong)ms->vmalloc_end);
 	fprintf(fp, "            modules_vaddr: %016lx\n", (ulong)ms->modules_vaddr);
@@ -6022,6 +6044,18 @@ parse_cmdline_args(void)
 						continue;
 					}
 				}
+			} else if (STRNEQ(arglist[i], "page_offset=")) {
+				p = arglist[i] + strlen("page_offset=");
+				if (strlen(p)) {
+					value = htol(p, RETURN_ON_ERROR|QUIET, &errflag);
+
+					if (!errflag) {
+						machdep->machspec->page_offset_force = value;
+						error(NOTE, "setting PAGE_OFFSET to: 0x%lx\n\n",
+							machdep->machspec->page_offset_force);
+						continue;
+					}
+				}
 			}
 	
 			error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
@@ -6937,7 +6971,7 @@ x86_64_virt_phys_base(void)
 	    QUIET|RETURN_ON_ERROR) && STRNEQ(buf, "Linux version"))
 		return TRUE;
 
-	for (phys = (ulong)(-MEGABYTES(16)); phys != MEGABYTES(16+1); 
+	for (phys = (ulong)(-MEGABYTES(32)); phys != 0xfffff00000; 
 	     phys += MEGABYTES(1)) {
 		if (readmem(linux_banner_phys + phys, PHYSADDR, buf,
 		    strlen("Linux version"), "linux_banner search", 
@@ -7903,7 +7937,11 @@ x86_64_init_hyper(int when)
 	case POST_GDB:
 		XEN_HYPER_STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
 		XEN_HYPER_STRUCT_SIZE_INIT(tss_struct, "tss_struct");
-		XEN_HYPER_ASSIGN_OFFSET(tss_struct_rsp0) = MEMBER_OFFSET("tss_struct", "__blh") + sizeof(short unsigned int);
+		if (MEMBER_EXISTS("tss_struct", "__blh")) {
+			XEN_HYPER_ASSIGN_OFFSET(tss_struct_rsp0) = MEMBER_OFFSET("tss_struct", "__blh") + sizeof(short unsigned int);
+		} else {
+			XEN_HYPER_ASSIGN_OFFSET(tss_struct_rsp0) = MEMBER_OFFSET("tss_struct", "rsp0");
+		}
 		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_ist, "tss_struct", "ist");
 		if (symbol_exists("cpu_data")) {
 			xht->cpu_data_address = symbol_value("cpu_data");

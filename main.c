@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2018 David Anderson
- * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2019 David Anderson
+ * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,7 +29,6 @@ static void check_xen_hyper(void);
 static void show_untrusted_files(void);
 static void get_osrelease(char *);
 static void get_log(char *);
-static char *no_vmcoreinfo(const char *);
 
 static struct option long_options[] = {
         {"memory_module", required_argument, 0, 0},
@@ -228,7 +227,8 @@ main(int argc, char **argv)
 				}
 			} else if (STREQ(long_options[option_index].name, "kaslr")) {
 				if (!machine_type("X86_64") &&
-				    !machine_type("ARM64") && !machine_type("X86"))
+				    !machine_type("ARM64") && !machine_type("X86") &&
+				    !machine_type("S390X"))
 					error(INFO, "--kaslr not valid "
 						"with this machine type.\n");
 				else if (STREQ(optarg, "auto"))
@@ -1950,7 +1950,7 @@ get_log(char *dumpfile)
 }
 
 
-static char *
+char *
 no_vmcoreinfo(const char *unused)
 {
 	return NULL;

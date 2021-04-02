@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2018 David Anderson
- * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2019 David Anderson
+ * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -593,8 +593,8 @@ kaslr_init(void)
 {
 	char *string;
 
-	if ((!machine_type("X86_64") && !machine_type("ARM64") && !machine_type("X86")) ||
-	    (kt->flags & RELOC_SET))
+	if ((!machine_type("X86_64") && !machine_type("ARM64") && !machine_type("X86") &&
+	    !machine_type("S390X")) || (kt->flags & RELOC_SET))
 		return;
 
 	/*
@@ -751,7 +751,8 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 					fromend, size, store);
 		} else if (!(kt->flags & RELOC_SET))
 			kt->flags |= RELOC_FORCE;
-	} else if (machine_type("X86_64") || machine_type("ARM64")) {
+	} else if (machine_type("X86_64") || machine_type("ARM64") ||
+		   machine_type("S390X")) {
 		if ((kt->flags2 & RELOC_AUTO) && !(kt->flags & RELOC_SET))
 			derive_kaslr_offset(abfd, dynamic, from,
 				fromend, size, store);
@@ -823,7 +824,7 @@ store_sysmap_symbols(void)
                         strerror(errno));
 
 	if (!machine_type("X86") && !machine_type("X86_64") &&
-	    !machine_type("ARM64"))
+	    !machine_type("ARM64") && !machine_type("S390X"))
 		kt->flags &= ~RELOC_SET;
 
 	first = 0;
@@ -2188,7 +2189,14 @@ Elf32_Sym_to_common(Elf32_Sym *e32, struct elf_common *ec)
 	ec->st_name = (ulong)e32->st_name;
 	ec->st_value = (ulong)e32->st_value;
 	ec->st_shndx = (ulong)e32->st_shndx;
-	ec->st_info = e32->st_info;
+	if ((e32->st_info >= ' ') && (e32->st_info < 0x7f))
+		ec->st_info = e32->st_info;
+	else if (e32->st_info == 0x02)
+		ec->st_info = 't';
+	else if (e32->st_info == 0x12)
+		ec->st_info = 'T';
+	else
+		ec->st_info = '?';
 	ec->st_size = (ulong)e32->st_size;
 }
 
@@ -2198,7 +2206,14 @@ Elf64_Sym_to_common(Elf64_Sym *e64, struct elf_common *ec)
 	ec->st_name = (ulong)e64->st_name;
 	ec->st_value = (ulong)e64->st_value;
 	ec->st_shndx = (ulong)e64->st_shndx;
-	ec->st_info = e64->st_info;
+	if ((e64->st_info >= ' ') && (e64->st_info < 0x7f))
+		ec->st_info = e64->st_info;
+	else if (e64->st_info == 0x02)
+		ec->st_info = 't';
+	else if (e64->st_info == 0x12)
+		ec->st_info = 'T';
+	else
+		ec->st_info = '?';
 	ec->st_size = (ulong)e64->st_size;
 }
 
@@ -2970,6 +2985,9 @@ kallsyms_module_function_size(struct syment *sp, struct load_module *lm, ulong *
 	struct elf_common elf_common, *ec;
 
 	if (!(lm->mod_flags & MOD_KALLSYMS) || !(kt->flags & KALLSYMS_V2))
+		return FALSE;
+
+	if (THIS_KERNEL_VERSION >= LINUX(5,0,0))  /* st_size not useable */
 		return FALSE;
 
 	module_buf = GETBUF(lm->mod_size);
@@ -9277,6 +9295,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(dentry_d_iname));
         fprintf(fp, "               dentry_d_covers: %ld\n",
                 OFFSET(dentry_d_covers));
+        fprintf(fp, "                   dentry_d_sb: %ld\n",
+                OFFSET(dentry_d_sb));
         fprintf(fp, "                      qstr_len: %ld\n", OFFSET(qstr_len));
         fprintf(fp, "                     qstr_name: %ld\n", OFFSET(qstr_name));
         fprintf(fp, "                  inode_i_mode: %ld\n",
@@ -10047,6 +10067,8 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "          s390_stack_frame_r14: %ld\n",
 		OFFSET(s390_stack_frame_r14));
 
+	fprintf(fp, "           cpu_context_save_r7: %ld\n",
+		OFFSET(cpu_context_save_r7));
 	fprintf(fp, "           cpu_context_save_fp: %ld\n",
 		OFFSET(cpu_context_save_fp));
 	fprintf(fp, "           cpu_context_save_sp: %ld\n",
@@ -10091,6 +10113,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(device_private_device));
 	fprintf(fp, "      device_private_knode_bus: %ld\n",
 		OFFSET(device_private_knode_bus));
+	fprintf(fp, "    device_private_knode_class: %ld\n",
+		OFFSET(device_private_knode_class));
 	fprintf(fp, "                   gendisk_dev: %ld\n",
 		OFFSET(gendisk_dev));
 	fprintf(fp, "                  gendisk_kobj: %ld\n",

@@ -486,13 +486,13 @@ task_init(void)
 			"radix_tree_node","height");
 		MEMBER_OFFSET_INIT(radix_tree_node_shift,
 			"radix_tree_node","shift");
-	} else {
-		STRUCT_SIZE_INIT(xarray, "xarray");
-		STRUCT_SIZE_INIT(xa_node, "xa_node");
-		MEMBER_OFFSET_INIT(xarray_xa_head, "xarray","xa_head");
-		MEMBER_OFFSET_INIT(xa_node_slots, "xa_node","slots");
-		MEMBER_OFFSET_INIT(xa_node_shift, "xa_node","shift");
 	}
+
+	STRUCT_SIZE_INIT(xarray, "xarray");
+	STRUCT_SIZE_INIT(xa_node, "xa_node");
+	MEMBER_OFFSET_INIT(xarray_xa_head, "xarray","xa_head");
+	MEMBER_OFFSET_INIT(xa_node_slots, "xa_node","slots");
+	MEMBER_OFFSET_INIT(xa_node_shift, "xa_node","shift");
 
 	if (symbol_exists("pidhash") && symbol_exists("pid_hash") &&
 	    !symbol_exists("pidhash_shift"))
@@ -507,10 +507,17 @@ task_init(void)
 				OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
 			tt->flags |= PID_XARRAY;
 		} else if STREQ(MEMBER_TYPE_NAME("idr", "idr_rt"), "radix_tree_root") {
-			tt->refresh_task_table = refresh_radix_tree_task_table;
-			tt->pid_radix_tree = symbol_value("init_pid_ns") +
-				OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
-			tt->flags |= PID_RADIX_TREE;
+			if (MEMBER_EXISTS("radix_tree_root", "rnode")) {
+				tt->refresh_task_table = refresh_radix_tree_task_table;
+				tt->pid_radix_tree = symbol_value("init_pid_ns") +
+					OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
+				tt->flags |= PID_RADIX_TREE;
+			} else if (MEMBER_EXISTS("radix_tree_root", "xa_head")) {
+				tt->refresh_task_table = refresh_xarray_task_table;
+				tt->pid_xarray = symbol_value("init_pid_ns") +
+					OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
+				tt->flags |= PID_XARRAY;
+			}
 		} else 
 			error(FATAL, "unknown pid_namespace.idr type: %s\n",
 				MEMBER_TYPE_NAME("idr", "idr_rt"));
