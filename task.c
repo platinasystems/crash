@@ -28,6 +28,7 @@ static void refresh_pidhash_task_table(void);
 static void refresh_pid_hash_task_table(void);
 static void refresh_hlist_task_table(void);
 static void refresh_hlist_task_table_v2(void);
+static void refresh_hlist_task_table_v3(void);
 static struct task_context *store_context(struct task_context *, ulong, char *);
 static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
@@ -220,6 +221,15 @@ task_init(void)
 	MEMBER_OFFSET_INIT(pid_hash_chain, "pid", "hash_chain");
 
 	STRUCT_SIZE_INIT(pid_link, "pid_link");
+	STRUCT_SIZE_INIT(upid, "upid");
+	if (VALID_STRUCT(upid)) {
+		MEMBER_OFFSET_INIT(upid_nr, "upid", "nr");
+		MEMBER_OFFSET_INIT(upid_ns, "upid", "ns"); 
+		MEMBER_OFFSET_INIT(upid_pid_chain, "upid", "pid_chain");
+		MEMBER_OFFSET_INIT(pid_numbers, "pid", "numbers");
+		MEMBER_OFFSET_INIT(pid_tasks, "pid", "tasks");
+		tt->init_pid_ns = symbol_value("init_pid_ns");
+	}
 
 	MEMBER_OFFSET_INIT(pid_pid_chain, "pid", "pid_chain");
 
@@ -333,19 +343,28 @@ task_init(void)
 		} else {
                 	tt->pidhash_addr = symbol_value("pid_hash");
 			if (LKCD_KERNTYPES()) {
-				if (VALID_STRUCT(pid_link))
-					tt->refresh_task_table =
-						refresh_hlist_task_table_v2;
- 				else
+				if (VALID_STRUCT(pid_link)) {
+					if (VALID_STRUCT(upid) && VALID_MEMBER(pid_numbers))
+						tt->refresh_task_table =
+							refresh_hlist_task_table_v3;
+					else
+						tt->refresh_task_table =
+							refresh_hlist_task_table_v2;
+ 				} else
 					tt->refresh_task_table =
 						refresh_hlist_task_table;
 				builtin_array_length("pid_hash",
 					tt->pidhash_len, NULL);
 			} else {
 				if (!get_array_length("pid_hash", NULL,
-				    sizeof(void *)) && VALID_STRUCT(pid_link))
-                			tt->refresh_task_table =
-						refresh_hlist_task_table_v2;
+				    sizeof(void *)) && VALID_STRUCT(pid_link)) {
+					if (VALID_STRUCT(upid) && VALID_MEMBER(pid_numbers))
+						tt->refresh_task_table =
+							refresh_hlist_task_table_v3;
+					else
+						tt->refresh_task_table =
+							refresh_hlist_task_table_v2;
+				}
 				else
                 			tt->refresh_task_table =
 						refresh_hlist_task_table;
@@ -1710,6 +1729,249 @@ retry_pid_hash:
 
 
 /*
+ *  2.6.24: The pid_hash[] hlist_head entries were changed to point 
+ *  to the hlist_node structure embedded in a upid structure. 
+ */
+static void
+refresh_hlist_task_table_v3(void)
+{
+	int i;
+	ulong *pid_hash;
+	ulong pidhash_array;
+	ulong kpp;
+	char *tp; 
+	ulong next, pnext, pprev;
+	ulong upid;
+	char *nodebuf;
+	int len, cnt;
+        struct task_context *tc;
+        ulong curtask;
+        ulong curpid;
+        ulong retries;
+	ulong *tlp;
+	uint upid_nr;
+	ulong upid_ns;
+	int chained;
+	ulong pid;
+	ulong pid_tasks_0;
+
+        if (DUMPFILE() && (tt->flags & TASK_INIT_DONE))   /* impossible */
+                return;
+
+        if (DUMPFILE()) {                                 /* impossible */
+		please_wait("gathering task table data");
+                if (!symbol_exists("panic_threads"))
+                        tt->flags |= POPULATE_PANIC;
+        }
+
+        if (ACTIVE() && !(tt->flags & TASK_REFRESH))
+                return;
+
+        /*
+         *  The current task's task_context entry may change,
+         *  or the task may not even exist anymore.
+         */
+        if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) {
+                curtask = CURRENT_TASK();
+                curpid = CURRENT_PID();
+        }
+
+	get_symbol_data("pid_hash", sizeof(void *), &pidhash_array);
+
+	len = tt->pidhash_len;
+	pid_hash = (ulong *)GETBUF(len * SIZE(hlist_head));
+	nodebuf = GETBUF(SIZE(upid));
+        retries = 0;
+
+retry_pid_hash:
+	if (retries && DUMPFILE())
+		error(FATAL,
+			"\ncannot gather a stable task list via pid_hash\n");
+
+        if ((retries == MAX_UNLIMITED_TASK_RETRIES) &&
+            !(tt->flags & TASK_INIT_DONE)) 
+                error(FATAL, 
+	       "\ncannot gather a stable task list via pid_hash (%d retries)\n",
+			retries);
+
+        if (!readmem(pidhash_array, KVADDR, pid_hash, 
+	    len * SIZE(hlist_head), "pid_hash contents", RETURN_ON_ERROR)) 
+		error(FATAL, "\ncannot read pid_hash array\n");
+
+        if (!hq_open()) {
+                error(INFO, "cannot hash task_struct entries\n");
+                if (!(tt->flags & TASK_INIT_DONE))
+                        clean_exit(1);
+                error(INFO, "using stale task_structs\n");
+                FREEBUF(pid_hash);
+                return;
+        }
+
+	/*
+	 *  Get the idle threads first. 
+	 */
+	cnt = 0;
+	for (i = 0; i < kt->cpus; i++) {
+		if (hq_enter(tt->idle_threads[i]))
+			cnt++;
+		else
+			error(WARNING, "%sduplicate idle tasks?\n",
+				DUMPFILE() ? "\n" : "");
+	}
+
+	for (i = 0; i < len; i++) {
+		if (!pid_hash[i])
+			continue;
+
+		kpp = pid_hash[i];
+		upid = pid_hash[i] - OFFSET(upid_pid_chain);
+		chained = 0;
+do_chained:
+        	if (!readmem(upid, KVADDR, nodebuf, SIZE(upid), 
+		    "pid_hash upid", RETURN_ON_ERROR|QUIET)) { 
+			error(INFO, "\ncannot read pid_hash upid\n");
+                        if (DUMPFILE())
+                                continue;
+                        hq_close();
+                        retries++;
+                        goto retry_pid_hash;
+		}
+
+		pnext = ULONG(nodebuf + OFFSET(upid_pid_chain) + OFFSET(hlist_node_next));
+		pprev = ULONG(nodebuf + OFFSET(upid_pid_chain) + OFFSET(hlist_node_pprev));
+		upid_nr = UINT(nodebuf + OFFSET(upid_nr));
+		upid_ns = ULONG(nodebuf + OFFSET(upid_ns));
+		/*
+		 *  Use init_pid_ns level 0 (PIDTYPE_PID).
+		 */
+		if (upid_ns != tt->init_pid_ns)
+			continue;
+
+		pid = upid - OFFSET(pid_numbers);
+
+		if (!readmem(pid + OFFSET(pid_tasks), KVADDR, &pid_tasks_0, 
+		    sizeof(void *), "pid tasks", RETURN_ON_ERROR|QUIET)) {
+                        error(INFO, "\ncannot read pid.tasks[0]\n");
+                        if (DUMPFILE())
+                                continue;
+                        hq_close();
+                        retries++;
+                        goto retry_pid_hash;
+                }
+
+		if (pid_tasks_0 == 0)
+			continue;
+
+		next = pid_tasks_0 - OFFSET(task_struct_pids);
+
+		if (CRASHDEBUG(1)) {
+			if (chained)
+				console("                %lx upid: %lx nr: %d pid: %lx\n" 
+				    "                pnext/pprev: %.*lx/%lx task: %lx\n",
+				    kpp, upid, upid_nr, pid, VADDR_PRLEN, pnext, pprev, next);
+			else
+				console("pid_hash[%4d]: %lx upid: %lx nr: %d pid: %lx\n"
+				    "                pnext/pprev: %.*lx/%lx task: %lx\n",
+				    i, kpp, upid, upid_nr, pid, VADDR_PRLEN, pnext, pprev, next);
+		}
+
+		if (!IS_TASK_ADDR(next)) {
+ 			error(INFO, "%sinvalid task address in pid_hash: %lx\n",
+                        	DUMPFILE() ? "\n" : "", next);
+			 if (DUMPFILE())
+                                        break;
+ 			hq_close();
+ 			retries++;
+ 			goto retry_pid_hash;
+		}
+
+		if (!is_idle_thread(next) && !hq_enter(next)) {
+			error(INFO, "%sduplicate task in pid_hash: %lx\n",
+				DUMPFILE() ? "\n" : "", next);
+			if (DUMPFILE())
+				break;
+			hq_close();
+			retries++;
+			goto retry_pid_hash;
+		}
+
+		cnt++;
+
+		if (pnext) {
+			kpp = pnext;
+			upid = pnext - OFFSET(upid_pid_chain);
+			chained++;
+			goto do_chained;
+		}
+	}
+
+        if (cnt > tt->max_tasks) {
+                tt->max_tasks = cnt + TASK_SLUSH;
+                allocate_task_space(tt->max_tasks);
+                hq_close();
+                if (!DUMPFILE())
+                        retries++;
+                goto retry_pid_hash;
+        }
+
+        BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
+        cnt = retrieve_list((ulong *)tt->task_local, cnt);
+
+	hq_close();
+
+	clear_task_cache();
+
+        for (i = 0, tlp = (ulong *)tt->task_local, 
+             tt->running_tasks = 0, tc = tt->context_array;
+             i < tt->max_tasks; i++, tlp++) {
+		if (!(*tlp))
+			continue;
+
+		if (!IS_TASK_ADDR(*tlp)) {
+			error(WARNING, 
+		            "%sinvalid task address found in task list: %lx\n", 
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE()) 
+				continue;
+			retries++;
+			goto retry_pid_hash;
+		}	
+	
+		if (task_exists(*tlp)) {
+			error(WARNING, 
+		           "%sduplicate task address found in task list: %lx\n",
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE())
+				continue;
+			retries++;
+			goto retry_pid_hash;
+		}
+
+		if (!(tp = fill_task_struct(*tlp))) {
+                        if (DUMPFILE())
+                                continue;
+                        retries++;
+                        goto retry_pid_hash;
+                }
+
+		if (store_context(tc, *tlp, tp)) {
+			tc++;
+			tt->running_tasks++;
+		}
+	}
+
+        FREEBUF(pid_hash);
+	FREEBUF(nodebuf);
+
+	please_wait_done();
+
+        if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) 
+		refresh_context(curtask, curpid);
+
+	tt->retries = MAX(tt->retries, retries);
+}
+
+/*
  *  Fill a task_context structure with the data from a task.  If a NULL
  *  task_context pointer is passed in, use the next available one.
  */
@@ -1729,6 +1991,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
 	else if (tt->refresh_task_table == refresh_pid_hash_task_table)
 		do_verify = 2;
 	else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
+		do_verify = 2;
+	else if (tt->refresh_task_table == refresh_hlist_task_table_v3)
 		do_verify = 2;
 	else
 		do_verify = 0;
@@ -5147,6 +5411,8 @@ dump_task_table(int verbose)
                 fprintf(fp, "refresh_hlist_task_table()\n");
         else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
                 fprintf(fp, "refresh_hlist_task_table_v2()\n");
+        else if (tt->refresh_task_table == refresh_hlist_task_table_v3)
+                fprintf(fp, "refresh_hlist_task_table_v3()\n");
 	else
 		fprintf(fp, "%lx\n", (ulong)tt->refresh_task_table);
 
@@ -5220,7 +5486,7 @@ dump_task_table(int verbose)
 	fprintf(fp, "      last_mm_read: %lx\n", tt->last_mm_read);
 	fprintf(fp, "       task_struct: %lx\n", (ulong)tt->task_struct);
 	fprintf(fp, "         mm_struct: %lx\n", (ulong)tt->mm_struct);
-
+	fprintf(fp, "       init_pid_ns: %lx\n", tt->init_pid_ns);
 
         fprintf(fp, "     panic_threads:");
 
