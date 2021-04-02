@@ -238,9 +238,11 @@ x86_64_init(int when)
                         machdep->nr_irqs = 224;  /* NR_IRQS (at least) */
 		machdep->vmalloc_start = x86_64_vmalloc_start;
 		machdep->dump_irq = x86_64_dump_irq;
-		machdep->hz = HZ;
-		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
-			machdep->hz = 1000;
+		if (!machdep->hz) {
+			machdep->hz = HZ;
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+				machdep->hz = 1000;
+		}
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
                 if (XEN()) {
@@ -930,7 +932,7 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
 		goto no_upage;
 
 	pgd_paddr = pml_pte & PHYSICAL_PAGE_MASK;
-	pgd_paddr = xen_machine_to_pseudo(pgd_paddr);
+	pgd_paddr = xen_m2p(pgd_paddr);
 	if (verbose)
 		fprintf(fp, "   PML: %lx\n", pgd_paddr);
 	FILL_PGD(pgd_paddr, PHYSADDR, PAGESIZE());
@@ -945,7 +947,7 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
          *  pmd = pmd_offset(pgd, address);
 	 */
 	pmd_paddr = pgd_pte & PHYSICAL_PAGE_MASK;
-	pmd_paddr = xen_machine_to_pseudo(pmd_paddr);
+	pmd_paddr = xen_m2p(pmd_paddr);
 	if (verbose)
                 fprintf(fp, "   PUD: %lx\n", pmd_paddr);
 	FILL_PMD(pmd_paddr, PHYSADDR, PAGESIZE());
@@ -960,9 +962,9 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
                         fprintf(fp, "  PAGE: %lx  (2MB) [machine]\n", 
 				PAGEBASE(pmd_pte) & PHYSICAL_PAGE_MASK);
 
-		pseudo_pmd_pte = xen_machine_to_pseudo(PAGEBASE(pmd_pte));
+		pseudo_pmd_pte = xen_m2p(PAGEBASE(pmd_pte));
 
-                if (pseudo_pmd_pte == XEN_MFN_NOT_FOUND) {
+                if (pseudo_pmd_pte == XEN_MACHADDR_NOT_FOUND) {
                         if (verbose)
                                 fprintf(fp, " PAGE: page not available\n");
                         *paddr = PADDR_NOT_AVAILABLE;
@@ -992,7 +994,7 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
 	 *  pte = *ptep;
 	 */
 	pte_paddr = pmd_pte & PHYSICAL_PAGE_MASK;
-	pte_paddr = xen_machine_to_pseudo(pte_paddr);
+	pte_paddr = xen_m2p(pte_paddr);
 	if (verbose)
 		fprintf(fp, "   PMD: %lx\n", pte_paddr);
 	FILL_PTBL(pte_paddr, PHYSADDR, PAGESIZE());
@@ -1008,7 +1010,7 @@ x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *p
 		goto no_upage;
 	}
 	
-	pseudo_pte = xen_machine_to_pseudo(pte & PHYSICAL_PAGE_MASK);
+	pseudo_pte = xen_m2p(pte & PHYSICAL_PAGE_MASK);
 	if (verbose)
 		fprintf(fp, "   PTE: %lx\n", pseudo_pte + PAGEOFFSET(pte));
 
@@ -1272,7 +1274,7 @@ x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, i
 	if (!(*pml4) & _PAGE_PRESENT)
 		goto no_kpage;
 	pgd_paddr = (*pml4) & PHYSICAL_PAGE_MASK;
-	pgd_paddr = xen_machine_to_pseudo(pgd_paddr);
+	pgd_paddr = xen_m2p(pgd_paddr);
 	if (verbose)
                 fprintf(fp, "PAGE DIRECTORY: %lx\n", pgd_paddr);
 	FILL_PGD(pgd_paddr, PHYSADDR, PAGESIZE());
@@ -1287,7 +1289,7 @@ x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, i
 	 *  pmd = pmd_offset(pgd, addr); 
 	 */
 	pmd_paddr = pgd_pte & PHYSICAL_PAGE_MASK;
-	pmd_paddr = xen_machine_to_pseudo(pmd_paddr);
+	pmd_paddr = xen_m2p(pmd_paddr);
 	if (verbose)
                 fprintf(fp, "   PUD: %lx\n", pmd_paddr);
 	FILL_PMD(pmd_paddr, PHYSADDR, PAGESIZE());
@@ -1302,9 +1304,9 @@ x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, i
 			fprintf(fp, "  PAGE: %lx  (2MB) [machine]\n", 
 				PAGEBASE(pmd_pte) & PHYSICAL_PAGE_MASK);
 
-                pseudo_pmd_pte = xen_machine_to_pseudo(PAGEBASE(pmd_pte));
+                pseudo_pmd_pte = xen_m2p(PAGEBASE(pmd_pte));
 
-                if (pseudo_pmd_pte == XEN_MFN_NOT_FOUND) {
+                if (pseudo_pmd_pte == XEN_MACHADDR_NOT_FOUND) {
                         if (verbose)
                                 fprintf(fp, " PAGE: page not available\n");
                         *paddr = PADDR_NOT_AVAILABLE;
@@ -1334,7 +1336,7 @@ x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, i
 	 *  pte = *ptep;
 	 */
 	pte_paddr = pmd_pte & PHYSICAL_PAGE_MASK;
-	pte_paddr = xen_machine_to_pseudo(pte_paddr);
+	pte_paddr = xen_m2p(pte_paddr);
 	if (verbose)
 		fprintf(fp, "   PMD: %lx\n", pte_paddr); 
 	FILL_PTBL(pte_paddr, PHYSADDR, PAGESIZE());
@@ -1350,7 +1352,7 @@ x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, i
                 goto no_kpage;
         }
 
-	pseudo_pte = xen_machine_to_pseudo(pte & PHYSICAL_PAGE_MASK);
+	pseudo_pte = xen_m2p(pte & PHYSICAL_PAGE_MASK);
 	if (verbose)
                 fprintf(fp, "   PTE: %lx\n", pseudo_pte + PAGEOFFSET(pte));
 
@@ -3458,21 +3460,85 @@ x86_64_clear_machdep_cache(void)
  *  From the xen vmcore, create an index of mfns for each page that makes
  *  up the dom0 kernel's complete phys_to_machine_mapping[max_pfn] array.
  */
+
+#define MAX_X86_64_FRAMES  (512)
+#define MFNS_PER_FRAME     (PAGESIZE()/sizeof(ulong))
+
 static int
 x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 {
-        int i;
+        int i, j;
         ulong kvaddr;
         ulong *up;
-
-        if (CRASHDEBUG(1))
-                fprintf(fp, "x86_64_xen_kdump_p2m_create: cr3: %lx\n", xkd->cr3);
+        ulong frames;
+        ulong frame_mfn[MAX_X86_64_FRAMES] = { 0 };
+        int mfns[MAX_X86_64_FRAMES] = { 0 };
 
         /*
-         *  Temporarily read only physical addresses from vmcore by
+         *  Temporarily read physical (machine) addresses from vmcore by
          *  going directly to read_netdump() instead of via read_kdump().
          */
         pc->readmem = read_netdump;
+
+        if (xkd->flags & KDUMP_CR3)
+                goto use_cr3;
+
+        if (CRASHDEBUG(1))
+                fprintf(fp, "x86_64_xen_kdump_p2m_create: p2m_mfn: %lx\n", 
+			xkd->p2m_mfn);
+
+	if (!readmem(PTOB(xkd->p2m_mfn), PHYSADDR, xkd->page, PAGESIZE(), 
+	    "xen kdump p2m mfn page", RETURN_ON_ERROR))
+		error(FATAL, "cannot read xen kdump p2m mfn page\n");
+
+	if (CRASHDEBUG(1))
+		x86_64_debug_dump_page(fp, xkd->page, "pfn_to_mfn_frame_list");
+
+	for (i = 0, up = (ulong *)xkd->page; i < MAX_X86_64_FRAMES; i++, up++)
+		frame_mfn[i] = *up;
+
+	for (i = 0; i < MAX_X86_64_FRAMES; i++) {
+		if (!frame_mfn[i])
+			break;
+
+        	if (!readmem(PTOB(frame_mfn[i]), PHYSADDR, xkd->page, 
+		    PAGESIZE(), "xen kdump p2m mfn list page", RETURN_ON_ERROR))
+                	error(FATAL, "cannot read xen kdump p2m mfn list page\n");
+
+		for (j = 0, up = (ulong *)xkd->page; j < MFNS_PER_FRAME; j++, up++)
+			if (*up)
+				mfns[i]++;
+
+		xkd->p2m_frames += mfns[i];
+		
+	        if (CRASHDEBUG(7))
+			x86_64_debug_dump_page(fp, xkd->page, "pfn_to_mfn_frame_list page");
+	}
+
+        if (CRASHDEBUG(1))
+		fprintf(fp, "p2m_frames: %d\n", xkd->p2m_frames);
+
+        if ((xkd->p2m_mfn_frame_list = (ulong *)
+	    malloc(xkd->p2m_frames * sizeof(ulong))) == NULL)
+                error(FATAL, "cannot malloc p2m_frame_index_list");
+
+	for (i = 0, frames = xkd->p2m_frames; frames; i++) {
+        	if (!readmem(PTOB(frame_mfn[i]), PHYSADDR, 
+		    &xkd->p2m_mfn_frame_list[i * MFNS_PER_FRAME], 
+		    mfns[i] * sizeof(ulong), "xen kdump p2m mfn list page", 
+		    RETURN_ON_ERROR))
+                	error(FATAL, "cannot read xen kdump p2m mfn list page\n");
+
+		frames -= mfns[i];
+	}
+
+        pc->readmem = read_kdump;
+	return FALSE;
+
+use_cr3:
+
+        if (CRASHDEBUG(1))
+                fprintf(fp, "x86_64_xen_kdump_p2m_create: cr3: %lx\n", xkd->cr3);
 
         if (!readmem(PTOB(xkd->cr3), PHYSADDR, machdep->machspec->pml4, 
 	    PAGESIZE(), "xen kdump cr3 page", RETURN_ON_ERROR))

@@ -697,10 +697,8 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
-	if (nd->flags & KDUMP_XEN)
-		netdump_print("%sKDUMP_XEN", others++ ? "|" : "");
-	if (nd->flags & KDUMP_P2M_INIT)
-		netdump_print("%sKDUMP_P2M_INIT", others++ ? "|" : "");
+	if (nd->flags & KDUMP_XEN_HV)
+		netdump_print("%sKDUMP_XEN_HV", others++ ? "|" : "");
 	netdump_print(")\n");
 	netdump_print("                   ndfd: %d\n", nd->ndfd);
 	netdump_print("                    ofp: %lx\n", nd->ofp);
@@ -730,8 +728,19 @@ netdump_memory_dump(FILE *fp)
 	netdump_print("              page_size: %d\n", nd->page_size);
 	netdump_print("           switch_stack: %lx\n", nd->switch_stack);
 	netdump_print("         xen_kdump_data: %s\n",
-		nd->flags & KDUMP_XEN ? " " : "(unused)");
-	if (nd->flags & KDUMP_XEN) {
+		nd->flags & KDUMP_XEN_HV ? " " : "(unused)");
+	if (nd->flags & KDUMP_XEN_HV) {
+		netdump_print("                    flags: %lx (", nd->xen_kdump_data->flags);
+		others = 0;
+        	if (nd->xen_kdump_data->flags & KDUMP_P2M_INIT)
+                	netdump_print("%sKDUMP_P2M_INIT", others++ ? "|" : "");
+        	if (nd->xen_kdump_data->flags & KDUMP_CR3)
+                	netdump_print("%sKDUMP_CR3", others++ ? "|" : "");
+        	if (nd->xen_kdump_data->flags & KDUMP_MFN_LIST)
+                	netdump_print("%sKDUMP_MFN_LIST", others++ ? "|" : "");
+		netdump_print(")\n");
+		netdump_print("                  p2m_mfn: %lx\n", 
+			nd->xen_kdump_data->p2m_mfn);
 		netdump_print("                      cr3: %lx\n", 
 			nd->xen_kdump_data->cr3);
 		netdump_print("            last_mfn_read: %lx\n", 
@@ -745,7 +754,7 @@ netdump_memory_dump(FILE *fp)
       		if (nd->xen_kdump_data->accesses)
                 	netdump_print("(%ld%%)", 
 			    nd->xen_kdump_data->cache_hits * 100 / nd->xen_kdump_data->accesses);
-		netdump_print("\n               p2m_frames: %lx\n", 
+		netdump_print("\n               p2m_frames: %d\n", 
 			nd->xen_kdump_data->p2m_frames);
 		netdump_print("       p2m_mfn_frame_list: %lx\n", 
 			nd->xen_kdump_data->p2m_mfn_frame_list);
@@ -1333,9 +1342,10 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	case NT_XEN_KDUMP_CR3:
                 netdump_print("(NT_XEN_KDUMP_CR3)\n");
 		if (store) { 
-			nd->flags |= KDUMP_XEN;
+			nd->flags |= KDUMP_XEN_HV;
 			nd->xen_kdump_data = &xen_kdump_data;
 			nd->xen_kdump_data->last_mfn_read = BADVAL;
+			nd->xen_kdump_data->flags |= KDUMP_CR3;
 			/*
 			 *  Use the first cr3 found.
 			 */
@@ -1476,9 +1486,10 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	case NT_XEN_KDUMP_CR3:
                 netdump_print("(NT_XEN_KDUMP_CR3)\n");
 		if (store) {
-			nd->flags |= KDUMP_XEN;
+			nd->flags |= KDUMP_XEN_HV;
 			nd->xen_kdump_data = &xen_kdump_data;
 			nd->xen_kdump_data->last_mfn_read = BADVAL;
+			nd->xen_kdump_data->flags |= KDUMP_CR3;
                         /*
                          *  Use the first cr3 found.
                          */
@@ -1814,8 +1825,8 @@ get_kdump_panic_task(void)
 int
 read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
-	if ((nd->flags & KDUMP_XEN)) {
-	    	if (!(nd->flags & KDUMP_P2M_INIT)) {
+	if ((nd->flags & KDUMP_XEN_HV)) {
+	    	if (!(nd->xen_kdump_data->flags & KDUMP_P2M_INIT)) {
         		if (!machdep->xen_kdump_p2m_create)
                 		error(FATAL,
                             "xen kdump dumpfiles not supported on this architecture\n");
@@ -1829,7 +1840,7 @@ read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
                 		error(FATAL,
                     	    "cannot create xen kdump pfn-to-mfn mapping\n");
 
-        		nd->flags |= KDUMP_P2M_INIT;
+        		nd->xen_kdump_data->flags |= KDUMP_P2M_INIT;
 		}
 
 		if ((paddr = xen_kdump_p2m(paddr)) == P2M_FAILURE)
@@ -1898,6 +1909,9 @@ xen_kdump_p2m(physaddr_t pseudo)
 	physaddr_t paddr;
 	struct xen_kdump_data *xkd = nd->xen_kdump_data;
 
+	if (pc->curcmd_flags & XEN_MACHINE_ADDR)
+		return pseudo;
+
 	xkd->accesses++;
 
 	pfn = (ulong)BTOP(pseudo);
@@ -1907,8 +1921,8 @@ xen_kdump_p2m(physaddr_t pseudo)
 
 	if (mfn_frame == xkd->last_mfn_read)
 		xkd->cache_hits++;
-	else if (!read_netdump(0, xkd->page, PAGESIZE(), 0, 
-	    	(physaddr_t)PTOB(mfn_frame)))
+	else if (read_netdump(0, xkd->page, PAGESIZE(), 0, 
+	    	(physaddr_t)PTOB(mfn_frame)) != PAGESIZE())
 		return P2M_FAILURE;
 
 	xkd->last_mfn_read = mfn_frame;

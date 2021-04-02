@@ -135,9 +135,11 @@ ppc_init(int when)
 				"irq_desc", NULL, 0);
 		else
 			machdep->nr_irqs = 0;
-		machdep->hz = HZ;
-		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
-			machdep->hz = 1000;
+		if (!machdep->hz) {
+			machdep->hz = HZ;
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+				machdep->hz = 1000;
+		}
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		break;

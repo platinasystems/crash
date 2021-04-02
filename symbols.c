@@ -1159,7 +1159,7 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				mod_name);
                 	strncpy(lm->mod_name, mod_name, MAX_MOD_NAME-1);
 		}
-		if (CRASHDEBUG(1))
+		if (CRASHDEBUG(3))
 			fprintf(fp, 
 			    "%lx (%lx): %s syms: %d gplsyms: %d ksyms: %ld\n", 
 				mod, lm->mod_base, lm->mod_name, nsyms, 

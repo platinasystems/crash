@@ -158,7 +158,8 @@ s390_init(int when)
 		machdep->nr_irqs = 0;  /* TBD */
 		machdep->vmalloc_start = s390_vmalloc_start;
 		machdep->dump_irq = s390_dump_irq;
-		machdep->hz = HZ;
+		if (!machdep->hz)
+			machdep->hz = HZ;
 		break;
 
 	case POST_INIT:
@@ -714,7 +715,9 @@ s390_back_trace_cmd(struct bt_info *bt)
 				frame_size = stack_base - old_backchain 
 					     + KERNEL_STACK_SIZE;
 			} else {
-				frame_size = backchain - old_backchain;
+				frame_size = MIN((backchain - old_backchain),
+					(stack_base - old_backchain +
+					KERNEL_STACK_SIZE));
 			}
 			for(j=0; j< frame_size; j+=4){
 				if(j % 16 == 0){

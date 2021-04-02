@@ -186,7 +186,8 @@ alpha_init(int when)
 				"irq_desc", NULL, 0);
         	else
                 	machdep->nr_irqs = 0;
-		machdep->hz = HZ;
+		if (!machdep->hz)
+			machdep->hz = HZ;
 		break;
 
 	case POST_INIT:

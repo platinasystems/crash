@@ -42,7 +42,9 @@
 #define NT_XEN_KDUMP_CR3 0x10000001
 
 struct xen_kdump_data {
+	ulong flags;
 	ulong cr3;
+	ulong p2m_mfn;
 	char *page;
 	ulong last_mfn_read;
 	ulong cache_hits;
@@ -50,5 +52,9 @@ struct xen_kdump_data {
 	int p2m_frames;
         ulong *p2m_mfn_frame_list;
 };
+
+#define KDUMP_P2M_INIT  (0x1)
+#define KDUMP_CR3       (0x2)
+#define KDUMP_MFN_LIST  (0x4)
 
 #define P2M_FAILURE ((physaddr_t)(0xffffffffffffffffLL))

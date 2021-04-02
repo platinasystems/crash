@@ -42,6 +42,8 @@ static struct option long_options[] = {
 	{"version", 0, 0, 0},
 	{"buildinfo", 0, 0, 0},
 	{"shadow_page_tables", 0, 0, 0},
+        {"cpus", 1, 0, 0},
+        {"no_ikconfig", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -77,6 +79,10 @@ main(int argc, char **argv)
 		        if (STREQ(long_options[option_index].name, 
 			    "no_modules")) 
 				kt->flags |= NO_MODULE_ACCESS;
+
+		        if (STREQ(long_options[option_index].name, 
+			    "no_ikconfig")) 
+				kt->flags |= NO_IKCONFIG;
 
 		        if (STREQ(long_options[option_index].name, 
 			    "no_namelist_gzip")) 
@@ -133,6 +139,9 @@ main(int argc, char **argv)
 			    "shadow_page_tables")) 
 				kt->xen_flags |= SHADOW_PAGE_TABLES;
 
+		        if (STREQ(long_options[option_index].name, "cpus")) 
+				kt->cpus_override = optarg;
+
 			break;
 
 		case 'f':
@@ -178,7 +187,7 @@ main(int argc, char **argv)
 		case 's':
 			pc->flags |= SILENT;
 			pc->flags &= ~SCROLL;
-			pc->scroll_command = SCROLL_NONE;
+//   			pc->scroll_command = SCROLL_NONE;   (why?)
 			break;
 
 		case 'L':
@@ -371,8 +380,7 @@ main(int argc, char **argv)
 	machdep_init(PRE_SYMTAB);
         symtab_init();
 	machdep_init(PRE_GDB);
-//	kernel_init(PRE_GDB);
-//	verify_version();
+	read_in_kernel_config(IKCFG_INIT);
         datatype_init();
 
 	/*
@@ -1070,6 +1078,11 @@ dump_program_context(void)
 	fprintf(fp, "          cur_req: %lx\n", (ulong)pc->cur_req);
 	fprintf(fp, "        cmdgencur: %ld\n", pc->cmdgencur); 
 	fprintf(fp, "       cmdgenspec: %ld\n", pc->cmdgenspec); 
+	fprintf(fp, "     curcmd_flags: %lx (", pc->curcmd_flags);
+	others = 0;
+        if (pc->curcmd_flags & XEN_MACHINE_ADDR)
+		fprintf(fp, "%sXEN_MACHINE_ADDR", others ? "|" : "");
+	fprintf(fp, ")\n");
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);
 	fprintf(fp, "    gdb_sigaction: %lx\n", (ulong)&pc->gdb_sigaction);
@@ -1104,6 +1117,8 @@ dump_program_context(void)
 		fprintf(fp, "          readmem: read_daemon()\n");
 	else if (pc->readmem == read_netdump)
 		fprintf(fp, "          readmem: read_netdump()\n");
+	else if (pc->readmem == read_xendump)
+		fprintf(fp, "          readmem: read_xendump()\n");
 	else if (pc->readmem == read_kdump)
 		fprintf(fp, "          readmem: read_kdump()\n");
 	else if (pc->readmem == read_memory_device)
@@ -1120,6 +1135,8 @@ dump_program_context(void)
                 fprintf(fp, "         writemem: write_daemon()\n");
         else if (pc->writemem == write_netdump)
                 fprintf(fp, "         writemem: write_netdump()\n");
+        else if (pc->writemem == write_xendump)
+                fprintf(fp, "         writemem: write_xendump()\n");
         else if (pc->writemem == write_kdump)
                 fprintf(fp, "         writemem: write_kdump()\n");
         else if (pc->writemem == write_memory_device)

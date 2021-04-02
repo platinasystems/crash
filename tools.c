@@ -4353,3 +4353,23 @@ please_wait_done(void)
 	fprintf(fp, "\r                                                \r");
 	fflush(fp);
 }
+
+/*
+ *  Compare two pathnames.
+ */
+int
+pathcmp(char *p1, char *p2)
+{
+        char c1, c2;
+
+        do {
+                if ((c1 = *p1++) == '/')
+                        while (*p1 == '/') { p1++; }
+                if ((c2 = *p2++) == '/')
+                        while (*p2 == '/') { p2++; }
+                if (c1 == '\0')
+                        return ((c2 == '/') && (*p2 == '\0')) ? 0 : c1 - c2;
+        } while (c1 == c2);
+
+        return ((c2 == '\0') && (c1 == '/') && (*p1 == '\0')) ? 0 : c1 - c2;
+}

@@ -42,7 +42,8 @@ static int verify_modules(void);
 static void verify_namelist(void);
 static char *debug_kernel_version(char *);
 static int restore_stack(struct bt_info *);
-static ulong __xen_machine_to_pseudo(ulonglong, ulong);
+static ulong __xen_m2p(ulonglong, ulong);
+static void read_in_kernel_config_err(int, char *);
 
 
 /*
@@ -51,9 +52,10 @@ static ulong __xen_machine_to_pseudo(ulonglong, ulong);
 void
 kernel_init(int when)
 {
-	int i;
+	int i, c;
 	char *p1, *p2, buf[BUFSIZE];
 	struct syment *sp1, *sp2;
+	char *rqstruct;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
@@ -86,8 +88,8 @@ kernel_init(int when)
                 		get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
 			if (machine_type("X86_64"))
                 		get_symbol_data("end_pfn", sizeof(ulong), &kt->p2m_table_size);
-                	if ((kt->machine_to_pseudo = (char *)malloc(PAGESIZE())) == NULL)
-                        	error(FATAL, "cannot malloc machine_to_pseudo space.");
+                	if ((kt->m2p_page = (char *)malloc(PAGESIZE())) == NULL)
+                        	error(FATAL, "cannot malloc m2p page.");
 		}
 
 		if (symbol_exists("smp_num_cpus")) {
@@ -157,7 +159,15 @@ kernel_init(int when)
 				&kt->__per_cpu_offset[0]); 
 			kt->flags |= PER_CPU_OFF;
 		}
-		MEMBER_OFFSET_INIT(runqueue_cpu, "runqueue", "cpu");
+		if (STRUCT_EXISTS("runqueue"))
+			rqstruct = "runqueue";
+		else if (STRUCT_EXISTS("rq"))
+			rqstruct = "rq";
+
+		MEMBER_OFFSET_INIT(runqueue_cpu, rqstruct, "cpu");
+		/*
+		 * 'cpu' does not exist in 'struct rq'.
+		 */
 		if (VALID_MEMBER(runqueue_cpu) &&
 		    (get_array_length("runqueue.cpu", NULL, 0) > 0)) {
 			MEMBER_OFFSET_INIT(cpu_s_curr, "cpu_s", "curr");
@@ -182,17 +192,17 @@ kernel_init(int when)
 	     "runq_siblings: %d: __cpu_idx and __rq_idx arrays don't exist?\n",
 					kt->runq_siblings);
 		} else {
-			MEMBER_OFFSET_INIT(runqueue_idle, "runqueue", "idle");
-			MEMBER_OFFSET_INIT(runqueue_curr, "runqueue", "curr");
+			MEMBER_OFFSET_INIT(runqueue_idle, rqstruct, "idle");
+			MEMBER_OFFSET_INIT(runqueue_curr, rqstruct, "curr");
 			ASSIGN_OFFSET(runqueue_cpu) = INVALID_OFFSET;
 		}
-		MEMBER_OFFSET_INIT(runqueue_active, "runqueue", "active");
-		MEMBER_OFFSET_INIT(runqueue_expired, "runqueue", "expired");
-		MEMBER_OFFSET_INIT(runqueue_arrays, "runqueue", "arrays");
+		MEMBER_OFFSET_INIT(runqueue_active, rqstruct, "active");
+		MEMBER_OFFSET_INIT(runqueue_expired, rqstruct, "expired");
+		MEMBER_OFFSET_INIT(runqueue_arrays, rqstruct, "arrays");
 		MEMBER_OFFSET_INIT(prio_array_queue, "prio_array", "queue");
                 MEMBER_OFFSET_INIT(prio_array_nr_active, "prio_array",
                         "nr_active");
-		STRUCT_SIZE_INIT(runqueue, "runqueue"); 
+		STRUCT_SIZE_INIT(runqueue, rqstruct); 
 		STRUCT_SIZE_INIT(prio_array, "prio_array"); 
 
                /*
@@ -229,10 +239,16 @@ kernel_init(int when)
 		    (kt->flags & PER_CPU_OFF))
 			kt->cpus = machdep->get_smp_cpus();
 
+		if (kt->cpus_override && (c = atoi(kt->cpus_override))) {
+			error(WARNING, "forcing cpu count to: %d\n\n", c);
+			kt->cpus = c;
+		}
+
 		if (kt->cpus > NR_CPUS) {
 			error(WARNING, 
-       "calculated number of cpus (%d) greater than compiled-in NR_CPUS (%d)\n",
-				kt->cpus, NR_CPUS);
+       "%s number of cpus (%d) greater than compiled-in NR_CPUS (%d)\n",
+				kt->cpus_override && atoi(kt->cpus_override) ? 
+				"configured" : "calculated", kt->cpus, NR_CPUS);
 			error(FATAL, "recompile crash with larger NR_CPUS\n");
 		}
 
@@ -2903,6 +2919,8 @@ cmd_sys(void)
         do {
                 if (sflag)
                         dump_sys_call_table(args[optind], cnt++);
+		else if (STREQ(args[optind], "config"))
+			read_in_kernel_config(IKCFG_READ);
                 else
                         cmd_usage(args[optind], COMPLETE_HELP);
                 optind++;
@@ -3362,6 +3380,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
 	if (kt->flags & ARCH_XEN)
 		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
+	if (kt->flags & NO_IKCONFIG)
+		fprintf(fp, "%sNO_IKCONFIG", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -3371,6 +3391,7 @@ dump_kernel_table(int verbose)
         fprintf(fp, "      init_end: %lx\n", kt->init_end);
         fprintf(fp, "           end: %lx\n", kt->end);
         fprintf(fp, "          cpus: %d\n", kt->cpus);
+        fprintf(fp, " cpus_override: %s\n", kt->cpus_override);
         fprintf(fp, "       NR_CPUS: %d (compiled-in to this version of %s)\n",
 		NR_CPUS, pc->program_name); 
 	fprintf(fp, "kernel_NR_CPUS: %d\n", kt->kernel_NR_CPUS);
@@ -3427,7 +3448,7 @@ dump_kernel_table(int verbose)
         if (kt->xen_flags & XEN_SUSPEND)
                 fprintf(fp, "%sXEN_SUSPEND", others++ ? "|" : "");
 	fprintf(fp, ")\n");
-	fprintf(fp, "      machine_to_pseudo: %lx\n", (ulong)kt->machine_to_pseudo);
+	fprintf(fp, "               m2p_page: %lx\n", (ulong)kt->m2p_page);
         fprintf(fp, "phys_to_machine_mapping: %lx\n", kt->phys_to_machine_mapping);
         fprintf(fp, "         p2m_table_size: %ld\n", kt->p2m_table_size);
 	fprintf(fp, " p2m_mapping_cache[%d]: %s\n", P2M_MAPPING_CACHE,
@@ -4890,60 +4911,70 @@ clear_machdep_cache(void)
 }
 
 /*
- *  For kernels containing cpu_online_map, count the bits.
+ *  For kernels containing at least the cpu_online_map, use it
+ *  to determine the cpu count.
  */
 int
 get_cpus_online()
 {
-	ulong cpu_online_map;
+	int i, len, online;
+	struct gnu_request req;
+	char *buf;
+	ulong *maskptr;
 
 	if (!symbol_exists("cpu_online_map")) 
 		return 0;
 
-	get_symbol_data("cpu_online_map", sizeof(ulong), &cpu_online_map);
+	len = get_symbol_type("cpu_online_map", NULL, &req) == TYPE_CODE_UNDEF ?
+		sizeof(ulong) : req.length;
+	buf = GETBUF(len);
 
-	return count_bits_long(cpu_online_map);
+	online = 0;
+
+        if (readmem(symbol_value("cpu_online_map"), KVADDR, buf, len,
+            "cpu_online_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
+			online += count_bits_long(*maskptr);
+
+		FREEBUF(buf);
+		if (CRASHDEBUG(1))
+			error(INFO, "get_cpus_online: online: %d\n", online);
+	}
+
+	return online;
 }
 
 /*
- *  xen machine-address to pseudo-physical-address translators.
+ *  Xen machine-address to pseudo-physical-page translator.
  */ 
-ulong
-xen_machine_to_pseudo(ulong machine)
+ulonglong
+xen_m2p(ulonglong machine)
 {
 	ulong mfn, pfn;
 
 	mfn = XEN_MACHINE_TO_MFN(machine);
-	pfn = __xen_machine_to_pseudo((ulonglong)machine, mfn);
+	pfn = __xen_m2p(machine, mfn);
 
-	if (pfn == XEN_MFN_NOT_FOUND)
-		return XEN_MFN_NOT_FOUND;
-	
+	if (pfn == XEN_MFN_NOT_FOUND) {
+		if (CRASHDEBUG(1))
+			error(INFO, 
+			    "xen_machine_to_pseudo_PAE: machine address %lx not found\n",
+                           	 machine);
+		return XEN_MACHADDR_NOT_FOUND;
+	}
+
 	return XEN_PFN_TO_PSEUDO(pfn);
-
-}
-
-ulonglong
-xen_machine_to_pseudo_PAE(ulonglong machine)
-{
-	ulong mfn, pfn;
-
-	mfn = XEN_MACHINE_TO_MFN_PAE(machine);
-	pfn = __xen_machine_to_pseudo(machine, mfn);
-
-	if (pfn == XEN_MFN_NOT_FOUND)
-		return XEN_MFN_NOT_FOUND_PAE;
-
-	return XEN_PFN_TO_PSEUDO_PAE(pfn);
 }
 
 static ulong
-__xen_machine_to_pseudo(ulonglong machine, ulong mfn)
+__xen_m2p(ulonglong machine, ulong mfn)
 {
 	ulong mapping, kmfn, pfn, p, i, c;
 	ulong *mp;
 
-	mp = (ulong *)kt->machine_to_pseudo;
+	mp = (ulong *)kt->m2p_page;
 	mapping = kt->phys_to_machine_mapping;
 
 	/*
@@ -4971,7 +5002,7 @@ __xen_machine_to_pseudo(ulonglong machine, ulong mfn)
 
                                 	if (CRASHDEBUG(1))
                                     	    console("(cached) mfn: %lx (%llx) p: %ld"
-                                        	" i: %ld pfn: %lx (%lx)\n",
+                                        	" i: %ld pfn: %lx (%llx)\n",
 						mfn, machine, p,
 						i, pfn, XEN_PFN_TO_PSEUDO(pfn));
 					kt->p2m_cache_hits++;
@@ -5011,7 +5042,7 @@ __xen_machine_to_pseudo(ulonglong machine, ulong mfn)
 				pfn = p + i;
 				if (CRASHDEBUG(1))
 				    console("pages: %d mfn: %lx (%llx) p: %ld"
-					" i: %ld pfn: %lx (%lx)\n",
+					" i: %ld pfn: %lx (%llx)\n",
 					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
 					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
 
@@ -5031,4 +5062,255 @@ __xen_machine_to_pseudo(ulonglong machine, ulong mfn)
 		console("machine address %llx not found\n", machine);
 
 	return (XEN_MFN_NOT_FOUND);
+}
+
+
+/*
+ *  Read the relevant IKCONFIG (In Kernel Config) data if available.
+ */
+
+static char *ikconfig[] = {
+        "CONFIG_NR_CPUS",
+        "CONFIG_PGTABLE_4",
+        "CONFIG_HZ",
+        NULL,
+};
+
+void
+read_in_kernel_config(int command)
+{
+	struct syment *sp;
+	int ii, jj, ret, end, found=0;
+	unsigned long size, bufsz;
+	char *pos, *ln, *buf, *head, *tail, *val, *uncomp;
+	char line[512];
+	z_stream stream;
+
+	if ((kt->flags & NO_IKCONFIG) && !(pc->flags & RUNTIME))
+		return;
+
+	if ((sp = symbol_search("kernel_config_data")) == NULL) {
+		if (command == IKCFG_READ)
+			error(FATAL, 
+			    "kernel_config_data does not exist in this kernel\n");
+		return;
+	}
+	
+	/* We don't know how large IKCONFIG is, so we start with 
+	 * 32k, if we can't find MAGIC_END assume we didn't read 
+	 * enough, double it and try again.
+	 */
+	ii = 32;
+
+again:
+	size = ii * 1024;
+
+	if ((buf = (char *)malloc(size)) == NULL) {
+		error(WARNING, "cannot malloc IKCONFIG input buffer\n");
+		return;
+	}
+	
+        if (!readmem(sp->value, KVADDR, buf, size,
+            "kernel_config_data", RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read kernel_config_data\n");
+		goto out2;
+	}
+		
+	/* Find the start */
+	if (strstr(buf, MAGIC_START))
+		head = buf + MAGIC_SIZE + 10; /* skip past MAGIC_START and gzip header */
+	else {
+		error(WARNING, "could not find MAGIC_START!\n");
+		goto out2;
+	}
+
+	tail = head;
+
+	end = strlen(MAGIC_END);
+
+	/* Find the end*/
+	while (tail < (buf + (size - 1))) {
+		
+		if (strncmp(tail, MAGIC_END, end)==0) {
+			found = 1;
+			break;
+		}
+		tail++;
+	}
+
+	if (found) {
+		bufsz = tail - head;
+		size = 10 * bufsz;
+		if ((uncomp = (char *)malloc(size)) == NULL) {
+			error(WARNING, "cannot malloc IKCONFIG output buffer\n");
+			goto out2;
+		}
+	} else {
+		if (ii > 512) {
+			error(WARNING, "could not find MAGIC_END!\n");
+			goto out2;
+		} else {
+			free(buf);
+			ii *= 2;
+			goto again;
+		}
+	}
+
+
+	/* initialize zlib */
+	stream.next_in = (Bytef *)head;
+	stream.avail_in = (uInt)bufsz;
+
+	stream.next_out = uncomp;
+	stream.avail_out = (uInt)size;
+
+	stream.zalloc = NULL;
+	stream.zfree = NULL;
+	stream.opaque = NULL;
+
+	ret = inflateInit2(&stream, -MAX_WBITS);
+	if (ret != Z_OK) {
+		read_in_kernel_config_err(ret, "initialize");
+		goto out1;
+	}
+
+	ret = inflate(&stream, Z_FINISH);
+
+	if (ret != Z_STREAM_END) {
+		inflateEnd(&stream);
+		if (ret == Z_NEED_DICT || 
+		   (ret == Z_BUF_ERROR && stream.avail_in == 0)) {
+			read_in_kernel_config_err(Z_DATA_ERROR, "uncompress");
+			goto out1;
+		}
+		read_in_kernel_config_err(ret, "uncompress");
+		goto out1;
+	}
+	size = stream.total_out;
+
+	ret = inflateEnd(&stream);
+
+	pos = uncomp;
+
+	do {
+		ret = sscanf(pos, "%511[^\n]\n%n", line, &ii);
+		if (ret > 0) {
+			if ((command == IKCFG_READ) || CRASHDEBUG(8))
+				fprintf(fp, "%s\n", line);
+
+			pos += ii;
+
+			ln = line;
+				
+			/* skip leading whitespace */
+			while (whitespace(*ln))
+				ln++;
+
+			/* skip comments */
+			if (*ln == '#')
+				continue;
+
+			/* Find '=' */
+			if ((head = strchr(ln, '=')) != NULL) {
+				*head = '\0';
+				val = head + 1;
+
+				head--;
+
+				/* skip trailing whitespace */
+				while (whitespace(*head)) {
+					*head = '\0';
+					head--;
+				}
+
+				/* skip whitespace */
+				while (whitespace(*val))
+					val++;
+
+			} else /* Bad line, skip it */
+				continue;
+
+			if (command != IKCFG_INIT)
+				continue;
+
+			for (jj = 0; ikconfig[jj]; jj++) {
+				 if (STREQ(ln, ikconfig[jj])) {
+
+					if (STREQ(ln, "CONFIG_NR_CPUS")) {
+						kt->kernel_NR_CPUS = atoi(val);
+						if (CRASHDEBUG(1)) 
+							error(INFO, 
+							    "CONFIG_NR_CPUS: %d\n",
+								kt->kernel_NR_CPUS);
+
+					} else if (STREQ(ln, "CONFIG_PGTABLE_4")) {
+						machdep->flags |= VM_4_LEVEL;
+						if (CRASHDEBUG(1))
+							error(INFO, "CONFIG_PGTABLE_4\n");
+
+					} else if (STREQ(ln, "CONFIG_HZ")) {
+						machdep->hz = atoi(val);
+						if (CRASHDEBUG(1))
+							error(INFO, 
+							    "CONFIG_HZ: %d\n",
+								machdep->hz);
+					}
+				}
+			}
+		}
+	} while (ret > 0);
+
+out1:
+	free(uncomp);
+out2:
+	free(buf);
+
+	return;
+}
+
+static void
+read_in_kernel_config_err(int e, char *msg)
+{
+	error(WARNING, "zlib could not %s\n", msg);
+	switch (e) {
+		case Z_OK:
+			fprintf(fp, "Z_OK\n");
+			break;
+
+		case Z_STREAM_END:
+			fprintf(fp, "Z_STREAM_END\n");
+			break;
+
+		case Z_NEED_DICT:
+			fprintf(fp, "Z_NEED_DICT\n");
+			break;
+		
+		case Z_ERRNO:
+			fprintf(fp, "Z_ERNO\n");
+			break;
+
+		case Z_STREAM_ERROR:
+			fprintf(fp, "Z_STREAM\n");
+			break;
+
+		case Z_DATA_ERROR: 
+			fprintf(fp, "Z_DATA_ERROR\n");
+			break;
+
+		case Z_MEM_ERROR: /* out of memory */
+			fprintf(fp, "Z_MEM_ERROR\n");
+			break;
+
+		case Z_BUF_ERROR: /* not enough room in output buf */
+			fprintf(fp, "Z_BUF_ERROR\n");
+			break;
+		
+		case Z_VERSION_ERROR:
+			fprintf(fp, "Z_VERSION_ERROR\n");
+			break;
+
+		default: 
+			fprintf(fp, "UNKNOWN ERROR: %d\n", e);
+			break;
+	}
 }
