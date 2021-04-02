@@ -1,8 +1,8 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005 David Anderson
- * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
- * Copyright (C) 2004 Haren Myneni, IBM Corporation
+ * Copyright (C) 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@ static long alloc_hq_entry(void);
 struct hq_entry;
 static void dealloc_hq_entry(struct hq_entry *);
 static void show_options(void);
+static void dump_struct_members(struct list_data *, int, ulong);
 
 /*
  *  General purpose error reporting routine.  Type INFO prints the message
@@ -2836,7 +2837,9 @@ cmd_list(void)
 			break;
 
 		case 's':
-			ld->structname = optarg;
+			if (ld->structname_args++ == 0) 
+				hq_open();
+			hq_enter((ulong)optarg);
 			break;
 
 		case 'o':
@@ -2873,6 +2876,12 @@ cmd_list(void)
 	if (args[optind] && args[optind+1] && args[optind+2]) {
 		error(INFO, "too many arguments\n");
 		cmd_usage(pc->curcmd, SYNOPSIS);
+	}
+
+	if (ld->structname_args) {
+		ld->structname = (char **)GETBUF(sizeof(char *) * ld->structname_args);
+		retrieve_list((ulong *)ld->structname, ld->structname_args); 
+		hq_close();
 	}
 
 	while (args[optind]) {
@@ -3021,7 +3030,11 @@ next_arg:
 	hq_open();
 	c = do_list(ld);
 	hq_close();
+
+        if (ld->structname_args)
+		FREEBUF(ld->structname);
 }
+
 
 /*
  *  Does the work for cmd_list() and any other function that requires the
@@ -3032,7 +3045,7 @@ do_list(struct list_data *ld)
 {
 	ulong next, last, first;
 	ulong searchfor, readflag;
-	int count, others;
+	int i, count, others;
 
 	if (CRASHDEBUG(1)) {
 		others = 0;
@@ -3057,7 +3070,11 @@ do_list(struct list_data *ld)
 		console("list_head_offset: %ld\n", ld->list_head_offset);
 		console("             end: %lx\n", ld->end);
 		console("       searchfor: %lx\n", ld->searchfor);
-		console("      structname: %s\n", ld->structname);
+		console(" structname_args: %lx\n", ld->structname_args);
+		if (!ld->structname_args)
+			console("      structname: (unused)\n");
+		for (i = 0; i < ld->structname_args; i++)	
+			console("   structname[%d]: %s\n", i, ld->structname[i]);
 		console("          header: %s\n", ld->header);
 	}
 
@@ -3084,20 +3101,21 @@ do_list(struct list_data *ld)
 			fprintf(fp, "%lx\n", next - ld->list_head_offset);
 
 			if (ld->structname) {
-				switch (count_chars(ld->structname, '.'))
-				{
-				case 0:
-					dump_struct(ld->structname, 
-						next - ld->list_head_offset, 0);
-					break;
-				case 1:
-					dump_struct_member(ld->structname, 
-						next - ld->list_head_offset, 0);
-					break;
-				default:
-					error(FATAL, 
-					    "invalid structure reference: %s\n",
-						ld->structname);
+				for (i = 0; i < ld->structname_args; i++) {
+					switch (count_chars(ld->structname[i], '.'))
+					{
+					case 0:
+						dump_struct(ld->structname[i], 
+							next - ld->list_head_offset, 0);
+						break;
+					case 1:
+						dump_struct_members(ld, i, next);
+						break;
+					default:
+						error(FATAL, 
+						    "invalid structure reference: %s\n",
+							ld->structname[i]);
+					}
 				}
 			}
 		}
@@ -3164,6 +3182,42 @@ do_list(struct list_data *ld)
 		console("do_list count: %d\n", count);
 
 	return count;
+}
+
+/*
+ *  Issue a dump_struct_member() call for one or more structure
+ *  members.  Multiple members are passed in a comma-separated
+ *  list using the the format:  
+ *
+ *            struct.member1,member2,member3
+ */
+void
+dump_struct_members(struct list_data *ld, int idx, ulong next)
+{
+	int i, argc;
+	char *p1, *p2;
+	char *structname, *members;
+	char *arglist[MAXARGS];
+
+	structname = GETBUF(strlen(ld->structname[idx])+1);
+	members = GETBUF(strlen(ld->structname[idx])+1);
+
+	strcpy(structname, ld->structname[idx]);
+	p1 = strstr(structname, ".") + 1;
+
+	p2 = strstr(ld->structname[idx], ".") + 1;
+	strcpy(members, p2);
+	replace_string(members, ",", ' ');
+	argc = parse_line(members, arglist);
+
+	for (i = 0; i < argc; i++) {
+		*p1 = NULLCHAR;
+		strcat(structname, arglist[i]);
+ 		dump_struct_member(structname, next - ld->list_head_offset, 0);
+	}
+
+	FREEBUF(structname);
+	FREEBUF(members);
 }
 
 /*
@@ -3571,6 +3625,55 @@ corrupt_list_entry:
         return(-1);
 }
 
+/*
+ *  For a given value, check to see if a hash queue entry exists.  If an
+ *  entry is found, return TRUE; for all other possibilities return FALSE.
+ */
+int
+hq_entry_exists(ulong value)
+{
+	struct hash_table *ht;
+	struct hq_entry *list_entry;
+	long hqi;
+	long index;
+
+	if (!(pc->flags & HASH))
+		return FALSE;
+
+	ht = &hash_table;
+
+	if (ht->flags & (HASH_QUEUE_NONE))
+		return FALSE;
+
+	if (!(ht->flags & HASH_QUEUE_OPEN))
+		return FALSE;
+
+	hqi = HQ_INDEX(value);
+	list_entry = ht->memptr + ht->queue_heads[hqi].next;
+
+	while (TRUE) {
+		if (list_entry->value == value)
+			return TRUE;
+
+		if (list_entry->next >= ht->count) {
+			error(INFO, corrupt_hq,
+				list_entry->value, 
+				list_entry->next,
+ 				list_entry->order);
+			ht->flags |= HASH_QUEUE_NONE;
+			return FALSE;
+		}
+
+		if (list_entry->next == 0)
+			break;
+
+		list_entry = ht->memptr + list_entry->next;
+	}
+
+	list_entry->next = index;
+
+	return FALSE;
+}
 
 /*
  *  K&R power function for integers

@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005 David Anderson
- * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006 David Anderson
+ * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,6 +22,7 @@ static int x86_64_kvtop_xen_wpt(struct task_context *, ulong, physaddr_t *, int)
 static int x86_64_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static int x86_64_uvtop_level4(struct task_context *, ulong, physaddr_t *, int);
 static int x86_64_uvtop_level4_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
+static int x86_64_uvtop_level4_rhel4_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
 static ulong x86_64_vmalloc_start(void);
 static int x86_64_is_task_addr(ulong);
 static int x86_64_verify_symbol(const char *, ulong, char);
@@ -126,16 +127,20 @@ x86_64_init(int when)
 		break;
 
 	case PRE_GDB:
-		if (!(machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN))) {
-			if (symbol_exists("boot_vmalloc_pgt"))
+		if (!(machdep->flags & VM_FLAGS)) {
+			if (symbol_exists("xen_start_info")) {
+				if (symbol_exists("low_pml4") && 
+				    symbol_exists("swap_low_mappings"))
+					machdep->flags |= VM_XEN_RHEL4;
+				else
+					machdep->flags |= VM_XEN;
+			} else if (symbol_exists("boot_vmalloc_pgt"))
 				machdep->flags |= VM_ORIG;
-			else if (symbol_exists("xen_start_info"))
-				machdep->flags |= VM_XEN;
 			else
 				machdep->flags |= VM_2_6_11;
 		}
 
-		switch (machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN)) 
+		switch (machdep->flags & VM_FLAGS) 
 		{
 		case VM_ORIG:
 		        /* pre-2.6.11 layout */
@@ -173,6 +178,16 @@ x86_64_init(int when)
                         machdep->machspec->modules_vaddr = MODULES_VADDR_XEN;
                         machdep->machspec->modules_end = MODULES_END_XEN;
                         break;
+
+		case VM_XEN_RHEL4:
+			/* RHEL4 Xen layout */
+                        machdep->machspec->userspace_top = USERSPACE_TOP_XEN_RHEL4;
+                        machdep->machspec->page_offset = PAGE_OFFSET_XEN_RHEL4;
+                        machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_XEN_RHEL4;
+                        machdep->machspec->vmalloc_end = VMALLOC_END_XEN_RHEL4;
+                        machdep->machspec->modules_vaddr = MODULES_VADDR_XEN_RHEL4;
+                        machdep->machspec->modules_end = MODULES_END_XEN_RHEL4;
+			break;
 		}
 	        machdep->kvbase = (ulong)PAGE_OFFSET;
 		machdep->identity_map_base = (ulong)PAGE_OFFSET;
@@ -248,9 +263,17 @@ x86_64_init(int when)
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
                 if (XEN()) {
-			if (kt->xen_flags & WRITABLE_PAGE_TABLES)
-                        	machdep->uvtop = x86_64_uvtop_level4_xen_wpt;
-			else
+			if (kt->xen_flags & WRITABLE_PAGE_TABLES) {
+				switch (machdep->flags & VM_FLAGS)
+				{
+				case VM_XEN: 
+                        		machdep->uvtop = x86_64_uvtop_level4_xen_wpt;
+					break;
+				case VM_XEN_RHEL4:
+                        		machdep->uvtop = x86_64_uvtop_level4_rhel4_xen_wpt;
+					break;
+				}
+			} else
                         	machdep->uvtop = x86_64_uvtop_level4;
                         MEMBER_OFFSET_INIT(vcpu_guest_context_user_regs,
                                 "vcpu_guest_context", "user_regs");
@@ -290,6 +313,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_2_6_11", others++ ? "|" : "");
 	if (machdep->flags & VM_XEN)
 		fprintf(fp, "%sVM_XEN", others++ ? "|" : "");
+	if (machdep->flags & VM_XEN_RHEL4)
+		fprintf(fp, "%sVM_XEN_RHEL4", others++ ? "|" : "");
 	if (machdep->flags & NO_TSS)
 		fprintf(fp, "%sNO_TSS", others++ ? "|" : "");
 	if (machdep->flags & SCHED_TEXT)
@@ -327,9 +352,14 @@ x86_64_dump_machdep_table(ulong arg)
         	fprintf(fp, "              uvtop: x86_64_uvtop_level4()\n");
 	else if (machdep->uvtop == x86_64_uvtop_level4_xen_wpt)
         	fprintf(fp, "              uvtop: x86_64_uvtop_level4_xen_wpt()\n");
+	else if (machdep->uvtop == x86_64_uvtop_level4_rhel4_xen_wpt)
+        	fprintf(fp, "              uvtop: x86_64_uvtop_level4_rhel4_xen_wpt()\n");
 	else
         	fprintf(fp, "              uvtop: %lx\n", (ulong)machdep->uvtop);
-        fprintf(fp, "              kvtop: x86_64_kvtop()\n");
+        fprintf(fp, "              kvtop: x86_64_kvtop()");
+        if (XEN() && (kt->xen_flags & WRITABLE_PAGE_TABLES))
+                fprintf(fp, " -> x86_64_kvtop_xen_wpt()");
+	fprintf(fp, "\n");
         fprintf(fp, "       get_task_pgd: x86_64_get_task_pgd()\n");
 	fprintf(fp, "           dump_irq: x86_64_dump_irq()\n");
         fprintf(fp, "    get_stack_frame: x86_64_get_stack_frame()\n");
@@ -1037,6 +1067,135 @@ no_upage:
 }
 
 static int
+x86_64_uvtop_level4_rhel4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
+{
+	ulong mm;
+	ulong *pgd;
+	ulong pgd_paddr;
+	ulong pgd_pte;
+	ulong *pmd;
+	ulong pmd_paddr;
+	ulong pmd_pte;
+	ulong pseudo_pmd_pte;
+	ulong *ptep;
+	ulong pte_paddr;
+	ulong pte;
+	ulong pseudo_pte;
+	physaddr_t physpage;
+	char buf[BUFSIZE];
+
+	if (!tc)
+		error(FATAL, "current context invalid\n");
+
+	*paddr = 0;
+
+	if (IS_KVADDR(uvaddr))
+		return x86_64_kvtop(tc, uvaddr, paddr, verbose);
+
+	if ((mm = task_mm(tc->task, TRUE)))
+		pgd = ULONG_PTR(tt->mm_struct + OFFSET(mm_struct_pgd));
+	else
+		readmem(tc->mm_struct + OFFSET(mm_struct_pgd), KVADDR, &pgd,
+			sizeof(long), "mm_struct pgd", FAULT_ON_ERROR);
+
+	pgd_paddr = x86_64_VTOP((ulong)pgd);
+	FILL_PGD(pgd_paddr, PHYSADDR, PAGESIZE());
+	pgd = ((ulong *)pgd_paddr) + pgd_index(uvaddr); 
+	pgd_pte = ULONG(machdep->pgd + PAGEOFFSET(pgd));
+	if (verbose) 
+                fprintf(fp, "   PGD: %lx => %lx [machine]\n", (ulong)pgd, pgd_pte);
+	if (!(pgd_pte & _PAGE_PRESENT))
+		goto no_upage;
+
+	/*
+         *  pmd = pmd_offset(pgd, address);
+	 */
+	pmd_paddr = pgd_pte & PHYSICAL_PAGE_MASK;
+	pmd_paddr = xen_m2p(pmd_paddr);
+	if (verbose)
+                fprintf(fp, "   PGD: %lx\n", pmd_paddr);
+	FILL_PMD(pmd_paddr, PHYSADDR, PAGESIZE());
+	pmd = ((ulong *)pmd_paddr) + pmd_index(uvaddr);
+	pmd_pte = ULONG(machdep->pmd + PAGEOFFSET(pmd));
+        if (verbose) 
+                fprintf(fp, "   PMD: %lx => %lx [machine]\n", (ulong)pmd, pmd_pte);
+	if (!(pmd_pte & _PAGE_PRESENT))
+		goto no_upage;
+        if (pmd_pte & _PAGE_PSE) {
+                if (verbose)
+                        fprintf(fp, "  PAGE: %lx  (2MB) [machine]\n", 
+				PAGEBASE(pmd_pte) & PHYSICAL_PAGE_MASK);
+
+		pseudo_pmd_pte = xen_m2p(PAGEBASE(pmd_pte));
+
+                if (pseudo_pmd_pte == XEN_MACHADDR_NOT_FOUND) {
+                        if (verbose)
+                                fprintf(fp, " PAGE: page not available\n");
+                        *paddr = PADDR_NOT_AVAILABLE;
+                        return FALSE;
+                }
+
+		pseudo_pmd_pte |= PAGEOFFSET(pmd_pte);
+
+                if (verbose) {
+                        fprintf(fp, " PAGE: %s  (2MB)\n\n",
+                                mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX,
+                                MKSTR(PAGEBASE(pseudo_pmd_pte) & 
+				PHYSICAL_PAGE_MASK)));
+
+                        x86_64_translate_pte(pseudo_pmd_pte, 0, 0);
+                }
+
+                physpage = (PAGEBASE(pseudo_pmd_pte) & PHYSICAL_PAGE_MASK) + 
+			(uvaddr & ~_2MB_PAGE_MASK);
+
+                *paddr = physpage;
+                return TRUE;
+        }
+
+        /*
+	 *  ptep = pte_offset_map(pmd, address);
+	 *  pte = *ptep;
+	 */
+	pte_paddr = pmd_pte & PHYSICAL_PAGE_MASK;
+	pte_paddr = xen_m2p(pte_paddr);
+	if (verbose)
+		fprintf(fp, "   PMD: %lx\n", pte_paddr);
+	FILL_PTBL(pte_paddr, PHYSADDR, PAGESIZE());
+	ptep = ((ulong *)pte_paddr) + pte_index(uvaddr);
+	pte = ULONG(machdep->ptbl + PAGEOFFSET(ptep));
+	if (verbose)
+		fprintf(fp, "   PTE: %lx => %lx [machine]\n", (ulong)ptep, pte);
+	if (!(pte & (_PAGE_PRESENT))) {
+		if (pte && verbose) {
+			fprintf(fp, "\n");
+			x86_64_translate_pte(pte, 0, 0);
+		}
+		goto no_upage;
+	}
+	
+	pseudo_pte = xen_m2p(pte & PHYSICAL_PAGE_MASK);
+	if (verbose)
+		fprintf(fp, "   PTE: %lx\n", pseudo_pte + PAGEOFFSET(pte));
+
+	*paddr = (PAGEBASE(pseudo_pte) & PHYSICAL_PAGE_MASK) + PAGEOFFSET(uvaddr);
+
+	if (verbose) {
+		fprintf(fp, "  PAGE: %lx [machine]\n", 
+			PAGEBASE(pte) & PHYSICAL_PAGE_MASK);
+		fprintf(fp, "  PAGE: %lx\n\n", 
+			PAGEBASE(*paddr) & PHYSICAL_PAGE_MASK);
+		x86_64_translate_pte(pseudo_pte + PAGEOFFSET(pte), 0, 0);
+	}
+
+	return TRUE;
+
+no_upage:
+
+	return FALSE;
+}
+
+static int
 x86_64_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
 {
        	ulong mm;
@@ -1168,7 +1327,7 @@ x86_64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbo
                 if (!verbose)
                         return TRUE;
         }
-	
+
 	if (XEN() && (kt->xen_flags & WRITABLE_PAGE_TABLES))
 		return (x86_64_kvtop_xen_wpt(tc, kvaddr, paddr, verbose));
 
@@ -3388,6 +3547,7 @@ parse_cmdline_arg(void)
 	char *arglist[MAXARGS];
 	int megabytes;
 	int lines = 0;
+	int vm_flag;
 	ulong value;
 
 	if (!strstr(machdep->cmdline_arg, "=")) {
@@ -3405,10 +3565,11 @@ parse_cmdline_arg(void)
 
 	c = parse_line(buf, arglist);
 
-	for (i = 0; i < c; i++) {
+	for (i = vm_flag = 0; i < c; i++) {
 		errflag = 0;
 
 		if (STRNEQ(arglist[i], "vm=")) {
+			vm_flag++;
 			p = arglist[i] + strlen("vm=");
 			if (strlen(p)) {
 				if (STREQ(p, "orig")) {
@@ -3419,6 +3580,9 @@ parse_cmdline_arg(void)
 					continue;
 				} else if (STREQ(p, "xen")) {
 					machdep->flags |= VM_XEN;
+					continue;
+				} else if (STREQ(p, "xen-rhel4")) {
+					machdep->flags |= VM_XEN_RHEL4;
 					continue;
 				}
 			}
@@ -3454,32 +3618,39 @@ parse_cmdline_arg(void)
 		lines++;
 	} 
 
-	switch (machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN))
-	{
-	case 0:
-		break;
+	if (vm_flag) {
+		switch (machdep->flags & VM_FLAGS)
+		{
+		case 0:
+			break;
+	
+		case VM_ORIG:
+			error(NOTE, "using original x86_64 VM address ranges\n");
+			lines++;
+			break;
+	
+		case VM_2_6_11:
+			error(NOTE, "using 2.6.11 x86_64 VM address ranges\n");
+			lines++;
+			break;
+	
+		case VM_XEN:
+			error(NOTE, "using xen x86_64 VM address ranges\n");
+			lines++;
+			break;
 
-	case VM_ORIG:
-		error(NOTE, "using original x86_64 VM address ranges\n");
-		lines++;
-		break;
-
-	case VM_2_6_11:
-		error(NOTE, "using 2.6.11 x86_64 VM address ranges\n");
-		lines++;
-		break;
-
-	case VM_XEN:
-		error(NOTE, "using xen x86_64 VM address ranges\n");
-		lines++;
-		break;
-
-	default:
-		error(WARNING, "cannot set multiple vm values\n");
-		lines++;
-		machdep->flags &= ~(VM_ORIG|VM_2_6_11|VM_XEN);
-		break;
-	} 
+		case VM_XEN_RHEL4:
+			error(NOTE, "using RHEL4 xen x86_64 VM address ranges\n");
+			lines++;
+			break;
+	
+		default:
+			error(WARNING, "cannot set multiple vm values\n");
+			lines++;
+			machdep->flags &= ~VM_FLAGS;
+			break;
+		} 
+	}
 
 	if (lines)
 		fprintf(fp, "\n");

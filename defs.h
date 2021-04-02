@@ -1610,7 +1610,8 @@ struct list_data {             /* generic structure used by do_list() to walk */
 	long list_head_offset;
         ulong end;
 	ulong searchfor;
-	char *structname;
+	char **structname;
+	int structname_args;
 	char *header;
 };
 #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
@@ -1946,6 +1947,13 @@ struct load_module {
 #define VMALLOC_END_XEN            0xffffe1ffffffffff
 #define MODULES_VADDR_XEN          0xffffffff88000000
 #define MODULES_END_XEN            0xfffffffffff00000
+
+#define USERSPACE_TOP_XEN_RHEL4       0x0000008000000000
+#define PAGE_OFFSET_XEN_RHEL4         0xffffff8000000000
+#define VMALLOC_START_ADDR_XEN_RHEL4  0xffffff0000000000
+#define VMALLOC_END_XEN_RHEL4         0xffffff7fffffffff
+#define MODULES_VADDR_XEN_RHEL4       0xffffffffa0000000
+#define MODULES_END_XEN_RHEL4         0xffffffffafffffff
 
 #define PTOV(X)               ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)               x86_64_VTOP((ulong)(X))
@@ -2978,6 +2986,7 @@ void hq_init(void);
 int hq_open(void);
 int hq_close(void);
 int hq_enter(ulong);
+int hq_entry_exists(ulong);
 long get_embedded(void);
 void dump_embedded(char *);
 char *ordinal(ulong, char *);
@@ -3568,6 +3577,9 @@ struct machine_specific {
 #define NO_TSS        (0x20)
 #define SCHED_TEXT    (0x40)
 #define PHYS_BASE     (0x80)
+#define VM_XEN_RHEL4 (0x100)
+
+#define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
 #endif
