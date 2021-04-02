@@ -895,6 +895,19 @@ gdb_line_number_callback(ulong pc, ulong low, ulong high)
 }
 
 /*
+ *  Prevent gdb from trying to translate and print pointers
+ *  that are not kernel virtual addresses.  
+ */
+int
+gdb_print_callback(ulong addr)
+{
+	if (!addr)
+		return FALSE;
+	else
+		return IS_KVADDR(addr);
+}
+
+/*
  *  Used by gdb_interface() to catch gdb-related errors, if desired.
  */
 void

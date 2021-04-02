@@ -187,7 +187,7 @@ GDB_FLAGS=
 # usefulness is also dependent upon the processor's compiler -- your mileage
 # may vary.
 #
-#WARNING_OPTIONS=-Wall -O2 -Wstrict-prototypes -Wmissing-prototypes -fstack-protector
+#WARNING_OPTIONS=-Wall -O2 -Wstrict-prototypes -Wmissing-prototypes -fstack-protector -Wformat-security
 #WARNING_ERROR=-Werror
 
 # TARGET_CFLAGS will be configured automatically by configure
@@ -509,7 +509,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.0.1
+VERSION=7.0.2
 RELEASE=0
 
 release: make_configure

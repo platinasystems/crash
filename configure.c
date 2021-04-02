@@ -1257,7 +1257,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("ExclusiveOS: Linux\n");
 	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm aarch64\n");
 	printf("Buildroot: %%{_tmppath}/%%{name}-root\n");
-	printf("BuildRequires: ncurses-devel zlib-devel\n");
+	printf("BuildRequires: ncurses-devel zlib-devel bison\n");
 	printf("Requires: binutils\n");
 	printf("# Patch0: crash-3.3-20.installfix.patch (patch example)\n");
 	printf("\n");

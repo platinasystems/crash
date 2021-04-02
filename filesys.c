@@ -1290,10 +1290,10 @@ cmd_mount(void)
 						namespace_context);
 				} else {
 					if (!(pc->curcmd_flags & HEADER_PRINTED)) {
-						fprintf(fp, mount_hdr);
+						fprintf(fp, "%s", mount_hdr);
 						pc->curcmd_flags |= HEADER_PRINTED;
 					}
-					fprintf(fp, buf2);
+					fprintf(fp, "%s", buf2);
 				}
 				found = FALSE;
 				fp = pc->tmpfile;
@@ -1420,7 +1420,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 		sbp = ULONG(vfsmount_buf + OFFSET(vfsmount_mnt_sb)); 
 
 		if (flags)
-			fprintf(fp, mount_hdr);
+			fprintf(fp, "%s", mount_hdr);
                 fprintf(fp, "%s %s ",
 			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
 			MKSTR(*vfsmnt)),
@@ -1449,7 +1449,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 		sprintf(buf1, "%s%s", buf3, buf4);
 		while ((strlen(buf1) > 17) && (buf1[strlen(buf1)-2] == ' '))
 			strip_ending_char(buf1, ' ');
-		fprintf(fp, buf1);
+		fprintf(fp, "%s", buf1);
 
 		if (VALID_MEMBER(vfsmount_mnt_dirname)) {
                 	if (read_string(dirp, buf1, BUFSIZE-1))
@@ -1486,7 +1486,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 					fprintf(fp, "%s\n",
                                             mkstring(buf2, VADDR_PRLEN,
                                                 CENTER, "OPEN FILES"));
-					fprintf(fp, mount_files_header);
+					fprintf(fp, "%s", mount_files_header);
 					files_header_printed = 1;
 				}
 				file_dump(0, *dp, inode, 0, DUMP_DENTRY_ONLY);
@@ -2221,14 +2221,14 @@ cmd_files(void)
 #define PRINT_FILE_REFERENCE()                  \
 	if (!root_pwd_printed) {                \
         	print_task_header(fp, tc, 0);   \
-                fprintf(fp, root_pwd);          \
+                fprintf(fp, "%s", root_pwd);    \
 		root_pwd_printed = TRUE;        \
 	}                                       \
 	if (!header_printed) {                  \
-		fprintf(fp, files_header);      \
+		fprintf(fp, "%s", files_header);\
                 header_printed = TRUE;          \
 	}                                       \
-	fprintf(fp, buf4);                      \
+	fprintf(fp, "%s", buf4);                \
 	ref->cmdflags |= FILES_REF_FOUND;
 
 #define FILENAME_COMPONENT(P,C) \
@@ -2506,7 +2506,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 				}
 				else if (file) {
 					if (!header_printed) {
-						fprintf(fp, files_header);
+						fprintf(fp, "%s", files_header);
 						header_printed = 1;
 					}
 					file_dump(file, 0, 0, i, 
@@ -3238,7 +3238,7 @@ cmd_fuser(void)
 				if (!STREQ(uses, "")) {
 					if (!fuser_header_printed) {
 						fprintf(pc->saved_fp,
-							fuser_header);
+							"%s", fuser_header);
 						fuser_header_printed = 1;
 					}
 					show_fuser(task_buf, uses);
@@ -3294,7 +3294,7 @@ cmd_fuser(void)
 		}
 		if (!STREQ(uses, "")) {
 			if (!fuser_header_printed) {
-				fprintf(pc->saved_fp, fuser_header);
+				fprintf(pc->saved_fp, "%s", fuser_header);
 				fuser_header_printed = 1;
 			}
 			show_fuser(task_buf, uses);

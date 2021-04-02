@@ -691,7 +691,7 @@ netdump_print(char *fmt, ...)
         va_end(ap);
 
         if (nd->ofp)
-                fprintf(nd->ofp, buf);
+                fprintf(nd->ofp, "%s", buf);
         else
                 console(buf);
 }

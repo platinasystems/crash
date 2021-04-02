@@ -1515,3 +1515,49 @@
 +extern void replace_ui_file_FILE(struct ui_file *, FILE *);
 +#endif
  #endif /* #ifndef DEFS_H */
+--- gdb-7.6/bfd/elflink.c.orig
++++ gdb-7.6/bfd/elflink.c
+@@ -4730,7 +4730,7 @@ error_free_dyn:
+ 	  struct elf_link_hash_entry *hlook;
+ 	  asection *slook;
+ 	  bfd_vma vlook;
+-	  size_t i, j, idx;
++	  size_t i, j, idx = 0;
+ 
+ 	  hlook = weaks;
+ 	  weaks = hlook->u.weakdef;
+--- gdb-7.6/gdb/s390-nat.c.orig
++++ gdb-7.6/gdb/s390-nat.c
+@@ -37,6 +37,8 @@
+ #include <sys/ucontext.h>
+ #include <elf.h>
+ 
++#include <sys/uio.h>
++
+ #ifndef HWCAP_S390_HIGH_GPRS
+ #define HWCAP_S390_HIGH_GPRS 512
+ #endif
+--- gdb-7.6/gdb/printcmd.c.orig
++++ gdb-7.6/gdb/printcmd.c
+@@ -573,11 +573,21 @@ print_address_symbolic (struct gdbarch *
+   int unmapped = 0;
+   int offset = 0;
+   int line = 0;
++#ifdef CRASH_MERGE
++  extern int gdb_print_callback(unsigned long);
++#endif
+ 
+   /* Throw away both name and filename.  */
+   struct cleanup *cleanup_chain = make_cleanup (free_current_contents, &name);
+   make_cleanup (free_current_contents, &filename);
+ 
++#ifdef CRASH_MERGE
++  if (!gdb_print_callback(addr)) {
++	do_cleanups (cleanup_chain);
++	return 0;
++  }
++#endif
++
+   if (build_address_symbolic (gdbarch, addr, do_demangle, &name, &offset,
+ 			      &filename, &line, &unmapped))
+     {

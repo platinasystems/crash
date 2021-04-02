@@ -165,10 +165,11 @@ exits.
 .RE
 .TP
 .B \-s
-Proceed directly to the "crash>" prompt without displaying
+Silently proceed directly to the "crash>" prompt without displaying
 any version, GPL, or 
 .B crash
-initialization data during startup.
+initialization data during startup, and by default, runtime command
+output is not passed to any scrolling command.
 .TP
 .BI \-i \ file
 Execute the command(s) contained in

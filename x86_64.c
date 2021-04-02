@@ -298,7 +298,13 @@ x86_64_init(int when)
 			machdep->machspec->modules_end = MODULES_END_2_6_31;
 		}
                 STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
-		STRUCT_SIZE_INIT(gate_struct, "gate_struct");
+		/* 
+		 * Before 2.6.25 the structure was called gate_struct
+		 */
+		if (STRUCT_EXISTS("gate_desc"))
+			STRUCT_SIZE_INIT(gate_struct, "gate_desc");
+		else
+			STRUCT_SIZE_INIT(gate_struct, "gate_struct");
                 STRUCT_SIZE_INIT(e820map, "e820map");
                 STRUCT_SIZE_INIT(e820entry, "e820entry");
                 MEMBER_OFFSET_INIT(e820map_nr_map, "e820map", "nr_map");
@@ -2817,6 +2823,9 @@ x86_64_in_alternate_stack(int cpu, ulong rsp)
 	int i;
 	struct machine_specific *ms;
 
+	if (cpu >= NR_CPUS)
+		return FALSE;
+
 	ms = machdep->machspec;
 
 	if (ms->stkinfo.ibase[cpu] &&
@@ -4453,8 +4462,7 @@ skip_stage:
         	*rip = ur_rip;
 		*rsp = ur_rsp;
 		if (is_kernel_text(ur_rip) &&
-		    (((ur_rsp >= GET_STACKBASE(bt->task)) &&
-		      (ur_rsp < GET_STACKTOP(bt->task))) ||
+		    (INSTACK(ur_rsp, bt) ||
 		     in_alternate_stack(bt->tc->processor, ur_rsp)))
 			bt_in->flags |= BT_KERNEL_SPACE;
 		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
@@ -4484,14 +4492,21 @@ skip_stage:
 		user_regs = bt->machdep;
 		ur_rip = ULONG(user_regs + OFFSET(user_regs_struct_rip));
 		ur_rsp = ULONG(user_regs + OFFSET(user_regs_struct_rsp));
-		if (is_kernel_text(ur_rip) &&
-		    (((ur_rsp >= GET_STACKBASE(bt->task)) &&
-		      (ur_rsp < GET_STACKTOP(bt->task))) ||
-		     in_alternate_stack(bt->tc->processor, ur_rsp)))
-			bt_in->flags |= BT_KERNEL_SPACE;
-		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
-			bt_in->flags |= BT_USER_SPACE;
-		return;
+		if (!in_alternate_stack(bt->tc->processor, ur_rsp) && 
+		    !stkptr_to_task(bt->task)) {
+			if (CRASHDEBUG(1))
+				error(INFO, 
+				    "x86_64_get_dumpfile_stack_frame: "
+				    "ELF mismatch: RSP: %lx task: %lx\n",
+					ur_rsp, bt->task);
+		} else {
+			if (is_kernel_text(ur_rip) && (INSTACK(ur_rsp, bt) || 
+			    in_alternate_stack(bt->tc->processor, ur_rsp)))
+				bt_in->flags |= BT_KERNEL_SPACE;
+			if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
+				bt_in->flags |= BT_USER_SPACE;
+			return;
+		}
 	}
 
 	if (CRASHDEBUG(1)) 
@@ -4679,7 +4694,7 @@ x86_64_extract_idt_function(ulong *ip, char *buf, ulong *retaddr)
 
 	value_to_symstr(addr, locbuf, 0);
 	if (strlen(locbuf))
-		sprintf(buf, locbuf);
+		sprintf(buf, "%s", locbuf);
 	else {
 		sprintf(buf, "%016lx", addr);
 		if (kvtop(NULL, addr, &phys, 0)) {
@@ -4745,7 +4760,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 		sprintf(buf1, "0x%lx <%s>\n", value,	
 			value_to_symstr(value, buf2, output_radix));
 
-		sprintf(p1, buf1);
+		sprintf(p1, "%s", buf1);
 	
         } else if (STREQ(argv[argc-2], "callq") &&
             hexadecimal(argv[argc-1], 0)) {
@@ -4763,7 +4778,7 @@ x86_64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
                                 value_to_symstr(value, buf2, output_radix));
                         if (IS_MODULE_VADDR(value) &&
                             !strstr(buf2, "+"))
-                                sprintf(p1, buf1);
+                                sprintf(p1, "%s", buf1);
                 }
         }
 
@@ -7256,7 +7271,7 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		strcpy(buf2, buf);
 
 		if (CRASHDEBUG(3))
-			fprintf(fp, buf2);
+			fprintf(fp, "%s", buf2);
 
 		c = parse_line(buf, arglist);
 
@@ -7430,6 +7445,11 @@ __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 	ulong rsp, *up;
 	struct syment *sp;
 	int framesize;
+
+	if (!INSTACK(rsp_in, bt))
+		error(FATAL, 
+		    "invalid RSP: %lx  bt->stackbase/stacktop: %lx/%lx cpu: %d\n",
+			rsp_in, bt->stackbase, bt->stacktop, bt->tc->processor);
 
 	if (x86_64_framesize_cache_func(FRAMESIZE_QUERY, 
 	    machdep->machspec->thread_return, &framesize, 0)) {

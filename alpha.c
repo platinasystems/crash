@@ -1,8 +1,8 @@
 /* alpha.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2006, 2010-2013 David Anderson
+ * Copyright (C) 2002-2006, 2010-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2073,7 +2073,7 @@ dis_address_translation(ulong vaddr, char *inbuf, unsigned int output_radix)
 		sprintf(buf1, "0x%lx <%s>\n", value,	
 			value_to_symstr(value, buf2, output_radix));
 
-		sprintf(p1, buf1);
+		sprintf(p1, "%s", buf1);
 	}
 
 	console("    %s", inbuf);
