@@ -90,6 +90,7 @@ void make_spec_file(struct supported_gdb_version *);
 #undef S390X
 #undef PPC64
 #undef X86_64
+#undef ARM
 
 #define X86     1
 #define ALPHA   2
@@ -99,6 +100,7 @@ void make_spec_file(struct supported_gdb_version *);
 #define S390X   6
 #define PPC64   7
 #define X86_64  8
+#define ARM	9
 
 #define TARGET_X86    "TARGET=X86"
 #define TARGET_ALPHA  "TARGET=ALPHA"
@@ -108,6 +110,7 @@ void make_spec_file(struct supported_gdb_version *);
 #define TARGET_S390X  "TARGET=S390X"
 #define TARGET_PPC64  "TARGET=PPC64"
 #define TARGET_X86_64 "TARGET=X86_64"
+#define TARGET_ARM    "TARGET=ARM"
 
 #define TARGET_CFLAGS_X86    "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 #define TARGET_CFLAGS_ALPHA  "TARGET_CFLAGS="
@@ -117,6 +120,7 @@ void make_spec_file(struct supported_gdb_version *);
 #define TARGET_CFLAGS_S390X  "TARGET_CFLAGS="
 #define TARGET_CFLAGS_PPC64  "TARGET_CFLAGS=-m64"
 #define TARGET_CFLAGS_X86_64 "TARGET_CFLAGS="
+#define TARGET_CFLAGS_ARM    "TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64"
 
 /*
  *  The original plan was to allow the use of a particular version
@@ -193,6 +197,7 @@ struct target_data {
 	char gdb_version[MAXSTRLEN];
 	char release[MAXSTRLEN];
 	struct stat statbuf;
+	const char *target_as_param;
 } target_data = { 0 }; 
 
 int
@@ -203,7 +208,7 @@ main(int argc, char **argv)
 
 	sp = setup_gdb_defaults();
 
-	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:")) > 0) {
+	while ((c = getopt(argc, argv, "gsqnWwubdr:p:P:t:")) > 0) {
 		switch (c) {
 		case 'q':
 			target_data.flags |= QUIET;
@@ -235,6 +240,9 @@ main(int argc, char **argv)
 			break;
 		case 'g':
 			gdb_configure(sp);
+			break;
+		case 't':
+			target_data.target_as_param = optarg;
 			break;
 		}
 	}
@@ -274,6 +282,21 @@ get_current_configuration(void)
 #ifdef __x86_64__
         target_data.target = X86_64;
 #endif
+#ifdef __arm__
+        target_data.target = ARM;
+#endif
+        /* override target if specified on command line */
+	if (target_data.target_as_param != 0) {
+		if (target_data.target == X86 &&
+		    strcmp(target_data.target_as_param, "ARM") == 0) {
+			/* debugging of ARM core files only supported on X86 */
+			target_data.target = ARM;
+		} else {
+			fprintf(stderr,
+				"target \"%s\" is not supported on this architecture\n",
+				target_data.target_as_param);
+		}
+        }
 
         if ((fp = fopen("Makefile", "r")) == NULL) {
 		perror("Makefile");
@@ -374,6 +397,9 @@ show_configuration(void)
 	case X86_64:
 		printf("TARGET: X86_64\n");
 		break;
+	case ARM:
+		printf("TARGET: ARM\n");
+		break;
 	}
 
 	if (strlen(target_data.program)) {
@@ -436,6 +462,10 @@ build_configure(struct supported_gdb_version *sp)
 	case X86_64:
                 target = TARGET_X86_64;
                 target_CFLAGS = TARGET_CFLAGS_X86_64;
+                break;
+	case ARM:
+                target = TARGET_ARM;
+                target_CFLAGS = TARGET_CFLAGS_ARM;
                 break;
 	}
 
@@ -998,7 +1028,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("Vendor: Red Hat, Inc.\n");
 	printf("Packager: Dave Anderson <anderson@redhat.com>\n");
 	printf("ExclusiveOS: Linux\n");
-	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x\n");
+	printf("ExclusiveArch: %%{ix86} alpha ia64 ppc ppc64 ppc64pseries ppc64iseries x86_64 s390 s390x arm\n");
 	printf("Buildroot: %%{_tmppath}/%%{name}-root\n");
 	printf("BuildRequires: ncurses-devel zlib-devel\n");
 	printf("Requires: binutils\n");

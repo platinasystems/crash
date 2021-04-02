@@ -490,7 +490,8 @@ get_text_init_space(void)
 		return;
 
 	if (((section = get_kernel_section(".text.init")) == NULL) &&
-	    ((section = get_kernel_section(".init.text")) == NULL)) {
+	    ((section = get_kernel_section(".init.text")) == NULL) &&
+	    (machine_type("ARM") && (section = get_kernel_section(".init")) == NULL)) {
 		error(WARNING, "cannot determine text init space\n");
 		return;
 	}
@@ -2660,6 +2661,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_ARM:
+			if (machine_type_mismatch(file, "ARM", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -2748,12 +2754,17 @@ is_shared_object(char *file)
 		switch (swap16(elf32->e_machine, swap))
 		{
 		case EM_386:
-			if (machine_type("X86"))
+			if (machine_type("X86") || machine_type("ARM"))
 				return TRUE;
 			break;
 
 		case EM_S390:
 			if (machine_type("S390"))
+				return TRUE;
+			break;
+
+		case EM_ARM:
+			if (machine_type("ARM"))
 				return TRUE;
 			break;
 		}
@@ -7405,6 +7416,35 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "    s390_lowcore_psw_save_area: %ld\n",
 		OFFSET(s390_lowcore_psw_save_area));
 
+	fprintf(fp, "           cpu_context_save_fp: %ld\n",
+		OFFSET(cpu_context_save_fp));
+	fprintf(fp, "           cpu_context_save_sp: %ld\n",
+		OFFSET(cpu_context_save_sp));
+	fprintf(fp, "           cpu_context_save_pc: %ld\n",
+		OFFSET(cpu_context_save_pc));
+	fprintf(fp, "           elf_prstatus_pr_pid: %ld\n",
+		OFFSET(elf_prstatus_pr_pid));
+	fprintf(fp, "           elf_prstatus_pr_reg: %ld\n",
+		OFFSET(elf_prstatus_pr_reg));
+	fprintf(fp, "               irq_desc_t_name: %ld\n",
+		OFFSET(irq_desc_t_name));
+	fprintf(fp, "       thread_info_cpu_context: %ld\n",
+		OFFSET(thread_info_cpu_context));
+	fprintf(fp, "             unwind_table_list: %ld\n",
+		OFFSET(unwind_table_list));
+	fprintf(fp, "            unwind_table_start: %ld\n",
+		OFFSET(unwind_table_start));
+	fprintf(fp, "             unwind_table_stop: %ld\n",
+		OFFSET(unwind_table_stop));
+	fprintf(fp, "       unwind_table_begin_addr: %ld\n",
+		OFFSET(unwind_table_begin_addr));
+	fprintf(fp, "         unwind_table_end_addr: %ld\n",
+		OFFSET(unwind_table_end_addr));
+	fprintf(fp, "               unwind_idx_addr: %ld\n",
+		OFFSET(unwind_idx_addr));
+	fprintf(fp, "               unwind_idx_insn: %ld\n",
+		OFFSET(unwind_idx_insn));
+
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
 	fprintf(fp, "                    page_flags: %ld\n", SIZE(page_flags));
@@ -7576,6 +7616,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(probe));
 	fprintf(fp, "                      kobj_map: %ld\n", 
 		SIZE(kobj_map));
+	fprintf(fp, "              cpu_context_save: %ld\n", 
+		SIZE(cpu_context_save));
+	fprintf(fp, "                  elf_prstatus: %ld\n", 
+		SIZE(elf_prstatus));
+	fprintf(fp, "                      note_buf: %ld\n", 
+		SIZE(note_buf));
+	fprintf(fp, "                    unwind_idx: %ld\n", 
+		SIZE(unwind_idx));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

@@ -1153,8 +1153,12 @@ cmd_mount(void)
 	ulong vfsmount = 0;
 	int flags = 0;
 	int save_next;
+	ulong pid;
 
-	namespace_context = pid_to_context(1);
+	/* find a context */
+	pid = 1;
+	while ((namespace_context = pid_to_context(pid)) == NULL)
+		pid++;
 
         while ((c = getopt(argcnt, args, "ifn:")) != EOF) {
                 switch(c)

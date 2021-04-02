@@ -228,6 +228,8 @@ kvmdump_memory_dump(FILE *ofp)
 		fprintf(ofp, "%sMAPFILE_FOUND", others++ ? "|" : "");
 	if (kvm->flags & MAPFILE_APPENDED)
 		fprintf(ofp, "%sMAPFILE_APPENDED", others++ ? "|" : "");
+	if (kvm->flags & NO_PHYS_BASE)
+		fprintf(ofp, "%sNO_PHYS_BASE", others++ ? "|" : "");
 	fprintf(ofp, ")\n");
 
 	fprintf(ofp, "            mapfd: %d\n", kvm->mapfd);
@@ -328,7 +330,8 @@ kvmdump_phys_base(unsigned long *phys_base)
 				kvm->mapinfo.cpu_version_id);
 
                 *phys_base = kvm->mapinfo.phys_base;
-                return TRUE;
+
+		return (kvm->flags & NO_PHYS_BASE ? FALSE : TRUE);
         }
 
         return FALSE;
@@ -432,6 +435,12 @@ store_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 int 
 load_mapfile_offset(uint64_t physaddr, off_t *entry_ptr)
 {
+	if (physaddr >= 0xe0000000) {
+		if (physaddr < 0x100000000ULL)
+			return SEEK_ERROR;   /* In 512MB I/O hole */
+		physaddr -= 0x20000000;
+	}
+ 
         if (lseek(kvm->mapfd, mapfile_offset(physaddr), SEEK_SET) < 0) {
 		error(INFO, "load_memfile_offset: lseek: %s\n", 
 			strerror(errno));

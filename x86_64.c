@@ -82,7 +82,7 @@ static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
 static void x86_64_thread_return_init(void);
 static void x86_64_framepointer_init(void);
-static void x86_64_xendump_phys_base(void);
+static int x86_64_virt_phys_base(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
 static int x86_64_pvops_xendump_p2m_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
@@ -910,7 +910,7 @@ x86_64_exception_stacks[MAX_EXCEPTION_STACKS] = {
 static void 
 x86_64_ist_init(void)
 {
-	int c, i, cpus, esize;
+	int c, i, cnt, cpus, esize;
 	ulong vaddr, offset;
 	ulong init_tss;
 	struct machine_specific *ms;
@@ -994,15 +994,26 @@ x86_64_ist_init(void)
 	 *  to the base stack address.
 	 */
         for (c = 0; c < kt->cpus; c++) {
-                for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
-                        if (ms->stkinfo.ebase[c][i] == 0)
+                for (i = cnt = 0; i < MAX_EXCEPTION_STACKS; i++) {
+                        if (ms->stkinfo.ebase[c][i] == 0) 
                                 break;
+			cnt++;
 			if ((THIS_KERNEL_VERSION >= LINUX(2,6,18)) &&
 			    (i == DEBUG_STACK))
 				ms->stkinfo.esize[i] = esize*2;
 			else
 				ms->stkinfo.esize[i] = esize;
 			ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
+		}
+		/*
+		 * RT kernel only uses 3 exception stacks for the 5 types.
+		 */
+		if ((c == 0) && (cnt == 3)) {
+			x86_64_exception_stacks[0] = "RT";
+			x86_64_exception_stacks[1] = "RT";
+			x86_64_exception_stacks[2] = "RT";
+			x86_64_exception_stacks[3] = "(unknown)";
+			x86_64_exception_stacks[4] = "(unknown)";
 		}
 	}
 
@@ -5371,6 +5382,13 @@ x86_64_calc_phys_base(void)
 			if (CRASHDEBUG(1))
 				fprintf(fp, "kvmdump: phys_base: %lx\n",
 					phys_base);
+		} else {
+			machdep->machspec->phys_base = phys_base;
+			if (!x86_64_virt_phys_base())
+				error(WARNING, 
+				    "cannot determine physical base address:"
+				    " defaulting to %lx\n\n", 
+					phys_base);
 		}
 		return;
 	}
@@ -5438,17 +5456,17 @@ x86_64_calc_phys_base(void)
 		}
 
 		if (xd->xc_core.header.xch_magic == XC_CORE_MAGIC_HVM)
-			x86_64_xendump_phys_base();
+			x86_64_virt_phys_base();
 	}
 }
 
 /*
- *  Because the xendump phys_base calculation is so speculative,
- *  first verify and then possibly override it by trying to read
- *  linux_banner from a range of typical physical offsets.
+ *  Verify, or possibly override, the xendump/kvmdump phys_base 
+ *  calculation by trying to read linux_banner from a range of 
+ *  typical physical offsets.
  */
-static void
-x86_64_xendump_phys_base(void)
+static int
+x86_64_virt_phys_base(void)
 {
 	char buf[BUFSIZE];
 	struct syment *sp;
@@ -5456,29 +5474,31 @@ x86_64_xendump_phys_base(void)
 
 	if (!(sp = symbol_search("linux_banner")) ||
 	    !((sp->type == 'R') || (sp->type == 'r')))
-		return;
+		return FALSE;
 
 	linux_banner_phys = sp->value - __START_KERNEL_map;
 
 	if (readmem(linux_banner_phys + machdep->machspec->phys_base,
-	    PHYSADDR, buf, strlen("Linux version"), "xendump linux_banner", 
+	    PHYSADDR, buf, strlen("Linux version"), "linux_banner verify", 
 	    QUIET|RETURN_ON_ERROR) && STRNEQ(buf, "Linux version"))
-		return;
+		return TRUE;
 
 	for (phys = (ulong)(-MEGABYTES(16)); phys != MEGABYTES(16+1); 
 	     phys += MEGABYTES(1)) {
 		if (readmem(linux_banner_phys + phys, PHYSADDR, buf,
-		    strlen("Linux version"), "xendump linux_banner", 
+		    strlen("Linux version"), "linux_banner search", 
 		    QUIET|RETURN_ON_ERROR) && STRNEQ(buf, "Linux version")) {
 			if (CRASHDEBUG(1))
 				fprintf(fp,
-				    "xendump phys_base: %lx %s\n", phys, 
+				    "virtual dump phys_base: %lx %s\n", phys, 
 					machdep->machspec->phys_base != phys ?
 					"override" : "");
 			machdep->machspec->phys_base = phys;
-			return;
+			return TRUE;
 		}
 	}
+
+	return FALSE;
 }
 
 /*

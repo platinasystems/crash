@@ -233,10 +233,10 @@ get_kernel_base(struct qemu_device_list *dl)
 		 */
                 kernel_base -= (base_vaddr - kvm->kvbase);
         } else {
-		fprintf(stderr, 
-			"WARNING: cannot determine physical base address:"
+		dprintf("WARNING: cannot determine physical base address:"
 			" defaulting to 0\n\n");
 		kernel_base = 0;
+		kvm->flags |= NO_PHYS_BASE;
 	}
 
 	return kernel_base;

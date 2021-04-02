@@ -57,6 +57,7 @@ struct kvmdump_data {
 #define MAPFILE           (0x4)
 #define MAPFILE_FOUND     (0x8)
 #define MAPFILE_APPENDED (0x10)
+#define NO_PHYS_BASE     (0x20)
 
 extern struct kvmdump_data *kvm;
 
