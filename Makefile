@@ -34,10 +34,10 @@ endif
 #
 # GDB, GDB_FILES, GDB_OFILES and GDB_PATCH_FILES will be configured automatically by configure 
 #
-GDB=
-GDB_FILES=
+GDB=gdb-7.6
+GDB_FILES=${GDB_7.6_FILES}
 GDB_OFILES=
-GDB_PATCH_FILES=
+GDB_PATCH_FILES=gdb-7.6.patch gdb-7.6-ppc64le-support.patch gdb-7.6-proc_service.h.patch
 
 #
 # Default installation directory
@@ -200,7 +200,7 @@ TARGET_CFLAGS=
 
 CRASH_CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS} ${GDB_FLAGS} ${CFLAGS}
 
-GPL_FILES=
+GPL_FILES=COPYING3
 TAR_FILES=${SOURCE_FILES} Makefile ${GPL_FILES} README .rh_rpm_package crash.8 \
 	${EXTENSION_SOURCE_FILES} ${MEMORY_DRIVER_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
@@ -566,7 +566,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=
+VERSION=7.2.3
 RELEASE=0
 
 release: make_configure
