@@ -1,0 +1,1117 @@
+/* net.c - core analysis suite
+ *
+ * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * 02/29/00, 2.2    Bug fixes, new commands, options
+ * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
+ * 04/12/00  ---    Transition to BitKeeper version control
+ * 
+ * BitKeeper ID: @(#)net.c 1.2
+ *
+ * 09/28/00  ---    Transition to CVS version control
+ *
+ * CVS: $Revision: 1.19 $ $Date: 2002/01/15 21:24:30 $
+ */
+
+#include "defs.h"
+#include <netinet/in.h>
+#include <netdb.h>
+#include <net/if_arp.h>
+#include <arpa/inet.h>
+
+/*
+ *  Cache values we need that can change based on OS version, or any other
+ *  variables static to this file.  These are setup in net_init().  Dump 
+ *  the table during runtime via "help -n".
+ */
+struct net_table {
+	ulong flags;
+        char *netdevice;    /* name of net device */
+	char *dev_name_t;   /* readmem ID's */
+        char *dev_type_t;
+	char *dev_addr_t;
+	long dev_name;
+	long dev_next;
+	long dev_type;
+	long dev_addr_len;
+	long dev_ip_ptr;
+	long in_device_ifa_list;
+	long in_ifaddr_ifa_next;
+	long in_ifaddr_ifa_address;
+	int net_device_name_index;
+} net_table = { 0 };
+
+struct net_table *net = &net_table;
+
+#define NETDEV_INIT       (0x1)
+#define STRUCT_DEVICE     (0x2)
+#define STRUCT_NET_DEVICE (0x4)
+
+#define	DEV_NAME_MAX	100
+struct devinfo {
+	char		dev_name[DEV_NAME_MAX];
+	unsigned char	dev_addr_len;
+	short		dev_type;
+};
+
+#define BYTES_IP_ADDR	15	/* bytes to print IP addr (xxx.xxx.xxx.xxx) */
+#define BYTES_PORT_NUM	5	/* bytes to print port number */
+/* bytes needed for <ip address>:<port> notation */
+#define BYTES_IP_TUPLE	(BYTES_IP_ADDR + BYTES_PORT_NUM + 1)
+
+static void show_net_devices(void);
+static void print_neighbour_q(ulong, int);
+static void get_netdev_info(ulong, struct devinfo *);
+static void get_device_name(ulong, char *);
+static void get_device_address(ulong, char *);
+static void get_sock_info(ulong, char *);
+static void dump_arp(void);
+static void arp_state_to_flags(unsigned char);
+static void dump_ether_hw(unsigned char *, int);
+static void dump_sockets(ulong, struct reference *);
+static int  sym_socket_dump(ulong, int, int, ulong, struct reference *);
+static void dump_hw_addr(unsigned char *, int);
+
+
+#define MK_TYPE_T(f,s,m)						\
+do {									\
+	(f) = malloc(strlen(s) + strlen(m) + 2);			\
+	if ((f) == NULL) {						\
+		error(WARNING, "malloc fail for type %s.%s", (s), (m));	\
+	} else {							\
+		sprintf((f), "%s %s", (s), (m));			\
+	}								\
+} while(0)
+
+void
+net_init(void)
+{
+	/*
+	 * Note the order of the following checks.  The device struct was
+	 * renamed to net_device in 2.3, but there may be another struct
+	 * called 'device' so we check for the new one first.
+	 */
+	if (STRUCT_EXISTS("net_device")) {
+		net->netdevice = "net_device";
+		net->dev_next = MEMBER_OFFSET("net_device", "next");
+		net->dev_name = MEMBER_OFFSET("net_device", "name");
+		net->dev_type = MEMBER_OFFSET("net_device", "type");
+                net->dev_addr_len = MEMBER_OFFSET("net_device", "addr_len");
+		net->dev_ip_ptr = MEMBER_OFFSET("net_device", "ip_ptr");
+		net->net_device_name_index =
+			get_array_length("net_device.name", NULL);
+		net->flags |= (NETDEV_INIT|STRUCT_NET_DEVICE);
+	} else if (STRUCT_EXISTS("device")) {
+		net->netdevice = "device";
+		net->dev_next = MEMBER_OFFSET("device", "next");
+		net->dev_name = MEMBER_OFFSET("device", "name");
+                net->dev_type = MEMBER_OFFSET("device", "type");
+		net->dev_ip_ptr = MEMBER_OFFSET("device", "ip_ptr");
+                net->dev_addr_len = MEMBER_OFFSET("device", "addr_len");
+		net->flags |= (NETDEV_INIT|STRUCT_DEVICE);
+	} else {
+		error(WARNING, "net_init: unknown device type for net device");
+	}
+
+	if (net->flags & NETDEV_INIT) {
+		MK_TYPE_T(net->dev_name_t, net->netdevice, "name");
+		MK_TYPE_T(net->dev_type_t, net->netdevice, "type");
+		MK_TYPE_T(net->dev_addr_t, net->netdevice, "addr_len");
+
+		OFFSET(socket_sk) = MEMBER_OFFSET("socket", "sk");
+		OFFSET(neighbour_next) = MEMBER_OFFSET("neighbour", "next");
+        	OFFSET(neighbour_primary_key) = 
+			MEMBER_OFFSET("neighbour", "primary_key");
+        	OFFSET(neighbour_ha) = MEMBER_OFFSET("neighbour", "ha");
+        	OFFSET(neighbour_dev) = MEMBER_OFFSET("neighbour", "dev");
+        	OFFSET(neighbour_nud_state) = 
+			MEMBER_OFFSET("neighbour", "nud_state");
+		OFFSET(neigh_table_hash_buckets) =
+			MEMBER_OFFSET("neigh_table", "hash_buckets");
+		OFFSET(neigh_table_key_len) =
+			MEMBER_OFFSET("neigh_table", "key_len");
+
+        	OFFSET(in_device_ifa_list) = 
+			MEMBER_OFFSET("in_device", "ifa_list");
+        	OFFSET(in_ifaddr_ifa_next) = 
+			MEMBER_OFFSET("in_ifaddr", "ifa_next");
+        	OFFSET(in_ifaddr_ifa_address) =
+			MEMBER_OFFSET("in_ifaddr", "ifa_address");
+
+		SIZE(sock) = STRUCT_SIZE("sock");
+		OFFSET(sock_daddr) = MEMBER_OFFSET("sock", "daddr");
+		OFFSET(sock_rcv_saddr) = MEMBER_OFFSET("sock", "rcv_saddr");
+		OFFSET(sock_dport) = MEMBER_OFFSET("sock", "dport");
+		OFFSET(sock_num) = MEMBER_OFFSET("sock", "num");
+		OFFSET(sock_family) = MEMBER_OFFSET("sock", "family");
+		OFFSET(sock_type) = MEMBER_OFFSET("sock", "type");
+	}	
+}
+
+/*
+ * The net command...
+ */
+
+#define NETOPTS	  "n:asSR:"
+#define s_FLAG FOREACH_s_FLAG
+#define S_FLAG FOREACH_S_FLAG
+
+#define NET_REF_FOUND             (0x1)
+#define NET_REF_HEXNUM            (0x2)
+#define NET_REF_DECNUM            (0x4)
+#define NET_TASK_HEADER_PRINTED   (0x8)
+#define NET_SOCK_HEADER_PRINTED  (0x10)
+#define NET_REF_FOUND_ITEM       (0x20)
+
+#define NET_REFERENCE_CHECK(X)   (X)
+#define NET_REFERENCE_FOUND(X)   ((X) && ((X)->cmdflags & NET_REF_FOUND))
+
+void
+cmd_net(void)
+{
+	int c;
+	ulong sflag;
+	ulong value;
+	struct reference reference, *ref;
+
+	if (!(net->flags & NETDEV_INIT)) 
+		error(FATAL, "net subsystem not initialized!");
+
+	ref = NULL;
+	sflag = 0;
+
+	while ((c = getopt(argcnt, args, NETOPTS)) != EOF) {
+		switch (c) {
+		case 'R':
+			if (ref)
+				error(INFO, "only one -R option allowed\n");
+			else {
+				ref = &reference;
+				BZERO(ref, sizeof(struct reference));
+				ref->str = optarg;
+			}
+			break;
+
+		case 'a':
+			dump_arp();
+			break;
+
+		case 'n':
+			value = stol(optarg, FAULT_ON_ERROR, NULL);
+			fprintf(fp, "%s\n",
+			    inet_ntoa(*((struct in_addr *)&(value))));
+			return;
+
+		case 's':
+			if (sflag)
+				error(INFO, 
+				    "only one -s or -S option allowed\n");
+			else
+				sflag = s_FLAG;
+		        break;
+
+		case 'S':
+			if (sflag)
+				error(INFO, 
+				    "only one -s or -S option allowed\n");
+			else
+				sflag = S_FLAG;
+            		break;
+
+		default:
+			argerrs++;
+			break;
+		}
+	}
+
+	if (argerrs) 
+		cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (sflag)
+		dump_sockets(sflag, ref);
+
+	if (argcnt == 1)
+		show_net_devices();
+}
+
+/*
+ *  Just display the address and name of each net device.
+ */
+
+static void
+show_net_devices(void)
+{
+	ulong next;
+	long flen;
+	char buf[BUFSIZE];
+
+	if (!symbol_exists("dev_base"))
+		error(FATAL, "dev_base does not exist!\n");
+
+	get_symbol_data("dev_base", sizeof(void *), &next);
+
+	if (!net->netdevice || !next)
+		return;
+
+	flen = MAX(VADDR_PRLEN, strlen(net->netdevice));
+
+	fprintf(fp, "%s  NAME   IP ADDRESS(ES)\n",
+		mkstring(upper_case(net->netdevice, buf), 
+			flen, CENTER|LJUST, NULL));
+
+	do {
+                fprintf(fp, "%s  ", 
+                    mkstring(buf, flen, CENTER|LJUST|LONG_HEX, MKSTR(next)));
+
+		get_device_name(next, buf);
+		fprintf(fp, "%-6s ", buf);
+
+		get_device_address(next, buf);
+		fprintf(fp, "%s\n", buf);
+
+        	readmem(next+net->dev_next, KVADDR, &next, 
+			sizeof(void *), "(net_)device.next", FAULT_ON_ERROR);
+	} while (next);
+}
+
+
+/*
+ * Perform the actual work of dumping the ARP table...
+ */
+#define ARP_HEADING \
+	"IP ADDRESS      HW TYPE    HW ADDRESS         DEVICE  STATE"
+
+static void
+dump_arp(void)
+{
+	ulong	arp_tbl;		/* address of arp_tbl */
+	ulong	*hash_buckets;
+	long	hash_bytes;
+	int	nhash_buckets;
+	int	key_len;
+	int	i;
+	int	header_printed = 0;
+
+	if (!symbol_exists("arp_tbl")) 
+		error(FATAL, "arp_tbl does not exist in this kernel\n");
+
+	arp_tbl = symbol_value("arp_tbl");
+
+	nhash_buckets = get_array_length("neigh_table.hash_buckets", NULL);
+	hash_bytes = nhash_buckets * sizeof(*hash_buckets);
+
+	hash_buckets = (ulong *)GETBUF(hash_bytes);
+
+	key_len = readmem(arp_tbl + OFFSET(neigh_table_key_len),
+			  KVADDR, &key_len, sizeof(key_len),
+			  "neigh_table key_len", FAULT_ON_ERROR);
+
+	readmem(arp_tbl + OFFSET(neigh_table_hash_buckets), 
+		KVADDR, hash_buckets, hash_bytes,
+		"neigh_table hash_buckets", FAULT_ON_ERROR);
+
+	for (i = 0; i < nhash_buckets; i++) {
+		if (hash_buckets[i] != (ulong)NULL) {
+			if (!header_printed) {
+				fprintf(fp, "%s\n", ARP_HEADING);
+				header_printed = 1;
+			}
+			print_neighbour_q(hash_buckets[i], key_len);
+		}
+	}
+
+	fflush(fp);
+
+	FREEBUF(hash_buckets);
+}
+
+/*
+ * Dump out the relevant information of a neighbour structure for the
+ * ARP table.
+ */
+static void
+print_neighbour_q(ulong addr, int key_len)
+{
+	ulong	dev;			/* dev address of this struct */
+	unsigned char *ha_buf;		/* buffer for hardware address */
+	uint	ha_size;		/* size of HW address */
+	uint	ipaddr;			/* hold ipaddr (aka primary_key) */
+	struct devinfo dinfo;
+	unsigned char state;		/* state of ARP entry */
+
+	ha_size = get_array_length("neighbour.ha", NULL);
+	ha_buf = (unsigned char *)GETBUF(ha_size);
+
+	while (addr) {
+		readmem(addr + OFFSET(neighbour_primary_key), KVADDR, 
+			&ipaddr, sizeof(ipaddr), "neighbour primary_key", 
+			FAULT_ON_ERROR);
+
+		readmem(addr + OFFSET(neighbour_ha), KVADDR, ha_buf, ha_size,
+			"neighbour ha", FAULT_ON_ERROR);
+
+		readmem(addr + OFFSET(neighbour_dev), KVADDR, &dev, sizeof(dev),
+			"neighbour dev", FAULT_ON_ERROR);
+		get_netdev_info(dev, &dinfo);
+
+		readmem(addr + OFFSET(neighbour_nud_state), KVADDR, 
+			&state, sizeof(state), "neighbour nud_state", 
+			FAULT_ON_ERROR);
+
+		fprintf(fp, "%-16s", inet_ntoa(*((struct in_addr *)&ipaddr)));
+
+		switch (dinfo.dev_type) {
+		case ARPHRD_ETHER:
+			/*
+			 * Use the actual HW address size in the device struct
+			 * rather than the max size of the array (as was done
+			 * during the readmem() call above....
+			 */
+			fprintf(fp, "%-10s ", "ETHER");
+			dump_ether_hw(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_NETROM:
+			fprintf(fp, "%-10s ", "NETROM");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_EETHER:
+			fprintf(fp, "%-10s ", "EETHER");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_AX25:
+			fprintf(fp, "%-10s ", "AX25");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_PRONET:
+			fprintf(fp, "%-10s ", "PRONET");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_CHAOS:
+			fprintf(fp, "%-10s ", "CHAOS");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_IEEE802:
+			fprintf(fp, "%-10s ", "IEEE802");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);	
+			break;
+		case ARPHRD_ARCNET:
+			fprintf(fp, "%-10s ", "ARCNET");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_APPLETLK:
+			fprintf(fp, "%-10s ", "APPLETLK");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_DLCI:
+			fprintf(fp, "%-10s ", "DLCI");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		case ARPHRD_METRICOM:
+			fprintf(fp, "%-10s ", "METRICOM");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		default:
+			fprintf(fp, "%-10s ", "UNKNOWN");
+			dump_hw_addr(ha_buf, dinfo.dev_addr_len);
+			break;
+		}
+
+		fprintf(fp, " %-6s  ", dinfo.dev_name);
+		fprintf(fp, "%02x ", state);
+
+		arp_state_to_flags(state);
+
+		readmem(addr + OFFSET(neighbour_next), KVADDR, 
+			&addr, sizeof(addr), "neighbour next", FAULT_ON_ERROR);
+	}
+
+	FREEBUF(ha_buf);
+}
+
+/*
+ * read netdevice info.... 
+ */
+static void
+get_netdev_info(ulong devaddr, struct devinfo *dip)
+{
+	short	dev_type;
+
+	get_device_name(devaddr, dip->dev_name);
+
+	readmem(devaddr + net->dev_type, KVADDR, 
+		&dev_type, sizeof(&dev_type), net->dev_type_t, FAULT_ON_ERROR);
+
+	dip->dev_type = dev_type;
+
+	readmem(devaddr + net->dev_addr_len, KVADDR,
+		&dip->dev_addr_len, sizeof(dip->dev_addr_len), net->dev_addr_t,
+		FAULT_ON_ERROR);
+}
+
+/*
+ *  Get the device name.
+ */
+static void
+get_device_name(ulong devaddr, char *buf)
+{
+	ulong	name_addr;
+
+	switch (net->flags & (STRUCT_DEVICE|STRUCT_NET_DEVICE))
+	{
+	case STRUCT_NET_DEVICE:
+		if (net->net_device_name_index > 0) {
+                	readmem(devaddr + net->dev_name, KVADDR,
+                        	buf, net->net_device_name_index, 
+				net->dev_name_t, FAULT_ON_ERROR);
+			return;
+		} 
+
+		/* fallthrough */
+
+        case STRUCT_DEVICE:
+                readmem(devaddr + net->dev_name, KVADDR,
+                        &name_addr, sizeof(name_addr), net->dev_name_t,
+                        FAULT_ON_ERROR);
+                read_string(name_addr, buf, DEV_NAME_MAX);
+                break;
+	}
+}
+
+/*
+ *  Get the device address.
+ *
+ *  {net_}device->ip_ptr points to in_device.
+ *  in_device->in_ifaddr points to in_ifaddr list.
+ *  in_ifaddr->ifa_address contains the address. 
+ *  in_ifaddr->ifa_next points to the next in_ifaddr in the list (if any).
+ * 
+ */
+static void
+get_device_address(ulong devaddr, char *buf)
+{
+	ulong ip_ptr, ifa_list;
+	struct in_addr ifa_address;
+
+	BZERO(buf, BUFSIZE);
+
+        readmem(devaddr + net->dev_ip_ptr, KVADDR,
+        	&ip_ptr, sizeof(ulong), "ip_ptr", FAULT_ON_ERROR);
+
+	if (!ip_ptr)
+		return;
+
+        readmem(ip_ptr + OFFSET(in_device_ifa_list), KVADDR,
+        	&ifa_list, sizeof(ulong), "ifa_list", FAULT_ON_ERROR);
+
+	while (ifa_list) {
+        	readmem(ifa_list + OFFSET(in_ifaddr_ifa_address), KVADDR,
+        		&ifa_address, sizeof(struct in_addr), "ifa_address", 
+			FAULT_ON_ERROR);
+
+		sprintf(&buf[strlen(buf)], "%s%s", 
+			strlen(buf) ? ", " : "",
+			inet_ntoa(ifa_address));
+
+        	readmem(ifa_list + OFFSET(in_ifaddr_ifa_next), KVADDR,
+        		&ifa_list, sizeof(ulong), "ifa_next", FAULT_ON_ERROR);
+	}
+}
+
+/*
+ *  Get the family, type, local and destination address/port pairs.
+ */
+static void
+get_sock_info(ulong sock, char *buf)
+{
+	uint32_t daddr, rcv_saddr;
+	uint16_t dport, sport;
+	ushort num, family, type;
+	char *sockbuf;
+
+	BZERO(buf, BUFSIZE);
+	sockbuf = GETBUF(SIZE(sock));
+
+        readmem(sock, KVADDR, sockbuf, SIZE(sock), 
+		"sock buffer", FAULT_ON_ERROR);
+
+	daddr = UINT(sockbuf + OFFSET(sock_daddr));
+	rcv_saddr = UINT(sockbuf + OFFSET(sock_rcv_saddr));
+	dport = USHORT(sockbuf + OFFSET(sock_dport));
+	sport = USHORT(sockbuf + MEMBER_OFFSET("sock", "sport"));
+	num = USHORT(sockbuf + OFFSET(sock_num));
+	family = USHORT(sockbuf + OFFSET(sock_family));
+	type = USHORT(sockbuf + OFFSET(sock_type));
+
+	switch (family)
+	{
+	case AF_UNSPEC:
+		sprintf(buf, "UNSPEC:"); break;
+	case AF_UNIX: 
+		sprintf(buf, "UNIX:"); break;
+	case AF_INET: 
+		sprintf(buf, "INET:"); break;
+	case AF_AX25: 
+		sprintf(buf, "AX25:"); break;
+	case AF_IPX:  
+		sprintf(buf, "IPX:"); break;
+	case AF_APPLETALK:
+		sprintf(buf, "APPLETALK:"); break;
+	case AF_NETROM:
+		sprintf(buf, "NETROM:"); break;
+	case AF_BRIDGE:
+		sprintf(buf, "BRIDGE:"); break;
+	case AF_ATMPVC:
+		sprintf(buf, "ATMPVC:"); break;
+	case AF_X25:  
+		sprintf(buf, "X25:"); break;
+	case AF_INET6:
+		sprintf(buf, "INET6:"); break;
+	case AF_ROSE: 
+		sprintf(buf, "ROSE:"); break;
+	case AF_DECnet:
+		sprintf(buf, "DECnet:"); break;
+	case AF_NETBEUI:
+		sprintf(buf, "NETBEUI:"); break;
+	case AF_SECURITY: 
+		sprintf(buf, "SECURITY/KEY:"); break;
+	case AF_NETLINK: 
+		sprintf(buf, "NETLINK/ROUTE:"); break;
+	case AF_PACKET:  
+		sprintf(buf, "PACKET:"); break;
+	case AF_ASH:     
+		sprintf(buf, "ASH:"); break;
+	case AF_ECONET:  
+		sprintf(buf, "ECONET:"); break;
+	case AF_ATMSVC: 
+		sprintf(buf, "ATMSVC:"); break;
+	case AF_SNA:    
+		sprintf(buf, "SNA:"); break;
+	case AF_IRDA:   
+		sprintf(buf, "IRDA:"); break;
+#ifndef AF_PPPOX
+#define AF_PPPOX 24
+#endif
+	case AF_PPPOX:  
+		sprintf(buf, "PPPOX:"); break;
+	default:
+		sprintf(buf, "%d:", family); break;
+	}
+
+	switch (type)
+	{
+	case SOCK_STREAM:
+		sprintf(&buf[strlen(buf)], "STREAM"); break;
+	case SOCK_DGRAM:
+		sprintf(&buf[strlen(buf)], "DGRAM "); break;
+	case SOCK_RAW:
+		sprintf(&buf[strlen(buf)], "RAW"); break;
+	case SOCK_RDM: 
+		sprintf(&buf[strlen(buf)], "RDM"); break;
+	case SOCK_SEQPACKET:
+		sprintf(&buf[strlen(buf)], "SEQPACKET"); break;
+	case SOCK_PACKET:
+		sprintf(&buf[strlen(buf)], "PACKET"); break;
+	default:
+		sprintf(&buf[strlen(buf)], "%d", type); break;
+	}
+
+	/* make sure we have room at the end... */
+	sprintf(&buf[strlen(buf)], "%s", space(MINSPACE-1));
+           
+	if (family == AF_INET) {
+		if (BITS32()) {
+			sprintf(&buf[strlen(buf)], "%*s:%-*d%s",
+				BYTES_IP_ADDR,
+				inet_ntoa(*((struct in_addr *)&rcv_saddr)),
+				BYTES_PORT_NUM,
+				ntohs(sport),
+				space(1));
+			sprintf(&buf[strlen(buf)], "%*s:%-*d%s",
+				BYTES_IP_ADDR,
+				inet_ntoa(*((struct in_addr *)&daddr)), 
+				BYTES_PORT_NUM,
+				ntohs(dport),
+				space(1));
+		} else {
+	                sprintf(&buf[strlen(buf)], " %s:%d ",
+	                        inet_ntoa(*((struct in_addr *)&rcv_saddr)),
+	                        ntohs(sport));
+	                sprintf(&buf[strlen(buf)], "%s:%d",
+	                        inet_ntoa(*((struct in_addr *)&daddr)),
+	                        ntohs(dport));
+		}
+	}
+
+	FREEBUF(sockbuf);
+}
+
+
+/*
+ *	XXX - copied from neighbour.h !!!!!!
+ *
+ *      Neighbor Cache Entry States.
+ */
+#define NUD_INCOMPLETE  0x01
+#define NUD_REACHABLE   0x02
+#define NUD_STALE       0x04
+#define NUD_DELAY       0x08
+#define NUD_PROBE       0x10
+#define NUD_FAILED      0x20
+#define NUD_NOARP       0x40
+#define NUD_PERMANENT   0x80
+
+#define FLAGBUF_SIZE 100
+
+#define FILLBUF(s)							\
+do {									\
+	char *bp;							\
+	int blen;							\
+	blen=strlen(flag_buffer);					\
+	if ((blen + strlen(s)) < FLAGBUF_SIZE-2) {			\
+		bp = &flag_buffer[blen];				\
+		if (blen != 0) {					\
+			sprintf(bp, "|%s", (s));			\
+		} else {						\
+			sprintf(bp, "(%s", (s));			\
+		}							\
+	}								\
+} while(0)
+
+/*
+ * Take the state of the ARP entry and print it out the flag associated
+ * with the binary state...
+ */
+static void
+arp_state_to_flags(unsigned char state)
+{
+	char flag_buffer[FLAGBUF_SIZE];
+	int had_flags = 0;
+
+	if (!state) { 
+		fprintf(fp, "\n");
+		return;
+	}
+
+	bzero(flag_buffer, FLAGBUF_SIZE);
+
+	if (state & NUD_INCOMPLETE) {
+		FILLBUF("INCOMPLETE");
+		had_flags = 1;
+	}
+
+	if (state & NUD_REACHABLE) {
+		FILLBUF("REACHABLE");
+		had_flags = 1;
+	}
+
+	if (state & NUD_STALE) {
+		FILLBUF("STALE");
+		had_flags = 1;
+	}
+
+	if (state & NUD_DELAY) {
+		FILLBUF("DELAY");
+		had_flags = 1;
+	}
+
+	if (state & NUD_PROBE) {
+		FILLBUF("PROBE");
+		had_flags = 1;
+	}
+
+	if (state & NUD_FAILED) {
+		FILLBUF("FAILED");
+		had_flags = 1;
+	}
+
+	if (state & NUD_NOARP) {
+		FILLBUF("NOARP");
+		had_flags = 1;
+	}
+
+	if (state & NUD_PERMANENT) {
+		FILLBUF("PERMANENT");
+		had_flags = 1;
+	}
+
+	if (had_flags) {
+		fprintf(fp, "%s)\n", flag_buffer);
+		/* fprintf(fp, "%29.29s%s)\n", " ",  flag_buffer); */
+	}
+}
+
+#undef FILLBUF
+
+/*
+ * Print out a formatted ethernet HW address....
+ */
+static void
+dump_ether_hw(unsigned char *ha, int len)
+{
+	int i;
+
+	for (i = 0; i < len; i++) {
+		char sep = ':';
+		if (i == (len - 1)) {
+			sep = ' ';
+		}
+		fprintf(fp, "%02x%c", ha[i], sep);
+	}
+}
+
+/*
+ * Catchall routine for dumping out a HA address whose format we
+ * don't know about...
+ */
+static void
+dump_hw_addr(unsigned char *ha, int len)
+{
+	int i;
+
+	for (i = 0; i < len; i++) {
+		fprintf(fp, "%02x ", ha[i]);
+	}
+}
+
+/*
+ *  help -n output
+ */
+void
+dump_net_table(void)
+{
+	int others;
+
+	others = 0;
+	fprintf(fp, "              flags: %lx (", net->flags);
+	if (net->flags & NETDEV_INIT)
+		fprintf(fp, "%sNETDEV_INIT", others++ ? "|" : "");
+	if (net->flags & STRUCT_DEVICE)
+		fprintf(fp, "%sSTRUCT_DEVICE", others++ ? "|" : "");
+	if (net->flags & STRUCT_NET_DEVICE)
+		fprintf(fp, "%sSTRUCT_NET_DEVICE", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+
+	fprintf(fp, "            netdevice: \"%s\"\n", net->netdevice); 
+	fprintf(fp, "           dev_name_t: \"%s\"\n", net->dev_name_t);
+	fprintf(fp, "           dev_type_t: \"%s\"\n", net->dev_type_t);
+	fprintf(fp, "           dev_addr_t: \"%s\"\n", net->dev_addr_t);
+        fprintf(fp, "             dev_name: %ld\n", net->dev_name);
+	fprintf(fp, "             dev_next: %ld\n", net->dev_next);
+        fprintf(fp, "             dev_type: %ld\n", net->dev_type);
+        fprintf(fp, "           dev_ip_ptr: %ld\n", net->dev_ip_ptr);
+        fprintf(fp, "         dev_addr_len: %ld\n", net->dev_addr_len);
+	fprintf(fp, "net_device_name_index: %d\n", net->net_device_name_index);
+}
+
+
+/*
+ * Dump the open sockets for a given PID.
+ */
+static void
+dump_sockets(ulong flag, struct reference *ref)
+{
+    	struct task_context *tc;
+    	ulong value;
+    	int subsequent;
+
+    	if (!args[optind]) { 
+		if (!NET_REFERENCE_CHECK(ref))
+            		print_task_header(fp, CURRENT_CONTEXT(), 0);
+        	dump_sockets_workhorse(CURRENT_TASK(), flag, ref);
+        	return;
+    	}
+
+	subsequent = 0;
+
+	while (args[optind]) {
+
+                switch (str_to_context(args[optind], &value, &tc))
+                {
+                case STR_PID:
+                        for (tc = pid_to_context(value); tc; tc = tc->tc_next) {
+                                if (!NET_REFERENCE_CHECK(ref))
+                                        print_task_header(fp, tc, subsequent++);
+                                dump_sockets_workhorse(tc->task, flag, ref);
+                        }
+                        break;
+
+                case STR_TASK:
+                        if (!NET_REFERENCE_CHECK(ref))
+                                print_task_header(fp, tc, subsequent++);
+                        dump_sockets_workhorse(tc->task, flag, ref);
+                        break;
+
+                case STR_INVALID:
+                        error(INFO, "%sinvalid task or pid value: %s\n",
+				subsequent++ ? "\n" : "", args[optind]);
+                        break;
+                }
+
+		optind++;
+	}
+}
+
+/*
+ *  Find all sockets in the designated task and call sym_socket_dump()
+ *  to display them.
+ */
+void
+dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
+{
+	ulong files_struct_addr = 0;
+	int max_fdset = 0;
+	int max_fds = 0;
+	ulong open_fds_addr = 0;
+	fd_set open_fds;
+	ulong fd;
+	ulong file;
+	int i, j;
+	int sockets_found = 0;
+	ulong value;
+
+       /* 
+        * Steps to getting open sockets:
+        *
+        * 1)  task->files (struct files_struct)
+        * 2)  files->fd   (struct file **)
+        * 3)  cycle through from 0 to files->open_fds offset from *fd
+        *     i.e.    fd[0], fd[1], fd[2]  are pointers to the first three
+        *     open file descriptors.  Thus, we have:
+        *         struct file *fd[0], *fd[1], *fd[2],...
+        *
+        * 4) file->f_dentry (struct dentry)
+        * 5) dentry->d_inode (struct inode)
+        * 6) S_ISSOCK(inode.mode)
+        *      Assuming it _is_ a socket:
+        * 7) inode.u (struct socket)   -- offset 0xdc from inode pointer
+        */
+
+	readmem(task + OFFSET(task_struct_files), KVADDR, &files_struct_addr,
+            sizeof(void *), "task files contents", FAULT_ON_ERROR);
+
+        if (files_struct_addr) {
+        	readmem(files_struct_addr + OFFSET(files_struct_max_fdset), 
+                    	KVADDR, &max_fdset, sizeof(int), 
+			"files_struct max_fdset", FAULT_ON_ERROR);
+
+        	readmem(files_struct_addr + OFFSET(files_struct_max_fds), 
+                    	KVADDR, &max_fds, sizeof(int), "files_struct max_fds",
+                    	FAULT_ON_ERROR);
+    	}
+
+	if (!files_struct_addr || (max_fdset == 0) || (max_fds == 0)) {
+		if (!NET_REFERENCE_CHECK(ref))
+			fprintf(fp, "No open sockets.\n");
+		return;
+	}
+
+	readmem(files_struct_addr + OFFSET(files_struct_open_fds), KVADDR, 
+            	&open_fds_addr, sizeof(void *), "files_struct open_fds addr", 
+            	FAULT_ON_ERROR);
+
+	if (open_fds_addr) 
+        	readmem(open_fds_addr, KVADDR, &open_fds, sizeof(fd_set), 
+                    	"files_struct open_fds", FAULT_ON_ERROR);
+
+	readmem(files_struct_addr + OFFSET(files_struct_fd), KVADDR, &fd,
+            	sizeof(void *), "files_struct fd addr", FAULT_ON_ERROR);
+
+    	if (!open_fds_addr || !fd) { 
+		if (!NET_REFERENCE_CHECK(ref))
+			fprintf(fp, "No open sockets.\n");
+        	return;
+	}
+
+	if (NET_REFERENCE_CHECK(ref)) {
+                if (IS_A_NUMBER(ref->str)) {
+	                if (hexadecimal_only(ref->str, 0)) {
+	                        ref->hexval = htol(ref->str,
+	                        	FAULT_ON_ERROR, NULL);
+	                        ref->cmdflags |= NET_REF_HEXNUM;
+	                } else {
+	                        value = dtol(ref->str, FAULT_ON_ERROR, NULL);
+	                        if (value <= MAX(max_fdset, max_fds)) {
+	                                ref->decval = value;
+	                                ref->cmdflags |= NET_REF_DECNUM;
+	                        } else {
+	                                ref->hexval = htol(ref->str,
+						FAULT_ON_ERROR, NULL);
+	                                ref->cmdflags |= NET_REF_HEXNUM;
+	                        }
+	                }
+                }
+		ref->ref1 = task;
+	}
+
+    	j = 0;
+    	for (;;) {
+	        unsigned long set;
+	        i = j * __NFDBITS;
+	        if ((i >= max_fdset) || (i >= max_fds))
+	            	break;
+	        set = open_fds.__fds_bits[j++];
+	        while (set) {
+	            	if (set & 1) {
+		                readmem(fd + i*sizeof(struct file *), KVADDR, 
+		                        &file, sizeof(struct file *), 
+		                        "fd file", FAULT_ON_ERROR);
+		                if (file) {
+		                    	if (sym_socket_dump(file, i, 
+					    sockets_found, flag, ref)) {
+		                        	sockets_found++;
+					}
+		                }
+	            	}
+	            	i++;
+	            	set >>= 1;
+	        }
+        }
+
+    	if (!sockets_found && !NET_REFERENCE_CHECK(ref))
+        	fprintf(fp, "No open sockets.\n");
+
+	if (NET_REFERENCE_FOUND(ref))
+		fprintf(fp, "\n");
+}
+
+
+/*
+ *  Dump a struct socket symbolically.  Dave makes this _very_ easy.
+ *
+ *  Return TRUE if we found a socket, FALSE otherwise.
+ */
+
+static char *socket_hdr_32 = 
+"FD   SOCKET     SOCK    FAMILY:TYPE          SOURCE:PORT      DESTINATION:PORT";
+static char *socket_hdr_64 = 
+"FD      SOCKET            SOCK       FAMILY:TYPE SOURCE:PORT DESTINATION:PORT";
+
+static int
+sym_socket_dump(ulong file, 
+		int fd, 
+		int sockets_found, 
+		ulong flag,
+		struct reference *ref)
+{
+	uint16_t umode16 = 0;
+	uint32_t umode32 = 0;
+    	uint mode = 0;
+    	ulong dentry = 0, inode = 0,
+        struct_socket = 0;
+	ulong sock = 0;
+	char *file_buf, *dentry_buf, *inode_buf;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char *socket_hdr = BITS32() ? socket_hdr_32 : socket_hdr_64;
+
+	file_buf = fill_file_cache(file);
+	dentry = ULONG(file_buf + OFFSET(file_f_dentry));
+
+    	if (!dentry)
+        	return FALSE;
+
+	dentry_buf = fill_dentry_cache(dentry);
+	inode = ULONG(dentry_buf + OFFSET(dentry_d_inode));
+
+    	if (!inode)
+        	return FALSE; 
+
+	inode_buf = fill_inode_cache(inode);
+
+
+	switch (SIZE(umode_t))
+	{
+	case SIZEOF_32BIT:
+		umode32 = UINT(inode_buf + OFFSET(inode_i_mode));
+		break;
+
+	case SIZEOF_16BIT:
+		umode16 = USHORT(inode_buf + OFFSET(inode_i_mode));
+		break;
+	}
+
+	if (SIZE(umode_t) == SIZEOF_32BIT)
+		mode = umode32;
+	else
+		mode = (uint)umode16;
+
+    	if (!S_ISSOCK(mode))
+        	return FALSE;
+
+    	struct_socket = inode + OFFSET(inode_u);
+
+	sock = ULONG(inode_buf + OFFSET(inode_u) + OFFSET(socket_sk));
+
+	if (NET_REFERENCE_CHECK(ref)) {
+		if ((ref->cmdflags & NET_REF_HEXNUM) &&
+		    ((ref->hexval == sock) || (ref->hexval == struct_socket)))
+			ref->cmdflags |= NET_REF_FOUND_ITEM;
+		else if ((ref->cmdflags & NET_REF_DECNUM) &&
+			(ref->decval == (ulong)fd))
+			ref->cmdflags |= NET_REF_FOUND_ITEM;
+                else if ((ref->cmdflags & NET_REF_HEXNUM) &&
+                        (ref->hexval == (ulong)fd))
+                        ref->cmdflags |= NET_REF_FOUND_ITEM;
+
+		if (!(ref->cmdflags & NET_REF_FOUND_ITEM))
+			return FALSE;
+
+		ref->cmdflags &= ~NET_REF_FOUND_ITEM;
+		ref->cmdflags |= NET_REF_FOUND;
+
+		if (!(ref->cmdflags & NET_TASK_HEADER_PRINTED)) {
+			print_task_header(fp, task_to_context(ref->ref1), 0);
+			ref->cmdflags |= NET_TASK_HEADER_PRINTED;
+		}
+
+		if (!(ref->cmdflags & NET_SOCK_HEADER_PRINTED)) {
+			sockets_found = 0;
+			ref->cmdflags |= NET_SOCK_HEADER_PRINTED;
+		}
+	}
+
+	switch (flag & (S_FLAG|s_FLAG))
+	{
+	case S_FLAG:
+		fprintf(fp, "%sFD  %s  %s\n", sockets_found ? "\n" : "",
+			mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SOCKET"),
+			mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "SOCK"));
+		fprintf(fp, "%2d  %lx  %lx\n\n", fd, struct_socket, sock);
+		break;
+
+	case s_FLAG:
+		if (!sockets_found) {
+			fprintf(fp, "%s\n", socket_hdr);
+		}
+		fprintf(fp, "%2d%s%lx%s%lx%s", 
+			fd, space(MINSPACE), 
+			struct_socket, 
+			space(MINSPACE),
+			sock,
+		        space(MINSPACE)); 
+
+		buf1[0] = NULLCHAR;
+		get_sock_info(sock, buf1);
+		fprintf(fp, "%s\n", buf1);
+
+		return TRUE;
+
+	default:
+		error(FATAL, "illegal flag: %lx\n", flag);
+	}
+
+    	dump_struct("socket", struct_socket, 0);
+    	dump_struct("sock", sock, 0);
+	
+    	return TRUE;
+}
