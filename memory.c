@@ -141,6 +141,7 @@ static void fill_swap_info(ulong);
 static char *vma_file_offset(ulong, ulong, char *);
 static ssize_t read_dev_kmem(ulong, char *, long);
 static void dump_memory_nodes(int);
+static void dump_zone_stats(void);
 #define MEMORY_NODES_DUMP       (0)
 #define MEMORY_NODES_INITIALIZE (1)
 static void node_table_init(void);
@@ -164,7 +165,10 @@ static int get_nodes_online(void);
 static int next_online_node(int);
 static ulong next_online_pgdat(int);
 static int vm_stat_init(void);
-static int dump_vm_stat(char *, long *);
+static int vm_event_state_init(void);
+static int dump_vm_stat(char *, long *, ulong);
+static int dump_vm_event_state(void);
+static int dump_page_states(void);
 static int generic_read_dumpfile(ulonglong, void *, long, char *, ulong);
 static int generic_write_dumpfile(ulonglong, void *, long, char *, ulong);
 static int page_to_nid(ulong);
@@ -233,11 +237,8 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "rss");
 	if (!VALID_MEMBER(mm_struct_rss))
 		MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "_rss");
-	if (!VALID_MEMBER(mm_struct_rss))
-		MEMBER_OFFSET_INIT(mm_struct_rss, "mm_struct", "_file_rss");
-	MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "anon_rss");
-	if (!VALID_MEMBER(mm_struct_anon_rss))
-		MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "_anon_rss");
+	MEMBER_OFFSET_INIT(mm_struct_anon_rss, "mm_struct", "_anon_rss");
+	MEMBER_OFFSET_INIT(mm_struct_file_rss, "mm_struct", "_file_rss");
 	MEMBER_OFFSET_INIT(mm_struct_total_vm, "mm_struct", "total_vm");
 	MEMBER_OFFSET_INIT(mm_struct_start_code, "mm_struct", "start_code");
         MEMBER_OFFSET_INIT(vm_area_struct_vm_mm, "vm_area_struct", "vm_mm");
@@ -755,12 +756,23 @@ vm_init(void)
                                 "zone", "zone_start_pfn");
                         MEMBER_OFFSET_INIT(zone_spanned_pages,
                                 "zone", "spanned_pages");
+                        MEMBER_OFFSET_INIT(zone_present_pages,
+                                "zone", "present_pages");
                         MEMBER_OFFSET_INIT(zone_pages_min,
                                 "zone", "pages_min");
                         MEMBER_OFFSET_INIT(zone_pages_low,
                                 "zone", "pages_low");
                         MEMBER_OFFSET_INIT(zone_pages_high,
                                 "zone", "pages_high");
+                        MEMBER_OFFSET_INIT(zone_nr_active,
+                                "zone", "nr_active");
+                        MEMBER_OFFSET_INIT(zone_nr_inactive,
+                                "zone", "nr_inactive");
+                        MEMBER_OFFSET_INIT(zone_all_unreclaimable,
+                                "zone", "all_unreclaimable");
+                        MEMBER_OFFSET_INIT(zone_flags, "zone", "flags");
+                        MEMBER_OFFSET_INIT(zone_pages_scanned, "zone", 
+				"pages_scanned");
 	        	ARRAY_LENGTH_INIT(vt->nr_free_areas, zone_free_area,
 				"zone.free_area", NULL, SIZE(free_area));
                 	vt->dump_free_pages = dump_free_pages_zones_v2;
@@ -3329,9 +3341,20 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 	if (!task_mm(task, TRUE))
 		return;
 
-        tm->rss = ULONG(tt->mm_struct + OFFSET(mm_struct_rss));
-	if (VALID_MEMBER(mm_struct_anon_rss))
-		tm->rss +=  ULONG(tt->mm_struct + OFFSET(mm_struct_anon_rss));
+	if (VALID_MEMBER(mm_struct_rss))
+		/*  
+		 *  mm_struct.rss or mm_struct._rss exist. 
+		 */
+        	tm->rss = ULONG(tt->mm_struct + OFFSET(mm_struct_rss));
+	else {
+		/*  
+		 *  mm_struct._anon_rss and mm_struct._file_rss should exist. 
+		 */
+		if (VALID_MEMBER(mm_struct_anon_rss))
+			tm->rss +=  ULONG(tt->mm_struct + OFFSET(mm_struct_anon_rss));
+		if (VALID_MEMBER(mm_struct_file_rss))
+			tm->rss +=  ULONG(tt->mm_struct + OFFSET(mm_struct_file_rss));
+	}
         tm->total_vm = ULONG(tt->mm_struct + OFFSET(mm_struct_total_vm));
         tm->pgd_addr = ULONG(tt->mm_struct + OFFSET(mm_struct_pgd));
 
@@ -3403,7 +3426,7 @@ cmd_kmem(void)
 {
 	int i;
 	int c;
-	int sflag, Sflag, pflag, fflag, Fflag, vflag; 
+	int sflag, Sflag, pflag, fflag, Fflag, vflag, zflag; 
 	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag, Vflag;
 	struct meminfo meminfo;
 	ulonglong value[MAXARGS];
@@ -3412,12 +3435,12 @@ cmd_kmem(void)
 	int spec_addr;
 
 	spec_addr = 0;
-        sflag =	Sflag = pflag = fflag = Fflag = Pflag = 0;
+        sflag =	Sflag = pflag = fflag = Fflag = Pflag = zflag = 0;
 	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = Vflag = 0;
 	BZERO(&meminfo, sizeof(struct meminfo));
 	BZERO(&value[0], sizeof(ulonglong)*MAXARGS);
 
-        while ((c = getopt(argcnt, args, "I:sSFfpvcCinl:L:PV")) != EOF) {
+        while ((c = getopt(argcnt, args, "I:sSFfpvczCinl:L:PV")) != EOF) {
                 switch(c)
 		{
 		case 'V':
@@ -3426,6 +3449,10 @@ cmd_kmem(void)
 
 		case 'n':
 			nflag = 1;
+			break;
+
+		case 'z':
+			zflag = 1;
 			break;
 
 		case 'i': 
@@ -3635,7 +3662,7 @@ cmd_kmem(void)
                 /* 
                  * no value arguments allowed! 
                  */
-                if (nflag || iflag || Fflag || Cflag || Lflag || Vflag) {
+                if (zflag || nflag || iflag || Fflag || Cflag || Lflag || Vflag) {
 			error(INFO, 
 			    "no address arguments allowed with this option\n");
                         cmd_usage(pc->curcmd, SYNOPSIS);
@@ -3704,6 +3731,9 @@ cmd_kmem(void)
 	if (nflag == 1)
 		dump_memory_nodes(MEMORY_NODES_DUMP);
 
+	if (zflag == 1)
+		dump_zone_stats();
+
 	if (lflag == 1) { 
 		dump_page_lists(&meminfo);
 	}
@@ -3713,10 +3743,13 @@ cmd_kmem(void)
 		dump_page_lists(&meminfo);
 	}
 
-	if (Vflag == 1)
-		dump_vm_stat(NULL, NULL);
+	if (Vflag == 1) {
+		dump_vm_stat(NULL, NULL, 0);
+		dump_page_states();
+		dump_vm_event_state();
+	}
 
-	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + Vflag +
+	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + Vflag + zflag +
               cflag + Cflag + iflag + nflag + lflag + Lflag + meminfo.calls))
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
@@ -6345,11 +6378,11 @@ dump_kmeminfo(void)
 	 *  If vm_stat array exists, override page search info.
 	 */
 	if (vm_stat_init()) {
-		if (dump_vm_stat("NR_SLAB", &nr_slab))
+		if (dump_vm_stat("NR_SLAB", &nr_slab, 0))
 			get_slabs = nr_slab;
-		else if (dump_vm_stat("NR_SLAB_RECLAIMABLE", &nr_slab)) {
+		else if (dump_vm_stat("NR_SLAB_RECLAIMABLE", &nr_slab, 0)) {
 			get_slabs = nr_slab;
-			if (dump_vm_stat("NR_SLAB_UNRECLAIMABLE", &nr_slab))
+			if (dump_vm_stat("NR_SLAB_UNRECLAIMABLE", &nr_slab, 0))
 				get_slabs += nr_slab;
 		}
 	}
@@ -6434,7 +6467,7 @@ dump_kmeminfo(void)
                	get_symbol_data("nr_pagecache", sizeof(int), &tmp);
                	page_cache_size = (long)tmp;
 		page_cache_size -= subtract_buffer_pages;
-	} else if (dump_vm_stat("NR_FILE_PAGES", &nr_file_pages)) {
+	} else if (dump_vm_stat("NR_FILE_PAGES", &nr_file_pages, 0)) {
 		char *swapper_space = GETBUF(SIZE(address_space));
 		
                 if (!readmem(symbol_value("swapper_space"), KVADDR, swapper_space,
@@ -10537,6 +10570,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sKMALLOC_SLUB", others++ ? "|" : "");\
 	if (vt->flags & CONFIG_NUMA)
 		fprintf(fp, "%sCONFIG_NUMA", others++ ? "|" : "");\
+	if (vt->flags & VM_EVENT)
+		fprintf(fp, "%sVM_EVENT", others++ ? "|" : "");\
 
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
@@ -10637,6 +10672,12 @@ dump_vm_table(int verbose)
 		"\n" : "(not used)\n");
 	for (i = 0; i < vt->nr_vm_stat_items; i++)
 		fprintf(fp, "        [%d] %s\n", i, vt->vm_stat_items[i]);
+
+	fprintf(fp, "  nr_vm_event_items: %d\n", vt->nr_vm_event_items);
+	fprintf(fp, "     vm_event_items: %s", (vt->flags & VM_EVENT) ?
+		"\n" : "(not used)\n");
+	for (i = 0; i < vt->nr_vm_event_items; i++)
+		fprintf(fp, "        [%d] %s\n", i, vt->vm_event_items[i]);
 
 	dump_vma_cache(VERBOSE);
 }
@@ -11947,6 +11988,145 @@ dump_memory_nodes(int initialize)
 		dump_mem_sections();
 }
 
+static void
+dump_zone_stats(void)
+{
+	int i, n;
+	ulong pgdat, node_zones;
+	char *zonebuf;
+	char buf1[BUFSIZE];
+	int ivalue;
+	ulong value1;
+	ulong value2;
+	ulong value3;
+	ulong value4;
+	ulong value5;
+	ulong value6;
+
+	pgdat = vt->node_table[0].pgdat;
+	zonebuf = GETBUF(SIZE_OPTION(zone_struct, zone));
+	vm_stat_init();
+
+        for (n = 0; pgdat; n++) {
+                node_zones = pgdat + OFFSET(pglist_data_node_zones);
+
+                for (i = 0; i < vt->nr_zones; i++) {
+
+			if (!readmem(node_zones, KVADDR, zonebuf,
+			    SIZE_OPTION(zone_struct, zone),
+			    "zone buffer", FAULT_ON_ERROR))
+				break; 
+
+			value1 = ULONG(zonebuf + 
+				OFFSET_OPTION(zone_struct_name, zone_name));
+
+                        if (!read_string(value1, buf1, BUFSIZE-1))
+                                sprintf(buf1, "(unknown) ");
+
+			if (VALID_MEMBER(zone_struct_size))
+				value1 = value6 = ULONG(zonebuf + 
+					OFFSET(zone_struct_size));
+			else if (VALID_MEMBER(zone_struct_memsize)) {
+				value1 = value6 = ULONG(zonebuf + 
+					OFFSET(zone_struct_memsize));
+			} else if (VALID_MEMBER(zone_spanned_pages)) {
+				value1 = ULONG(zonebuf + 
+					OFFSET(zone_spanned_pages));
+				value6 = ULONG(zonebuf + 
+					OFFSET(zone_present_pages));
+			} else error(FATAL, 
+			    	"zone struct has unknown size field\n");
+
+			value2 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_min,
+				zone_struct_pages_min));
+			value3 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_low,
+				zone_struct_pages_low));
+			value4 = ULONG(zonebuf + OFFSET_OPTION(zone_pages_high,
+				zone_struct_pages_high));
+			value5 = ULONG(zonebuf + OFFSET_OPTION(zone_free_pages,
+				zone_struct_free_pages));
+
+			fprintf(fp, 
+			    "NODE: %d  ZONE: %d  ADDR: %lx  NAME: \"%s\"\n", 
+				n, i, node_zones, buf1);
+
+			if (!value1) {
+				fprintf(fp, "  [unpopulated]\n");
+				goto next_zone;
+			}
+			fprintf(fp, "  SIZE: %ld", value1);
+			if (value6 < value1) 
+				fprintf(fp, "  PRESENT: %ld", value6);
+			fprintf(fp, "  MIN/LOW/HIGH: %ld/%ld/%ld",
+				value2, value3, value4);
+
+			if (VALID_MEMBER(zone_vm_stat)) 
+			    	dump_vm_stat("NR_FREE_PAGES", (long *)&value5, 
+			    		node_zones + OFFSET(zone_vm_stat));
+
+			if (VALID_MEMBER(zone_nr_active) && 
+			    VALID_MEMBER(zone_nr_inactive)) {
+				value1 = ULONG(zonebuf + 
+					OFFSET(zone_nr_active));
+				value2 = ULONG(zonebuf + 
+					OFFSET(zone_nr_inactive));
+				fprintf(fp, 
+			    "\n  NR_ACTIVE: %ld  NR_INACTIVE: %ld  FREE: %ld\n",
+					value1, value2, value5); 
+				if (VALID_MEMBER(zone_vm_stat)) {
+					fprintf(fp, "  VM_STAT:\n");
+					dump_vm_stat(NULL, NULL, node_zones +
+						OFFSET(zone_vm_stat));
+				}
+			} else if (VALID_MEMBER(zone_vm_stat) &&
+				dump_vm_stat("NR_ACTIVE", (long *)&value1, 
+				node_zones + OFFSET(zone_vm_stat)) &&
+				dump_vm_stat("NR_INACTIVE", (long *)&value2, 
+				node_zones + OFFSET(zone_vm_stat))) {
+				fprintf(fp, "\n  VM_STAT:\n");
+				dump_vm_stat(NULL, NULL, node_zones + 
+					OFFSET(zone_vm_stat));
+			} else {
+				fprintf(fp, "  FREE: %ld\n", value5); 
+				goto next_zone;
+			}
+
+			if (VALID_MEMBER(zone_all_unreclaimable)) {
+				ivalue = UINT(zonebuf + 
+					OFFSET(zone_all_unreclaimable));
+				fprintf(fp, "  ALL_UNRECLAIMABLE: %s  ", 
+					ivalue ? "yes" : "no");
+			} else if (VALID_MEMBER(zone_flags) &&
+				enumerator_value("ZONE_ALL_UNRECLAIMABLE", 
+				(long *)&value1)) {
+				value2 = ULONG(zonebuf + OFFSET(zone_flags));
+				value3 = value2 & (1 << value1);
+				fprintf(fp, "  ALL_UNRECLAIMABLE: %s  ", 
+					value3 ? "yes" : "no");
+			}
+
+			if (VALID_MEMBER(zone_pages_scanned)) {
+				value1 = ULONG(zonebuf + 
+					OFFSET(zone_pages_scanned));
+				fprintf(fp, "PAGES_SCANNED: %ld  ", value1);
+			} 
+			fprintf(fp, "\n");
+
+next_zone:
+			fprintf(fp, "\n");
+			node_zones += SIZE_OPTION(zone_struct, zone);
+		}
+
+		if ((n+1) < vt->numnodes)
+			pgdat = vt->node_table[n+1].pgdat;
+		else
+			pgdat = 0;
+	}
+
+	FREEBUF(zonebuf);
+
+}
+
 /*
  *  Gather essential information regarding each memory node.
  */
@@ -12767,7 +12947,7 @@ vm_stat_init(void)
 		(sizeof(void *) * vt->nr_vm_stat_items);
         if (!(vt->vm_stat_items = (char **)malloc(total))) {
 		close_tmpfile();
-                error(FATAL, "cannot malloc vm_area_struct cache\n");
+                error(FATAL, "cannot malloc vm_stat_items cache\n");
 	}
 
 	start = (char *)&vt->vm_stat_items[vt->nr_vm_stat_items];
@@ -12796,33 +12976,39 @@ bailout:
 
 /*
  *  Either dump all vm_stat entries, or return the value of
- *  the specified vm_stat item.
+ *  the specified vm_stat item.  Use the global counter unless
+ *  a zone-specific address is passed.
  */
 static int
-dump_vm_stat(char *item, long *retval)
+dump_vm_stat(char *item, long *retval, ulong zone)
 {
 	char *buf;
 	ulong *vp;
+	ulong location;
 	int i;
 
 	if (!vm_stat_init()) {
 		if (!item)
-			error(FATAL, 
-			    "vm_stat not available in this kernel\n");
+			if (CRASHDEBUG(1))
+				error(INFO, 
+			    	    "vm_stat not available in this kernel\n");
 		return FALSE;
 	}
 
 	buf = GETBUF(sizeof(ulong) * vt->nr_vm_stat_items);
 
-	readmem(symbol_value("vm_stat"), KVADDR, buf, 
+	location = zone ? zone : symbol_value("vm_stat");
+
+	readmem(location, KVADDR, buf, 
 	    sizeof(ulong) * vt->nr_vm_stat_items, 
 	    "vm_stat", FAULT_ON_ERROR);
 
-
 	if (!item) {
+		if (!zone)
+			fprintf(fp, "  VM_STAT:\n");
 		vp = (ulong *)buf;
 		for (i = 0; i < vt->nr_vm_stat_items; i++)
-			fprintf(fp, "%21s: %ld\n", vt->vm_stat_items[i], vp[i]);
+			fprintf(fp, "%23s: %ld\n", vt->vm_stat_items[i], vp[i]);
 		return TRUE;
 	}
 
@@ -12836,6 +13022,232 @@ dump_vm_stat(char *item, long *retval)
 
 	return FALSE;
 }
+
+/*
+ *  Dump the cumulative totals of the per_cpu__page_states counters.
+ */
+int
+dump_page_states(void)
+{
+	struct syment *sp;
+	ulong addr, value;
+	int i, c, fd, len, instance, members;
+	char buf[BUFSIZE];
+        char *arglist[MAXARGS];
+	struct entry {
+		char *name;
+		ulong value;
+	} *entry_list;
+	struct stat stat;
+	char *namebuf, *nameptr;
+
+	if (!(sp = symbol_search("per_cpu__page_states"))) {
+		if (CRASHDEBUG(1))
+			error(INFO, "per_cpu__page_states"
+			    "not available in this kernel\n");
+		return FALSE;
+	}
+
+	instance = members = len = 0;
+
+        sprintf(buf, "ptype struct page_state");
+
+	open_tmpfile();
+        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+		close_tmpfile();
+		return FALSE;
+	}
+
+	fflush(pc->tmpfile);
+	fd = fileno(pc->tmpfile);
+	fstat(fd, &stat);
+	namebuf = GETBUF(stat.st_size);
+	nameptr = namebuf;
+
+	rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "struct page_state") ||
+		    strstr(buf, "}"))
+			continue;
+		members++;
+	}
+
+	entry_list = (struct entry *)
+		GETBUF(sizeof(struct entry) * members);
+
+	rewind(pc->tmpfile);
+	i = 0;
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "struct page_state") ||
+		    strstr(buf, "}"))
+			continue;
+		strip_ending_char(strip_linefeeds(buf), ';');
+		c = parse_line(buf, arglist);
+		strcpy(nameptr, arglist[c-1]);
+		entry_list[i].name = nameptr;
+		if (strlen(nameptr) > len)
+			len = strlen(nameptr);
+		nameptr += strlen(nameptr)+2;
+		i++;
+	}
+	close_tmpfile();
+
+	open_tmpfile();
+
+        for (c = 0; c < kt->cpus; c++) {
+                addr = sp->value + kt->__per_cpu_offset[c];
+		dump_struct("page_state", addr, RADIX(16));
+        }
+
+	i = 0;
+	rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "struct page_state")) {
+			instance++;
+			i = 0;
+			continue;
+		}
+		if (strstr(buf, "}"))
+			continue;	
+		strip_linefeeds(buf);
+		extract_hex(buf, &value, ',', TRUE);
+		entry_list[i].value += value;
+		i++;
+        }
+
+	close_tmpfile();
+
+	fprintf(fp, "  PAGE_STATES:\n");
+	for (i = 0; i < members; i++) {
+		sprintf(buf, "%s", entry_list[i].name);
+		fprintf(fp, "%s", mkstring(buf, len+2, RJUST, 0));
+		fprintf(fp, ": %ld\n", entry_list[i].value);
+	}
+
+	FREEBUF(namebuf);
+	FREEBUF(entry_list);
+
+	return TRUE;
+}
+
+
+/* 
+ *  Dump the cumulative totals of the per_cpu__vm_event_state
+ *  counters.
+ */
+static int 
+dump_vm_event_state(void)
+{
+	int i, c;
+	struct syment *sp;
+	ulong addr;
+	ulong *events, *cumulative;
+
+	if (!vm_event_state_init())
+		return FALSE;
+
+	events = (ulong *)GETBUF((sizeof(ulong) * vt->nr_vm_event_items) * 2);
+	cumulative = &events[vt->nr_vm_event_items];
+
+        sp = symbol_search("per_cpu__vm_event_states");
+
+        for (c = 0; c < kt->cpus; c++) {
+                addr = sp->value + kt->__per_cpu_offset[c];
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "[%d]: %lx\n", c, addr);
+			dump_struct("vm_event_state", addr, RADIX(16));
+		}
+                readmem(addr, KVADDR, events,
+                    sizeof(ulong) * vt->nr_vm_event_items, 
+		    "vm_event_states buffer", FAULT_ON_ERROR);
+		for (i = 0; i < vt->nr_vm_event_items; i++)
+			cumulative[i] += events[i];
+        }
+
+	fprintf(fp, "\n  VM_EVENT_STATES:\n");
+	for (i = 0; i < vt->nr_vm_event_items; i++)
+		fprintf(fp, "%23s: %ld\n", vt->vm_event_items[i], cumulative[i]);
+
+	FREEBUF(events);
+
+	return TRUE;
+}
+
+static int
+vm_event_state_init(void)
+{
+	int i, c, stringlen, total;
+	long count;
+	struct gnu_request *req;
+	char *arglist[MAXARGS];
+	char buf[BUFSIZE];
+	char *start;
+
+	if (vt->flags & VM_EVENT)
+		return TRUE;
+
+        if ((vt->nr_vm_event_items == -1) || 
+	    !symbol_exists("per_cpu__vm_event_states"))
+                goto bailout;
+
+	if (!enumerator_value("NR_VM_EVENT_ITEMS", &count))
+		return FALSE;
+
+	vt->nr_vm_event_items = count;
+
+        open_tmpfile();
+        req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
+        req->command = GNU_GET_DATATYPE;
+        req->name = "vm_event_item";
+        req->flags = GNU_PRINT_ENUMERATORS;
+        gdb_interface(req);
+        FREEBUF(req);
+
+	stringlen = 1;
+
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "{") || strstr(buf, "}"))
+			continue;
+		clean_line(buf);
+		c = parse_line(buf, arglist);
+		if (STREQ(arglist[0], "NR_VM_EVENT_ITEMS"))
+			break;
+		else
+			stringlen += strlen(arglist[0]);
+        }
+
+	total = stringlen + vt->nr_vm_event_items + 
+		(sizeof(void *) * vt->nr_vm_event_items);
+        if (!(vt->vm_event_items = (char **)malloc(total))) {
+		close_tmpfile();
+                error(FATAL, "cannot malloc vm_event_items cache\n");
+	}
+
+	start = (char *)&vt->vm_event_items[vt->nr_vm_event_items];
+
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "{") || strstr(buf, "}"))
+                        continue;
+		c = parse_line(buf, arglist);
+		i = atoi(arglist[2]);
+		if (i < vt->nr_vm_event_items) {
+			vt->vm_event_items[i] = start;
+			strcpy(start, arglist[0]);
+			start += strlen(arglist[0]) + 1;
+		}
+        }
+	close_tmpfile();
+
+	vt->flags |= VM_EVENT;
+	return TRUE;
+
+bailout:
+	vt->nr_vm_event_items = -1;
+	return FALSE;
+}
+
 
 /*
  *  Support for slub.c slab cache.

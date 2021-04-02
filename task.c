@@ -29,6 +29,7 @@ static void refresh_pid_hash_task_table(void);
 static void refresh_hlist_task_table(void);
 static void refresh_hlist_task_table_v2(void);
 static void refresh_hlist_task_table_v3(void);
+static void refresh_active_task_table(void);
 static struct task_context *store_context(struct task_context *, ulong, char *);
 static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
@@ -409,6 +410,10 @@ task_init(void)
 		irqstacks_init();
 
 	get_active_set();
+
+	if (tt->flags & ACTIVE_ONLY)
+		tt->refresh_task_table = refresh_active_task_table;
+
 	tt->refresh_task_table(); 
 
 	if (tt->flags & TASK_REFRESH_OFF) 
@@ -1971,6 +1976,125 @@ do_chained:
 	tt->retries = MAX(tt->retries, retries);
 }
 
+static void
+refresh_active_task_table(void)
+{
+	int i;
+	char *tp; 
+	int cnt;
+        struct task_context *tc;
+        ulong curtask;
+        ulong curpid;
+        ulong retries;
+	ulong *tlp;
+
+        if (DUMPFILE() && (tt->flags & TASK_INIT_DONE))   /* impossible */
+                return;
+
+        if (DUMPFILE()) { 
+		please_wait("gathering task table data");
+                if (!symbol_exists("panic_threads"))
+                        tt->flags |= POPULATE_PANIC;
+        }
+
+        if (ACTIVE() && !(tt->flags & TASK_REFRESH))
+                return;
+
+	get_active_set();
+       	/*
+       	 *  The current task's task_context entry may change,
+         *  or the task may not even exist anymore.
+         */
+       	if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) {
+               	curtask = CURRENT_TASK();
+               	curpid = CURRENT_PID();
+       	}
+
+retry_active:
+
+        if (!hq_open()) {
+                error(INFO, "cannot hash task_struct entries\n");
+                if (!(tt->flags & TASK_INIT_DONE))
+                        clean_exit(1);
+                error(INFO, "using stale task_structs\n");
+                return;
+        }
+
+	/*
+	 *  Get the active tasks. 
+	 */
+	cnt = 0;
+	for (i = 0; i < kt->cpus; i++) {
+		if (hq_enter(tt->active_set[i]))
+			cnt++;
+		else
+			error(WARNING, "%sduplicate active tasks?\n",
+				DUMPFILE() ? "\n" : "");
+	}
+
+        BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
+        cnt = retrieve_list((ulong *)tt->task_local, cnt);
+
+	hq_close();
+
+	clear_task_cache();
+
+        for (i = 0, tlp = (ulong *)tt->task_local, 
+             tt->running_tasks = 0, tc = tt->context_array;
+             i < tt->max_tasks; i++, tlp++) {
+		if (!(*tlp))
+			continue;
+
+		if (!IS_TASK_ADDR(*tlp)) {
+			error(WARNING, 
+		            "%sinvalid task address found in task list: %lx\n", 
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE()) 
+				continue;
+			retries++;
+			goto retry_active;
+		}	
+	
+		if (task_exists(*tlp)) {
+			error(WARNING, 
+		           "%sduplicate task address found in task list: %lx\n",
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE())
+				continue;
+			retries++;
+			goto retry_active;
+		}
+
+		if (!(tp = fill_task_struct(*tlp))) {
+                        if (DUMPFILE())
+                                continue;
+                        retries++;
+                        goto retry_active;
+                }
+
+		if (store_context(tc, *tlp, tp)) {
+			tc++;
+			tt->running_tasks++;
+		} else if (DUMPFILE())
+			error(WARNING, "corrupt/invalid active task: %lx\n",
+				*tlp);
+	}
+
+	if (!tt->running_tasks) {
+		if (DUMPFILE())
+			error(FATAL, "cannot determine any active tasks!\n");
+		retries++;
+		goto retry_active;
+	}
+
+	please_wait_done();
+
+        if (ACTIVE() && (tt->flags & TASK_INIT_DONE))
+		refresh_context(curtask, curpid);
+
+	tt->retries = MAX(tt->retries, retries);
+}
+
 /*
  *  Fill a task_context structure with the data from a task.  If a NULL
  *  task_context pointer is passed in, use the next available one.
@@ -1993,6 +2117,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
 	else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
 		do_verify = 2;
 	else if (tt->refresh_task_table == refresh_hlist_task_table_v3)
+		do_verify = 2;
+	else if (tt->refresh_task_table == refresh_active_task_table)
 		do_verify = 2;
 	else
 		do_verify = 0;
@@ -3952,6 +4078,10 @@ show_context(struct task_context *tc)
                		cnt++ ? "" : "\n", tc->comm);
 		break;
 	}
+
+	if (!(pc->flags & RUNTIME) && (tt->flags & ACTIVE_ONLY))
+		error(WARNING, 
+		    "\nonly the active tasks on each cpu are being tracked\n");
 }
 
 
@@ -5413,6 +5543,8 @@ dump_task_table(int verbose)
                 fprintf(fp, "refresh_hlist_task_table_v2()\n");
         else if (tt->refresh_task_table == refresh_hlist_task_table_v3)
                 fprintf(fp, "refresh_hlist_task_table_v3()\n");
+        else if (tt->refresh_task_table == refresh_active_task_table)
+                fprintf(fp, "refresh_active_task_table()\n");
 	else
 		fprintf(fp, "%lx\n", (ulong)tt->refresh_task_table);
 
@@ -5461,6 +5593,9 @@ dump_task_table(int verbose)
         if (tt->flags & NO_TIMESPEC)
                 sprintf(&buf[strlen(buf)], 
 			"%sNO_TIMESPEC", others++ ? "|" : "");
+        if (tt->flags & ACTIVE_ONLY)
+                sprintf(&buf[strlen(buf)], 
+			"%sACTIVE_ONLY", others++ ? "|" : "");
 	sprintf(&buf[strlen(buf)], ")");
 
         if (strlen(buf) > 54)

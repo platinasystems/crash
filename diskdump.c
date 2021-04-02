@@ -7,8 +7,8 @@
  * netdump dumpfiles, the facilities in netdump.c are used.  For
  * compressed dumpfiles, the facilities in this file are used.
  *
- * Copyright (C) 2004, 2005, 2006 David Anderson
- * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005  FUJITSU LIMITED
  * Copyright (C) 2005  NEC Corporation
  *
@@ -94,14 +94,14 @@ static int open_dump_file(char *file)
 
 	fd = open(file, O_RDONLY);
 	if (fd < 0) {
-		error(INFO, "diskdump: unable to open dump file %s", file);
+		error(INFO, "diskdump / compressed kdump: unable to open dump file %s", file);
 		return FALSE;
 	}
 	dd->dfd = fd;
 	return TRUE;
 }
 
-static int read_dump_header(void)
+static int read_dump_header(char *file)
 {
 	struct disk_dump_header *header = NULL;
 	struct disk_dump_sub_header *sub_header = NULL;
@@ -117,17 +117,17 @@ static int read_dump_header(void)
 		return FALSE;
 
 	if ((header = malloc(block_size)) == NULL)
-		error(FATAL, "diskdump: cannot malloc block_size buffer\n");
+		error(FATAL, "diskdump / compressed kdump: cannot malloc block_size buffer\n");
 
 	if (lseek(dd->dfd, 0, SEEK_SET) == failed) {
 		if (CRASHDEBUG(1))
-			error(INFO, "diskdump: cannot lseek dump header\n");
+			error(INFO, "diskdump / compressed kdump: cannot lseek dump header\n");
 		goto err;
 	}
 
 	if (read(dd->dfd, header, block_size) < block_size) {
 		if (CRASHDEBUG(1))
-			error(INFO, "diskdump: cannot read dump header\n");
+			error(INFO, "diskdump / compressed kdump: cannot read dump header\n");
 		goto err;
 	}
 
@@ -142,13 +142,33 @@ static int read_dump_header(void)
 			dd->flags |= ERROR_EXCLUDED;
 	} else {
 		if (CRASHDEBUG(1))
-			error(INFO, "diskdump: dump does not have panic dump header\n");
+			error(INFO, 
+			    "diskdump / compressed kdump: dump does not have panic dump header\n");
 		goto err;
 	}
 
+	if (CRASHDEBUG(1))
+		fprintf(fp, "%s: header->utsname.machine: %s\n", 
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			header->utsname.machine);
+
+	if (STRNEQ(header->utsname.machine, "i686") &&
+	    machine_type_mismatch(file, "X86", NULL, 0))
+		goto err;
+	else if (STRNEQ(header->utsname.machine, "x86_64") &&
+	    machine_type_mismatch(file, "X86_64", NULL, 0))
+		goto err;
+	else if (STRNEQ(header->utsname.machine, "ia64") &&
+	    machine_type_mismatch(file, "IA64", NULL, 0))
+		goto err;
+	else if (STRNEQ(header->utsname.machine, "ppc64") &&
+	    machine_type_mismatch(file, "PPC64", NULL, 0))
+		goto err;
+
 	if (header->block_size != block_size) {
-		error(INFO, "diskdump: block size in the dump header does not match"
-	            " with system page size\n");
+		error(INFO, "%s: block size in the dump header does not match"
+	            " with system page size\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 		goto err;
 	}
 	dd->block_size  = block_size;
@@ -156,14 +176,18 @@ static int read_dump_header(void)
 
 	if (sizeof(*header) + sizeof(void *) * header->nr_cpus > block_size ||
 	    header->nr_cpus <= 0) {
-		error(INFO, "diskdump: invalid nr_cpus value: %d\n", header->nr_cpus);
+		error(INFO, "%s: invalid nr_cpus value: %d\n", 
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			header->nr_cpus);
 		goto err;
 	}
 
 	/* read sub header */
 	offset = (off_t)block_size;
 	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-		error(INFO, "diskdump: cannot lseek dump sub header\n");
+		error(INFO, "%s: cannot lseek dump sub header\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+
 		goto err;
 	}
 
@@ -179,11 +203,11 @@ static int read_dump_header(void)
 		dd->sub_header = sub_header;
 	} else if (KDUMP_CMPRS_VALID()) {
 		if ((sub_header_kdump = malloc(block_size)) == NULL)
-			error(FATAL, "diskdump: cannot malloc sub_header_kdump buffer\n");
+			error(FATAL, "compressed kdump: cannot malloc sub_header_kdump buffer\n");
 
 		if (read(dd->dfd, sub_header_kdump, block_size)
 		  < block_size) {
-			error(INFO, "diskdump: cannot read dump sub header\n");
+			error(INFO, "compressed kdump: cannot read dump sub header\n");
 			goto err;
 		}
 		dd->sub_header_kdump = sub_header_kdump;
@@ -195,15 +219,20 @@ static int read_dump_header(void)
 
 	offset = (off_t)block_size * (1 + header->sub_hdr_size);
 	if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
-		error(INFO, "diskdump: cannot lseek memory bitmap\n");
+		error(INFO, "%s: cannot lseek memory bitmap\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+
 		goto err;
 	}
 
 	if ((dd->bitmap = malloc(bitmap_len)) == NULL)
-		error(FATAL, "diskdump: cannot malloc bitmap buffer\n");
+		error(FATAL, "%s: cannot malloc bitmap buffer\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+
 	dd->dumpable_bitmap = calloc(bitmap_len, 1);
 	if (read(dd->dfd, dd->bitmap, bitmap_len) < bitmap_len) {
-		error(INFO, "diskdump: cannot read memory bitmap\n");
+		error(INFO, "%s: cannot read memory bitmap\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 		goto err;
 	}
 
@@ -228,7 +257,9 @@ static int read_dump_header(void)
 	else if (machine_type("PPC64"))
 		dd->machine_type = EM_PPC64;
 	else {
-		error(INFO, "diskdump: unsupported machine type: %s\n", MACHINE_TYPE);
+		error(INFO, "%s: unsupported machine type: %s\n", 
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			MACHINE_TYPE);
 		goto err;
 	}
 
@@ -284,19 +315,21 @@ is_diskdump(char *file)
 {
 	int sz, i;
 
-	if (!open_dump_file(file) || !read_dump_header())
+	if (!open_dump_file(file) || !read_dump_header(file))
 		return FALSE;
 
 	sz = dd->block_size * (DISKDUMP_CACHED_PAGES);
 	if ((dd->page_cache_buf = malloc(sz)) == NULL)
-		error(FATAL, "diskdump: cannot malloc compressed page_cache_buf\n");
+		error(FATAL, "%s: cannot malloc compressed page_cache_buf\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 
 	for (i = 0; i < DISKDUMP_CACHED_PAGES; i++)
 		dd->page_cache_hdr[i].pg_bufptr =
 			&dd->page_cache_buf[i * dd->block_size];
 
 	if ((dd->compressed_page = (char *)malloc(dd->block_size)) == NULL)
-		error(FATAL, "diskdump: cannot malloc compressed page space\n");
+		error(FATAL, "%s: cannot malloc compressed page space\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 
 	if (CRASHDEBUG(1))
 		diskdump_memory_dump(fp);
@@ -433,7 +466,9 @@ cache_page(physaddr_t paddr)
 		                 (unsigned char *)dd->compressed_page,
 		                 pd.size);
 		if ((ret != Z_OK) || (retlen != block_size)) {
-			error(INFO, "diskdump: uncompress failed: %d\n", ret);
+			error(INFO, "%s: uncompress failed: %d\n", 
+				DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+				ret);
 			return READ_ERROR;
 		}
 	} else
@@ -541,7 +576,10 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		break;
 
 	default:
-		error(FATAL, "diskdump: unsupported machine type: %s\n", MACHINE_TYPE);
+		error(FATAL, "%s: unsupported machine type: %s\n",
+			DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			MACHINE_TYPE);
+
 	}
 }
 

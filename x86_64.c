@@ -4339,126 +4339,6 @@ x86_64_irq_eframe_link_init(void)
 #include "netdump.h"
 
 /*
- *  Determine the physical address base for relocatable kernels.
- */
-static void
-x86_64_calc_phys_base(void)
-{
-	int i;
-	FILE *iomem;
-	char buf[BUFSIZE];
-	char *p1;
-	ulong phys_base, text_start, kernel_code_start;
-	int errflag;
-	struct vmcore_data *vd;
-	Elf64_Phdr *phdr;
-
-	if (machdep->flags & PHYS_BASE)     /* --machdep override */
-		return;
-
-	machdep->machspec->phys_base = 0;   /* default/traditional */
-
-	if (!kernel_symbol_exists("phys_base"))
-		return;
-
-	if (!symbol_exists("_text"))
-		return;
-	else
-		text_start = symbol_value("_text");
-
-	if (ACTIVE()) {
-	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
-	                return;
-	
-		errflag = 1;
-	        while (fgets(buf, BUFSIZE, iomem)) {
-			if (strstr(buf, ": Kernel code")) {
-				clean_line(buf);
-				errflag = 0;
-				break;
-			}
-		}
-	        fclose(iomem);
-	
-		if (errflag)
-			return;
-	
-		if (!(p1 = strstr(buf, "-")))
-			return;
-		else
-			*p1 = NULLCHAR;
-	
-		errflag = 0;
-		kernel_code_start = htol(buf, RETURN_ON_ERROR|QUIET, &errflag);
-	        if (errflag)
-			return;
-	
-		machdep->machspec->phys_base = kernel_code_start -
-			(text_start - __START_KERNEL_map);
-	
-		if (CRASHDEBUG(1)) {
-			fprintf(fp, "_text: %lx  ", text_start);
-			fprintf(fp, "Kernel code: %lx -> ", kernel_code_start);
-			fprintf(fp, "phys_base: %lx\n\n", 
-				machdep->machspec->phys_base);
-		}
-
-		return;
-	}
-
-	/*
-	 *  Get relocation value from whatever dumpfile format is being used.
-	 */
-
-	if (DISKDUMP_DUMPFILE()) {
-		if (diskdump_phys_base(&phys_base)) {
-			machdep->machspec->phys_base = phys_base;
-			if (CRASHDEBUG(1))
-				fprintf(fp, "compressed kdump: phys_base: %lx\n",
-					phys_base);
-		}
-		return;
-	}
-
-	if ((vd = get_kdump_vmcore_data())) {
-                for (i = 0; i < vd->num_pt_load_segments; i++) {
-			phdr = vd->load64 + i;
-			if ((phdr->p_vaddr >= __START_KERNEL_map) &&
-			    !(IS_VMALLOC_ADDR(phdr->p_vaddr))) {
-
-				machdep->machspec->phys_base = phdr->p_paddr - 
-				    (phdr->p_vaddr & ~(__START_KERNEL_map));
-
-				if (CRASHDEBUG(1)) {
-					fprintf(fp, "p_vaddr: %lx p_paddr: %lx -> ",
-						phdr->p_vaddr, phdr->p_paddr);
-					fprintf(fp, "phys_base: %lx\n\n", 
-						machdep->machspec->phys_base);
-				}
-				break;
-			}
-		}
-
-		return;
-	}
-
-	if (XENDUMP_DUMPFILE() && (text_start == __START_KERNEL_map)) {
-		/* 
-		 *  Xen kernels are not relocable (yet) and don't have the
-		 *  "phys_base" entry point, so this must be a xendump of a 
-		 *  fully-virtualized relocatable kernel.  No clues exist in 
-		 *  the xendump header, so hardwire phys_base to 2MB and hope
-		 *  for the best.
-		 */
-		machdep->machspec->phys_base = 0x200000;
-		if (CRASHDEBUG(1))
-			fprintf(fp, 
-			    "default relocatable default phys_base: %lx\n",
-				machdep->machspec->phys_base);
-	}
-}
-
-/*
  *  From the xen vmcore, create an index of mfns for each page that makes
  *  up the dom0 kernel's complete phys_to_machine_mapping[max_pfn] array.
  */
@@ -4716,6 +4596,154 @@ x86_64_xen_kdump_page_mfn(ulong kvaddr)
 }
 
 #include "xendump.h"
+
+/*
+ *  Determine the physical address base for relocatable kernels.
+ */
+static void
+x86_64_calc_phys_base(void)
+{
+	int i;
+	FILE *iomem;
+	char buf[BUFSIZE];
+	char *p1;
+	ulong phys_base, text_start, kernel_code_start;
+	int errflag;
+	struct vmcore_data *vd;
+	static struct xendump_data *xd;
+	Elf64_Phdr *phdr;
+
+	if (machdep->flags & PHYS_BASE)     /* --machdep override */
+		return;
+
+	machdep->machspec->phys_base = 0;   /* default/traditional */
+
+	if (!kernel_symbol_exists("phys_base"))
+		return;
+
+	if (!symbol_exists("_text"))
+		return;
+	else
+		text_start = symbol_value("_text");
+
+	if (ACTIVE()) {
+	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
+	                return;
+	
+		errflag = 1;
+	        while (fgets(buf, BUFSIZE, iomem)) {
+			if (strstr(buf, ": Kernel code")) {
+				clean_line(buf);
+				errflag = 0;
+				break;
+			}
+		}
+	        fclose(iomem);
+	
+		if (errflag)
+			return;
+	
+		if (!(p1 = strstr(buf, "-")))
+			return;
+		else
+			*p1 = NULLCHAR;
+	
+		errflag = 0;
+		kernel_code_start = htol(buf, RETURN_ON_ERROR|QUIET, &errflag);
+	        if (errflag)
+			return;
+	
+		machdep->machspec->phys_base = kernel_code_start -
+			(text_start - __START_KERNEL_map);
+	
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "_text: %lx  ", text_start);
+			fprintf(fp, "Kernel code: %lx -> ", kernel_code_start);
+			fprintf(fp, "phys_base: %lx\n\n", 
+				machdep->machspec->phys_base);
+		}
+
+		return;
+	}
+
+	/*
+	 *  Get relocation value from whatever dumpfile format is being used.
+	 */
+
+	if (DISKDUMP_DUMPFILE()) {
+		if (diskdump_phys_base(&phys_base)) {
+			machdep->machspec->phys_base = phys_base;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "compressed kdump: phys_base: %lx\n",
+					phys_base);
+		}
+		return;
+	}
+
+	if ((vd = get_kdump_vmcore_data())) {
+                for (i = 0; i < vd->num_pt_load_segments; i++) {
+			phdr = vd->load64 + i;
+			if ((phdr->p_vaddr >= __START_KERNEL_map) &&
+			    !(IS_VMALLOC_ADDR(phdr->p_vaddr))) {
+
+				machdep->machspec->phys_base = phdr->p_paddr - 
+				    (phdr->p_vaddr & ~(__START_KERNEL_map));
+
+				if (CRASHDEBUG(1)) {
+					fprintf(fp, "p_vaddr: %lx p_paddr: %lx -> ",
+						phdr->p_vaddr, phdr->p_paddr);
+					fprintf(fp, "phys_base: %lx\n\n", 
+						machdep->machspec->phys_base);
+				}
+				break;
+			}
+		}
+
+		return;
+	}
+
+	if ((xd = get_xendump_data())) {
+		if (text_start == __START_KERNEL_map) {
+		       /* 
+			*  Xen kernels are not relocable (yet) and don't have
+			*  the "phys_base" entry point, so this is most likely 
+			*  a xendump of a fully-virtualized relocatable kernel.
+			*  No clues exist in the xendump header, so hardwire 
+			*  phys_base to 2MB and hope for the best.
+			*/
+			machdep->machspec->phys_base = 0x200000;
+			if (CRASHDEBUG(1))
+				fprintf(fp, 
+			    	    "default relocatable phys_base: %lx\n",
+					machdep->machspec->phys_base);
+
+		} else if (text_start > __START_KERNEL_map) {
+			switch (xd->flags & (XC_CORE_ELF|XC_CORE_NO_P2M)) 	
+			{
+			/*
+			 *  If this is a new ELF-style xendump with no
+			 *  p2m information, then it also must be a
+			 *  fully-virtualized relocatable kernel.  Again,
+			 *  the xendump header is useless, and we don't
+			 *  have /proc/iomem, so presume that the kernel 
+			 *  code starts at 2MB.
+			 */ 
+			case (XC_CORE_ELF|XC_CORE_NO_P2M):
+				machdep->machspec->phys_base = 0x200000 - 
+					(text_start - __START_KERNEL_map);
+				if (CRASHDEBUG(1))
+					fprintf(fp, "default relocatable " 
+			    	            "phys_base: %lx\n",
+						machdep->machspec->phys_base);
+				break;
+
+			default:
+				break;
+			}
+		}
+	}
+}
+
 
 /*
  *  Create an index of mfns for each page that makes up the
