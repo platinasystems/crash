@@ -19,14 +19,18 @@
 struct bpf_info {
 	ulong status;
 	ulong progs, maps;
-	struct radix_tree_pair *proglist;
-	struct radix_tree_pair *maplist;
+	struct list_pair *proglist;
+	struct list_pair *maplist;
 	char *bpf_prog_buf;
 	char *bpf_prog_aux_buf;
 	char *bpf_map_buf;
 	char *bytecode_buf;
 	int bpf_prog_type_size;
 	int bpf_map_map_type_size;
+	int idr_type;
+#define IDR_ORIG   (1)
+#define IDR_RADIX  (2)
+#define IDR_XARRAY (3)
 	char prog_hdr1[81];
 	char map_hdr1[81];
 } bpf_info = { 
@@ -45,6 +49,10 @@ static void bpf_prog_gpl_compatible(char *, ulong);
 static void dump_xlated_plain(void *, unsigned int, int);
 static void print_boot_time(unsigned long long, char *, unsigned int);
 
+static int do_old_idr(int, ulong, struct list_pair *);
+#define IDR_ORIG_INIT   (1)
+#define IDR_ORIG_COUNT  (2)
+#define IDR_ORIG_GATHER (3)
 
 #define PROG_ID        (0x1)
 #define MAP_ID         (0x2)
@@ -167,7 +175,6 @@ bpf_init(struct bpf_info *bpf)
 		    !VALID_STRUCT(bpf_map) ||
 		    !VALID_STRUCT(bpf_insn) ||
 		    INVALID_MEMBER(bpf_prog_aux) ||
-		    INVALID_MEMBER(idr_idr_rt) ||
 		    INVALID_MEMBER(bpf_prog_type) ||
 		    INVALID_MEMBER(bpf_prog_tag) ||
 		    INVALID_MEMBER(bpf_prog_jited_len) ||
@@ -210,6 +217,16 @@ bpf_init(struct bpf_info *bpf)
 			mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "BPF_MAP"),
 			mkstring(buf3, bpf->bpf_map_map_type_size, CENTER|LJUST, "BPF_MAP_TYPE"));
 
+		if (INVALID_MEMBER(idr_idr_rt)) {
+			bpf->idr_type = IDR_ORIG;
+			do_old_idr(IDR_ORIG_INIT, 0, NULL);
+		} else if (STREQ(MEMBER_TYPE_NAME("idr", "idr_rt"), "radix_tree_root"))
+			bpf->idr_type = IDR_RADIX;
+		else if (STREQ(MEMBER_TYPE_NAME("idr", "idr_rt"), "xarray"))
+			bpf->idr_type = IDR_XARRAY;
+		else
+			error(FATAL, "cannot determine IDR list type\n");
+
 		bpf->status = TRUE;
 		break;
 
@@ -220,24 +237,76 @@ bpf_init(struct bpf_info *bpf)
 		command_not_supported();
 	}
 
-	bpf->progs = do_radix_tree(symbol_value("prog_idr") + OFFSET(idr_idr_rt),
-		RADIX_TREE_COUNT, NULL);
-	if (bpf->progs) {
-		len = sizeof(struct radix_tree_pair) * (bpf->progs+1);
-		bpf->proglist = (struct radix_tree_pair *)GETBUF(len);
-		bpf->proglist[0].index = bpf->progs;
+	switch (bpf->idr_type)
+	{
+	case IDR_ORIG:
+		bpf->progs = do_old_idr(IDR_ORIG_COUNT, symbol_value("prog_idr"), NULL);
+		break;
+	case IDR_RADIX:
 		bpf->progs = do_radix_tree(symbol_value("prog_idr") + OFFSET(idr_idr_rt),
-			RADIX_TREE_GATHER, bpf->proglist);
+			RADIX_TREE_COUNT, NULL);
+		break;
+	case IDR_XARRAY:
+		bpf->progs = do_xarray(symbol_value("prog_idr") + OFFSET(idr_idr_rt),
+			XARRAY_COUNT, NULL);
+		break;
 	}
 
-	bpf->maps = do_radix_tree(symbol_value("map_idr") + OFFSET(idr_idr_rt), 
-		RADIX_TREE_COUNT, NULL);
+	if (bpf->progs) {
+		len = sizeof(struct list_pair) * (bpf->progs+1);
+		bpf->proglist = (struct list_pair *)GETBUF(len);
+		bpf->proglist[0].index = bpf->progs;
+
+		switch (bpf->idr_type)
+		{
+		case IDR_ORIG:
+			bpf->progs = do_old_idr(IDR_ORIG_GATHER, symbol_value("prog_idr"), bpf->proglist);
+			break;
+		case IDR_RADIX:
+			bpf->progs = do_radix_tree(symbol_value("prog_idr") + OFFSET(idr_idr_rt),
+				RADIX_TREE_GATHER, bpf->proglist);
+			break;
+		case IDR_XARRAY:
+			bpf->progs = do_xarray(symbol_value("prog_idr") + OFFSET(idr_idr_rt),
+				XARRAY_GATHER, bpf->proglist);
+			break;
+		}
+	}
+
+	switch (bpf->idr_type)
+	{
+	case IDR_ORIG:
+		bpf->maps = do_old_idr(IDR_ORIG_COUNT, symbol_value("map_idr"), NULL);
+		break;
+	case IDR_RADIX:
+		bpf->maps = do_radix_tree(symbol_value("map_idr") + OFFSET(idr_idr_rt), 
+			RADIX_TREE_COUNT, NULL);
+		break;
+	case IDR_XARRAY:
+		bpf->maps = do_xarray(symbol_value("map_idr") + OFFSET(idr_idr_rt), 
+			XARRAY_COUNT, NULL);
+		break;
+	}
+
 	if (bpf->maps) {
-		len = sizeof(struct radix_tree_pair) * (bpf->maps+1);
-		bpf->maplist = (struct radix_tree_pair *)GETBUF(len);
+		len = sizeof(struct list_pair) * (bpf->maps+1);
+		bpf->maplist = (struct list_pair *)GETBUF(len);
 		bpf->maplist[0].index = bpf->maps;
-		bpf->maps = do_radix_tree(symbol_value("map_idr") + OFFSET(idr_idr_rt),
-			RADIX_TREE_GATHER, bpf->maplist);
+
+		switch (bpf->idr_type)
+		{
+		case IDR_ORIG:
+			bpf->maps = do_old_idr(IDR_ORIG_GATHER, symbol_value("map_idr"), bpf->maplist);
+			break;
+		case IDR_RADIX:
+			bpf->maps = do_radix_tree(symbol_value("map_idr") + OFFSET(idr_idr_rt),
+				RADIX_TREE_GATHER, bpf->maplist);
+			break;
+		case IDR_XARRAY:
+			bpf->maps = do_xarray(symbol_value("map_idr") + OFFSET(idr_idr_rt),
+				XARRAY_GATHER, bpf->maplist);
+			break;
+		}
 	}
 
 	bpf->bpf_prog_buf = GETBUF(SIZE(bpf_prog));
@@ -265,7 +334,8 @@ do_bpf(ulong flags, ulong prog_id, ulong map_id, int radix)
 	char buf5[BUFSIZE/2];
 	
 	bpf = &bpf_info;
-	bpf->proglist = bpf->maplist = NULL;
+	bpf->proglist = NULL;
+	bpf->maplist = NULL;
 	bpf->bpf_prog_buf = bpf->bpf_prog_aux_buf = bpf->bpf_map_buf = NULL;
 	bpf->bytecode_buf = NULL;
 
@@ -362,7 +432,7 @@ do_bpf(ulong flags, ulong prog_id, ulong map_id, int radix)
 			fprintf(fp, "     LOAD_TIME: ");
 			if (VALID_MEMBER(bpf_prog_aux_load_time)) {
 				load_time = ULONGLONG(bpf->bpf_prog_aux_buf + OFFSET(bpf_prog_aux_load_time));
-				print_boot_time(load_time, buf5, BUFSIZE);
+				print_boot_time(load_time, buf5, BUFSIZE/2);
 				fprintf(fp, "%s\n", buf5);
 			} else
 				fprintf(fp, "(unknown)\n");
@@ -538,8 +608,10 @@ do_map_only:
 	}
 
 bailout:
-	FREEBUF(bpf->proglist);
-	FREEBUF(bpf->maplist);
+	if (bpf->proglist)
+		FREEBUF(bpf->proglist);
+	if (bpf->maplist)
+		FREEBUF(bpf->maplist);
 	FREEBUF(bpf->bpf_prog_buf);
 	FREEBUF(bpf->bpf_prog_aux_buf);
 	FREEBUF(bpf->bpf_map_buf);
@@ -1060,8 +1132,7 @@ static char *__func_get_name(const struct bpf_insn *insn,
 		return buff;
 
 	if (insn->src_reg != BPF_PSEUDO_CALL &&
-	    insn->imm >= 0 && insn->imm < __BPF_FUNC_MAX_ID &&
-	    func_id_str[insn->imm]) {
+	    insn->imm >= 0 && insn->imm < __BPF_FUNC_MAX_ID) {
 //              return func_id_str[insn->imm];
 		if (!readmem(symbol_value("func_id_str") + (insn->imm * sizeof(void *)), 
 		    KVADDR, &func_id_ptr, sizeof(void *), "func_id_str pointer", 
@@ -1255,4 +1326,51 @@ print_boot_time(unsigned long long nsecs, char *buf, unsigned int size)
 #else
 	sprintf(buf, "(unknown)");
 #endif
+}
+
+/*
+ *  Borrow the old (pre-radix_tree) IDR facility code used by
+ *  the ipcs command.
+ */
+static int
+do_old_idr(int cmd, ulong idr, struct list_pair *lp)
+{
+	int i, max, cur, next_id, total = 0;
+	ulong entry;
+
+	switch (cmd)
+	{
+	case IDR_ORIG_INIT:
+		ipcs_init();
+		break;
+
+	case IDR_ORIG_COUNT:
+		readmem(idr + OFFSET(idr_cur), KVADDR, &cur, 
+			sizeof(int), "idr.cur", FAULT_ON_ERROR);
+		for (total = next_id = 0; next_id < cur; next_id++) {
+			entry = idr_find(idr, next_id);
+			if (entry == 0)
+				continue;
+			total++;
+		}
+		break;
+
+	case IDR_ORIG_GATHER:
+		max = lp[0].index;
+		readmem(idr + OFFSET(idr_cur), KVADDR, &cur, 
+			sizeof(int), "idr.cur", FAULT_ON_ERROR);
+		for (i = total = next_id = 0; next_id < cur; next_id++) {
+			entry = idr_find(idr, next_id);
+			if (entry == 0)
+				continue;
+			total++;
+			lp[i].index = next_id;
+			lp[i].value = (void *)entry;
+			if (++i == max)
+				break;
+		}
+		break;
+	}
+
+	return total;
 }

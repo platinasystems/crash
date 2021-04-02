@@ -32,6 +32,7 @@ static void refresh_hlist_task_table_v3(void);
 static void refresh_active_task_table(void);
 static int radix_tree_task_callback(ulong);
 static void refresh_radix_tree_task_table(void);
+static void refresh_xarray_task_table(void);
 static struct task_context *add_context(ulong, char *);
 static void refresh_context(ulong, ulong);
 static ulong parent_of(ulong);
@@ -314,6 +315,7 @@ task_init(void)
 	        strcpy(buf, "alias last ps -l");
         	alias_init(buf);
 	}
+	MEMBER_OFFSET_INIT(task_struct_pid_links, "task_struct", "pid_links");
 	MEMBER_OFFSET_INIT(pid_link_pid, "pid_link", "pid");
 	MEMBER_OFFSET_INIT(pid_hash_chain, "pid", "hash_chain");
 
@@ -440,7 +442,7 @@ task_init(void)
 	} else if (VALID_SIZE(thread_union) && 
 	    	((len = SIZE(thread_union)) != STACKSIZE())) {
 		machdep->stacksize = len;
-	} else {
+	} else if (!VALID_SIZE(thread_union) && !VALID_SIZE(task_union)) {
 		if (kernel_symbol_exists("__start_init_task") &&
 		    kernel_symbol_exists("__end_init_task")) {
 			len = symbol_value("__end_init_task");
@@ -484,6 +486,12 @@ task_init(void)
 			"radix_tree_node","height");
 		MEMBER_OFFSET_INIT(radix_tree_node_shift,
 			"radix_tree_node","shift");
+	} else {
+		STRUCT_SIZE_INIT(xarray, "xarray");
+		STRUCT_SIZE_INIT(xa_node, "xa_node");
+		MEMBER_OFFSET_INIT(xarray_xa_head, "xarray","xa_head");
+		MEMBER_OFFSET_INIT(xa_node_slots, "xa_node","slots");
+		MEMBER_OFFSET_INIT(xa_node_shift, "xa_node","shift");
 	}
 
 	if (symbol_exists("pidhash") && symbol_exists("pid_hash") &&
@@ -493,11 +501,19 @@ task_init(void)
 
 	if (VALID_MEMBER(pid_namespace_idr)) {
 		STRUCT_SIZE_INIT(pid, "pid");
-		tt->refresh_task_table = refresh_radix_tree_task_table;
-		tt->pid_radix_tree = symbol_value("init_pid_ns") +
-			OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
-		tt->flags |= PID_RADIX_TREE;
-
+		if (STREQ(MEMBER_TYPE_NAME("idr", "idr_rt"), "xarray")) {
+			tt->refresh_task_table = refresh_xarray_task_table;
+			tt->pid_xarray = symbol_value("init_pid_ns") +
+				OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
+			tt->flags |= PID_XARRAY;
+		} else if STREQ(MEMBER_TYPE_NAME("idr", "idr_rt"), "radix_tree_root") {
+			tt->refresh_task_table = refresh_radix_tree_task_table;
+			tt->pid_radix_tree = symbol_value("init_pid_ns") +
+				OFFSET(pid_namespace_idr) + OFFSET(idr_idr_rt);
+			tt->flags |= PID_RADIX_TREE;
+		} else 
+			error(FATAL, "unknown pid_namespace.idr type: %s\n",
+				MEMBER_TYPE_NAME("idr", "idr_rt"));
 	} else if (symbol_exists("pid_hash") && symbol_exists("pidhash_shift")) {
 		int pidhash_shift;
 
@@ -2267,7 +2283,7 @@ refresh_radix_tree_task_table(void)
 	ulong count, retries, next, curtask, curpid, upid_ns, pid_tasks_0, task;
 	ulong *tlp;
 	char *tp;
-	struct radix_tree_pair rtp;
+	struct list_pair rtp;
 	char *pidbuf;
 
 	if (DUMPFILE() && (tt->flags & TASK_INIT_DONE))   /* impossible */
@@ -2382,7 +2398,10 @@ retry_radix_tree:
 		pid_tasks_0 = ULONG(pidbuf + OFFSET(pid_tasks));
 		if (!pid_tasks_0)
 			continue;
-		task = pid_tasks_0 - OFFSET(task_struct_pids);
+		if (VALID_MEMBER(task_struct_pids))
+			task = pid_tasks_0 - OFFSET(task_struct_pids);
+		else
+			task = pid_tasks_0 - OFFSET(task_struct_pid_links);
 
 		if (CRASHDEBUG(1))
 			console("pid: %lx  ns: %lx  tasks[0]: %lx task: %lx\n",
@@ -2440,6 +2459,222 @@ retry_radix_tree:
 				continue;
 			retries++;
 			goto retry_radix_tree;
+		}
+
+		add_context(*tlp, tp);
+	}
+
+	FREEBUF(pidbuf);
+
+	please_wait_done();
+
+	if (ACTIVE() && (tt->flags & TASK_INIT_DONE))
+		refresh_context(curtask, curpid);
+
+	tt->retries = MAX(tt->retries, retries);
+}
+
+
+/*
+ *  Linux 4.20: pid_hash[] IDR changed from radix tree to xarray
+ */
+static int
+xarray_task_callback(ulong task)
+{
+	ulong *tlp;
+
+	if (tt->callbacks < tt->max_tasks) {
+		tlp = (ulong *)tt->task_local;
+		tlp += tt->callbacks++;
+		*tlp = task;
+	}
+
+	return TRUE;
+}
+
+static void
+refresh_xarray_task_table(void)
+{
+	int i, cnt;
+	ulong count, retries, next, curtask, curpid, upid_ns, pid_tasks_0, task;
+	ulong *tlp;
+	char *tp;
+	struct list_pair xp;
+	char *pidbuf;
+
+	if (DUMPFILE() && (tt->flags & TASK_INIT_DONE))   /* impossible */
+		return;
+
+	if (DUMPFILE()) {                                 /* impossible */
+		please_wait("gathering task table data");
+		if (!symbol_exists("panic_threads"))
+			tt->flags |= POPULATE_PANIC;
+	}
+
+	if (ACTIVE() && !(tt->flags & TASK_REFRESH))
+		return;
+
+	curpid = NO_PID;
+	curtask = NO_TASK;
+
+	/*
+	 *  The current task's task_context entry may change,
+	 *  or the task may not even exist anymore.
+	 */
+	if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) {
+		curtask = CURRENT_TASK();
+		curpid = CURRENT_PID();
+	}
+
+	count = do_xarray(tt->pid_xarray, XARRAY_COUNT, NULL);
+	if (CRASHDEBUG(1))
+		console("xarray: count: %ld\n", count);
+
+	retries = 0;
+	pidbuf = GETBUF(SIZE(pid));
+
+retry_xarray:
+	if (retries && DUMPFILE())
+		error(FATAL,
+			"\ncannot gather a stable task list via xarray\n");
+
+	if ((retries == MAX_UNLIMITED_TASK_RETRIES) &&
+	    !(tt->flags & TASK_INIT_DONE))
+		error(FATAL,
+		    "\ncannot gather a stable task list via xarray (%d retries)\n",
+			retries);
+
+	if (count > tt->max_tasks) {
+		tt->max_tasks = count + TASK_SLUSH;
+		allocate_task_space(tt->max_tasks);
+	}
+
+	BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
+	tt->callbacks = 0;
+	xp.index = 0;
+	xp.value = (void *)&xarray_task_callback;
+	count = do_xarray(tt->pid_xarray, XARRAY_DUMP_CB, &xp);
+	if (CRASHDEBUG(1))
+		console("do_xarray: count: %ld  tt->callbacks: %d\n", count, tt->callbacks);
+
+	if (count > tt->max_tasks) {
+		retries++;
+		goto retry_xarray;
+	}
+
+	if (!hq_open()) {
+		error(INFO, "cannot hash task_struct entries\n");
+		if (!(tt->flags & TASK_INIT_DONE))
+			clean_exit(1);
+		error(INFO, "using stale task_structs\n");
+		return;
+       }
+
+	/*
+	 *  Get the idle threads first.
+	 */
+	cnt = 0;
+	for (i = 0; i < kt->cpus; i++) {
+		if (!tt->idle_threads[i])
+			continue;
+		if (hq_enter(tt->idle_threads[i]))
+			cnt++;
+		else
+			error(WARNING, "%sduplicate idle tasks?\n",
+				DUMPFILE() ? "\n" : "");
+	}
+
+	for (i = 0; i < tt->max_tasks; i++) {
+		tlp = (ulong *)tt->task_local;
+		tlp += i;
+		if ((next = *tlp) == 0)
+			break;
+
+		/*
+		 *  Translate xarray contents to PIDTYPE_PID task.
+		 *  - the xarray contents are struct pid pointers
+		 *  - upid is contained in pid.numbers[0]
+		 *  - upid.ns should point to init->init_pid_ns
+		 *  - pid->tasks[0] is first hlist_node in task->pids[3]
+		 *  - get task from address of task->pids[0]
+		 */
+		if (!readmem(next, KVADDR, pidbuf,
+		    SIZE(pid), "pid", RETURN_ON_ERROR|QUIET)) {
+			error(INFO, "\ncannot read pid struct from xarray\n");
+			if (DUMPFILE())
+				continue;
+			hq_close();
+			retries++;
+			goto retry_xarray;
+		}
+
+		upid_ns = ULONG(pidbuf + OFFSET(pid_numbers) + OFFSET(upid_ns));
+		if (upid_ns != tt->init_pid_ns)
+			continue;
+		pid_tasks_0 = ULONG(pidbuf + OFFSET(pid_tasks));
+		if (!pid_tasks_0)
+			continue;
+		if (VALID_MEMBER(task_struct_pids))
+			task = pid_tasks_0 - OFFSET(task_struct_pids);
+		else
+			task = pid_tasks_0 - OFFSET(task_struct_pid_links);
+
+		if (CRASHDEBUG(1))
+			console("pid: %lx  ns: %lx  tasks[0]: %lx task: %lx\n",
+				next, upid_ns, pid_tasks_0, task);
+
+		if (is_idle_thread(task))
+			continue;
+
+		if (!IS_TASK_ADDR(task)) {
+			error(INFO, "%s: IDR xarray: invalid task address: %lx\n",
+				DUMPFILE() ? "\n" : "", task);
+			if (DUMPFILE())
+				break;
+			hq_close();
+			retries++;
+			goto retry_xarray;
+		}
+
+		if (!hq_enter(task)) {
+			error(INFO, "%s: IDR xarray: duplicate task: %lx\n",
+				DUMPFILE() ? "\n" : "", task);
+			if (DUMPFILE())
+				break;
+			hq_close();
+			retries++;
+			goto retry_xarray;
+		}
+
+		cnt++;
+	}
+
+	BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
+	cnt = retrieve_list((ulong *)tt->task_local, cnt);
+	hq_close();
+
+	clear_task_cache();
+
+        for (i = 0, tlp = (ulong *)tt->task_local, tt->running_tasks = 0;
+             i < tt->max_tasks; i++, tlp++) {
+		if (!(*tlp))
+			continue;
+
+		if (!IS_TASK_ADDR(*tlp)) {
+			error(WARNING,
+		            "%sinvalid task address found in task list: %lx\n",
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE())
+				continue;
+			retries++;
+			goto retry_xarray;
+		}
+
+		if (!(tp = fill_task_struct(*tlp))) {
+			if (DUMPFILE())
+				continue;
+			retries++;
+			goto retry_xarray;
 		}
 
 		add_context(*tlp, tp);
@@ -4133,6 +4368,10 @@ task_pointer_string(struct task_context *tc, ulong do_kstackp, char *buf)
         		readmem(tc->task + OFFSET(task_struct_thread_ksp), 
 				KVADDR, &bt->stkptr, sizeof(void *),
                 		"thread_struct ksp", FAULT_ON_ERROR);
+		} else if (VALID_MEMBER(task_struct_thread_context_sp)) {
+			readmem(tc->task + OFFSET(task_struct_thread_context_sp), 
+				KVADDR, &bt->stkptr, sizeof(void *),
+				"cpu_context sp", FAULT_ON_ERROR);
 		} else {
 			if ((bt->stackbase = GET_STACKBASE(tc->task))) {
 				bt->stacktop = GET_STACKTOP(tc->task);
@@ -4140,6 +4379,8 @@ task_pointer_string(struct task_context *tc, ulong do_kstackp, char *buf)
 				bt->tc = tc;
 				bt->flags |= BT_KSTACKP;
 				back_trace(bt);
+				if (bt->stackbuf)
+					FREEBUF(bt->stackbuf);
 			} else
 				bt->stkptr = 0;
 		}
@@ -5172,6 +5413,7 @@ static long _WAKING_ = TASK_STATE_UNINITIALIZED;
 static long _NONINTERACTIVE_ = TASK_STATE_UNINITIALIZED;
 static long _PARKED_ = TASK_STATE_UNINITIALIZED;
 static long _NOLOAD_ = TASK_STATE_UNINITIALIZED;
+static long _NEW_ = TASK_STATE_UNINITIALIZED;
 
 #define valid_task_state(X) ((X) != TASK_STATE_UNINITIALIZED)
 
@@ -5249,6 +5491,10 @@ dump_task_states(void)
 	if (valid_task_state(_NOLOAD_))
 		fprintf(fp, "            NOLOAD: %3ld (0x%lx)\n", 
 			_NOLOAD_, _NOLOAD_);
+
+	if (valid_task_state(_NEW_))
+		fprintf(fp, "               NEW: %3ld (0x%lx)\n",
+			_NEW_, _NEW_);
 }
 
 
@@ -5282,6 +5528,7 @@ old_defaults:
 	/*
 	 *  If the later version of stat_nam[] array exists that contains 
 	 *  WAKING, WAKEKILL and PARKED, use it instead of task_state_array[].
+	 *  Available since kernel version 2.6.33 to 4.13.
 	 */
 	if (((len = get_array_length("stat_nam", NULL, 0)) > 0) &&
 	    read_string(symbol_value("stat_nam"), buf, BUFSIZE-1) &&
@@ -5330,6 +5577,9 @@ old_defaults:
 				break;
 			case 'N':
 				_NOLOAD_ = (1 << (i-1));
+				break;
+			case 'n':
+				_NEW_ = (1 << (i-1));
 				break;
 			}
 		}
@@ -5393,7 +5643,16 @@ old_defaults:
 		_NONINTERACTIVE_ = 64;
 	}
 
-	if (THIS_KERNEL_VERSION >= LINUX(2,6,32)) {
+	if (THIS_KERNEL_VERSION >= LINUX(4,14,0)) {
+		if (valid_task_state(_PARKED_)) {
+			bitpos = _PARKED_;
+			_DEAD_ |= (bitpos << 1);    /* TASK_DEAD */
+			_WAKEKILL_ = (bitpos << 2); /* TASK_WAKEKILL */
+			_WAKING_ = (bitpos << 3);   /* TASK_WAKING */
+			_NOLOAD_ = (bitpos << 4);   /* TASK_NOLOAD */
+			_NEW_ = (bitpos << 5);      /* TASK_NEW */
+		}
+	} else if (THIS_KERNEL_VERSION >= LINUX(2,6,32)) {
 		/*
 	 	 * Account for states not listed in task_state_array[]
 		 */
@@ -5481,6 +5740,10 @@ task_state_string_verbose(ulong task, char *buf)
 		sprintf(&buf[strlen(buf)], "%sTASK_NOLOAD",
 			count++ ? "|" : "");
 
+	if (valid_task_state(_NEW_) && (state & _NEW_))
+		sprintf(&buf[strlen(buf)], "%sTASK_NEW",
+			count++ ? "|" : "");
+
 	if (valid_task_state(_NONINTERACTIVE_) &&
 	    (state & _NONINTERACTIVE_))
 		sprintf(&buf[strlen(buf)], "%sTASK_NONINTERACTIVE",
@@ -5530,7 +5793,11 @@ task_state_string(ulong task, char *buf, int verbose)
 	}
 
 	if (state & _UNINTERRUPTIBLE_) {
-		sprintf(buf, "UN");
+		if (valid_task_state(_NOLOAD_) &&
+		    (state & _NOLOAD_))
+			sprintf(buf, "ID");
+		else
+			sprintf(buf, "UN");
 		valid++; 
 		set++;
 	}
@@ -5573,6 +5840,11 @@ task_state_string(ulong task, char *buf, int verbose)
 
 	if (state == _WAKING_) {
 		sprintf(buf, "WA"); 
+		valid++;
+	}
+
+	if (state == _NEW_) {
+		sprintf(buf, "NE");
 		valid++;
 	}
 
@@ -6273,6 +6545,8 @@ cmd_foreach(void)
 		    STREQ(args[optind], "DE") ||
 		    STREQ(args[optind], "PA") ||
 		    STREQ(args[optind], "WA") ||
+		    STREQ(args[optind], "ID") ||
+		    STREQ(args[optind], "NE") ||
 		    STREQ(args[optind], "SW")) {
 
 			if (fd->flags & FOREACH_STATE)
@@ -6298,6 +6572,10 @@ cmd_foreach(void)
 				fd->state = _PARKED_;
 			else if (STREQ(args[optind], "WA"))
 				fd->state = _WAKING_;
+			else if (STREQ(args[optind], "ID"))
+				fd->state = _UNINTERRUPTIBLE_|_NOLOAD_;
+			else if (STREQ(args[optind], "NE"))
+				fd->state = _NEW_;
 
 			if (fd->state == TASK_STATE_UNINITIALIZED)
 				error(FATAL, 
@@ -6678,6 +6956,19 @@ foreach(struct foreach_data *fd)
 			if (fd->state == _RUNNING_) {
 				if (task_state(tc->task) != _RUNNING_)
 					continue;
+			} else if (fd->state & _UNINTERRUPTIBLE_) {
+				if (!(task_state(tc->task) & _UNINTERRUPTIBLE_))
+					continue;
+
+				if (valid_task_state(_NOLOAD_)) {
+					if (fd->state & _NOLOAD_) {
+						if (!(task_state(tc->task) & _NOLOAD_))
+							continue;
+					} else {
+						if ((task_state(tc->task) & _NOLOAD_))
+							continue;
+					}
+				}
 			} else if (!(task_state(tc->task) & fd->state))
 				continue;
 		}
@@ -7298,6 +7589,8 @@ dump_task_table(int verbose)
                 fprintf(fp, "refresh_active_task_table()\n");
         else if (tt->refresh_task_table == refresh_radix_tree_task_table)
                 fprintf(fp, "refresh_radix_tree_task_table()\n");
+        else if (tt->refresh_task_table == refresh_xarray_task_table)
+                fprintf(fp, "refresh_xarray_task_table()\n");
 	else
 		fprintf(fp, "%lx\n", (ulong)tt->refresh_task_table);
 
@@ -7337,6 +7630,9 @@ dump_task_table(int verbose)
 	if (tt->flags & PID_RADIX_TREE)
 		sprintf(&buf[strlen(buf)],
 			"%sPID_RADIX_TREE", others++ ? "|" : "");
+	if (tt->flags & PID_XARRAY)
+		sprintf(&buf[strlen(buf)],
+			"%sPID_XARRAY", others++ ? "|" : "");
         if (tt->flags & THREAD_INFO)
                 sprintf(&buf[strlen(buf)], 
 			"%sTHREAD_INFO", others++ ? "|" : "");
@@ -7373,6 +7669,7 @@ dump_task_table(int verbose)
 	fprintf(fp, "        task_local: %lx\n",  (ulong)tt->task_local);
 	fprintf(fp, "         max_tasks: %d\n", tt->max_tasks);
 	fprintf(fp, "    pid_radix_tree: %lx\n", tt->pid_radix_tree);
+	fprintf(fp, "        pid_xarray: %lx\n", tt->pid_xarray);
 	fprintf(fp, "         callbacks: %d\n", tt->callbacks);
 	fprintf(fp, "        nr_threads: %d\n", tt->nr_threads);
 	fprintf(fp, "     running_tasks: %ld\n", tt->running_tasks);

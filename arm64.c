@@ -125,7 +125,8 @@ arm64_init(int when)
 			free(string);
 		}
 
-		if (ms->kimage_voffset) {
+		if (ms->kimage_voffset ||
+		    (ACTIVE() && (symbol_value_from_proc_kallsyms("kimage_voffset") != BADVAL))) {
 			machdep->flags |= NEW_VMEMMAP;
 
 			/*
@@ -142,6 +143,12 @@ arm64_init(int when)
 	case PRE_GDB:
 		if (kernel_symbol_exists("kimage_voffset"))
 			machdep->flags |= NEW_VMEMMAP;
+
+		if (!machdep->pagesize && 
+		    (string = pc->read_vmcoreinfo("PAGESIZE"))) {
+			machdep->pagesize = atoi(string);
+			free(string);
+		}
 
 		if (!machdep->pagesize) {
 			/*
@@ -771,6 +778,17 @@ arm64_calc_kimage_voffset(void)
 		char *p1;
 		int errflag;
 		FILE *iomem;
+		ulong kimage_voffset, vaddr;
+
+		if (pc->flags & PROC_KCORE) {
+			kimage_voffset = symbol_value_from_proc_kallsyms("kimage_voffset");
+			if ((kimage_voffset != BADVAL) && 
+			    (READMEM(pc->mfd, &vaddr, sizeof(ulong),
+			     kimage_voffset, KCORE_USE_VADDR) > 0)) {
+				ms->kimage_voffset = vaddr;
+				return;
+			}
+		}
 
 		if ((iomem = fopen("/proc/iomem", "r")) == NULL)
 			return;
@@ -838,16 +856,28 @@ arm64_calc_phys_offset(void)
 		int errflag;
 		FILE *iomem;
 		physaddr_t paddr;
+		ulong vaddr;
 		struct syment *sp;
+		char *string;
 
 		if ((machdep->flags & NEW_VMEMMAP) &&
 		    ms->kimage_voffset && (sp = kernel_symbol_search("memstart_addr"))) {
-			if (pc->flags & PROC_KCORE)
+			if (pc->flags & PROC_KCORE) {
+				if ((string = pc->read_vmcoreinfo("NUMBER(PHYS_OFFSET)"))) {
+					ms->phys_offset = htol(string, QUIET, NULL);
+					free(string);
+					return;
+				}
+				vaddr = symbol_value_from_proc_kallsyms("memstart_addr");
+				if (vaddr == BADVAL)
+					vaddr = sp->value;
 				paddr = KCORE_USE_VADDR;
-			else
+			} else {
+				vaddr = sp->value;
 				paddr =	sp->value - machdep->machspec->kimage_voffset;
+			}
 			if (READMEM(pc->mfd, &phys_offset, sizeof(phys_offset),
-			    sp->value, paddr) > 0) {
+			    vaddr, paddr) > 0) {
 				ms->phys_offset = phys_offset;
 				return;
 			}
@@ -3668,9 +3698,11 @@ arm64_calc_VA_BITS(void)
         if ((string = pc->read_vmcoreinfo("NUMBER(VA_BITS)"))) {
                 value = atol(string);
                 free(string);
-		if (machdep->machspec->VA_BITS != value)
+		if (machdep->machspec->VA_BITS != value) {
 			error(WARNING, "VA_BITS: calculated: %ld  vmcoreinfo: %ld\n",
 				machdep->machspec->VA_BITS, value);
+			machdep->machspec->VA_BITS = value;
+		}
         }
 
 
