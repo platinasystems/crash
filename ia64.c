@@ -55,7 +55,7 @@ static ulong ia64_in_per_cpu_mca_stack(void);
 static struct line_number_hook ia64_line_number_hooks[];
 static ulong ia64_get_stackbase(ulong);
 static ulong ia64_get_stacktop(ulong);
-static void parse_cmdline_arg(void);
+static void parse_cmdline_args(void);
 static void ia64_calc_phys_start(void);
 
 struct unw_frame_info;
@@ -145,8 +145,8 @@ ia64_init(int when)
 		machdep->verify_paddr = ia64_verify_paddr;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
                 machdep->machspec->phys_start = UNKNOWN_PHYS_START;
-                if (machdep->cmdline_arg) 
-			parse_cmdline_arg();
+                if (machdep->cmdline_args[0]) 
+			parse_cmdline_args();
 		if (ACTIVE())
 			machdep->flags |= DEVMEMRD;
                 break;     
@@ -267,9 +267,9 @@ ia64_init(int when)
  */
 
 void
-parse_cmdline_arg(void)
+parse_cmdline_args(void)
 {
-	int i, c, errflag;
+	int index, i, c, errflag;
 	char *p;
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
@@ -280,92 +280,98 @@ parse_cmdline_arg(void)
         ms = &ia64_machine_specific;
 	vm_flag = 0;
 
-	if (!strstr(machdep->cmdline_arg, "=")) {
-		errflag = 0;
-        	value = htol(machdep->cmdline_arg,
-                	RETURN_ON_ERROR|QUIET, &errflag);
-		if (!errflag) {
-        		ms->phys_start = value;
-			error(NOTE, "setting phys_start to: 0x%lx\n",
-				ms->phys_start);
-		} else
-			error(WARNING, "ignoring --machdep option: %s\n\n",
-				machdep->cmdline_arg);
-		return;
-        }
+	for (index = 0; index < MAX_MACHDEP_ARGS; index++) {
 
-	strcpy(buf, machdep->cmdline_arg);
+		if (!machdep->cmdline_args[index])
+			break;
 
-	for (p = buf; *p; p++) {
-		if (*p == ',')
-			 *p = ' ';
-	}
-
-	c = parse_line(buf, arglist);
-
-	for (i = 0; i < c; i++) {
-		errflag = 0;
-
-		if (STRNEQ(arglist[i], "phys_start=")) {
-			p = arglist[i] + strlen("phys_start=");
-			if (strlen(p)) {
-        			value = htol(p, RETURN_ON_ERROR|QUIET, 
-					&errflag);
-				if (!errflag) {
-        				ms->phys_start = value;
-					error(NOTE, 
-					    "setting phys_start to: 0x%lx\n",
-						ms->phys_start);
-					continue;
-				}
-			}
-		} else if (STRNEQ(arglist[i], "init_stack_size=")) {
-			p = arglist[i] + strlen("init_stack_size=");
-			if (strlen(p)) {
-				value = stol(p, RETURN_ON_ERROR|QUIET, 
-					&errflag);
-				if (!errflag) {
-					ms->ia64_init_stack_size = (int)value;
-					error(NOTE, 
-		    	    	      "setting init_stack_size to: 0x%x (%d)\n",
-				    		ms->ia64_init_stack_size,
-				    		ms->ia64_init_stack_size);
-					continue;
-				}
-			}
-		} else if (STRNEQ(arglist[i], "vm=")) {
-			vm_flag++;
-			p = arglist[i] + strlen("vm=");
-			if (strlen(p)) {
-				if (STREQ(p, "4l")) {
-					machdep->flags |= VM_4_LEVEL;
-					continue;
-				}
-			}
+		if (!strstr(machdep->cmdline_args[index], "=")) {
+			errflag = 0;
+	        	value = htol(machdep->cmdline_args[index],
+	                	RETURN_ON_ERROR|QUIET, &errflag);
+			if (!errflag) {
+	        		ms->phys_start = value;
+				error(NOTE, "setting phys_start to: 0x%lx\n",
+					ms->phys_start);
+			} else
+				error(WARNING, "ignoring --machdep option: %s\n\n",
+					machdep->cmdline_args[index]);
+			continue;
+	        }
+	
+		strcpy(buf, machdep->cmdline_args[index]);
+	
+		for (p = buf; *p; p++) {
+			if (*p == ',')
+				 *p = ' ';
 		}
-
-		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
-	} 
-
-	if (vm_flag) {
-		switch (machdep->flags & (VM_4_LEVEL))
-		{
-			case VM_4_LEVEL:
-				error(NOTE, "using 4-level pagetable\n");
-				c++;
-				break;
-				
-			default:
-				error(WARNING, "invalid vm= option\n");
-				c++;
-				machdep->flags &= ~(VM_4_LEVEL);
-				break;
+	
+		c = parse_line(buf, arglist);
+	
+		for (i = 0; i < c; i++) {
+			errflag = 0;
+	
+			if (STRNEQ(arglist[i], "phys_start=")) {
+				p = arglist[i] + strlen("phys_start=");
+				if (strlen(p)) {
+	        			value = htol(p, RETURN_ON_ERROR|QUIET, 
+						&errflag);
+					if (!errflag) {
+	        				ms->phys_start = value;
+						error(NOTE, 
+						    "setting phys_start to: 0x%lx\n",
+							ms->phys_start);
+						continue;
+					}
+				}
+			} else if (STRNEQ(arglist[i], "init_stack_size=")) {
+				p = arglist[i] + strlen("init_stack_size=");
+				if (strlen(p)) {
+					value = stol(p, RETURN_ON_ERROR|QUIET, 
+						&errflag);
+					if (!errflag) {
+						ms->ia64_init_stack_size = (int)value;
+						error(NOTE, 
+			    	    	      "setting init_stack_size to: 0x%x (%d)\n",
+					    		ms->ia64_init_stack_size,
+					    		ms->ia64_init_stack_size);
+						continue;
+					}
+				}
+			} else if (STRNEQ(arglist[i], "vm=")) {
+				vm_flag++;
+				p = arglist[i] + strlen("vm=");
+				if (strlen(p)) {
+					if (STREQ(p, "4l")) {
+						machdep->flags |= VM_4_LEVEL;
+						continue;
+					}
+				}
+			}
+	
+			error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
 		} 
+	
+		if (vm_flag) {
+			switch (machdep->flags & (VM_4_LEVEL))
+			{
+				case VM_4_LEVEL:
+					error(NOTE, "using 4-level pagetable\n");
+					c++;
+					break;
+					
+				default:
+					error(WARNING, "invalid vm= option\n");
+					c++;
+					machdep->flags &= ~(VM_4_LEVEL);
+					break;
+			} 
+		}
+	
+	
+		if (c)
+			fprintf(fp, "\n");
 	}
-
-
-	if (c)
-		fprintf(fp, "\n");
 }
 
 
@@ -444,7 +450,7 @@ ia64_in_per_cpu_mca_stack(void)
 void
 ia64_dump_machdep_table(ulong arg)
 {
-        int others, verbose;
+        int i, others, verbose;
 	struct machine_specific *ms;
 
 	verbose = FALSE;
@@ -589,7 +595,11 @@ ia64_dump_machdep_table(ulong arg)
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
-	fprintf(fp, "        cmdline_arg: %s\n", machdep->cmdline_arg);
+        for (i = 0; i < MAX_MACHDEP_ARGS; i++) {
+                fprintf(fp, "    cmdline_args[%d]: %s\n",
+                        i, machdep->cmdline_args[i] ?
+                        machdep->cmdline_args[i] : "(unused)");
+        }
         fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
         fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
         fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
@@ -4255,8 +4265,8 @@ ia64_init_hyper(int when)
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
                 machdep->machspec->phys_start = UNKNOWN_PHYS_START;
 		/* ODA: if need make hyper version
-                if (machdep->cmdline_arg) 
-			parse_cmdline_arg(); */
+                if (machdep->cmdline_args[0]) 
+			parse_cmdline_args(); */
                 break;     
 
         case PRE_GDB:

@@ -1251,7 +1251,7 @@ char *help_bt[] = {
 "bt",
 "backtrace",
 #if defined(GDB_6_0) || defined(GDB_6_1)
-"[-a|-r|-t|-T|-l|-e|-E|-f|-o|-O] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
+"[-a|-g|-r|-t|-T|-l|-e|-E|-f|-o|-O] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
 #else
 "[-a|-r|-t|-l|-e|-f|-g] [-R ref] [ -I ip ] [-S sp] [pid | taskp]",
 #endif
@@ -1259,6 +1259,8 @@ char *help_bt[] = {
 "  trace of the current context will be displayed.\n",
 "       -a  displays the stack traces of the active task on each CPU.",
 "           (only applicable to crash dumps)",
+"       -g  displays the stack traces of all threads in the thread group of",
+"           the target task; the thread group leader will be displayed first.",
 "       -r  display raw stack data, consisting of a memory dump of the two",
 "           pages of memory containing the task_union structure.",
 "       -t  display all text symbols found from the last known stack location",

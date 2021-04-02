@@ -828,19 +828,26 @@ non_matching_kernel(void)
                 fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug,
                         debug_kernel_version(pc->namelist_debug));
 
-        fprintf(fp, "    DUMPFILE: ");
+	if (dumpfile_is_split())
+        	fprintf(fp, "   DUMPFILES: ");
+	else
+        	fprintf(fp, "    DUMPFILE: ");
         if (ACTIVE()) {
                 if (REMOTE_ACTIVE())
                         fprintf(fp, "%s@%s  (remote live system)\n",
                                 pc->server_memsrc, pc->server);
-                else
+                else 
                         fprintf(fp, "%s\n", pc->live_memsrc);
         } else {
                 if (REMOTE_DUMPFILE())
                         fprintf(fp, "%s@%s  (remote dumpfile)\n",
                                 pc->server_memsrc, pc->server);
-                else
-                        fprintf(fp, "%s\n", pc->dumpfile);
+                else {
+                        if (dumpfile_is_split())
+                                show_split_dumpfiles();
+                        else
+                                fprintf(fp, "%s", pc->dumpfile);
+                }
         }
 
 	fprintf(fp, "\n");
@@ -1600,11 +1607,54 @@ clone_bt_info(struct bt_info *orig, struct bt_info *new,
 		bt->ref = &reference;                         \
         	bt->ref->str = refptr;                        \
 	}
+
+#define DO_TASK_BACKTRACE() 					\
+	{							\
+	BT_SETUP(tc);						\
+	if (!BT_REFERENCE_CHECK(bt))				\
+		print_task_header(fp, tc, subsequent++);	\
+	back_trace(bt);						\
+	}
  
+#define DO_THREAD_GROUP_BACKTRACE()	 			\
+	{							\
+	tc = pid_to_context(tgid);				\
+	BT_SETUP(tc);						\
+	if (!BT_REFERENCE_CHECK(bt))				\
+		print_task_header(fp, tc, subsequent++);	\
+	if (setjmp(pc->foreach_loop_env)) {			\
+		pc->flags &= ~IN_FOREACH;			\
+		free_all_bufs();				\
+	} else {						\
+		pc->flags |= IN_FOREACH;			\
+		back_trace(bt);					\
+		pc->flags &= ~IN_FOREACH;			\
+	}							\
+	tc = FIRST_CONTEXT();					\
+	for (i = 0; i < RUNNING_TASKS(); i++, tc++) {		\
+		if (tc->pid == tgid) 				\
+			continue;				\
+		if (task_tgid(tc->task) != tgid)		\
+			continue;				\
+		BT_SETUP(tc);					\
+		if (!BT_REFERENCE_CHECK(bt))			\
+			print_task_header(fp, tc, subsequent++);\
+		if (setjmp(pc->foreach_loop_env)) {		\
+			pc->flags &= ~IN_FOREACH;		\
+			free_all_bufs();			\
+		} else {					\
+			pc->flags |= IN_FOREACH;		\
+			back_trace(bt);				\
+			pc->flags &= ~IN_FOREACH;		\
+		}						\
+       	}							\
+	pc->flags &= ~IN_FOREACH;				\
+	}
+
 void
 cmd_bt(void)
 {
-	int c;
+	int i, c;
 	ulong value;
         struct task_context *tc;
 	int count, subsequent, active;
@@ -1612,6 +1662,7 @@ cmd_bt(void)
 	struct bt_info bt_info, bt_setup, *bt;
 	struct reference reference;
 	char *refptr;
+	ulong tgid;
 
 	tc = NULL;
 	subsequent = active = count = 0;
@@ -1688,8 +1739,7 @@ cmd_bt(void)
 
 		case 'g':
 #if defined(GDB_6_0) || defined(GDB_6_1)
-			error(FATAL, 
-		       "-g option is not supported with this version of gdb\n");
+			bt->flags |= BT_THREAD_GROUP;
 #else
 			bt->flags |= BT_USE_GDB;
 #endif
@@ -1838,33 +1888,36 @@ cmd_bt(void)
 	if (active) {
 		if (ACTIVE())
 			error(FATAL, 
-				"-a option not supported on a live system\n");
+			    "-a option not supported on a live system\n");
+
+		if (bt->flags & BT_THREAD_GROUP)
+			error(FATAL, 
+			    "-a option cannot be used with the -g option\n");
 
 		for (c = 0; c < NR_CPUS; c++) {
 			if (setjmp(pc->foreach_loop_env)) {
+				pc->flags &= ~IN_FOREACH;
 				free_all_bufs();
 				continue;
 			}
-			pc->flags |= IN_FOREACH;
-
 			if ((tc = task_to_context(tt->panic_threads[c]))) {
-				BT_SETUP(tc);
-				if (!BT_REFERENCE_CHECK(bt))
-					print_task_header(fp, tc, subsequent++);
-				back_trace(bt);
+				pc->flags |= IN_FOREACH;
+				DO_TASK_BACKTRACE();
+				pc->flags &= ~IN_FOREACH;
 			}
 		}
-                pc->flags &= ~IN_FOREACH;
 
 		return;
 	}
 
 	if (!args[optind]) {
-		tc = CURRENT_CONTEXT();
-		BT_SETUP(tc);
-		if (!BT_REFERENCE_CHECK(bt))
-			print_task_header(fp, tc, 0);
-		back_trace(bt);
+		if (CURRENT_PID() && (bt->flags & BT_THREAD_GROUP)) {
+			tgid = task_tgid(CURRENT_TASK());
+			DO_THREAD_GROUP_BACKTRACE();
+		} else {
+			tc = CURRENT_CONTEXT();
+			DO_TASK_BACKTRACE();
+		}
 		return;
 	}
 
@@ -1873,19 +1926,31 @@ cmd_bt(void)
                 {
                 case STR_PID:
                         for (tc = pid_to_context(value); tc; tc = tc->tc_next) {
-                                BT_SETUP(tc);
-                                if (!BT_REFERENCE_CHECK(bt))
-                                        print_task_header(fp, tc, subsequent++);
-                                back_trace(bt);
-                        }
-                        break;
+				if (tc->pid && (bt->flags & BT_THREAD_GROUP)) {
+					tgid = task_tgid(tc->task);
+					DO_THREAD_GROUP_BACKTRACE();
+					break;
+				} else if (tc->tc_next) {
+		                        if (setjmp(pc->foreach_loop_env)) {
+						pc->flags &= ~IN_FOREACH;
+						free_all_bufs();
+						continue;
+					}
+					pc->flags |= IN_FOREACH;
+					DO_TASK_BACKTRACE();
+					pc->flags &= ~IN_FOREACH;
+				} else 
+					DO_TASK_BACKTRACE();
+			}
+			break;
 
                 case STR_TASK:
-                        BT_SETUP(tc);
-                        if (!BT_REFERENCE_CHECK(bt))
-                                print_task_header(fp, tc, subsequent++);
-                        back_trace(bt);
-                        break;
+			if (tc->pid && (bt->flags & BT_THREAD_GROUP)) {
+				tgid = task_tgid(value);
+				DO_THREAD_GROUP_BACKTRACE();
+			} else
+				DO_TASK_BACKTRACE();
+			break;
 
                 case STR_INVALID:
                         error(INFO, "%sinvalid task or pid value: %s\n",
@@ -3571,7 +3636,10 @@ display_sys_stats(void)
 		fprintf(fp, "DEBUG KERNEL: %s %s\n", pc->namelist_debug,
 			debug_kernel_version(pc->namelist_debug));
 
-	fprintf(fp, "    DUMPFILE: ");
+	if (dumpfile_is_split())
+		fprintf(fp, "   DUMPFILES: ");
+	else
+		fprintf(fp, "    DUMPFILE: ");
         if (ACTIVE()) {
 		if (REMOTE_ACTIVE()) 
 			fprintf(fp, "%s@%s  (remote live system)\n",
@@ -3582,13 +3650,18 @@ display_sys_stats(void)
 		if (REMOTE_DUMPFILE())
                 	fprintf(fp, "%s@%s  (remote dumpfile)", 
 				pc->server_memsrc, pc->server);
-		else
-                	fprintf(fp, "%s", pc->dumpfile);
+		else {
+			if (dumpfile_is_split())
+				show_split_dumpfiles();
+			else
+                		fprintf(fp, "%s", pc->dumpfile);
+		}
 
 		if (NETDUMP_DUMPFILE() && is_partial_netdump())
 			fprintf(fp, "  [PARTIAL DUMP]");
 
-		if (DISKDUMP_DUMPFILE() && is_partial_diskdump())
+		if (DISKDUMP_DUMPFILE() && !dumpfile_is_split() &&
+		     is_partial_diskdump())
 			fprintf(fp, "  [PARTIAL DUMP]");
 
 		fprintf(fp, "\n");

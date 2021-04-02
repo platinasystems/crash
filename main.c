@@ -65,7 +65,7 @@ static struct option long_options[] = {
 int
 main(int argc, char **argv)
 {
-	int c, option_index;
+	int i, c, option_index;
 
 	setup_environment(argc, argv);
 
@@ -128,8 +128,17 @@ main(int argc, char **argv)
 				kt->flags |= SMP;
 
 		        else if (STREQ(long_options[option_index].name, 
-			    "machdep")) 
-				machdep->cmdline_arg = optarg;
+			    "machdep")) {
+				for (i = 0; i < MAX_MACHDEP_ARGS; i++) {
+					if (machdep->cmdline_args[i])
+						continue;
+					machdep->cmdline_args[i] = optarg;
+					break;
+				}
+				if (i == MAX_MACHDEP_ARGS)
+					error(INFO, "option ignored: %s\n",
+						optarg);
+			}
 
 		        else if (STREQ(long_options[option_index].name, 
 			    "version")) { 
@@ -297,7 +306,15 @@ main(int argc, char **argv)
 			break;
 
 		case 'm':
-			machdep->cmdline_arg = optarg;
+			for (i = 0; i < MAX_MACHDEP_ARGS; i++) {
+				if (machdep->cmdline_args[i])
+					continue;
+				machdep->cmdline_args[i] = optarg;
+				break;
+			}
+			if (i == MAX_MACHDEP_ARGS)
+				error(INFO, "option ignored: %s\n",
+					optarg);
 			break;
 
 		default:
@@ -396,7 +413,8 @@ main(int argc, char **argv)
                                 pc->writemem = write_xendump;
 
 			} else if (is_diskdump(argv[optind])) {
-                                if (pc->flags & MEMORY_SOURCES) {
+                                if ((pc->flags & MEMORY_SOURCES) &&
+                                    (!dumpfile_is_split())) {
                                         error(INFO,
                                             "too many dumpfile arguments\n");
                                         program_usage(SHORT_FORM);
