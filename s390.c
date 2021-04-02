@@ -663,6 +663,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 	backchain = ksp;
 	do {
 		unsigned long r14_stack_off;
+		struct load_module *lm;
 		int j;
 
 		/* Find stack: Either async, panic stack or task stack */
@@ -697,7 +698,10 @@ s390_back_trace_cmd(struct bt_info *bt)
 			skip_first_frame=0;
 		} else {
 			fprintf(fp," #%i [%08lx] ",i,backchain);
-			fprintf(fp,"%s at %x\n", closest_symbol(r14), r14);
+			fprintf(fp,"%s at %x", closest_symbol(r14), r14);
+			if (module_symbol(r14, NULL, &lm, NULL, 0))
+				fprintf(fp, " [%s]", lm->mod_name);
+			fprintf(fp, "\n");
 			if (bt->flags & BT_LINE_NUMBERS)
 				s390_dump_line_number(r14);
 			i++;

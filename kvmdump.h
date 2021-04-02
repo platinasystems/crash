@@ -24,6 +24,19 @@ struct mapinfo_trailer {
 	uint64_t magic;
 };
 
+struct register_set {
+	uint32_t cs;
+	uint32_t ss;
+	uint32_t ds;
+	uint32_t es;
+	uint32_t fs;
+	uint32_t gs;
+	uint64_t ip;
+	uint64_t flags;
+	uint64_t regs[16];
+};
+
+#define REGS_MAGIC    (0xfeedbeefdeadbabeULL)
 #define MAPFILE_MAGIC (0xfeedbabedeadbeefULL)
 #define CHKSUM_SIZE   (4096)
 
@@ -51,13 +64,20 @@ struct kvmdump_data {
 	ulong compresses;
 	uint64_t kvbase;
 	ulong *debug;
+	uint32_t cpu_devices;
+	struct register_set *registers;
 };
 
-#define TMPFILE           (0x2)
-#define MAPFILE           (0x4)
-#define MAPFILE_FOUND     (0x8)
-#define MAPFILE_APPENDED (0x10)
-#define NO_PHYS_BASE     (0x20)
+#define TMPFILE              (0x2)
+#define MAPFILE              (0x4)
+#define MAPFILE_FOUND        (0x8)
+#define MAPFILE_APPENDED    (0x10)
+#define NO_PHYS_BASE        (0x20)
+#define KVMHOST_32          (0x40)
+#define KVMHOST_64          (0x80)
+#define REGS_FROM_DUMPFILE (0x100)
+#define REGS_FROM_MAPFILE  (0x200)
+#define REGS_NOT_AVAIL     (0x400)
 
 extern struct kvmdump_data *kvm;
 
@@ -66,3 +86,23 @@ extern struct kvmdump_data *kvm;
 
 int store_mapfile_offset(uint64_t, off_t *);
 int load_mapfile_offset(uint64_t, off_t *);
+
+struct qemu_device_x86;
+int kvmdump_regs_store(uint32_t, struct qemu_device_x86 *);
+#define KVMDUMP_REGS_START   (NR_CPUS+1)
+#define KVMDUMP_REGS_END     (NR_CPUS+2)
+
+#define UPPER_32_BITS    (0xffffffff00000000ULL)
+
+enum CPU_REG {
+	R_EAX,
+	R_ECX,
+	R_EDX,
+	R_EBX,
+	R_ESP,
+	R_EBP,
+	R_ESI,
+	R_EDI,
+	R_GP_MAX,
+};
+

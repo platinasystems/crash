@@ -31,6 +31,7 @@ static int arm_verify_symbol(const char *, ulong, char);
 static int arm_is_module_addr(ulong);
 static int arm_is_kvaddr(ulong);
 static int arm_in_exception_text(ulong);
+static int arm_in_ret_from_syscall(ulong, int *);
 static void arm_back_trace(struct bt_info *);
 static void arm_back_trace_cmd(struct bt_info *);
 static ulong arm_processor_speed(void);
@@ -51,8 +52,6 @@ static ulong arm_get_task_pgd(ulong);
 static void arm_cmd_mach(void);
 static void arm_display_machine_stats(void);
 static int arm_get_smp_cpus(void);
-static void print_irq_member(char *, ulong, char *);
-static void arm_dump_irq(int);
 static void arm_init_machspec(void);
 
 static struct line_number_hook arm_line_number_hooks[];
@@ -73,7 +72,7 @@ struct arm_cpu_context_save {
 /*
  * Holds registers during the crash.
  */
-static struct arm_pt_regs panic_task_regs;
+static struct arm_pt_regs *panic_task_regs;
 
 #define PGDIR_SIZE() (4 * PAGESIZE())
 #define PGDIR_OFFSET(X) (((ulong)(X)) & (PGDIR_SIZE() - 1))
@@ -236,22 +235,15 @@ arm_init(int when)
 		machdep->line_number_hooks = arm_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = NULL;
-
-		if (symbol_exists("irq_desc"))
-			machdep->dump_irq = arm_dump_irq;
+		machdep->dump_irq = generic_dump_irq;
 
 		arm_init_machspec();
 		break;
 
 	case POST_GDB:
-		if (symbol_exists("irq_desc")) {
+		if (symbol_exists("irq_desc"))
 			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc,
 					  "irq_desc", NULL, 0);
-			if (MEMBER_EXISTS("irq_desc", "name"))
-				MEMBER_OFFSET_INIT(irq_desc_t_name, "irq_desc",
-						   "name");
-		}
-
 		/*
 		 * Registers for idle threads are saved in
 		 * thread_info.cpu_context.
@@ -342,10 +334,7 @@ arm_dump_machdep_table(ulong arg)
 	fprintf(fp, "              uvtop: arm_uvtop()\n");
 	fprintf(fp, "              kvtop: arm_kvtop()\n");
 	fprintf(fp, "       get_task_pgd: arm_get_task_pgd()\n");
-	if (symbol_exists("irq_desc"))
-		fprintf(fp, "           dump_irq: arm_dump_irq()\n");
-	else
-		fprintf(fp, "           dump_irq: NULL\n");
+	fprintf(fp, "           dump_irq: generic_dump_irq()\n");
 	fprintf(fp, "    get_stack_frame: arm_get_stack_frame()\n");
 	fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
 	fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
@@ -392,7 +381,6 @@ arm_dump_machdep_table(ulong arg)
 	fprintf(fp, "    kernel_text_end: %lx\n", ms->kernel_text_end);
 	fprintf(fp, "exception_text_start: %lx\n", ms->exception_text_start);
 	fprintf(fp, " exception_text_end: %lx\n", ms->exception_text_end);
-	fprintf(fp, "     crash_task_pid: %ld\n", ms->crash_task_pid);
 	fprintf(fp, "    crash_task_regs: %lx\n", (ulong)ms->crash_task_regs);
 }
 
@@ -482,73 +470,108 @@ arm_get_crash_notes(void)
 	struct machine_specific *ms = machdep->machspec;
 	ulong crash_notes;
 	Elf32_Nhdr *note;
-	ulong ptr, offset;
+	ulong offset;
 	char *buf, *p;
+	ulong *notes_ptrs;
+	ulong per_cpu_offsets_addr;
+	ulong *per_cpu_offsets;
+	ulong i;
 
 	if (!symbol_exists("crash_notes"))
 		return FALSE;
 
 	crash_notes = symbol_value("crash_notes");
 
-	if (kt->cpus > 1)
-		error(WARNING, "only one CPU is currently supported\n");
+	notes_ptrs = (ulong *)GETBUF(kt->cpus*sizeof(notes_ptrs[0]));
 
 	/*
 	 * Read crash_notes for the first CPU. crash_notes are in standard ELF
 	 * note format.
 	 */
-	if (!readmem(crash_notes, KVADDR, &ptr, sizeof(ptr), "crash_notes",
+	if (!readmem(crash_notes, KVADDR, &notes_ptrs[kt->cpus-1], 
+	    sizeof(notes_ptrs[kt->cpus-1]), "crash_notes",
 		     RETURN_ON_ERROR)) {
 		error(WARNING, "cannot read crash_notes\n");
+		FREEBUF(notes_ptrs);
 		return FALSE;
+	}
+
+	if (symbol_exists("__per_cpu_offset")) {
+
+		/* Get the __per_cpu_offset array */
+		per_cpu_offsets_addr = symbol_value("__per_cpu_offset");
+		
+		per_cpu_offsets = (ulong *)GETBUF(kt->cpus*sizeof(*per_cpu_offsets));
+		
+		if (!readmem(per_cpu_offsets_addr, KVADDR, per_cpu_offsets, 
+		    kt->cpus*sizeof(*per_cpu_offsets), "per_cpu_offsets",
+			     RETURN_ON_ERROR)) {
+			error(WARNING, "cannot read per_cpu_offsets\n");
+			FREEBUF(per_cpu_offsets);
+			return FALSE;
+		}
+
+		/* Add __per_cpu_offset for each cpu to form the pointer to the notes */
+		for (i = 0; i<kt->cpus; i++)
+			notes_ptrs[i] = notes_ptrs[kt->cpus-1] + per_cpu_offsets[i];
+		FREEBUF(per_cpu_offsets);
 	}
 
 	buf = GETBUF(SIZE(note_buf));
 
-	if (!readmem(ptr, KVADDR, buf, SIZE(note_buf), "note_buf_t",
-		     RETURN_ON_ERROR)) {
-		error(WARNING, "failed to read note_buf_t\n");
-		goto fail;
+	if (!(panic_task_regs = malloc(kt->cpus*sizeof(*panic_task_regs))))
+		error(FATAL, "cannot malloc panic_task_regs space\n");
+	
+	for  (i=0;i<kt->cpus;i++) {
+
+		if (!readmem(notes_ptrs[i], KVADDR, buf, SIZE(note_buf), "note_buf_t",
+			     RETURN_ON_ERROR)) {
+			error(WARNING, "failed to read note_buf_t\n");
+			goto fail;
+		}
+
+		/*
+		 * Do some sanity checks for this note before reading registers from it.
+		 */
+		note = (Elf32_Nhdr *)buf;
+		p = buf + sizeof(Elf32_Nhdr);
+
+		if (note->n_type != NT_PRSTATUS) {
+			error(WARNING, "invalid note (n_type != NT_PRSTATUS)\n");
+			goto fail;
+		}
+		if (p[0] != 'C' || p[1] != 'O' || p[2] != 'R' || p[3] != 'E') {
+			error(WARNING, "invalid note (name != \"CORE\"\n");
+			goto fail;
+		}
+
+		/*
+		 * Find correct location of note data. This contains elf_prstatus
+		 * structure which has registers etc. for the crashed task.
+		 */
+		offset = sizeof(Elf32_Nhdr);
+		offset = roundup(offset + note->n_namesz, 4);
+		p = buf + offset; /* start of elf_prstatus */
+
+		BCOPY(p + OFFSET(elf_prstatus_pr_reg), &panic_task_regs[i],
+		      sizeof(panic_task_regs[i]));
+
 	}
 
 	/*
-	 * Do some sanity checks for this note before reading registers from it.
-	 */
-	note = (Elf32_Nhdr *)buf;
-	p = buf + sizeof(Elf32_Nhdr);
-
-	if (note->n_type != NT_PRSTATUS) {
-		error(WARNING, "invalid note (n_type != NT_PRSTATUS)\n");
-		goto fail;
-	}
-	if (p[0] != 'C' || p[1] != 'O' || p[2] != 'R' || p[3] != 'E') {
-		error(WARNING, "invalid note (name != \"CORE\"\n");
-		goto fail;
-	}
-
-	/*
-	 * Find correct location of note data. This contains elf_prstatus
-	 * structure which has registers etc. for the crashed task.
-	 */
-	offset = sizeof(Elf32_Nhdr);
-	offset = roundup(offset + note->n_namesz, 4);
-	p = buf + offset; /* start of elf_prstatus */
-
-	BCOPY(p + OFFSET(elf_prstatus_pr_reg), &panic_task_regs,
-	      sizeof(panic_task_regs));
-
-	/*
-	 * And finally we have pid and registers for the crashed task. This is
+	 * And finally we have the registers for the crashed task. This is
 	 * used later on when dumping backtrace.
 	 */
-	ms->crash_task_pid = *(ulong *)(p + OFFSET(elf_prstatus_pr_pid));
-	ms->crash_task_regs = &panic_task_regs;
+	ms->crash_task_regs = panic_task_regs;
 
 	FREEBUF(buf);
+	FREEBUF(notes_ptrs);
 	return TRUE;
 
 fail:
 	FREEBUF(buf);
+	FREEBUF(notes_ptrs);
+	free(panic_task_regs);
 	return FALSE;
 }
 
@@ -629,6 +652,47 @@ arm_in_exception_text(ulong pc)
 
 	if (exception_start && exception_end)
 		return (pc >= exception_start && pc < exception_end);
+
+	return FALSE;
+}
+
+/*
+ * Returns TRUE if given pc points to a return from syscall
+ * entrypoint. In case the function returns TRUE and if offset is given,
+ * it is filled with the offset that should be added to the SP to get
+ * address of the exception frame where the user registers are.
+ */
+static int
+arm_in_ret_from_syscall(ulong pc, int *offset)
+{
+	/*
+	 * On fast syscall return path, the stack looks like:
+	 *
+	 * SP + 0	{r4, r5}
+	 * SP + 8	user pt_regs
+	 *
+	 * The asm syscall handler pushes fifth and sixth registers
+	 * onto the stack before calling the actual syscall handler.
+	 *
+	 * So in order to print out the user registers at the time
+	 * the syscall was made, we need to adjust SP for 8.
+	 */
+	if (pc == symbol_value("ret_fast_syscall")) {
+		if (offset)
+			*offset = 8;
+		return TRUE;
+	}
+
+	/*
+	 * In case we are on the slow syscall path, the SP already
+	 * points to the start of the user registers hence no
+	 * adjustments needs to be done.
+	 */
+	if (pc == symbol_value("ret_slow_syscall")) {
+		if (offset)
+			*offset = 0;
+		return TRUE;
+	}
 
 	return FALSE;
 }
@@ -996,20 +1060,20 @@ arm_get_dumpfile_stack_frame(struct bt_info *bt, ulong *nip, ulong *ksp)
 	if (!ms->crash_task_regs)
 		return FALSE;
 
-	if (tt->panic_task != bt->task || bt->tc->pid != ms->crash_task_pid)
+	if (!is_task_active(bt->task))
 		return FALSE;
-
+	
 	/*
 	 * We got registers for panic task from crash_notes. Just return them.
 	 */
-	*nip = ms->crash_task_regs->ARM_pc;
-	*ksp = ms->crash_task_regs->ARM_sp;
+	*nip = ms->crash_task_regs[bt->tc->processor].ARM_pc;
+	*ksp = ms->crash_task_regs[bt->tc->processor].ARM_sp;
 
 	/*
 	 * Also store pointer to all registers in case unwinding code needs
 	 * to access LR.
 	 */
-	bt->machdep = ms->crash_task_regs;
+	bt->machdep = &(ms->crash_task_regs[bt->tc->processor]);
 
 	return TRUE;
 }
@@ -1133,6 +1197,7 @@ arm_dump_backtrace_entry(struct bt_info *bt, int level, ulong from, ulong sp)
 {
 	struct load_module *lm;
 	const char *name;
+	int offset = 0;
 
 	name = closest_symbol(bt->instptr);
 
@@ -1154,8 +1219,13 @@ arm_dump_backtrace_entry(struct bt_info *bt, int level, ulong from, ulong sp)
 			fprintf(fp, "    %s\n", buf);
 	}
 
-	if (arm_in_exception_text(bt->instptr))
+	if (arm_in_exception_text(bt->instptr)) {
 		arm_dump_exception_stack(sp, sp + sizeof(struct arm_pt_regs));
+	} else if (arm_in_ret_from_syscall(from, &offset)) {
+		ulong nsp = sp + offset;
+
+		arm_dump_exception_stack(nsp, nsp + sizeof(struct arm_pt_regs));
+	}
 
 	if (bt->flags & BT_FULL) {
 		if (kt->flags & DWARF_UNWIND) {
@@ -1325,314 +1395,6 @@ static int
 arm_get_smp_cpus(void)
 {
 	return get_cpus_online();
-}
-
-static void
-print_irq_member(char *irq, ulong val, char *ind)
-{
-	char buf[BUFSIZE];
-	ulong val2;
-
-	fprintf(fp, "%17s: %8lx  ", irq, val);
-	if (val) {
-		if (is_kernel_text(val))
-			fprintf(fp, "<%s>", value_to_symstr(val, buf, 0));
-		else if (readmem(val, KVADDR, &val2,
-			sizeof(ulong), ind, RETURN_ON_ERROR|QUIET) &&
-			is_kernel_text(val2))
-			fprintf(fp, "<%s>", value_to_symstr(val2, buf, 0));
-	}
-	fprintf(fp, "\n");
-}
-
-/*
- *  Do the work for cmd_irq().
- */
-static void
-arm_dump_irq(int irq)
-{
-	struct datatype_member datatype_member, *dm;
-	ulong irq_desc_addr;
-	ulong irq_desc_ptr;
-	long len;
-	char buf[BUFSIZE];
-	int type, status, depth, others;
-	ulong handler, action, value;
-	ulong tmp1;
-
-	dm = &datatype_member;
-
-	if (!VALID_STRUCT(irq_desc_t))
-		error(FATAL, "cannot determine size of irq_desc\n");
-	len = SIZE(irq_desc_t);
-
-        if (symbol_exists("irq_desc"))
-		irq_desc_addr = symbol_value("irq_desc") + (len * irq);
-        else if (symbol_exists("_irq_desc"))
-		irq_desc_addr = symbol_value("_irq_desc") + (len * irq);
-	else if (symbol_exists("irq_desc_ptrs")) {
-		get_symbol_data("irq_desc_ptrs", sizeof(void *), &irq_desc_ptr);
-		irq_desc_ptr += (irq * sizeof(void *));
-		readmem(irq_desc_ptr, KVADDR, &irq_desc_addr,
-                        sizeof(void *), "irq_desc_ptrs entry",
-                        FAULT_ON_ERROR);
-		if (!irq_desc_addr) {
-			fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
-			return;
-		}
-	} else {
-		irq_desc_addr = 0;
-		error(FATAL,
-		    "neither irq_desc, _irq_desc, nor irq_desc_ptrs "
-		    "symbols exist\n");
-	}
-
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, &status,
-                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
-	if (VALID_MEMBER(irq_desc_t_handler))
-	        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), KVADDR,
-			&handler, sizeof(long), "irq_desc entry",
-			FAULT_ON_ERROR);
-	else if (VALID_MEMBER(irq_desc_t_chip))
-	        readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
-			&handler, sizeof(long), "irq_desc entry",
-			FAULT_ON_ERROR);
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR, &action,
-                sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
-                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
-
-	if (!action && (handler == (ulong)pc->curcmd_private))
-		return;
-
-	fprintf(fp, "    IRQ: %d\n", irq);
-	fprintf(fp, "ADDRESS: %08lx\n", irq_desc_addr);
-
-	if (VALID_MEMBER(irq_desc_t_name)) {
-		readmem(irq_desc_addr+OFFSET(irq_desc_t_name),
-			KVADDR,	&tmp1, sizeof(void *),
-			"irq_desc name", FAULT_ON_ERROR);
-		if (tmp1) {
-			fprintf(fp, "   NAME: %lx", tmp1);
-			BZERO(buf, BUFSIZE);
-			if (read_string(tmp1, buf, BUFSIZE-1))
-				fprintf(fp, " \"%s\"", buf);
-			fprintf(fp, "\n");
-		}
-	}
-
-	type = status & IRQ_TYPE_SENSE_MASK;
-	fprintf(fp, "   TYPE: %x %s", type, type ? "(" : "");
-	others = 0;
-
-	if ((type & IRQ_TYPE_EDGE_BOTH) == IRQ_TYPE_EDGE_BOTH)
-		fprintf(fp, "%sEDGE_BOTH", others++ ? "|" : "");
-	else {
-		if (type & IRQ_TYPE_EDGE_RISING)
-			fprintf(fp, "%sEDGE_RISING", others++ ? "|" : "");
-		if (type & IRQ_TYPE_EDGE_FALLING)
-			fprintf(fp, "%sEDGE_FALLING", others++ ? "|" : "");
-	}
-	if (type & IRQ_TYPE_LEVEL_HIGH)
-		fprintf(fp, "%sLEVEL_HIGH", others++ ? "|" : "");
-	if (type & IRQ_TYPE_LEVEL_LOW)
-		fprintf(fp, "%sLEVEL_LOW", others++ ? "|" : "");
-	fprintf(fp, "%s\n", type ? ")" : "");
-
-	fprintf(fp, "  PROBE: %s\n", status & IRQ_TYPE_PROBE ? "true" : "false");
-
-	fprintf(fp, " STATUS: %x %s", status, status ? "(" : "");
-	others = 0;
-	if (status & IRQ_INPROGRESS) {
-		fprintf(fp, "IRQ_INPROGRESS");
-		others++;
-	}
-	if (status & IRQ_DISABLED)
-		fprintf(fp, "%sIRQ_DISABLED", others++ ? "|" : "");
-        if (status & IRQ_PENDING)
-                fprintf(fp, "%sIRQ_PENDING", others++ ? "|" : "");
-        if (status & IRQ_REPLAY)
-                fprintf(fp, "%sIRQ_REPLAY", others++ ? "|" : "");
-        if (status & IRQ_AUTODETECT)
-                fprintf(fp, "%sIRQ_AUTODETECT", others++ ? "|" : "");
-        if (status & IRQ_WAITING)
-                fprintf(fp, "%sIRQ_WAITING", others++ ? "|" : "");
-        if (status & IRQ_LEVEL)
-                fprintf(fp, "%sIRQ_LEVEL", others++ ? "|" : "");
-        if (status & IRQ_MASKED)
-                fprintf(fp, "%sIRQ_MASKED", others++ ? "|" : "");
-
-        if (status & IRQ_PER_CPU)
-                fprintf(fp, "%sIRQ_PER_CPU", others++ ? "|" : "");
-        if (status & IRQ_NOPROBE)
-                fprintf(fp, "%sIRQ_NOPROBE", others++ ? "|" : "");
-        if (status & IRQ_NOREQUEST)
-                fprintf(fp, "%sIRQ_NOREQUEST", others++ ? "|" : "");
-        if (status & IRQ_NOAUTOEN)
-                fprintf(fp, "%sIRQ_NOAUTOEN", others++ ? "|" : "");
-        if (status & IRQ_WAKEUP)
-                fprintf(fp, "%sIRQ_WAKEUP", others++ ? "|" : "");
-        if (status & IRQ_MOVE_PENDING)
-                fprintf(fp, "%sIRQ_MOVE_PENDING", others++ ? "|" : "");
-        if (status & IRQ_NO_BALANCING)
-                fprintf(fp, "%sIRQ_NO_BALANCING", others++ ? "|" : "");
-        if (status & IRQ_SPURIOUS_DISABLED)
-                fprintf(fp, "%sIRQ_SPURIOUS_DISABLED", others++ ? "|" : "");
-        if (status & IRQ_MOVE_PCNTXT)
-                fprintf(fp, "%sIRQ_MOVE_PCNTXT", others++ ? "|" : "");
-        if (status & IRQ_AFFINITY_SET)
-                fprintf(fp, "%sIRQ_AFFINITY_SET", others++ ? "|" : "");
-
-
-	fprintf(fp, "%s\n", status ? ")" : "");
-
-	fprintf(fp, "HANDLER: %8lx  ", handler);
-	if (value_symbol(handler)) {
-		pad_line(fp, VADDR_PRLEN == 8 ? VADDR_PRLEN+2 : VADDR_PRLEN-6, ' ');
-		fprintf(fp, "<%s>", value_symbol(handler));
-	}
-	fprintf(fp, "\n");
-
-#define CHECK_HANDLER_OPT_MEMBER_PRT(x)					 \
-	if (VALID_MEMBER(hw_interrupt_type_ ## x)) {			 \
-		readmem(handler+OFFSET(hw_interrupt_type_ ## x), KVADDR, \
-			&tmp1, sizeof(void *),	"hw_interrupt_type " #x, \
-			FAULT_ON_ERROR);				 \
-		print_irq_member(#x, tmp1, #x " indirection");		 \
-	} else if (VALID_MEMBER(irq_chip_ ## x)) {			 \
-		readmem(handler+OFFSET(irq_chip_ ## x),KVADDR, &tmp1,	 \
-			sizeof(void *), "irq_chip " #x, FAULT_ON_ERROR); \
-		print_irq_member(#x, tmp1, #x " indirection");		 \
-	}
-
-#define CHECK_HANDLER_OPT_MEMBER(x)					 \
-	if (VALID_MEMBER(hw_interrupt_type_ ## x))			 \
-		readmem(handler+OFFSET(hw_interrupt_type_ ## x), KVADDR, \
-			&tmp1, sizeof(void *), "hw_interrupt_type " #x,	 \
-			FAULT_ON_ERROR);				 \
-	else if (VALID_MEMBER(irq_chip_ ## x))				 \
-		readmem(handler+OFFSET(irq_chip_ ## x),KVADDR, &tmp1,	 \
-			sizeof(void *), "irq_chip " #x, FAULT_ON_ERROR); \
-
-#define CHECK_HANDLER_MEMBER_PRT(x,s1,s2)				 \
-	if (VALID_MEMBER(x)) {						 \
-		readmem(handler+OFFSET(x), KVADDR, &tmp1, sizeof(void *),\
-			s1, FAULT_ON_ERROR);				 \
-			print_irq_member(s2, tmp1, s2 " indirection");	 \
-	}
-
-	if (handler) {
-		CHECK_HANDLER_OPT_MEMBER(typename);
-
-		fprintf(fp, "         typename: %lx  ", tmp1);
-		BZERO(buf, BUFSIZE);
-		if (read_string(tmp1, buf, BUFSIZE-1))
-			fprintf(fp, "\"%s\"", buf);
-		fprintf(fp, "\n");
-
-		CHECK_HANDLER_OPT_MEMBER(startup);
-
-		print_irq_member("startup", tmp1, "startup indirection");
-
-		CHECK_HANDLER_OPT_MEMBER(shutdown);
-
-		print_irq_member("shutdown", tmp1, "shutdown indirection");
-
-		CHECK_HANDLER_MEMBER_PRT(hw_interrupt_type_handle,
-					 "hw_interrupt_type handle",
-					 "handle");
-
-		CHECK_HANDLER_OPT_MEMBER(enable);
-
-		print_irq_member("enable", tmp1, "enable indirection");
-
-		CHECK_HANDLER_OPT_MEMBER(disable);
-
-		print_irq_member("disable", tmp1, "disable indirection");
-
-		CHECK_HANDLER_OPT_MEMBER(ack);
-
-		print_irq_member("ack", tmp1, "ack indirection");
-
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_mask, "irq_chip mask","mask");
-
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_mask_ack, "irq_chip mask_ack",
-					 "mask_ack");
-
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_unmask, "irq_chip unmask",
-					 "unmask");
-
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_eoi,"irq_chip eoi","eoi");
-
-		CHECK_HANDLER_OPT_MEMBER_PRT(startup);
-
-		CHECK_HANDLER_OPT_MEMBER_PRT(set_affinity);
-
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_retrigger,
-					 "irq_chip retrigger", "retrigger");
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_set_type,
-					 "irq_chip set_type", "set_type");
-		CHECK_HANDLER_MEMBER_PRT(irq_chip_set_wake,
-					 "irq_chip set_wake", "set_wake");
-	}
-
-do_linked_action:
-
-	fprintf(fp, " ACTION: ");
-        if (value_symbol(action)) {
-                fprintf(fp, "%lx  ", action);
-                pad_line(fp, VADDR_PRLEN == 8 ?
-			VADDR_PRLEN+2 : VADDR_PRLEN - 6, ' ');
-                fprintf(fp, "<%s>\n", value_symbol(action));
-        } else if (action) {
-                fprintf(fp, "%8lx\n", action);
-	} else {
-		fprintf(fp, "(none)\n");
-	}
-
-	if (action) {
-                readmem(action+OFFSET(irqaction_handler), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "irqaction handler", FAULT_ON_ERROR);
-
-		print_irq_member("handler", tmp1, "handler indirection");
-
-                readmem(action+OFFSET(irqaction_flags), KVADDR,
-                        &value, sizeof(void *),
-                        "irqaction flags", FAULT_ON_ERROR);
-                fprintf(fp, "            flags: %8lx\n", value);
-
-		if (VALID_MEMBER(irqaction_mask)) {
-			readmem(action+OFFSET(irqaction_mask), KVADDR,
-				&tmp1, sizeof(void *),
-				"irqaction mask", FAULT_ON_ERROR);
-			fprintf(fp, "             mask: %8lx\n", tmp1);
-		}
-
-                readmem(action+OFFSET(irqaction_name), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "irqaction name", FAULT_ON_ERROR);
-                fprintf(fp, "             name: %8lx  ", tmp1);
-                BZERO(buf, BUFSIZE);
-                if (read_string(tmp1, buf, BUFSIZE-1))
-                        fprintf(fp, "\"%s\"", buf);
-                fprintf(fp, "\n");
-
-                readmem(action+OFFSET(irqaction_dev_id), KVADDR,
-                        &tmp1, sizeof(void *),
-                        "irqaction dev_id", FAULT_ON_ERROR);
-                fprintf(fp, "           dev_id: %8lx\n", tmp1);
-
-                readmem(action+OFFSET(irqaction_next), KVADDR,
-                        &action, sizeof(void *),
-                        "irqaction dev_id", FAULT_ON_ERROR);
-                fprintf(fp, "             next: %8lx\n", action);
-	}
-
-	if (action)
-		goto do_linked_action;
-
-	fprintf(fp, "  DEPTH: %d\n\n", depth);
 }
 
 /*

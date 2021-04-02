@@ -18,6 +18,7 @@
 #ifdef S390X
 #include <elf.h>
 #include "defs.h"
+#include "netdump.h"
 
 #define S390X_WORD_SIZE   8
 
@@ -40,41 +41,6 @@
 #define KERNEL_STACK_SIZE STACKSIZE() // can be 8192 or 16384
 
 #define LOWCORE_SIZE 8192
-
-/*
- * S390 CPU timer ELF note
- */
-#ifndef NT_S390_TIMER
-#define NT_S390_TIMER 0x301
-#endif
-
-/*
- * S390 TOD clock comparator ELF note
- */
-#ifndef NT_S390_TODCMP
-#define NT_S390_TODCMP 0x302
-#endif
-
-/*
- * S390 TOD programmable register ELF note
- */
-#ifndef NT_S390_TODPREG
-#define NT_S390_TODPREG 0x303
-#endif
-
-/*
- * S390 control registers ELF note
- */
-#ifndef NT_S390_CTRS
-#define NT_S390_CTRS 0x304
-#endif
-
-/*
- * S390 prefix ELF note
- */
-#ifndef NT_S390_PREFIX
-#define NT_S390_PREFIX 0x305
-#endif
 
 /*
  * S390x prstatus ELF Note
@@ -272,6 +238,26 @@ static void s390x_elf_note_add(int elf_cpu_nr, void *note_ptr)
 	}
 }
 
+static void s390x_process_elf_notes(void *note_ptr, unsigned long size_note)
+{
+	Elf64_Nhdr *note = NULL;
+	size_t tot, len;
+	static int num_prstatus_notes = 0;
+
+	for (tot = 0; tot < size_note; tot += len) {
+		note = note_ptr + tot;
+
+		if (note->n_type == NT_PRSTATUS)
+			num_prstatus_notes++;
+
+		machdep->dumpfile_init(num_prstatus_notes, note);
+
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		len = roundup(len + note->n_descsz, 4);
+	}
+}
+
 /*
  *  Do all necessary machine-specific setup here.  This is called several
  *  times during initialization.
@@ -283,6 +269,7 @@ s390x_init(int when)
 	{
 	case SETUP_ENV:
 		machdep->dumpfile_init = s390x_elf_note_add;
+		machdep->process_elf_notes = s390x_process_elf_notes;
 		break;
 	case PRE_SYMTAB:
 		machdep->verify_symbol = s390x_verify_symbol;
@@ -399,6 +386,7 @@ s390x_dump_machdep_table(ulong arg)
 	fprintf(fp, "    init_kernel_pgd: NULL\n");
 	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
 	fprintf(fp, "      dumpfile_init: s390x_elf_note_add()\n");
+	fprintf(fp, "  process_elf_notes: s390x_process_elf_notes()\n");
 	fprintf(fp, "  line_number_hooks: s390x_line_number_hooks\n");
 	fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
 	fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
@@ -896,6 +884,7 @@ s390x_back_trace_cmd(struct bt_info *bt)
 	backchain = ksp; 
 	do {
 		unsigned long r14_stack_off;
+		struct load_module *lm;
 		int j;
 
 		/* Find stack: Either async, panic stack or task stack */
@@ -930,7 +919,10 @@ s390x_back_trace_cmd(struct bt_info *bt)
 			skip_first_frame=0;
 		} else {
 			fprintf(fp," #%i [%08lx] ",i,backchain);
-			fprintf(fp,"%s at %lx\n", closest_symbol(r14), r14);
+			fprintf(fp,"%s at %lx", closest_symbol(r14), r14);
+			if (module_symbol(r14, NULL, &lm, NULL, 0))
+				fprintf(fp, " [%s]", lm->mod_name);
+			fprintf(fp, "\n");
 			if (bt->flags & BT_LINE_NUMBERS)
 				s390x_dump_line_number(r14);
 			i++;

@@ -297,14 +297,12 @@ qemu_init(char *filename)
 
 	please_wait("scanning KVM dumpfile");
 
-	if (machine_type("X86"))
+	if (kvm->flags & KVMHOST_32)
 		dl = qemu_load(devices_x86_32, 
 			QEMU_FEATURE_CPU|QEMU_FEATURE_RAM, kvm->vmp);
-	else if (machine_type("X86_64"))
+	else
 		dl = qemu_load(devices_x86_64, 
 			QEMU_FEATURE_CPU|QEMU_FEATURE_RAM, kvm->vmp);
-	else
-		dl = NULL;
 
 	please_wait_done();
 

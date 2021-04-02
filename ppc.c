@@ -1,8 +1,8 @@
 /* ppc.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -843,6 +843,8 @@ ppc_print_stack_entry(int frame,
 		      char *name, 
 		      struct bt_info *bt)
 {
+	struct load_module *lm;
+
 	if (BT_REFERENCE_CHECK(bt)) {
                 switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
                 {
@@ -857,9 +859,12 @@ ppc_print_stack_entry(int frame,
                         break;
                 }
 	} else {
-		fprintf(fp, "%s#%d [%lx] %s at %lx\n",
+		fprintf(fp, "%s#%d [%lx] %s at %lx",
         		frame < 10 ? " " : "", frame,
                 	req->sp, name, callpc);
+		if (module_symbol(callpc, NULL, &lm, NULL, 0))
+			fprintf(fp, " [%s]", lm->mod_name);
+                fprintf(fp, "\n");
 	}
 
 	if (bt->flags & BT_SAVE_LASTSP)

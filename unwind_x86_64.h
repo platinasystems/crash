@@ -54,7 +54,7 @@ struct unwind_frame_info
         struct pt_regs regs;
 };
 
-extern int unwind(struct unwind_frame_info *);
+extern int unwind(struct unwind_frame_info *, int);
 extern void init_unwind_table(void);
 extern void free_unwind_table(void);
 

@@ -59,10 +59,14 @@ struct disk_dump_sub_header {
 
 struct kdump_sub_header {
 	unsigned long	phys_base;
-	int		dump_level;  /* header_version 1 and later */
-	int		split;       /* header_version 2 and later */
-	unsigned long start_pfn; /* header_version 2 and later */
-	unsigned long end_pfn;   /* header_version 2 and later */
+	int		dump_level;         /* header_version 1 and later */
+	int		split;              /* header_version 2 and later */
+	unsigned long	start_pfn;          /* header_version 2 and later */
+	unsigned long	end_pfn;            /* header_version 2 and later */
+	off_t		offset_vmcoreinfo;  /* header_version 3 and later */
+	unsigned long	size_vmcoreinfo;    /* header_version 3 and later */
+	off_t		offset_note;        /* header_version 4 and later */
+	unsigned long	size_note;          /* header_version 4 and later */
 };
 
 /* page flags */

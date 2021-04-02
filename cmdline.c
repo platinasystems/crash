@@ -1317,6 +1317,8 @@ exec_input_file(void)
 		restore_ifile_sanity();
         	BZERO(pc->command_line, BUFSIZE);
         	BZERO(pc->orig_line, BUFSIZE);
+		if (this & (RCHOME_IFILE|RCLOCAL_IFILE))
+			pc->curcmd_flags |= FROM_RCFILE;
 
 		pc->ifile_offset = ftell(pc->ifile);
 
@@ -1349,10 +1351,6 @@ exec_input_file(void)
 			console(buf);
 
 		if (!(argcnt = parse_line(pc->command_line, args)))
-			continue;
-
-		if ((this & (RCHOME_IFILE|RCLOCAL_IFILE)) &&
-		    (STREQ(args[0], "set") || STREQ(args[0], "alias")))
 			continue;
 
                 if (!(pc->flags & SILENT)) {
@@ -1523,18 +1521,14 @@ is_alias(char *s)
 }
 
 /*
- *  .rc file commands that consist of either "set" or "alias" commands
- *  are performed during initialization.  Determine which is being requested, 
- *  and pass the line to either cmd_set() or allocate_alias().  If any
- *  runtime commands are found, flag them for later execution by 
- *  exec_rc_commands().
+ *  .rc file commands that are "set" commands may be performed prior 
+ *  to initialization, so pass them to cmd_set() for consideration.  
+ *  All other commands are flagged for execution by exec_input_file()
+ *  after session initialization is complete.
  */
 void
 resolve_rc_cmd(char *s, int origin)
 {
-	int i;
-	struct alias_data *ad;
-
 	clean_line(s);
 
 	if (*s == '#')
@@ -1543,34 +1537,19 @@ resolve_rc_cmd(char *s, int origin)
 	if ((argcnt = parse_line(s, args)) == 0)
 		return;
 
-	/*
-	 *  If the command is a built-in alias of "set", switch the
-         *  args so that it will be caught by the subsequent set-string
-         *  check below.
-	 */
-	if ((argcnt == 1) && 
-	    (ad = is_alias(args[0])) &&
-	    STREQ(ad->args[0], "set")) {
-		argcnt = ad->argcnt;
-		for (i = 0; i < ad->argcnt; i++)
-			args[i] = ad->args[i];
-	}
-
 	if (STREQ(args[0], "set")) {
 		optind = 0;
 		cmd_set();
-	} else if (STREQ(args[0], "alias") && (argcnt > 2))
-		allocate_alias(origin);
-	else {
-        	switch (origin)
-        	{
-        	case ALIAS_RCHOME:
-                	pc->flags |= RCHOME_IFILE;
-                	break;
-        	case ALIAS_RCLOCAL:
-                	pc->flags |= RCLOCAL_IFILE;
-               	 	break;
-        	}
+	}
+
+	switch (origin)
+	{
+	case ALIAS_RCHOME:
+		pc->flags |= RCHOME_IFILE;
+		break;
+	case ALIAS_RCLOCAL:
+		pc->flags |= RCLOCAL_IFILE;
+		break;
 	}
 
 	return;
@@ -1893,16 +1872,11 @@ cmd_repeat(void)
 
 	check_special_handling(buf);
 
-#ifdef TODO
-	/* 
-	 * make aliases work... 
-	 */
 	strcpy(pc->command_line, buf);
 	resolve_aliases();
 	if (!argcnt)
 		return;
-	concat_args(buf, 0, FALSE);
-#endif
+	strcpy(buf, pc->command_line);
 
 	strcpy(bufsave, buf);
 	argcnt = parse_line(buf, args);
@@ -2177,7 +2151,7 @@ shell_command(char *cmd)
         }
 
         while (fgets(buf, BUFSIZE, pipe))
-		fprintf(fp, buf);
+		fputs(buf, fp);
         pclose(pipe);
 
 	return REDIRECT_SHELL_COMMAND;

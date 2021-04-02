@@ -36,6 +36,15 @@ ifeq ($(TARGET), ARM)
 ifeq ($(ARCH), i386)
 GDB_CONF_FLAGS = --target=arm-elf-linux
 endif
+ifeq ($(ARCH), x86_64)
+GDB_CONF_FLAGS = --target=arm-elf-linux CFLAGS=-m32
+endif
+endif
+
+ifeq ($(TARGET), X86)
+ifeq ($(ARCH), x86_64)
+GDB_CONF_FLAGS = --target=i686-pc-linux-gnu CFLAGS=-m32
+endif
 endif
 
 #
@@ -86,7 +95,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
 	netdump.c diskdump.c xendump.c unwind.c unwind_decoder.c \
 	unwind_x86_32_64.c unwind_arm.c \
- 	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
+	xen_hyper.c xen_hyper_command.c xen_hyper_global_data.c \
 	xen_hyper_dump_tables.c kvmdump.c qemu.c qemu-load.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
@@ -103,7 +112,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o xendump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o \
 	unwind_x86_32_64.o unwind_arm.o \
- 	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
+	xen_hyper.o xen_hyper_command.o xen_hyper_global_data.o \
 	xen_hyper_dump_tables.o kvmdump.o qemu.o qemu-load.o
 
 # These are the current set of crash extensions sources.  They are not built
@@ -270,7 +279,7 @@ gdb_merge: force
 	@if [ ! -f ${GDB}/config.status ]; then \
 	  (cd ${GDB}; ./configure ${GDB_CONF_FLAGS} --with-separate-debug-dir=/usr/lib/debug \
 	    --with-bugurl="" --with-expat=no --with-python=no; \
-	  make --no-print-directory;) \
+	  make --no-print-directory; echo ${TARGET} > crash.target) \
 	else (cd ${GDB}/gdb; make --no-print-directory;); fi
 	@if [ ! -f ${GDB}/gdb/libgdb.a ]; then \
 	  echo; echo "gdb build failed: ${GDB}/gdb/libgdb.a does not exist"; \
@@ -302,7 +311,7 @@ make_configure: force
 	@cc ${CONF_FLAGS} -o configure configure.c ${WARNING_ERROR} ${WARNING_OPTIONS}
 
 clean: make_configure
-	@./configure -q -b
+	@./configure ${CONF_TARGET_FLAG} -q -b
 	@make --no-print-directory do_clean
 
 do_clean:
@@ -320,15 +329,15 @@ unconfig: make_configure
 	@./configure -u
 
 warn: make_configure
-	@./configure -w -b
+	@./configure ${CONF_TARGET_FLAG} -w -b
 	@make --no-print-directory gdb_merge
 
 Warn: make_configure
-	@./configure -W -b
+	@./configure ${CONF_TARGET_FLAG} -W -b
 	@make --no-print-directory gdb_merge
 
 nowarn: make_configure
-	@./configure -n -b
+	@./configure ${CONF_TARGET_FLAG} -n -b
 	@make --no-print-directory gdb_merge
 
 main.o: ${GENERIC_HFILES} main.c
@@ -535,7 +544,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=5.0.7
+VERSION=5.1.1
 RELEASE=0
 
 release: make_configure
@@ -615,4 +624,4 @@ extensions: make_configure
 	@make --no-print-directory do_extensions
 
 do_extensions:
-	@(cd extensions; make -i TARGET=$(TARGET) TARGET_CFLAGS=$(TARGET_CFLAGS) GDB=$(GDB) GDB_FLAGS=$(GDB_FLAGS))
+	@(cd extensions; make -i TARGET=$(TARGET) TARGET_CFLAGS="$(TARGET_CFLAGS)" GDB=$(GDB) GDB_FLAGS=$(GDB_FLAGS))

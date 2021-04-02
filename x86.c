@@ -677,6 +677,13 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 	struct eframe eframe, *ep;
 	char dbuf[BUFSIZE];
 
+	if ((bt->flags & BT_USER_SPACE) && KVMDUMP_DUMPFILE()) {
+		kvmdump_display_regs(bt->tc->processor, fp);
+		fprintf(fp, " #0 [user space]\n");
+		return;
+	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE())
+		kvmdump_display_regs(bt->tc->processor, fp);
+
 	addr = bt->stkptr;
 	have_addr = TRUE;
 	count = 50;
@@ -3907,6 +3914,9 @@ x86_get_smp_cpus(void)
         	cpucount = count_bits_long(cpu_present_map);
 		count = MAX(cpucount, kt->cpus);
 	}
+
+	if (KVMDUMP_DUMPFILE() && (count < get_cpus_present()))
+		return(get_highest_cpu_present()+1);
 
 	return MAX(count, get_highest_cpu_online()+1);
 }

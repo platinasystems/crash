@@ -139,9 +139,10 @@ static inline void* K_PTR(void* addr, char* struct_name, char* member_name)
 	return addr+MEMBER_OFFSET(struct_name,member_name);
 }
 
-static inline uint32_t KL_UINT(void* ptr, char* struct_name, char* member_name)
+static inline unsigned long KL_ULONG(void* ptr, char* struct_name, char*
+				     member_name)
 {
-	return (uint32_t) ULONG(ptr+MEMBER_OFFSET(struct_name,member_name));
+	return ULONG(ptr+MEMBER_OFFSET(struct_name,member_name));
 }
 
 static inline uint32_t KL_VREAD_UINT32(kaddr_t addr)
@@ -203,6 +204,7 @@ static inline kaddr_t kl_funcaddr(kaddr_t addr)
 
 #define LOAD_FLAG (1 << C_LFLG_SHFT)
 #define VIEWS_FLAG (2 << C_LFLG_SHFT)
+#define SAVE_DBF_FLAG (4 << C_LFLG_SHFT)
 
 #ifndef MIN
 #define MIN(a,b) (((a)<(b))?(a):(b))
@@ -214,7 +216,7 @@ static inline kaddr_t kl_funcaddr(kaddr_t addr)
 #define DBF_VERSION_V2 2
 #define PAGE_SIZE 4096
 #define DEBUG_MAX_VIEWS	    10 /* max number of views in proc fs */
-#define DEBUG_MAX_PROCF_LEN	16 /* max length for a proc file name */
+#define DEBUG_MAX_PROCF_LEN	64 /* max length for a proc file name */
 #define DEBUG_SPRINTF_MAX_ARGS 10
 
 /* define debug-structures for lcrash */
@@ -900,7 +902,7 @@ debug_get_areas_v1(debug_info_t* db_info, void* k_dbi)
 	area_size = PAGE_SIZE << db_info->page_order;
        	db_info->areas = (void**)malloc(db_info->nr_areas * sizeof(void *));
 	memset(db_info->areas, 0, db_info->nr_areas * sizeof(void *));
-       	mem_pos = (kaddr_t) KL_UINT(k_dbi,"debug_info","areas");
+       	mem_pos = KL_ULONG(k_dbi,"debug_info","areas");
        	for (i = 0; i < db_info->nr_areas; i++) {
 		dbe_addr = KL_VREAD_PTR(mem_pos);
 	       	db_info->areas[i] = (debug_entry_t *) malloc(area_size);
@@ -918,7 +920,7 @@ debug_get_areas_v2(debug_info_t* db_info, void* k_dbi)
 	kaddr_t page_ptr;
 	int i,j;
        	db_info->areas_v2=(void***)malloc(db_info->nr_areas * sizeof(void **));
-       	area_ptr = (kaddr_t) KL_UINT(k_dbi,"debug_info","areas");
+       	area_ptr = KL_ULONG(k_dbi,"debug_info","areas");
        	for (i = 0; i < db_info->nr_areas; i++) {
 		db_info->areas_v2[i] = (void**)malloc(db_info->pages_per_area_v2
 							* sizeof(void*));
@@ -970,8 +972,8 @@ get_debug_info(kaddr_t addr,int get_areas)
 	db_info->page_order       = KL_INT(k_dbi,"debug_info","page_order");
 	db_info->buf_size	 = KL_INT(k_dbi,"debug_info","buf_size");
 	db_info->entry_size       = KL_INT(k_dbi,"debug_info","entry_size");
-	db_info->next_dbi	 = KL_UINT(k_dbi,"debug_info","next");
-	db_info->prev_dbi	 = KL_UINT(k_dbi,"debug_info","prev");
+	db_info->next_dbi	 = KL_ULONG(k_dbi,"debug_info","next");
+	db_info->prev_dbi	 = KL_ULONG(k_dbi,"debug_info","prev");
 	db_info->addr	     = addr;
 	strncpy(db_info->name,K_PTR(k_dbi,"debug_info","name"),
 		DEBUG_MAX_PROCF_LEN);
@@ -1036,6 +1038,18 @@ free_debug_info_v2(debug_info_t * db_info)
 		free_debug_view(db_info->views[i]);
 	}
 	free(db_info);
+}
+
+static void
+debug_write_output(debug_info_t *db_info, debug_view_t *db_view, FILE * fp)
+{
+	if (dbf_version == DBF_VERSION_V1) {
+		debug_format_output_v1(db_info, db_view, fp);
+		free_debug_info_v1(db_info);
+	} else {
+		debug_format_output_v2(db_info, db_view, fp);
+		free_debug_info_v2(db_info);
+	}
 }
 
 static int
@@ -1139,13 +1153,7 @@ list_one_view(char *area_name, char *view_name, command_t * cmd)
 		fprintf(cmd->efp, "View '%s' not registered!\n", view_name);
 		return -1;
 	}
-	if(dbf_version == DBF_VERSION_V1){
-		debug_format_output_v1(db_info, db_view, cmd->ofp);
-		free_debug_info_v1(db_info);
-	} else {
-		debug_format_output_v2(db_info, db_view, cmd->ofp);
-		free_debug_info_v2(db_info);
-	}
+	debug_write_output(db_info, db_view, cmd->ofp);
 	return 0;
 }
 
@@ -1221,6 +1229,86 @@ load_debug_view(const char *path, command_t * cmd)
 }
 #endif
 
+static int
+save_one_view(const char *dbf_dir_name, const char *area_name,
+	      const char *view_name, command_t *cmd)
+{
+	char path_view[PATH_MAX];
+	debug_info_t *db_info;
+	debug_view_t *db_view;
+	FILE *view_fh;
+
+	db_info = find_debug_area(area_name);
+	if (db_info == NULL) {
+		fprintf(cmd->efp, "Debug log '%s' not found!\n", area_name);
+		return -1;
+	}
+	db_info = get_debug_info(db_info->addr, 1);
+
+	db_view = find_lcrash_debug_view(view_name);
+	if (db_view == NULL) {
+		fprintf(cmd->efp, "View '%s' not registered!\n", view_name);
+		return -1;
+	}
+	sprintf(path_view, "%s/%s/%s", dbf_dir_name, area_name, view_name);
+	view_fh = fopen(path_view, "w");
+	if (view_fh == NULL) {
+		fprintf(cmd->efp, "Could not create file: %s (%s)\n",
+			path_view, strerror(errno));
+		return -1;
+	}
+	debug_write_output(db_info, db_view, view_fh);
+	fclose(view_fh);
+	return 0;
+}
+
+static int
+save_one_area(const char *dbf_dir_name, const char *area_name, command_t *cmd)
+{
+	char dir_name_area[PATH_MAX];
+	debug_info_t *db_info;
+	int i;
+
+	db_info = find_debug_area(area_name);
+	if (db_info == NULL) {
+		fprintf(cmd->efp, "Debug log '%s' not found!\n", area_name);
+		return -1;
+	}
+	sprintf(dir_name_area, "%s/%s", dbf_dir_name, area_name);
+	if (mkdir(dir_name_area, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) != 0) {
+		fprintf(cmd->efp, "Could not create directory: %s (%s)\n",
+			dir_name_area, strerror(errno));
+		return -1;
+	}
+	for (i = 0; i < DEBUG_MAX_VIEWS; i++) {
+		if (db_info->views[i] == NULL)
+			continue;
+		if (!find_lcrash_debug_view(db_info->views[i]->name))
+			continue;
+		save_one_view(dbf_dir_name, area_name, db_info->views[i]->name,
+			      cmd);
+	}
+	return 0;
+}
+
+static void
+save_dbf(const char *dbf_dir_name, command_t *cmd)
+{
+	debug_info_t *act_debug_info = debug_area_first;
+	FILE *ofp = cmd->ofp;
+
+	fprintf(ofp, "Saving s390dbf to directory \"%s\"\n", dbf_dir_name);
+	if (mkdir(dbf_dir_name, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) != 0) {
+		fprintf(cmd->efp, "Could not create directory: %s (%s)\n",
+			dbf_dir_name, strerror(errno));
+		return;
+	}
+	while (act_debug_info != NULL) {
+		save_one_area(dbf_dir_name, act_debug_info->name, cmd);
+		act_debug_info = act_debug_info->next;
+	}
+}
+
 /* 
  * s390dbf_cmd() -- Run the 's390dbf' command.
  */
@@ -1271,6 +1359,14 @@ s390dbf_cmd(command_t * cmd)
 	if(get_debug_areas() == -1) 
 		return -1;
 
+	if (cmd->flags & SAVE_DBF_FLAG) {
+		if (cmd->nargs != 2) {
+			fprintf(cmd->efp, "Specify directory name for -s\n");
+			return 1;
+		}
+		save_dbf(cmd->args[1], cmd);
+		return 0;
+	}
 	switch (cmd->nargs) {
 	case 0:
 		rc = list_areas(cmd->ofp);
@@ -1288,7 +1384,7 @@ s390dbf_cmd(command_t * cmd)
 	return rc;
 }
 
-#define _S390DBF_USAGE " [-v] [debug log] [debug view]"
+#define _S390DBF_USAGE " [-v] [-s dirname] [debug log] [debug view]"
 
 /*
  * s390dbf_usage() -- Print the usage string for the 's390dbf' command.
@@ -1306,17 +1402,19 @@ s390dbf_usage(command_t * cmd)
 char *help_s390dbf[] = {
 	"s390dbf",
 	"s390dbf prints out debug feature logs",
-	"[-v] [debug_log] [debug_log view]",
+	"[-v] [-s dirname] [debug log] [debug view]"
 	"",
 	"Display Debug logs:",
 	" + If called without parameters, all active debug logs are listed.",
-	" + If called with '-v', all debug views which are available to",
-	"   'crash' are listed",
 	" + If called with the name of a debug log, all debug-views for which",
 	"   the debug-log has registered are listed. It is possible thatsome",
 	"   of the debug views are not available to 'crash'.",
 	" + If called with the name of a debug-log and an available viewname,",
 	"   the specified view is printed.",
+	" + If called with '-s dirname', the s390dbf is saved to the specified",
+	"   directory",
+	" + If called with '-v', all debug views which are available to",
+	"   'crash' are listed",
 	NULL
 };
 
@@ -1335,10 +1433,13 @@ void cmd_s390dbf()
 	for (i=1; i < argcnt; i++)
 		cmd.args[i-1] = args[i];
 	
-	while ((c = getopt(argcnt, args, "v")) != EOF) {
+	while ((c = getopt(argcnt, args, "vs")) != EOF) {
 		switch(c) {
 		case 'v':
 			cmd.flags |= VIEWS_FLAG;
+			break;
+		case 's':
+			cmd.flags |= SAVE_DBF_FLAG;
 			break;
 		default:
 			s390dbf_usage(&cmd);

@@ -105,7 +105,8 @@ update_gdb_hooks(void)
 void
 gdb_readnow_warning(void)
 {
-	if ((THIS_GCC_VERSION >= GCC(3,4,0)) && !(pc->flags & READNOW)) {
+	if ((THIS_GCC_VERSION >= GCC(3,4,0)) && (THIS_GCC_VERSION < GCC(4,0,0))
+	    && !(pc->flags & READNOW)) {
 		fprintf(stderr, 
  "WARNING: Because this kernel was compiled with gcc version %d.%d.%d, certain\n" 
  "         commands or command options may fail unless crash is invoked with\n"

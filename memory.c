@@ -187,7 +187,8 @@ static ulong get_freepointer(struct meminfo *, void *);
 static int count_free_objects(struct meminfo *, ulong);
 char *is_slab_page(struct meminfo *, char *);
 static void do_node_lists_slub(struct meminfo *, ulong, int);
-static void check_devmem_is_allowed(void);
+static int devmem_is_restricted(void);
+static int switch_to_proc_kcore(void);
 static int verify_pfn(ulong);
 
 /*
@@ -1744,14 +1745,14 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 			addr, memtype_string(memtype, 1), type, size, 
 			error_handle_string(error_handle), (ulong)buffer);
 
+	bufptr = (char *)buffer;
+
 	if (size <= 0) {
 		if (PRINT_ERROR_MESSAGE)
                        	error(INFO, "invalid size request: %ld  type: \"%s\"\n",
 				size, type);
 		goto readmem_error;
 	}
-
-	bufptr = (char *)buffer;
 
 	fd = REMOTE_MEMSRC() ? pc->sockfd : (ACTIVE() ? pc->mfd : pc->dfd); 
 
@@ -1839,6 +1840,11 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 			fprintf(fp, "    addr: %llx  paddr: %llx  cnt: %ld\n", 
 				addr, (unsigned long long)paddr, cnt);
 
+		if (memtype == KVADDR)
+			pc->curcmd_flags |= MEMTYPE_KVADDR;
+		else
+			pc->curcmd_flags &= ~MEMTYPE_KVADDR;
+
 		switch (READMEM(fd, bufptr, cnt, 
 		    (memtype == PHYSADDR) || (memtype == XENMACHADDR) ? 0 : addr, paddr))
 		{
@@ -1873,8 +1879,11 @@ readmem_error:
         switch (error_handle)
         {
         case (FAULT_ON_ERROR):
-		if (ACTIVE() && (kt->flags & IN_KERNEL_INIT))
-			check_devmem_is_allowed();
+		if ((pc->flags & DEVMEM) && (kt->flags & PRE_KERNEL_INIT) &&
+		    devmem_is_restricted() && switch_to_proc_kcore())
+			return(readmem(addr, memtype, bufptr, size,
+				type, error_handle));
+		/* FALLTHROUGH */
         case (QUIET|FAULT_ON_ERROR):
                 if (pc->flags & IN_FOREACH)
                         RESUME_FOREACH();
@@ -2007,8 +2016,8 @@ write_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
  *            return 0;
  *    }
  */
-static void
-check_devmem_is_allowed(void)
+static int
+devmem_is_restricted(void)
 {
 	long tmp;
 
@@ -2021,10 +2030,41 @@ check_devmem_is_allowed(void)
             sizeof(long), "devmem_is_allowed - pfn 257",
             QUIET|RETURN_ON_ERROR))) {
 		error(INFO, 
- 	      	    "\nThis kernel may be configured with CONFIG_STRICT_DEVMEM,"
+ 	      	    "\nthis kernel may be configured with CONFIG_STRICT_DEVMEM,"
                     " which\n       renders /dev/mem unusable as a live memory "
                     "source.\n\n");
+		return TRUE;
 	}
+
+	return FALSE;
+}
+
+static int
+switch_to_proc_kcore(void)
+{
+	close(pc->mfd);
+
+	if (file_exists("/proc/kcore", NULL))
+		error(INFO, "trying /proc/kcore as an alternative to /dev/mem\n\n");
+	else
+		return FALSE;
+
+	if ((pc->mfd = open("/proc/kcore", O_RDONLY)) < 0) {
+		error(INFO, "/proc/kcore: %s\n", strerror(errno));
+		return FALSE;
+	}
+	if (!proc_kcore_init(fp)) {
+		error(INFO, "/proc/kcore: initialization failed\n");
+		return FALSE;
+	}
+
+	pc->flags &= ~DEVMEM;
+	pc->flags |= PROC_KCORE;
+	pc->readmem = read_proc_kcore;
+	pc->writemem = write_proc_kcore;
+	pc->live_memsrc = "/proc/kcore";
+
+	return TRUE;
 }
 
 /*
@@ -6717,8 +6757,10 @@ dump_kmeminfo(void)
 	} else if (dump_vm_stat("NR_FILE_PAGES", &nr_file_pages, 0)) {
 		char *swapper_space = GETBUF(SIZE(address_space));
 		
-                if (!readmem(symbol_value("swapper_space"), KVADDR, swapper_space,
-                    SIZE(address_space), "swapper_space", RETURN_ON_ERROR))
+                if (!symbol_exists("swapper_space") || 
+		    !readmem(symbol_value("swapper_space"), KVADDR, 
+		    swapper_space, SIZE(address_space), "swapper_space", 
+		    RETURN_ON_ERROR))
 			swapper_space_nrpages = 0;
 		else
 			swapper_space_nrpages = ULONG(swapper_space + 
@@ -6796,27 +6838,30 @@ dump_kmeminfo(void)
          *  get swap data from dump_swap_info().
          */
 	fprintf(fp, "\n");
-        if (dump_swap_info(RETURN_ON_ERROR, &totalswap_pages, 
-	    &totalused_pages)) {
-	        fprintf(fp, "%10s  %7ld  %11s         ----\n", 
-			"TOTAL SWAP", totalswap_pages, 
-			pages_to_size(totalswap_pages, buf));
-	        pct = totalswap_pages ? (totalused_pages * 100) /
-			totalswap_pages : 100;
-	        fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n",
-	                "SWAP USED", totalused_pages,
-	                pages_to_size(totalused_pages, buf), pct);
-	        pct = totalswap_pages ? ((totalswap_pages - totalused_pages) *
-			100) / totalswap_pages : 0;
-	        fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n", 
-			"SWAP FREE",
-	                totalswap_pages - totalused_pages,
-	                pages_to_size(totalswap_pages - totalused_pages, buf), 
-			pct);
-	} else
-		error(INFO, "swap_info[%ld].swap_map at %lx is inaccessible\n",
-			totalused_pages, totalswap_pages);
-
+	if (symbol_exists("swapper_space")) {
+		if (dump_swap_info(RETURN_ON_ERROR, &totalswap_pages, 
+		    &totalused_pages)) {
+			fprintf(fp, "%10s  %7ld  %11s         ----\n", 
+				"TOTAL SWAP", totalswap_pages, 
+				pages_to_size(totalswap_pages, buf));
+				pct = totalswap_pages ? (totalused_pages * 100) /
+				totalswap_pages : 100;
+			fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n",
+				"SWAP USED", totalused_pages,
+				pages_to_size(totalused_pages, buf), pct);
+		 		pct = totalswap_pages ? 
+				((totalswap_pages - totalused_pages) *
+				100) / totalswap_pages : 0;
+			fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL SWAP\n", 
+				"SWAP FREE",
+				totalswap_pages - totalused_pages,
+				pages_to_size(totalswap_pages - totalused_pages, 
+				buf), pct);
+		} else
+			error(INFO, 
+			    "swap_info[%ld].swap_map at %lx is inaccessible\n",
+				totalused_pages, totalswap_pages);
+	}
 	dump_zone_page_usage();
 }
 
@@ -10409,7 +10454,10 @@ gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
 
         for (i = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
 	     (cpudata[i]) && !(index); i++) {
-		BZERO(si->cpudata[i], sizeof(ulong) * vt->kmem_max_limit);
+		if (si->cpudata[i])
+			BZERO(si->cpudata[i], sizeof(ulong) * vt->kmem_max_limit);
+		else
+			continue;
 
                 readmem(cpudata[i]+OFFSET(array_cache_avail),
                         KVADDR, &avail, sizeof(int),
@@ -12783,6 +12831,7 @@ memory_page_size(void)
 	case MEMMOD:
 	case CRASHBUILTIN:
 	case KVMDUMP:
+	case PROC_KCORE:
 		psz = (uint)getpagesize();  
 		break;
 
@@ -12980,9 +13029,6 @@ dumpfile_memory(int cmd)
 
 	retval = 0;
 
-	if (!DUMPFILE())
-		return retval;
-
 	switch (cmd)
 	{
 	case DUMPFILE_MEM_USED:
@@ -13046,6 +13092,8 @@ dumpfile_memory(int cmd)
                         retval = vas_memory_dump(fp);
                 else if (pc->flags & S390D)
                         retval = s390_memory_dump(fp);
+                else if (pc->flags & PROC_KCORE)
+                        retval = kcore_memory_dump(fp);
 		break;
 	
 	case DUMPFILE_ENVIRONMENT:

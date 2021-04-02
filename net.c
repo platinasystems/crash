@@ -204,11 +204,19 @@ net_init(void)
 				MEMBER_OFFSET_INIT(inet_opt_num, "inet_opt", "num");
 			} else {	/* inet_opt moved to inet_sock */
 				ASSIGN_OFFSET(inet_sock_inet) = 0;
-				MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_sock", "daddr");
-				MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_sock", "rcv_saddr");
-				MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "dport");
-				MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "sport");
-				MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "num");
+				if (MEMBER_EXISTS("inet_sock", "daddr")) {
+					MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_sock", "daddr");
+					MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_sock", "rcv_saddr");
+					MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "dport");
+					MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "sport");
+					MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "num");
+				} else {
+					MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_sock", "inet_daddr");
+					MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_sock", "inet_rcv_saddr");
+					MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "inet_dport");
+					MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "inet_sport");
+					MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "inet_num");
+				}
 			}	
 
 			if (VALID_STRUCT(inet_sock) && 

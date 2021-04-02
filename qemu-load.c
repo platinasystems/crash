@@ -408,7 +408,7 @@ cpu_common_init_load (struct qemu_device_list *dl,
 
 /* CPU loader.  */
 
-static inline int
+static inline uint64_t
 get_be_long (FILE *fp, int size)
 {
 	uint32_t a = size == 32 ? 0 : get_be32 (fp);
@@ -438,14 +438,20 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 {
 	struct qemu_device_x86 *dx86 = (struct qemu_device_x86 *)d;
 	uint32_t qemu_hflags = 0, qemu_hflags2 = 0;
-	int nregs = size == 32 ? 8 : 16;
+	int nregs;
 	uint32_t version_id = dx86->dev_base.version_id;
 	uint32_t rhel5_version_id;
 	int i;
+	off_t restart;
 
 	struct qemu_device *drhel5;
 	struct qemu_device_cpu_common *dcpu;
 
+	if (kvm->flags & KVMHOST_32)
+		size = 32;
+	restart = ftello(fp);
+retry:
+	nregs = size == 32 ? 8 : 16;
 	drhel5 = device_find_instance (d->list, "__rhel5", 0);
 	if (drhel5 || (version_id >= 7 && version_id <= 9)) {
 		rhel5_version_id = version_id;
@@ -463,7 +469,7 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 	if (dcpu) {
 		dx86->halted = dcpu->halted;
 		dx86->irq = dcpu->irq;
-		device_free ((struct qemu_device *) dcpu);
+//		device_free ((struct qemu_device *) dcpu);
 	}
 
 	for (i = 0; i < nregs; i++)
@@ -526,7 +532,7 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 	dx86->smm = qemu_hflags		& (1 << 19);
 
 	if (version_id == 4)
-		return QEMU_FEATURE_CPU;
+		goto store;
 
 	dx86->pat = get_be64 (fp);
 	qemu_hflags2 = get_be32 (fp);
@@ -608,6 +614,18 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 		dx86->kvm.system_time_msr = get_be64 (fp);
 		dx86->kvm.wall_clock_msr = get_be64 (fp);
 	}
+
+store:
+	if (!kvmdump_regs_store(d->instance_id, dx86)) {
+		size = 32;
+		kvm->flags |= KVMHOST_32;
+		fseeko(fp, restart, SEEK_SET);
+		dprintf("cpu_load: invalid registers: retry with 32-bit host\n");
+		goto retry;
+	}
+
+	if (dcpu)
+		device_free ((struct qemu_device *) dcpu);
 
 	return QEMU_FEATURE_CPU;
 }
@@ -819,6 +837,8 @@ struct libvirt_header {
 	uint32_t	padding[16];
 };
 
+static long device_search(const struct qemu_device_loader *, FILE *);
+
 static struct qemu_device *
 device_get (const struct qemu_device_loader *devices,
 	    struct qemu_device_list *dl, enum qemu_save_section sec, FILE *fp)
@@ -826,7 +846,11 @@ device_get (const struct qemu_device_loader *devices,
 	char name[257];
 	uint32_t section_id, instance_id, version_id;
 //	bool live;
+	const struct qemu_device_loader *devp;
+	long next_device_offset;
 
+next_device:
+	devp = devices;
 	section_id = get_be32 (fp);
 	if (sec != QEMU_VM_SECTION_START &&
 	    sec != QEMU_VM_SECTION_FULL)
@@ -837,12 +861,21 @@ device_get (const struct qemu_device_loader *devices,
 	instance_id = get_be32 (fp);
 	version_id = get_be32 (fp);
 
-	while (devices->name && strcmp (devices->name, name))
-		devices++;
-	if (!devices->name)
+	while (devp->name && strcmp (devp->name, name))
+		devp++;
+	if (!devp->name) {
+		dprintf("device_get: unknown/unsupported: \"%s\"\n", name);
+		if ((next_device_offset = device_search(devices, fp))) {
+			fseek(fp, next_device_offset, SEEK_CUR);
+			sec = getc(fp);
+			if (sec == QEMU_VM_EOF)
+				return NULL;
+			goto next_device;
+		}
 		return NULL;
+	}
 
-	return devices->init_load (dl, section_id, instance_id, version_id,
+	return devp->init_load (dl, section_id, instance_id, version_id,
 				   sec == QEMU_VM_SECTION_START, fp);
 }
 
@@ -1026,3 +1059,40 @@ dump_qemu_header(FILE *out)
 	fprintf(out, "\n");
 }
 
+static long
+device_search(const struct qemu_device_loader *devices, FILE *fp)
+{
+	uint sz;
+	char *p1, *p2;
+	long next_device_offset;
+	long remaining;
+	char buf[4096];
+	off_t current;
+
+	BZERO(buf, 4096);
+
+	current = ftello(fp);
+	if (fread(buf, sizeof(char), 4096, fp) != 4096) {
+		fseeko(fp, current, SEEK_SET);
+		return 0;
+	}
+	fseeko(fp, current, SEEK_SET);
+
+        while (devices->name) {
+		for (p1 = buf, remaining = 4096; 
+	     	    (p2 = memchr(p1, devices->name[0], remaining));
+	     	     p1 = p2+1, remaining = 4096 - (p1-buf)) {
+			sz = *((unsigned char *)p2-1);
+			if (STRNEQ(p2, devices->name) && 
+			    (strlen(devices->name) == sz)) {
+				*(p2+sz) = '\0';
+				dprintf("device_search: %s\n", p2);
+				next_device_offset = (p2-buf) - 6;
+				return next_device_offset;
+			}
+		}
+		devices++;
+	}
+
+	return 0;
+}

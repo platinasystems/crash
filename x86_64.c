@@ -827,7 +827,7 @@ x86_64_per_cpu_init(void)
 		/*
 		 * Presume kernel is !CONFIG_SMP.
 		 */
-		if (irq_sp) { 
+		if (irq_sp || (irq_sp = symbol_search("irq_stack_union"))) { 
 			ms->stkinfo.ibase[0] = irq_sp->value;
 			if ((ms->stkinfo.isize = 
 		    	    MEMBER_SIZE("irq_stack_union", "irq_stack")) <= 0)
@@ -873,8 +873,8 @@ x86_64_per_cpu_init(void)
 	if (cpus > 1)
 		kt->flags |= SMP;
 
-	if ((i = get_cpus_online()) && (!cpus || (i < cpus)))
-		kt->cpus = get_highest_cpu_online() + 1;
+	if ((i = get_cpus_present()) && (!cpus || (i < cpus)))
+		kt->cpus = get_highest_cpu_present() + 1;
 	else
 		kt->cpus = cpus;
 
@@ -2407,6 +2407,7 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	int i, result; 
 	long eframe_check;
 	char buf[BUFSIZE];
+	struct load_module *lm;
 
 	eframe_check = -1;
 	if (!(bt->flags & BT_SAVE_EFRAME_IP))
@@ -2423,9 +2424,12 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 			rsp = bt->stkptr;
 		else
 			rsp = bt->stackbase + (stkindex * sizeof(long));
-                fprintf(ofp, "  [%s] %s at %lx\n",
+                fprintf(ofp, "  [%s] %s at %lx",
                 	mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(rsp)),
                         name, text);
+		if (module_symbol(text, NULL, &lm, NULL, 0))
+			fprintf(ofp, " [%s]", lm->mod_name);
+		fprintf(ofp, "\n");
 		if (BT_REFERENCE_CHECK(bt))
 			x86_64_do_bt_reference_check(bt, text, name);
 		return BACKTRACE_ENTRY_DISPLAYED;
@@ -2472,7 +2476,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
                 else if (symbol_exists("arch_kernel_thread"))
                         name = "arch_kernel_thread";
 		result = BACKTRACE_COMPLETE;
-        } else if (STREQ(name, "cpu_idle"))
+        } else if (STREQ(name, "cpu_idle") || 
+	    STREQ(name, "system_call_fastpath"))
 		result = BACKTRACE_COMPLETE;
 	else
 		result = BACKTRACE_ENTRY_DISPLAYED;
@@ -2500,6 +2505,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 		    (spl = value_search(locking_func, &offset)))
 			fprintf(ofp, " (via %s)", spl->name);
 	}
+	if (module_symbol(text, NULL, &lm, NULL, 0))
+		fprintf(ofp, " [%s]", lm->mod_name);
 
 	if (bt->flags & BT_FRAMESIZE_DISABLE)
 		fprintf(ofp, " *");
@@ -2717,6 +2724,21 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			    STREQ(closest_symbol(bt->instptr), "thread_return") ?
 			    " (schedule)" : "",
 			    bt->instptr);
+	} else if ((bt->flags & BT_USER_SPACE) && KVMDUMP_DUMPFILE()) {
+		fprintf(ofp, "    [exception RIP: user space]\n");
+		kvmdump_display_regs(bt->tc->processor, ofp);
+		return;
+	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE()) {
+		fprintf(ofp, "    [exception RIP: ");
+		if ((sp = value_search(bt->instptr, &offset))) {
+			fprintf(ofp, "%s", sp->name);
+			if (offset)
+				fprintf(ofp, (*gdb_output_radix == 16) ?
+					"+0x%lx" : "+%ld", offset);
+		} else
+			fprintf(ofp, "unknown or invalid address");
+		fprintf(ofp, "]\n");
+		kvmdump_display_regs(bt->tc->processor, ofp);
         } else if (bt->flags & BT_START) {
                 x86_64_print_stack_entry(bt, ofp, level,
                         0, bt->instptr);
@@ -3023,7 +3045,9 @@ in_exception_stack:
 			 *  A non-zero offset value from the value_search() 
 			 *  lets us know if it's a real text return address.
 			 */
-			spt = value_search(*up, &offset);
+			if (!(spt = value_search(*up, &offset)))
+				continue;
+
 			if (!offset && !(bt->flags & BT_FRAMESIZE_DISABLE))
 				continue;
 
@@ -3445,7 +3469,7 @@ x86_64_function_called_by(ulong rip)
 	sp = NULL;
 
         if (!readmem(rip, KVADDR, &byte, sizeof(unsigned char), "call byte",
-            RETURN_ON_ERROR)) 
+            QUIET|RETURN_ON_ERROR)) 
 		return sp;
 
         if (byte != 0xe8) 
@@ -3906,10 +3930,10 @@ static void
 x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp) 
 {
 	int panic_task;
-        int i, estack, panic, stage;
+        int i, j, estack, panic, stage;
         char *sym;
 	struct syment *sp;
-        ulong *up;
+        ulong *up, *up2;
 	struct bt_info bt_local, *bt;
         struct machine_specific *ms;
 	char *user_regs;
@@ -3917,6 +3941,9 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	ulong halt_rip, halt_rsp;
 	ulong crash_kexec_rip, crash_kexec_rsp;
 	ulong call_function_rip, call_function_rsp;
+	ulong sysrq_c_rip, sysrq_c_rsp;
+
+#define STACKTOP_INDEX(BT) (((BT)->stacktop - (BT)->stackbase)/sizeof(ulong))
 
         bt = &bt_local;
         BCOPY(bt_in, bt, sizeof(struct bt_info));
@@ -3925,6 +3952,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	halt_rip = halt_rsp = 0;
 	crash_kexec_rip = crash_kexec_rsp = 0;
 	call_function_rip = call_function_rsp = 0;
+	sysrq_c_rip = sysrq_c_rsp = 0;
 	stage = 0;
 	estack = -1;
 
@@ -3958,8 +3986,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	 *  Check the process stack first.
 	 */
 next_stack:
-        for (i = 0, up = (ulong *)bt->stackbuf; 
-	     i < (bt->stacktop - bt->stackbase)/sizeof(ulong); i++, up++) {
+        for (i = 0, up = (ulong *)bt->stackbuf; i < STACKTOP_INDEX(bt); i++, up++) {
                 sym = closest_symbol(*up);
 		if (XEN_CORE_DUMPFILE()) {
 			if (STREQ(sym, "crash_kexec")) {
@@ -4028,8 +4055,10 @@ next_stack:
                 if (STREQ(sym, "die")) {
                         *rip = *up;
                         *rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
-                        for (i++, up++; i < LONGS_PER_STACK; i++, up++) {
-                                sym = closest_symbol(*up);
+			j = i;
+			up2 = up;
+                        for (j++, up2++; j < STACKTOP_INDEX(bt); j++, up2++) {
+                                sym = closest_symbol(*up2);
                                 if (STREQ(sym, "sysrq_handle_crash"))
                                         goto next_sysrq;
                         }
@@ -4037,20 +4066,22 @@ next_stack:
                 }
 
                 if (STREQ(sym, "sysrq_handle_crash")) {
+			j = i;
+			up2 = up;
 next_sysrq:
-                        *rip = *up;
-                        *rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+                        sysrq_c_rip = *up2;
+                        sysrq_c_rsp = bt->stackbase + ((char *)(up2) - bt->stackbuf);
                         pc->flags |= SYSRQ;
-                        for (i++, up++; i < LONGS_PER_STACK; i++, up++) {
-                                sym = closest_symbol(*up);
+                        for (j++, up2++; j < STACKTOP_INDEX(bt); j++, up2++) {
+                                sym = closest_symbol(*up2);
                                 if (STREQ(sym, "sysrq_handle_crash"))
                                         goto next_sysrq;
                         }
-                        return;
                 }
 
                 if (!panic_task && (stage > 0) && 
-		    STREQ(sym, "smp_call_function_interrupt")) {
+		    (STREQ(sym, "smp_call_function_interrupt") ||
+		     STREQ(sym, "stop_this_cpu"))) {
 			call_function_rip = *up;
 			call_function_rsp = bt->stackbase + 
 				((char *)(up) - bt->stackbuf);
@@ -4126,6 +4157,12 @@ skip_stage:
 
 	}
 
+	if (sysrq_c_rip) {
+		*rip = sysrq_c_rip;
+		*rsp = sysrq_c_rsp;
+		return;
+	}
+
 	/*
 	 *  We didn't find what we were looking for, so just use what was
 	 *  passed in from the ELF header.
@@ -4145,8 +4182,17 @@ skip_stage:
 	if (halt_rip && halt_rsp) {
         	*rip = halt_rip;
 		*rsp = halt_rsp;
+		if (KVMDUMP_DUMPFILE())
+			bt_in->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 		return;
 	}
+
+	/*
+	 *  Use what was (already) saved in the panic task's 
+	 *  registers found in the ELF header.
+	 */ 
+	if (bt->flags & BT_KDUMP_ELF_REGS)
+		return;
 
 	if (CRASHDEBUG(1)) 
         	error(INFO, 
@@ -4162,6 +4208,9 @@ skip_stage:
 	bt->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 
         machdep->get_stack_frame(bt, rip, rsp);
+
+	if (KVMDUMP_DUMPFILE())
+		bt_in->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 }
 
 /*
@@ -4230,12 +4279,14 @@ static void
 x86_64_dump_irq(int irq)
 {
         if (symbol_exists("irq_desc") || 
-	    kernel_symbol_exists("irq_desc_ptrs")) {
+	    kernel_symbol_exists("irq_desc_ptrs") ||
+	    kernel_symbol_exists("irq_desc_tree")) {
                 machdep->dump_irq = generic_dump_irq;
                 return(generic_dump_irq(irq));
         }
 
-        error(FATAL, "x86_64_dump_irq: irq_desc[] does not exist?\n");
+        error(FATAL, 
+	    "x86_64_dump_irq: irq_desc[] or irq_desc_tree do not exist?\n");
 }
 
 /* 
@@ -4423,8 +4474,8 @@ x86_64_get_smp_cpus(void)
 			cpus++;
 		}
 
-		if ((i = get_cpus_online()) && (!cpus || (i < cpus)))
-			cpus = get_highest_cpu_online() + 1;
+		if ((i = get_cpus_present()) && (!cpus || (i < cpus)))
+			cpus = get_highest_cpu_present() + 1;
 
 		return cpus;
 	}

@@ -26,9 +26,11 @@ static char *get_loadavg(char *);
 static void get_lkcd_regs(struct bt_info *, ulong *, ulong *);
 static void dump_sys_call_table(char *, int);
 static int get_NR_syscalls(void);
+static ulong get_irq_desc_addr(int);
 static void display_bh_1(void);
 static void display_bh_2(void);
 static void display_bh_3(void);
+static void display_bh_4(void);
 static void dump_timer_data(void);
 static void dump_timer_data_tvec_bases_v1(void);
 static void dump_timer_data_tvec_bases_v2(void);
@@ -67,8 +69,6 @@ kernel_init()
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
-
-	kt->flags |= IN_KERNEL_INIT;
 
         if (!(kt->cpu_flags = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
                 error(FATAL, "cannot malloc cpu_flags array");
@@ -414,6 +414,10 @@ kernel_init()
 	MEMBER_OFFSET_INIT(irqaction_dev_id, "irqaction", "dev_id");
 	MEMBER_OFFSET_INIT(irqaction_next, "irqaction", "next");
 
+	if (kernel_symbol_exists("irq_desc_tree"))
+		kt->flags |= IRQ_DESC_TREE;
+	STRUCT_SIZE_INIT(irq_data, "irq_data");
+
         STRUCT_SIZE_INIT(irq_cpustat_t, "irq_cpustat_t");
         MEMBER_OFFSET_INIT(irq_cpustat_t___softirq_active, 
                 "irq_cpustat_t", "__softirq_active");
@@ -479,6 +483,7 @@ kernel_init()
 
 	STRUCT_SIZE_INIT(pt_regs, "pt_regs");
 	STRUCT_SIZE_INIT(softirq_state, "softirq_state");
+	STRUCT_SIZE_INIT(softirq_action, "softirq_action");
 	STRUCT_SIZE_INIT(desc_struct, "desc_struct");
 
 	STRUCT_SIZE_INIT(char_device_struct, "char_device_struct");
@@ -576,7 +581,7 @@ kernel_init()
 
 	BUG_bytes_init();
 	
-	kt->flags &= ~IN_KERNEL_INIT;
+	kt->flags &= ~PRE_KERNEL_INIT;
 }
 
 /*
@@ -2083,6 +2088,7 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 	ulong next_sp, next_pc;
 	int i;
 	ulong *up;
+	struct load_module *lm;
 	char buf[BUFSIZE];
 
 	if (bt->flags & BT_TEXT_SYMBOLS) {
@@ -2107,8 +2113,8 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 		}
 		if (is_kernel_text(*up) && (bt->flags & 
 		    (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT))) { 
-			if (bt->flags & (BT_ERROR_MASK|BT_TEXT_SYMBOLS))
-                               	fprintf(fp, "  %s[%s] %s at %lx\n",
+			if (bt->flags & (BT_ERROR_MASK|BT_TEXT_SYMBOLS)) {
+                               	fprintf(fp, "  %s[%s] %s at %lx",
 					bt->flags & BT_ERROR_MASK ?
 					"  " : "",
 					mkstring(buf, VADDR_PRLEN, 
@@ -2116,7 +2122,10 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
                                		MKSTR(bt->stackbase + 
 					(i * sizeof(long)))),
 					closest_symbol(*up), *up);
-			else
+				if (module_symbol(*up, NULL, &lm, NULL, 0))
+					fprintf(fp, " [%s]", lm->mod_name);
+				fprintf(fp, "\n");
+			} else
                                	fprintf(fp, "%lx: %s\n",
                                        	bt->stackbase + 
 					(i * sizeof(long)),
@@ -2175,10 +2184,12 @@ back_trace(struct bt_info *bt)
 		    bt->flags & (BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT))
 			return;
 
-		if (!(bt->flags & BT_KSTACKP))
+		if (!(bt->flags & 
+		    (BT_KSTACKP|BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL)))
 			fprintf(fp, "(active)\n");
 
-		return;
+		if (!(bt->flags & (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL)))
+			return;
  	}
 
 	fill_stackbuf(bt);
@@ -2217,7 +2228,7 @@ back_trace(struct bt_info *bt)
 	if (bt->hp) {
 		if (bt->hp->esp && !INSTACK(bt->hp->esp, bt) &&
 		    !in_alternate_stack(bt->tc->processor, bt->hp->esp))
-			error(INFO, 
+			error(FATAL, 
 		    	    "non-process stack address for this task: %lx\n"
 			    "    (valid range: %lx - %lx)\n",
 				bt->hp->esp, bt->stackbase, bt->stacktop);
@@ -2691,8 +2702,10 @@ module_init(void)
         	MEMBER_OFFSET_INIT(module_core_text_size, "module", 
 			"core_text_size");
 		MEMBER_OFFSET_INIT(module_module_init, "module", "module_init");
+		MEMBER_OFFSET_INIT(module_init_size, "module", "init_size");
 		MEMBER_OFFSET_INIT(module_init_text_size, "module", 
 			"init_text_size");
+		MEMBER_OFFSET_INIT(module_percpu, "module", "percpu");
 
 		/*
 		 *  Make sure to pick the kernel "modules" list_head symbol,
@@ -3668,7 +3681,7 @@ cmd_log(void)
 void 
 dump_log(int msg_level)
 {
-	int i;
+	int i, len, tmp;
 	ulong log_buf, log_end;
 	char *buf;
 	char last;
@@ -3697,7 +3710,12 @@ dump_log(int msg_level)
 	buf = GETBUF(log_buf_len);
 	log_wrap = FALSE;
 	last = 0;
-	get_symbol_data("log_end", sizeof(ulong), &log_end);
+	if ((len = get_symbol_length("log_end")) == sizeof(int)) {
+		get_symbol_data("log_end", len, &tmp);
+		log_end = (ulong)tmp;
+	} else
+		get_symbol_data("log_end", len, &log_end);
+
         readmem(log_buf, KVADDR, buf,
         	log_buf_len, "log_buf contents", FAULT_ON_ERROR);
 
@@ -4318,8 +4336,10 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sRELOC_SET", others++ ? "|" : "");
 	if (kt->flags & RELOC_FORCE)
 		fprintf(fp, "%sRELOC_FORCE", others++ ? "|" : "");
-	if (kt->flags & IN_KERNEL_INIT)
-		fprintf(fp, "%sIN_KERNEL_INIT", others++ ? "|" : "");
+	if (kt->flags & PRE_KERNEL_INIT)
+		fprintf(fp, "%sPRE_KERNEL_INIT", others++ ? "|" : "");
+	if (kt->flags & IRQ_DESC_TREE)
+		fprintf(fp, "%sIRQ_DESC_TREE", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -4341,6 +4361,11 @@ dump_kernel_table(int verbose)
         	fprintf(fp, "    display_bh: display_bh_3()\n");
 	else
         	fprintf(fp, "    display_bh: %lx\n", (ulong)kt->display_bh);
+        fprintf(fp, "   highest_irq: ");
+	if (kt->highest_irq)
+		fprintf(fp, "%d\n", kt->highest_irq);
+	else
+		fprintf(fp, "(unused/undetermined)\n");
         fprintf(fp, "   module_list: %lx\n", kt->module_list);
         fprintf(fp, " kernel_module: %lx\n", kt->kernel_module);
 	fprintf(fp, "mods_installed: %d\n", kt->mods_installed);
@@ -4540,9 +4565,6 @@ cmd_irq(void)
         int i, c;
 	int nr_irqs;
 
-	if (machine_type("S390") || machine_type("S390X"))
-		command_not_supported();
-
         while ((c = getopt(argcnt, args, "dbu")) != EOF) {
                 switch(c)
                 {
@@ -4566,6 +4588,9 @@ cmd_irq(void)
 				    VALID_MEMBER(irq_cpustat_t___softirq_active)
                         	    && VALID_MEMBER(irq_cpustat_t___softirq_mask))
 			                kt->display_bh = display_bh_3;
+				else if (get_symbol_type("softirq_vec", NULL, NULL) == 
+				    TYPE_CODE_ARRAY)
+			                kt->display_bh = display_bh_4;
 				else
 					error(FATAL, 
 					    "bottom-half option not supported\n");
@@ -4574,6 +4599,9 @@ cmd_irq(void)
 			return;
 
 		case 'u':
+			if (machine_type("S390") || machine_type("S390X"))
+				command_not_supported();
+
 			pc->curcmd_flags |= IRQ_IN_USE;
 			if (kernel_symbol_exists("no_irq_chip"))
 				pc->curcmd_private = (ulonglong)symbol_value("no_irq_chip");
@@ -4592,6 +4620,9 @@ cmd_irq(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (machine_type("S390") || machine_type("S390X"))
+		command_not_supported();
 
 	if ((nr_irqs = machdep->nr_irqs) == 0)
 		error(FATAL, "cannot determine number of IRQs\n");
@@ -4614,6 +4645,39 @@ cmd_irq(void)
 	}
 }
 
+static ulong
+get_irq_desc_addr(int irq)
+{
+	int c;
+	ulong cnt, addr;
+	struct radix_tree_pair *rtp;
+
+	addr = 0;
+
+	if (kt->highest_irq && (irq > kt->highest_irq))
+		return addr;
+
+ 	cnt = do_radix_tree(symbol_value("irq_desc_tree"), RADIX_TREE_COUNT, NULL);
+	rtp = (struct radix_tree_pair *)GETBUF(sizeof(struct radix_tree_pair) * (cnt+1));
+	rtp[0].index = cnt;
+	cnt = do_radix_tree(symbol_value("irq_desc_tree"), RADIX_TREE_GATHER, rtp);
+
+	if (kt->highest_irq == 0)
+		kt->highest_irq = rtp[cnt-1].index;
+
+	for (c = 0; c < cnt; c++) {
+		if (rtp[c].index == irq) {
+			if (CRASHDEBUG(1))
+				fprintf(fp, "index: %ld value: %lx\n", 
+					rtp[c].index, (ulong)rtp[c].value);
+			addr = (ulong)rtp[c].value;
+			break;
+		}
+	}
+
+	FREEBUF(rtp);
+	return addr;
+}
 
 /*
  *  Do the work for cmd_irq().
@@ -4626,11 +4690,15 @@ generic_dump_irq(int irq)
 	ulong irq_desc_ptr;
 	long len;
 	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
 	int status, depth, others;
 	ulong handler, action, value;
 	ulong tmp1, tmp2;
 
 	dm = &datatype_member;
+	handler = UNINITIALIZED;
 	
 	if (!VALID_STRUCT(irq_desc_t))
 		error(FATAL, "cannot determine size of irq_desc_t\n");
@@ -4641,39 +4709,56 @@ generic_dump_irq(int irq)
         else if (symbol_exists("_irq_desc"))
 		irq_desc_addr = symbol_value("_irq_desc") + (len * irq);
 	else if (symbol_exists("irq_desc_ptrs")) {
-		get_symbol_data("irq_desc_ptrs", sizeof(void *), &irq_desc_ptr);
+		if (get_symbol_type("irq_desc_ptrs", NULL, NULL) == TYPE_CODE_PTR)
+			get_symbol_data("irq_desc_ptrs", sizeof(void *), &irq_desc_ptr);
+		else
+			irq_desc_ptr = symbol_value("irq_desc_ptrs");
 		irq_desc_ptr += (irq * sizeof(void *));
 		readmem(irq_desc_ptr, KVADDR, &irq_desc_addr,
                         sizeof(void *), "irq_desc_ptrs entry",
                         FAULT_ON_ERROR);
 		if (!irq_desc_addr) {
-			fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
+			if (!(pc->curcmd_flags & IRQ_IN_USE))
+				fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
 			return;
 		}
+	} else if (kt->flags & IRQ_DESC_TREE) {
+		irq_desc_addr = get_irq_desc_addr(irq);
 	} else {
 		irq_desc_addr = 0;
 		error(FATAL, 
-		    "neither irq_desc, _irq_desc, nor irq_desc_ptrs "
-		    "symbols exist\n");
+		    "neither irq_desc, _irq_desc, irq_desc_ptrs "
+		    "or irq_desc_tree symbols exist\n");
 	}
 
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, &status,
-                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
-	if (VALID_MEMBER(irq_desc_t_handler))
-	        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), KVADDR,
-        	        &handler, sizeof(long), "irq_desc entry",
-			FAULT_ON_ERROR);
-	else if (VALID_MEMBER(irq_desc_t_chip))
-	        readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
-        	        &handler, sizeof(long), "irq_desc entry",
-			FAULT_ON_ERROR);
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR, &action,
-                sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
-        readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
-                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+	if (irq_desc_addr) {
+	        readmem(irq_desc_addr + OFFSET(irq_desc_t_status), KVADDR, 
+			&status, sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+		if (VALID_MEMBER(irq_desc_t_handler))
+		        readmem(irq_desc_addr + OFFSET(irq_desc_t_handler), 
+				KVADDR, &handler, sizeof(long), "irq_desc entry",
+				FAULT_ON_ERROR);
+		else if (VALID_MEMBER(irq_desc_t_chip))
+		        readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
+	        	        &handler, sizeof(long), "irq_desc entry",
+				FAULT_ON_ERROR);
+	        readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR, 
+			&action, sizeof(long), "irq_desc entry", FAULT_ON_ERROR);
+	        readmem(irq_desc_addr + OFFSET(irq_desc_t_depth), KVADDR, &depth,
+	                sizeof(int), "irq_desc entry", FAULT_ON_ERROR);
+	}
 
 	if (!action && (handler == (ulong)pc->curcmd_private))
 		return;
+
+	if ((handler == UNINITIALIZED) && VALID_STRUCT(irq_data))
+		goto irq_desc_format_v2;
+
+	if (!irq_desc_addr) {
+		if (!(pc->curcmd_flags & IRQ_IN_USE))
+			fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
+		return;
+	}
 
 	fprintf(fp, "    IRQ: %d\n", irq);
 	fprintf(fp, " STATUS: %x %s", status, status ? "(" : "");
@@ -5079,6 +5164,61 @@ do_linked_action:
 		goto do_linked_action;
 
 	fprintf(fp, "  DEPTH: %d\n\n", depth);
+
+	return;
+
+irq_desc_format_v2:
+
+	if (!(pc->curcmd_flags & HEADER_PRINTED)) {
+		fprintf(fp, " IRQ  %s  %s  NAME\n",
+			mkstring(buf1, VADDR_PRLEN, CENTER,
+			"IRQ_DESC/_DATA"),
+			mkstring(buf2, VADDR_PRLEN, CENTER,
+			"IRQACTION"));
+		
+		pc->curcmd_flags |= HEADER_PRINTED;
+	}
+	if (!irq_desc_addr) {
+		if (pc->curcmd_flags & IRQ_IN_USE)
+			return;
+	}
+	fprintf(fp, "%s  %s  ", 
+		mkstring(buf1, 4, CENTER|RJUST|INT_DEC, MKSTR((ulong)irq)),
+		irq_desc_addr ?
+		mkstring(buf2, MAX(VADDR_PRLEN, strlen("IRQ_DESC/_DATA")),
+		CENTER|LONG_HEX, MKSTR(irq_desc_addr)) :
+		mkstring(buf3,
+                MAX(VADDR_PRLEN, strlen("IRQ_DESC/_DATA")),
+                CENTER, "(unused)"));
+
+do_linked_action_v2:
+
+	fprintf(fp, "%s  ", action ?
+		mkstring(buf1, MAX(VADDR_PRLEN, strlen("IRQACTION")),
+		CENTER|LONG_HEX, MKSTR(action)) :
+		mkstring(buf2, MAX(VADDR_PRLEN, strlen("IRQACTION")),
+		CENTER, "(unused)"));
+
+	if (action) {
+		readmem(action+OFFSET(irqaction_name), KVADDR,
+			&tmp1, sizeof(void *),
+			"irqaction name", FAULT_ON_ERROR);
+		if (read_string(tmp1, buf, BUFSIZE-1))
+			fprintf(fp, "\"%s\"", buf);
+
+                readmem(action+OFFSET(irqaction_next), KVADDR,
+                        &action, sizeof(void *),
+                        "irqaction next", FAULT_ON_ERROR);
+		if (action) {
+			fprintf(fp, "\n%s",
+				space(4 + 2 + MAX(VADDR_PRLEN, 
+				strlen("IRQ_DESC/_DATA")) + 2));
+			goto do_linked_action_v2;
+		}
+	}
+		
+
+	fprintf(fp, "\n");
 }
 
 /*
@@ -5248,6 +5388,48 @@ display_bh_3(void)
 		fprintf(fp, "\n");
         }
 
+}
+
+/*
+ *  Dump the 2.6 Linux version's bottom half essentials.  
+ */
+static void
+display_bh_4(void)
+{
+	int i, len;
+	char buf[BUFSIZE];
+	char *array; 
+	ulong *p;
+	struct load_module *lm;
+
+	if (!(len = get_array_length("softirq_vec", NULL, 0)))
+		error(FATAL, "cannot determine softirq_vec array length\n");
+
+	fprintf(fp, "SOFTIRQ_VEC %s\n",
+		mkstring(buf, VADDR_PRLEN, CENTER|RJUST, "ACTION"));
+
+	array = GETBUF(SIZE(softirq_action) * (len+1));
+	
+	readmem(symbol_value("softirq_vec"), KVADDR,
+		array, SIZE(softirq_action) * len,
+		"softirq_vec", FAULT_ON_ERROR);
+
+	for (i = 0, p = (ulong *)array; i < len; i++, p++) {
+		if (*p) {
+			fprintf(fp, "    [%d]%s %s  <%s>",
+				i, i < 10 ? space(4) : space(3),
+				mkstring(buf, VADDR_PRLEN, 
+				LONG_HEX|CENTER|RJUST, MKSTR(*p)),
+				value_symbol(*p));
+			if (module_symbol(*p, NULL, &lm, NULL, 0))
+				fprintf(fp, "  [%s]", lm->mod_name);
+			fprintf(fp, "\n");
+		}
+		if (SIZE(softirq_action) == (sizeof(void *)*2))
+			p++;
+	}
+
+	FREEBUF(array);
 }
 
 /*
@@ -6270,6 +6452,43 @@ get_cpus_present()
 	FREEBUF(buf);
 
 	return present;
+}
+
+/*
+ *  If it exists, return the highest cpu number in the cpu_present_map.
+ */
+int
+get_highest_cpu_present()
+{
+	int i, len;
+	char *buf;
+	ulong *maskptr, addr;
+	int high, highest;
+
+	if (!(addr = cpu_map_addr("present")))
+		return -1;
+
+	len = cpu_map_size("present");
+	buf = GETBUF(len);
+	highest = -1;
+
+	if (readmem(addr, KVADDR, buf, len, 
+	    "cpu_present_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++) {
+			if ((high = highest_bit_long(*maskptr)) < 0)
+				continue;
+			highest = high + (i * (sizeof(ulong)*8));
+		}
+
+		if (CRASHDEBUG(1))
+			error(INFO, "get_highest_cpu_present: %d\n", highest);
+	}
+
+	FREEBUF(buf);
+
+	return highest;
 }
 
 /*

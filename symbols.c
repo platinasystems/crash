@@ -32,7 +32,6 @@ static char * get_section(ulong vaddr, char *buf);
 static void symbol_dump(ulong, char *);
 static void check_for_dups(struct load_module *);
 static int symbol_name_count(char *);
-static struct syment *symbol_search_next(char *, struct syment *);
 static struct syment *kallsyms_module_symbol(struct load_module *, symbol_info *);
 static void store_load_module_symbols \
 	(bfd *, int, void *, long, uint, ulong, char *);
@@ -72,7 +71,9 @@ static void Elf32_Sym_to_common(Elf32_Sym *, struct elf_common *);
 static void Elf64_Sym_to_common(Elf64_Sym *, struct elf_common *); 
 static void cmd_datatype_common(ulong);
 static int display_per_cpu_info(struct syment *);
-
+static struct load_module *get_module_percpu_sym_owner(struct syment *);
+static int is_percpu_symbol(struct syment *);
+static void dump_percpu_symbols(struct load_module *);
 
 #define KERNEL_SECTIONS  (void *)(1)
 #define MODULE_SECTIONS  (void *)(2) 
@@ -489,9 +490,11 @@ get_text_init_space(void)
 	if (pc->flags & SYSMAP)
 		return;
 
-	if (((section = get_kernel_section(".text.init")) == NULL) &&
-	    ((section = get_kernel_section(".init.text")) == NULL) &&
-	    (machine_type("ARM") && (section = get_kernel_section(".init")) == NULL)) {
+	if (machine_type("ARM"))
+		section = get_kernel_section(".init");
+	else if ((section = get_kernel_section(".text.init")) == NULL) 
+		section = get_kernel_section(".init.text");
+	if (!section) {
 		error(WARNING, "cannot determine text init space\n");
 		return;
 	}
@@ -884,18 +887,24 @@ symname_hash_search(char *name)
  */
 
 #define MODULE_PSEUDO_SYMBOL(sp) \
-    (STRNEQ((sp)->name, "_MODULE_START_") || STRNEQ((sp)->name, "_MODULE_END_"))
+    ((STRNEQ((sp)->name, "_MODULE_START_") || STRNEQ((sp)->name, "_MODULE_END_")) || \
+    (STRNEQ((sp)->name, "_MODULE_INIT_START_") || STRNEQ((sp)->name, "_MODULE_INIT_END_")))
 
 #define MODULE_START(sp) (STRNEQ((sp)->name, "_MODULE_START_"))
 #define MODULE_END(sp)   (STRNEQ((sp)->name, "_MODULE_END_"))
+#define MODULE_INIT_START(sp) (STRNEQ((sp)->name, "_MODULE_INIT_START_"))
+#define MODULE_INIT_END(sp)   (STRNEQ((sp)->name, "_MODULE_INIT_END_"))
 
 static void
 symbol_dump(ulong flags, char *module)
 {
-	int i;
+	int i, start, percpu_syms;
         struct syment *sp, *sp_end;
 	struct load_module *lm;
 	char *p1, *p2;;
+
+#define TBD  1
+#define DISPLAYED 2
 
 	if (flags & KERNEL_SYMS) {
         	for (sp = st->symtable; sp < st->symend; sp++) 
@@ -913,20 +922,80 @@ symbol_dump(ulong flags, char *module)
 
 		sp = lm->mod_symtable;
 		sp_end = lm->mod_symend;
+		percpu_syms = 0;
 
-                for ( ; sp <= sp_end; sp++) {
+                for (start = FALSE; sp <= sp_end; sp++) {
+
+			if (IN_MODULE_PERCPU(sp->value, lm)) {
+				if (percpu_syms == DISPLAYED)
+					continue;
+				if (!start) {
+					percpu_syms = TBD;
+					continue;
+				}
+				dump_percpu_symbols(lm);
+				percpu_syms = DISPLAYED;
+			}
+
 			if (MODULE_PSEUDO_SYMBOL(sp)) {
 				if (MODULE_START(sp)) {
 					p1 = "MODULE START";
 					p2 = sp->name+strlen("_MODULE_START_");
+					start = TRUE;
 				} else {
 					p1 = "MODULE END";
 					p2 = sp->name+strlen("_MODULE_END_");
+					if (MODULE_PERCPU_SYMS_LOADED(lm) &&
+					    !percpu_syms) {
+						dump_percpu_symbols(lm);
+						percpu_syms = DISPLAYED;
+					}
 				}
 				fprintf(fp, "%lx %s: %s\n", sp->value, p1, p2);
+
+				if (percpu_syms == TBD) {
+					dump_percpu_symbols(lm);
+					percpu_syms = DISPLAYED;
+				}
 			} else
 				show_symbol(sp, 0, SHOW_RADIX());
                 }
+
+		if (lm->mod_init_symtable) {
+			sp = lm->mod_init_symtable;
+			sp_end = lm->mod_init_symend;
+
+			for ( ; sp <= sp_end; sp++) {
+				if (MODULE_PSEUDO_SYMBOL(sp)) {
+					if (MODULE_INIT_START(sp)) {
+						p1 = "MODULE INIT START";
+						p2 = sp->name+strlen("_MODULE_INIT_START_");
+					} else {
+						p1 = "MODULE INIT END";
+						p2 = sp->name+strlen("_MODULE_INIT_END_");
+					}
+					fprintf(fp, "%lx %s: %s\n", sp->value, p1, p2);
+				} else
+					show_symbol(sp, 0, SHOW_RADIX());
+			}
+		}
+	}
+#undef TBD
+#undef DISPLAYED
+}
+
+static void
+dump_percpu_symbols(struct load_module *lm)
+{
+	struct syment *sp, *sp_end;
+
+	if (MODULE_PERCPU_SYMS_LOADED(lm)) {
+		sp = lm->mod_symtable;
+		sp_end = lm->mod_symend;
+		for ( ; sp <= sp_end; sp++) {
+			if (IN_MODULE_PERCPU(sp->value, lm))
+				show_symbol(sp, 0, SHOW_RADIX());
+		}
 	}
 }
 
@@ -1068,6 +1137,7 @@ store_module_symbols_v1(ulong total, int mods_installed)
 
 		st->ext_module_symtable[mcnt].value = mod;
 		st->ext_module_symtable[mcnt].type = 'm';
+		st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 		sprintf(buf2, "%s%s", "_MODULE_START_", name);
 		namespace_ctl(NAMESPACE_INSTALL, &st->ext_module_namespace,
 			&st->ext_module_symtable[mcnt], buf2);
@@ -1129,6 +1199,7 @@ store_module_symbols_v1(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].value = 
 					modsym->value;
 				st->ext_module_symtable[mcnt].type = '?'; 
+				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
                 		namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
@@ -1170,6 +1241,7 @@ store_module_symbols_v1(ulong total, int mods_installed)
 
 		st->ext_module_symtable[mcnt].value = mod + size;
 		st->ext_module_symtable[mcnt].type = 'm';
+		st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 		sprintf(buf2, "%s%s", "_MODULE_END_", name);
                 namespace_ctl(NAMESPACE_INSTALL, 
 			&st->ext_module_namespace,
@@ -1244,6 +1316,8 @@ store_module_symbols_v2(ulong total, int mods_installed)
 	struct load_module *lm;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
 	char *strbuf, *modbuf, *modsymbuf;
 	struct syment *sp;
 	ulong first, last;
@@ -1323,14 +1397,19 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		lm->mod_ext_symcnt = mcnt;
 		lm->mod_init_module_ptr = ULONG(modbuf + 
 			OFFSET(module_module_init));
+		lm->mod_percpu = ULONG(modbuf + OFFSET(module_percpu));
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 			lm->mod_etext_guess = lm->mod_base +
 				UINT(modbuf + OFFSET(module_core_text_size));
+			lm->mod_init_size =
+				UINT(modbuf + OFFSET(module_init_size));
 			lm->mod_init_text_size = 
 				UINT(modbuf + OFFSET(module_init_text_size));
 		} else {
 			lm->mod_etext_guess = lm->mod_base +
 				ULONG(modbuf + OFFSET(module_core_text_size));
+			lm->mod_init_size =
+				ULONG(modbuf + OFFSET(module_init_size));
 			lm->mod_init_text_size = 
 				ULONG(modbuf + OFFSET(module_init_text_size));
 		}
@@ -1338,11 +1417,26 @@ store_module_symbols_v2(ulong total, int mods_installed)
 
 		st->ext_module_symtable[mcnt].value = lm->mod_base;
 		st->ext_module_symtable[mcnt].type = 'm';
+		st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 		sprintf(buf2, "%s%s", "_MODULE_START_", mod_name);
 		namespace_ctl(NAMESPACE_INSTALL, &st->ext_module_namespace,
 			&st->ext_module_symtable[mcnt], buf2);
 		lm_mcnt = mcnt;
 		mcnt++;
+
+		if (lm->mod_init_size > 0) {
+			st->ext_module_symtable[mcnt].value = lm->mod_init_module_ptr;
+			st->ext_module_symtable[mcnt].type = 'm';
+			st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
+			sprintf(buf3, "%s%s", "_MODULE_INIT_START_", mod_name);
+			namespace_ctl(NAMESPACE_INSTALL, 
+					&st->ext_module_namespace,
+					&st->ext_module_symtable[mcnt], buf3);
+			lm_mcnt = mcnt;
+			mcnt++;
+			lm->mod_flags |= MOD_INIT;
+		}
+
 
 		if (nsyms && !IN_MODULE(syms, lm)) {
 			error(WARNING, 
@@ -1407,6 +1501,7 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].value = 
 					modsym->value;
 				st->ext_module_symtable[mcnt].type = '?'; 
+				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
                 		namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
@@ -1480,6 +1575,7 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				st->ext_module_symtable[mcnt].value = 
 					modsym->value;
 				st->ext_module_symtable[mcnt].type = '?'; 
+				st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 				strip_module_symbol_end(buf1);
                 		namespace_ctl(NAMESPACE_INSTALL, 
 				    &st->ext_module_namespace,
@@ -1514,11 +1610,23 @@ store_module_symbols_v2(ulong total, int mods_installed)
 
 		st->ext_module_symtable[mcnt].value = lm->mod_base + size;
 		st->ext_module_symtable[mcnt].type = 'm';
+		st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
 		sprintf(buf2, "%s%s", "_MODULE_END_", mod_name);
                 namespace_ctl(NAMESPACE_INSTALL, 
 			&st->ext_module_namespace,
                         &st->ext_module_symtable[mcnt], buf2);
 		mcnt++;
+
+		if (lm->mod_init_size > 0) {
+			st->ext_module_symtable[mcnt].value = lm->mod_init_module_ptr + lm->mod_init_size;
+			st->ext_module_symtable[mcnt].type = 'm';
+			st->ext_module_symtable[mcnt].flags |= MODULE_SYMBOL;
+			sprintf(buf4, "%s%s", "_MODULE_INIT_END_", mod_name);
+			namespace_ctl(NAMESPACE_INSTALL, 
+					&st->ext_module_namespace,
+					&st->ext_module_symtable[mcnt], buf4);
+			mcnt++;
+		}
 
 		lm->mod_ext_symcnt = mcnt - lm->mod_ext_symcnt;
 
@@ -1545,6 +1653,8 @@ store_module_symbols_v2(ulong total, int mods_installed)
                 lm = &st->load_modules[m];
 		sprintf(buf1, "_MODULE_START_%s", lm->mod_name);
 		sprintf(buf2, "_MODULE_END_%s", lm->mod_name);
+		sprintf(buf3, "_MODULE_INIT_START_%s", lm->mod_name);
+		sprintf(buf4, "_MODULE_INIT_END_%s", lm->mod_name);
 
         	for (sp = st->ext_module_symtable; 
 		     sp < st->ext_module_symend; sp++) {
@@ -1556,6 +1666,12 @@ store_module_symbols_v2(ulong total, int mods_installed)
 				lm->mod_ext_symend = sp;
 				lm->mod_symend = sp;
 			}
+			if (STREQ(sp->name, buf3)) {
+				lm->mod_init_symtable = sp;
+			}
+			if (STREQ(sp->name, buf4)) {
+				lm->mod_init_symend = sp;
+			}
 		}
 	}
 
@@ -1563,6 +1679,10 @@ store_module_symbols_v2(ulong total, int mods_installed)
 
         if (symbol_query("__insmod_", NULL, NULL))
                 st->flags |= INSMOD_BUILTIN;
+
+	if (mcnt > total)
+		error(FATAL, "store_module_symbols_v2: total: %ld mcnt: %d\n", 
+			total, mcnt);
 }
 
 /*
@@ -1695,6 +1815,7 @@ store_module_kallsyms_v1(struct load_module *lm, int start, int curr,
 
                        	st->ext_module_symtable[mcnt_idx].value = symbol_addr;
                        	st->ext_module_symtable[mcnt_idx].type = type;
+                       	st->ext_module_symtable[mcnt_idx].flags |= MODULE_SYMBOL;
                         namespace_ctl(NAMESPACE_INSTALL,
                                 &st->ext_module_namespace,
                                 &st->ext_module_symtable[mcnt_idx++], nameptr);
@@ -1750,6 +1871,7 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 	struct namespace *ns;
         int mcnt;
         int mcnt_idx;
+	char *module_buf_init = NULL;
 
 	if (!(kt->flags & KALLSYMS_V2))
 		return 0;
@@ -1772,30 +1894,50 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
                 return 0;
         }
 
+	if (lm->mod_init_size > 0) {
+		module_buf_init = GETBUF(lm->mod_init_size);
+
+		if (!readmem(lm->mod_init_module_ptr, KVADDR, module_buf_init, lm->mod_init_size,
+					"module init (kallsyms)", RETURN_ON_ERROR|QUIET)) {
+			error(WARNING,"cannot access module init kallsyms\n");
+			FREEBUF(module_buf_init);
+		}
+	}
+
 	if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
 		nksyms = UINT(modbuf + OFFSET(module_num_symtab));
 	else
 		nksyms = ULONG(modbuf + OFFSET(module_num_symtab));
 
 	ksymtab = ULONG(modbuf + OFFSET(module_symtab));
-	if (!IN_MODULE(ksymtab, lm)) {
+	if (!IN_MODULE(ksymtab, lm) && !IN_MODULE_INIT(ksymtab, lm)) {
 		error(WARNING,
 		    "%s: module.symtab outside of module address space\n",
 			lm->mod_name);
 		FREEBUF(module_buf);
+		if (module_buf_init)
+			FREEBUF(module_buf_init);
 		return 0;
 	} 
-	locsymtab = module_buf + (ksymtab - lm->mod_base);
+	if (IN_MODULE(ksymtab, lm))
+		locsymtab = module_buf + (ksymtab - lm->mod_base);
+	else
+		locsymtab = module_buf_init + (ksymtab - lm->mod_init_module_ptr);
 
 	kstrtab = ULONG(modbuf + OFFSET(module_strtab));
-	if (!IN_MODULE(kstrtab, lm)) {
+	if (!IN_MODULE(kstrtab, lm) && !IN_MODULE_INIT(kstrtab, lm)) {
 		error(WARNING, 
 		    "%s: module.strtab outside of module address space\n",
 			lm->mod_name);
 		FREEBUF(module_buf);
+		if (module_buf_init)
+			FREEBUF(module_buf_init);
 		return 0;
 	}
-	locstrtab = module_buf + (kstrtab - lm->mod_base);
+	if (IN_MODULE(kstrtab, lm))
+		locstrtab = module_buf + (kstrtab - lm->mod_base);
+	else
+		locstrtab = module_buf_init + (kstrtab - lm->mod_init_module_ptr);
 
 	for (i = 1; i < nksyms; i++) {  /* ELF starts real symbols at 1 */
 		switch (BITS())
@@ -1810,14 +1952,16 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 			break;
 		}
 
-		if ((ec->st_value < lm->mod_base) || 
-		    (ec->st_value >  (lm->mod_base + lm->mod_size))) 
+		if (((ec->st_value < lm->mod_base) ||
+		    (ec->st_value >  (lm->mod_base + lm->mod_size))) &&
+		    ((ec->st_value < lm->mod_init_module_ptr) ||
+		    (ec->st_value > (lm->mod_init_module_ptr + lm->mod_init_size))))
 				continue;
 
 		if (ec->st_shndx == SHN_UNDEF)
                         continue;
 
-		if (!IN_MODULE(kstrtab + ec->st_name, lm)) {
+		if (!IN_MODULE(kstrtab + ec->st_name, lm) && !IN_MODULE_INIT(kstrtab + ec->st_name, lm)) {
 			if (CRASHDEBUG(3)) {
 				error(WARNING, 
 				   "%s: bad st_name index: %lx -> %lx\n        "
@@ -1861,6 +2005,7 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 
                 st->ext_module_symtable[mcnt_idx].value = ec->st_value;
                 st->ext_module_symtable[mcnt_idx].type = ec->st_info;
+                st->ext_module_symtable[mcnt_idx].flags |= MODULE_SYMBOL;
                 namespace_ctl(NAMESPACE_INSTALL,
                 	&st->ext_module_namespace,
                         &st->ext_module_symtable[mcnt_idx++], nameptr);
@@ -1869,6 +2014,8 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 
         lm->mod_flags |= MOD_KALLSYMS;
         FREEBUF(module_buf);
+	if (module_buf_init)
+		FREEBUF(module_buf_init);
 
         return mcnt;
 }
@@ -2179,12 +2326,17 @@ is_kernel_text(ulong value)
 	start = 0;
 
 	if (pc->flags & SYSMAP) {
-		sp = st->symtable;
-		if ((value >= sp->value) && (value < kt->etext))
-			return TRUE;
-        	if ((sp = value_search(value, NULL)) &&
+		if ((sp = value_search(value, NULL)) &&
 		    ((sp->type == 'T') || (sp->type == 't'))) 
 			return TRUE;
+
+		for (sp = st->symtable; sp < st->symend; sp++) {
+			if (!((sp->type == 'T') || (sp->type == 't')))
+				continue;
+			if ((value >= sp->value) && (value < kt->etext))
+				return TRUE;
+			break;
+		}
 	} else {
 	        sec = (asection **)st->sections;
 	        for (i = 0; i < st->bfd->section_count; i++, sec++) {
@@ -2211,7 +2363,7 @@ is_kernel_text(ulong value)
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
 
-		if (!IN_MODULE(value, lm))
+		if (!IN_MODULE(value, lm) && !IN_MODULE_INIT(value, lm))
 			continue;
 
 		if (lm->mod_flags & MOD_LOAD_SYMS) {
@@ -2233,10 +2385,15 @@ is_kernel_text(ulong value)
 				start = lm->mod_base + lm->mod_size_of_struct;
 				break;
 			case KMOD_V2:
-				start = lm->mod_base;
+				if (IN_MODULE(value, lm))
+					start = lm->mod_base;
+				else
+					start = lm->mod_init_module_ptr;
 				break;
 			}
 			end = lm->mod_etext_guess;
+			if (IN_MODULE_INIT(value, lm) && end < lm->mod_init_module_ptr + lm->mod_init_size)
+				end = lm->mod_init_module_ptr + lm->mod_init_size;
 
 	        	if ((value >= start) && (value < end)) 
 	               		return TRUE;
@@ -2470,12 +2627,18 @@ dump_symbol_table(void)
 			fprintf(fp, "%sMOD_INITRD", others++ ? "|" : "");
 		if (lm->mod_flags & MOD_NOPATCH)
 			fprintf(fp, "%sMOD_NOPATCH", others++ ? "|" : "");
+		if (lm->mod_flags & MOD_INIT)
+			fprintf(fp, "%sMOD_INIT", others++ ? "|" : "");
 		fprintf(fp, ")\n");
 
         	fprintf(fp, "          mod_symtable: %lx\n",
 			(ulong)lm->mod_symtable);
         	fprintf(fp, "            mod_symend: %lx\n",
 			(ulong)lm->mod_symend);
+        	fprintf(fp, "     mod_init_symtable: %lx\n",
+			(ulong)lm->mod_init_symtable);
+        	fprintf(fp, "       mod_init_symend: %lx\n",
+			(ulong)lm->mod_init_symend);
 
                 fprintf(fp, "        mod_ext_symcnt: %ld\n",
                         lm->mod_ext_symcnt);
@@ -2524,10 +2687,32 @@ dump_symbol_table(void)
                         lm->mod_bss_start,
                         lm->mod_bss_start ?
                         lm->mod_bss_start - lm->mod_base : 0);
+		fprintf(fp, "         mod_init_size: %ld\n",
+			lm->mod_init_size);
 		fprintf(fp, "    mod_init_text_size: %ld\n",
 			lm->mod_init_text_size);
 		fprintf(fp, "   mod_init_module_ptr: %lx\n",
 			lm->mod_init_module_ptr);
+		if (lm->mod_percpu_size) {
+			fprintf(fp, "       mod_percpu_size: %lx\n", 
+				lm->mod_percpu_size);
+			fprintf(fp, "            mod_percpu: %lx - %lx\n", 
+				lm->mod_percpu, 
+				lm->mod_percpu + lm->mod_percpu_size);
+		} else {
+			if (lm->mod_percpu) {
+				fprintf(fp, 
+				    "       mod_percpu_size: (not loaded)\n");
+				fprintf(fp, 
+				    "            mod_percpu: %lx - (unknown)\n",
+					lm->mod_percpu);
+			} else {
+				fprintf(fp, 
+				    "       mod_percpu_size: (not used)\n");
+				fprintf(fp, 
+				    "            mod_percpu: (not used)\n");
+			}
+		}
 
 		fprintf(fp, "          mod_sections: %d\n", lm->mod_sections);
 		fprintf(fp, "      mod_section_data: %lx %s\n",
@@ -2555,9 +2740,14 @@ dump_symbol_table(void)
 	}
 
 	fprintf(fp, "\n");
-	fprintf(fp, "dwarf_eh_frame_file_offset: %llx\n", 
+	fprintf(fp, "   dwarf_eh_frame_file_offset: %llx\n", 
 		(unsigned long long)st->dwarf_eh_frame_file_offset);
-        fprintf(fp, "       dwarf_eh_frame_size: %ld\n", st->dwarf_eh_frame_size);
+	fprintf(fp, "          dwarf_eh_frame_size: %ld\n", st->dwarf_eh_frame_size);
+
+	fprintf(fp, "dwarf_debug_frame_file_offset: %llx\n", 
+		(unsigned long long)st->dwarf_debug_frame_file_offset);
+	fprintf(fp, "       dwarf_debug_frame_size: %ld\n", st->dwarf_debug_frame_size);
+
 	fprintf(fp, "\n");
 
 	sec = (asection **)st->sections;
@@ -3036,6 +3226,7 @@ cmd_sym(void)
 			name = NULL;
 			multiples = 0;
 			sp = NULL;
+			show_flags &= ~SHOW_MODULE;
 
 			if (hexadecimal(args[optind], 0)) {
 				errflag = 0;
@@ -3046,6 +3237,9 @@ cmd_sym(void)
 						args[optind]);
 				} else if ((sp = value_search(value, &offset))){
 					name = sp->name;
+					if (module_symbol(sp->value, NULL, NULL,
+					    NULL, 0))
+						show_flags |= SHOW_MODULE;
 					if (prev && 
 					    (spp = prev_symbol(NULL, sp))) 
 						show_symbol(spp, 0, show_flags);
@@ -3069,6 +3263,9 @@ cmd_sym(void)
 				if ((sp = symbol_search(args[optind]))) {
 					multiples = symbol_name_count(sp->name);
 do_multiples:
+					if (module_symbol(sp->value, NULL, NULL,
+					    NULL, 0))
+						show_flags |= SHOW_MODULE;
 					name = sp->name;
 					if (prev && 
 					    (spp = prev_symbol(NULL, sp)))
@@ -3110,6 +3307,9 @@ show_symbol(struct syment *sp, ulong offset, ulong show_flags)
 	char buf[BUFSIZE];
 	char *p1;
 	ulong radix;
+	struct load_module *lm;
+
+	lm = NULL;
 
 	switch (show_flags & (SHOW_HEX_OFFS|SHOW_DEC_OFFS))
 	{
@@ -3123,7 +3323,6 @@ show_symbol(struct syment *sp, ulong offset, ulong show_flags)
 		break;
 	}
 
-
 	if (MODULE_START(sp)) {
 		p1 = sp->name + strlen("_MODULE_START_");
 		fprintf(fp, "%lx (%c) (%s module)", sp->value, sp->type, p1);
@@ -3132,24 +3331,27 @@ show_symbol(struct syment *sp, ulong offset, ulong show_flags)
 				offset);
 		fprintf(fp, "\n");
 		return;
-	}
+	} else if (show_flags & SHOW_MODULE)
+		module_symbol(sp->value, NULL, &lm, NULL, 0);
 
         if (offset)
                 fprintf(fp, (radix == 16) ?
-			"%lx (%c) %s+0x%lx  " : "%lx (%c) %s+%ld  ", 
+			"%lx (%c) %s+0x%lx" : "%lx (%c) %s+%ld", 
 			sp->value+offset, sp->type, sp->name, offset);
         else
-                fprintf(fp, "%lx (%c) %s  ", sp->value, sp->type, sp->name);
+                fprintf(fp, "%lx (%c) %s", sp->value, sp->type, sp->name);
+
+	if (lm)
+		fprintf(fp, " [%s]", lm->mod_name);
 
         if (is_kernel_text(sp->value+offset) && 
 	    (show_flags & SHOW_LINENUM))
-                fprintf(fp, "%s", 
+                fprintf(fp, " %s", 
 			get_line_number(sp->value+offset, buf, TRUE));
 
 	if (show_flags & SHOW_SECTION)
-                fprintf(fp, "[%s]", get_section(sp->value+offset, buf));
+                fprintf(fp, " [%s]", get_section(sp->value+offset, buf));
 		
-
 	fprintf(fp, "\n");
 }
 
@@ -3281,7 +3483,7 @@ symbol_query(char *s, char *print_pad, struct syment **spp)
 	int i;
         struct syment *sp, *sp_end;
 	struct load_module *lm;
-	int cnt;
+	int cnt, search_init;
 
 	cnt = 0;
 
@@ -3298,8 +3500,12 @@ symbol_query(char *s, char *print_pad, struct syment **spp)
 		}
 	}
 
+	search_init = FALSE;
+
 	for (i = 0; i < st->mods_installed; i++) {
 		lm = &st->load_modules[i];
+		if (lm->mod_flags & MOD_INIT)
+			search_init = TRUE;
 		sp = lm->mod_symtable;
 		sp_end = lm->mod_symend;
 
@@ -3311,7 +3517,8 @@ symbol_query(char *s, char *print_pad, struct syment **spp)
 				if (print_pad) {
 					if (strlen(print_pad))
 						fprintf(fp, "%s", print_pad);
-					show_symbol(sp, 0, SHOW_RADIX());
+					show_symbol(sp, 0, 
+						SHOW_RADIX()|SHOW_MODULE);
 				}
 				if (spp)
 					*spp = sp;
@@ -3319,7 +3526,35 @@ symbol_query(char *s, char *print_pad, struct syment **spp)
 			}
 		}
 	}
+
+	if (!search_init)
+		return(cnt);
 	
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (!lm->mod_init_symtable)
+			continue;
+		sp = lm->mod_init_symtable;
+		sp_end = lm->mod_init_symend;
+
+		for ( ; sp < sp_end; sp++) {
+			if (MODULE_START(sp))
+				continue;
+
+			if (strstr(sp->name, s)) {
+				if (print_pad) {
+					if (strlen(print_pad))
+						fprintf(fp, "%s", print_pad);
+					show_symbol(sp, 0, 
+						SHOW_RADIX()|SHOW_MODULE);
+				}
+				if (spp)
+					*spp = sp;
+				cnt++;
+			}
+		}
+	}
+
 	return(cnt);
 }
 
@@ -3333,7 +3568,7 @@ symbol_search(char *s)
 	int i;
         struct syment *sp_hashed, *sp, *sp_end;
 	struct load_module *lm;
-	int pseudos;
+	int pseudos, search_init;
 
 	sp_hashed = symname_hash_search(s);
 
@@ -3343,20 +3578,43 @@ symbol_search(char *s)
         }
 
 	pseudos = (strstr(s, "_MODULE_START_") || strstr(s, "_MODULE_END_"));
+	search_init = FALSE;
 
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
+		if (lm->mod_flags & MOD_INIT)
+			search_init = TRUE;
 		sp = lm->mod_symtable;
                 sp_end = lm->mod_symend;
 
-                for ( ; sp < sp_end; sp++) {
+                for ( ; sp <= sp_end; sp++) {
                 	if (!pseudos && MODULE_PSEUDO_SYMBOL(sp))
                         	continue;
-
                 	if (STREQ(s, sp->name))
                         	return(sp);
                 }
         }
+
+	if (!search_init)
+		return((struct syment *)NULL);
+
+	pseudos = (strstr(s, "_MODULE_INIT_START_") || strstr(s, "_MODULE_INIT_END_"));
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (!lm->mod_init_symtable)
+			continue;
+		sp = lm->mod_init_symtable;
+		sp_end = lm->mod_init_symend;
+
+		for ( ; sp < sp_end; sp++) {
+			if (!pseudos && MODULE_PSEUDO_SYMBOL(sp))
+				continue;
+
+			if (STREQ(s, sp->name))
+				return(sp);
+		}
+	}
 
         return((struct syment *)NULL);
 }
@@ -3370,7 +3628,7 @@ symbol_name_count(char *s)
         int i;
         struct syment *sp, *sp_end;
         struct load_module *lm;
-        int count, pseudos;
+        int count, pseudos, search_init;
 
 	count = 0;
 
@@ -3382,9 +3640,12 @@ symbol_name_count(char *s)
         }
 
         pseudos = (strstr(s, "_MODULE_START_") || strstr(s, "_MODULE_END_"));
+	search_init = FALSE;
 
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
+		if (lm->mod_flags & MOD_INIT)
+			search_init = TRUE;
                 sp = lm->mod_symtable;
                 sp_end = lm->mod_symend;
  
@@ -3397,20 +3658,41 @@ symbol_name_count(char *s)
                 }
         }
 
-        return(count);
+	if (!search_init)
+		return(count);
+
+	pseudos = (strstr(s, "_MODULE_INIT_START_") || strstr(s, "_MODULE_INIT_END_"));
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (!lm->mod_init_symtable)
+			continue;
+		sp = lm->mod_init_symtable;
+		sp_end = lm->mod_init_symend;
+
+		for ( ; sp < sp_end; sp++) {
+			if (!pseudos && MODULE_PSEUDO_SYMBOL(sp))
+				continue;
+
+			if (STREQ(s, sp->name))
+				count++;
+		}
+	}
+
+	return(count);
 }
 
 /*
  *  Return the syment of the next symbol with the same name of the input symbol.
  */
-static struct syment *
+struct syment *
 symbol_search_next(char *s, struct syment *spstart)
 {
 	int i;
         struct syment *sp, *sp_end;
 	struct load_module *lm;
 	int found_start;
-	int pseudos;
+	int pseudos, search_init;
 
 	found_start = FALSE;
 
@@ -3427,9 +3709,12 @@ symbol_search_next(char *s, struct syment *spstart)
         }
 
 	pseudos = (strstr(s, "_MODULE_START_") || strstr(s, "_MODULE_END_"));
+	search_init = FALSE;
 
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
+		if (lm->mod_flags & MOD_INIT)
+			search_init = TRUE;
 		sp = lm->mod_symtable;
                 sp_end = lm->mod_symend;
 
@@ -3448,7 +3733,34 @@ symbol_search_next(char *s, struct syment *spstart)
                 }
         }
 
-        return((struct syment *)NULL);
+	if (!search_init)
+		return((struct syment *)NULL);
+
+	pseudos = (strstr(s, "_MODULE_INIT_START_") || strstr(s, "_MODULE_INIT_END_"));
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (!lm->mod_init_symtable)
+			continue;
+		sp = lm->mod_init_symtable;
+		sp_end = lm->mod_init_symend;
+
+		for ( ; sp < sp_end; sp++) {
+			if (!pseudos && MODULE_PSEUDO_SYMBOL(sp))
+				continue;
+
+			if (sp == spstart) {
+				found_start = TRUE;
+				continue;
+			} else if (!found_start)
+				continue;
+
+			if (STREQ(s, sp->name))
+				return(sp);
+		}
+	}
+
+	return((struct syment *)NULL);
 }
 
 /*
@@ -3493,6 +3805,7 @@ module_symbol(ulong value,
 	long mcnt;
 	char buf[BUFSIZE];
 	ulong offs, offset;
+	ulong base, end;
 
 	if (NO_MODULES())
 		return FALSE;
@@ -3506,13 +3819,24 @@ module_symbol(ulong value,
 	for (i = 0; i < st->mods_installed; i++) {
 		lm = &st->load_modules[i];
 
-		if ((value >= lm->mod_base) && 
-		    (value < (lm->mod_base + lm->mod_size))) {
+		if (IN_MODULE(value, lm)) {
+			base = lm->mod_base;
+			end = lm->mod_base + lm->mod_size;
+		} else if (IN_MODULE_INIT(value, lm)) {
+			base = lm->mod_init_module_ptr;
+			end = lm->mod_init_module_ptr + lm->mod_init_size;
+		} else if (IN_MODULE_PERCPU(value, lm)) {
+			base = lm->mod_percpu;
+			end = lm->mod_percpu + lm->mod_percpu_size;
+		} else
+			continue;
+
+		if ((value >= base) && (value < end)) {
 			if (lmp) 
 				*lmp = lm;
 
 			if (name) {
-				offs = value - lm->mod_base;
+				offs = value - base;
         			if ((sp = value_search(value, &offset))) {
                 			if (offset)
                         			sprintf(buf, radix == 16 ? 
@@ -3541,56 +3865,38 @@ module_symbol(ulong value,
 	return FALSE;
 }
 
-/*
- *  Return the syment of the symbol closest to the value, along with
- *  the offset from the symbol value if requested.
- */
 struct syment *
-value_search(ulong value, ulong *offset)
+value_search_module(ulong value, ulong *offset)
 {
 	int i;
         struct syment *sp, *sp_end, *spnext, *splast;
 	struct load_module *lm;
+	int search_init_sections, search_init;
 
-        if (!in_ksymbol_range(value))
-                return((struct syment *)NULL);
+	search_init = FALSE;
+	search_init_sections = 0;
 
-	if ((sp = machdep->value_to_symbol(value, offset)))
-		return sp;
+        for (i = 0; i < st->mods_installed; i++) {
+                if (st->load_modules[i].mod_flags & MOD_INIT)
+			search_init_sections++;
+	}
 
-	if (IS_VMALLOC_ADDR(value)) 
-		goto check_modules;
-
-	if ((sp = symval_hash_search(value)) == NULL)
-		sp = st->symtable;
- 
-        for ( ; sp < st->symend; sp++) {
-                if (value == sp->value) {
-#ifdef GDB_7_0
-			if (STRNEQ(sp->name, ".text.")) {
-				spnext = sp+1;
-				if (spnext->value == value)
-					sp = spnext;
-			}
-#endif
-                        if (offset) 
-				*offset = 0;
-                        return((struct syment *)sp);
-                }
-                if (sp->value > value) {
-			if (offset)
-                        	*offset = value - ((sp-1)->value);
-                        return((struct syment *)(sp-1));
-                }
-        }
-
-check_modules:
+retry:
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
-		sp = lm->mod_symtable;
-                sp_end = lm->mod_symend;
 
-		if (sp->value > value)  /* invalid -- between modules */
+		if (search_init) {
+			if (lm->mod_init_symtable) {
+				sp = lm->mod_init_symtable;
+				sp_end = lm->mod_init_symend;
+			} else
+				continue;
+		} else {
+			sp = lm->mod_symtable;
+			sp_end = lm->mod_symend;
+		}
+
+		if (sp->value > value)   /* invalid -- between modules */
 			break;
 
 	       /*
@@ -3599,9 +3905,12 @@ check_modules:
                 *  when they have unique values.
 		*/
 		splast = NULL;
-                for ( ; sp < sp_end; sp++) {
+                for ( ; sp <= sp_end; sp++) {
                 	if (value == sp->value) {
-				if (MODULE_START(sp)) {
+				if (MODULE_END(sp) || MODULE_INIT_END(sp))
+					break;
+
+				if (MODULE_START(sp) || MODULE_INIT_START(sp)) {
 					spnext = sp+1;
 					if (spnext->value == value)
 						sp = spnext;
@@ -3641,7 +3950,61 @@ check_modules:
                 }
         }
 
+	if (search_init_sections) {
+		if (!search_init) {
+			search_init = TRUE;
+			goto retry;
+		}
+	}
+
         return((struct syment *)NULL);
+}
+
+/*
+ *  Return the syment of the symbol closest to the value, along with
+ *  the offset from the symbol value if requested.
+ */
+struct syment *
+value_search(ulong value, ulong *offset)
+{
+        struct syment *sp, *spnext;
+
+        if (!in_ksymbol_range(value))
+                return((struct syment *)NULL);
+
+	if ((sp = machdep->value_to_symbol(value, offset)))
+		return sp;
+
+	if (IS_VMALLOC_ADDR(value)) 
+		goto check_modules;
+
+	if ((sp = symval_hash_search(value)) == NULL)
+		sp = st->symtable;
+ 
+        for ( ; sp < st->symend; sp++) {
+                if (value == sp->value) {
+#ifdef GDB_7_0
+			if (STRNEQ(sp->name, ".text.")) {
+				spnext = sp+1;
+				if (spnext->value == value)
+					sp = spnext;
+			}
+#endif
+                        if (offset) 
+				*offset = 0;
+                        return((struct syment *)sp);
+                }
+                if (sp->value > value) {
+			if (offset)
+                        	*offset = value - ((sp-1)->value);
+                        return((struct syment *)(sp-1));
+                }
+        }
+
+check_modules:
+	sp = value_search_module(value, offset);
+
+	return sp;
 }
 
 ulong
@@ -3807,7 +4170,7 @@ struct syment *
 next_symbol(char *symbol, struct syment *sp_in)
 {
 	int i;
-	int found;
+	int found, search_init;
         struct syment *sp, *sp_end;
 	struct load_module *lm;
 	char buf[BUFSIZE], *p1;
@@ -3826,8 +4189,12 @@ next_symbol(char *symbol, struct syment *sp_in)
 			}
 	        }
 	
+		search_init = FALSE;
+
 	        for (i = 0; i < st->mods_installed; i++) {
 	                lm = &st->load_modules[i];
+			if (lm->mod_flags & MOD_INIT)
+				search_init = TRUE;
 	                sp = lm->mod_symtable;
 	                sp_end = lm->mod_symend;
 	
@@ -3842,6 +4209,23 @@ next_symbol(char *symbol, struct syment *sp_in)
 						continue;
                                 	return sp;
 				}
+	                }
+	        }
+
+	        for (i = 0; search_init && (i < st->mods_installed); i++) {
+	                lm = &st->load_modules[i];
+			if (!lm->mod_init_symtable)
+				continue;
+	                sp = lm->mod_init_symtable;
+	                sp_end = lm->mod_init_symend;
+	
+	                for ( ; sp < sp_end; sp++) {
+	                        if (MODULE_PSEUDO_SYMBOL(sp))
+	                                continue;
+                       		if (sp == sp_in) 
+                                	found = TRUE;
+                        	else if (found)
+                                	return sp;
 	                }
 	        }
 
@@ -3894,7 +4278,7 @@ next_symbol(char *symbol, struct syment *sp_in)
 struct syment *
 prev_symbol(char *symbol, struct syment *sp_in)
 {
-	int i;
+	int i, search_init;
         struct syment *sp, *sp_end, *sp_prev;
 	char buf[BUFSIZE], *p1;
 	struct load_module *lm;
@@ -3910,8 +4294,12 @@ prev_symbol(char *symbol, struct syment *sp_in)
 			sp_prev = sp;
                 }
 
+		search_init = FALSE;
+
                 for (i = 0; i < st->mods_installed; i++) {
                         lm = &st->load_modules[i];
+			if (lm->mod_flags & MOD_INIT)
+				search_init = TRUE;
                         sp = lm->mod_symtable;
                         sp_end = lm->mod_symend;
 
@@ -3926,6 +4314,23 @@ prev_symbol(char *symbol, struct syment *sp_in)
                                                 sp_prev = sp;
                                 } else
                                 	sp_prev = sp;
+                        }
+                }
+
+                for (i = 0; search_init && (i < st->mods_installed); i++) {
+                        lm = &st->load_modules[i];
+                        if (!lm->mod_init_symtable)
+				continue;
+                        sp = lm->mod_init_symtable;
+                        sp_end = lm->mod_init_symend;
+
+                        for ( ; sp < sp_end; sp++) {
+                                if (MODULE_PSEUDO_SYMBOL(sp))
+                                        continue;
+                                if (sp == sp_in)
+                                        return sp_prev;
+
+                               	sp_prev = sp;
                         }
                 }
 
@@ -4034,6 +4439,16 @@ symbol_value_module(char *symbol, char *module)
 			if (STREQ(symbol, sp->name))
 				return(sp->value);
 		}
+
+		if (lm->mod_init_symtable) {
+			sp = lm->mod_init_symtable;
+			sp_end = lm->mod_init_symend;
+	
+			for ( ; sp < sp_end; sp++) {
+				if (STREQ(symbol, sp->name))
+					return(sp->value);
+			}
+		}
 	}
 
 	return 0;
@@ -4082,6 +4497,16 @@ symbol_exists(char *symbol)
                 	if (STREQ(symbol, sp->name))
                         	return(TRUE);
                 }
+
+		if (lm->mod_init_symtable) {
+			sp = lm->mod_init_symtable;
+			sp_end = lm->mod_init_symend;
+	
+			for ( ; sp < sp_end; sp++) {
+				if (STREQ(symbol, sp->name))
+					return(TRUE);
+			}
+		}
 	}
 
         return(FALSE);
@@ -4108,16 +4533,12 @@ per_cpu_symbol_search(char *symbol)
 			return sp;
 		new = symbol + strlen("per_cpu__");
 		if ((sp = symbol_search(new))) {
-			if ((sp->type == 'V') ||
-			    ((sp->value >= st->__per_cpu_start) && 
-		    	    (sp->value < st->__per_cpu_end)))
+			if ((sp->type == 'V') || (is_percpu_symbol(sp)))
 				return sp;
 		}
 	} else {
 		if ((sp = symbol_search(symbol))) {
-			if ((sp->type == 'V') ||
-			    ((sp->value >= st->__per_cpu_start) && 
-		    	    (sp->value < st->__per_cpu_end)))
+			if ((sp->type == 'V') || (is_percpu_symbol(sp)))
 				return sp;
 		}
 
@@ -4190,7 +4611,19 @@ get_syment_array(char *symbol, struct syment **sp_array, int max)
                                 cnt++;
 			}
                 }
-        }
+
+		if (lm->mod_init_symtable) {
+                	sp = lm->mod_init_symtable;
+                	sp_end = lm->mod_init_symend;
+			for ( ; sp < sp_end; sp++) {
+				if (STREQ(symbol, sp->name)) {
+					if (max && (cnt < max))
+						sp_array[cnt] = sp;
+					cnt++;
+				}
+			}
+		}
+	}
 
         return cnt;
 }
@@ -4456,6 +4889,23 @@ get_symbol_type(char *name, char *member, struct gnu_request *caller_req)
 		FREEBUF(req);
 
 	return(typecode);
+}
+
+int
+get_symbol_length(char *symbol)
+{
+	struct gnu_request *req;
+	int len;
+
+	req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
+	if (get_symbol_type(symbol, NULL, req) == TYPE_CODE_UNDEF)
+		error(FATAL, "cannot determine length of symbol: %s\n",
+			symbol);
+
+	len = (int)req->length;
+	FREEBUF(req);
+
+	return len;
 }
 
 
@@ -5285,7 +5735,10 @@ cmd_p(void)
 		leader = strlen(buf2);
 		if (module_symbol(sp->value, NULL, NULL, NULL, *gdb_output_radix))
 			do_load_module_filter = TRUE;
-	} else if (st->flags & LOAD_MODULE_SYMS)
+	} else if ((percpu_sp = per_cpu_symbol_search(args[optind])) &&
+		   display_per_cpu_info(percpu_sp))
+		return;
+	else if (st->flags & LOAD_MODULE_SYMS)
 		do_load_module_filter = TRUE;
 
 	if (leader || do_load_module_filter)
@@ -5345,8 +5798,7 @@ display_per_cpu_info(struct syment *sp)
 	char buf[BUFSIZE];
 
 	if (((kt->flags & (SMP|PER_CPU_OFF)) != (SMP|PER_CPU_OFF)) ||
-	    (sp->value < symbol_value("__per_cpu_start")) || 
-	    (sp->value >= symbol_value("__per_cpu_end")) ||
+	    (!is_percpu_symbol(sp)) ||
 	    !((sp->type == 'd') || (sp->type == 'D') || (sp->type == 'V')))
 		return FALSE;
 
@@ -5364,6 +5816,43 @@ display_per_cpu_info(struct syment *sp)
 	}
 
 	return TRUE;
+}
+
+static struct load_module *
+get_module_percpu_sym_owner(struct syment *sp)
+{
+	int i;
+	struct load_module *lm;
+
+	if (!IS_MODULE_SYMBOL(sp))
+		return NULL;
+
+	/*
+	 * Find out percpu symbol owner module.
+	 * If found out, sp is module's percpu symbol.
+	 */
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (!MODULE_PERCPU_SYMS_LOADED(lm))
+			continue;
+		if (IN_MODULE_PERCPU(sp->value, lm))
+			return lm;
+	}
+	return NULL;
+}
+
+static int 
+is_percpu_symbol(struct syment *sp)
+{
+	if (sp->value >= st->__per_cpu_start) {
+		if (sp->value < st->__per_cpu_end)
+			/* kernel percpu symbol */
+			return 1;
+		else if (get_module_percpu_sym_owner(sp))
+			/* module percpu symbol */
+			return 2;
+	}
+	return 0;
 }
 
 /*
@@ -6336,6 +6825,8 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "           signal_struct_count: %ld\n",
         	OFFSET(signal_struct_count));
+	fprintf(fp, "      signal_struct_nr_threads: %ld\n",
+        	OFFSET(signal_struct_nr_threads));
 	fprintf(fp, "          signal_struct_action: %ld\n",
         	OFFSET(signal_struct_action));
 	fprintf(fp, "  signal_struct_shared_pending: %ld\n",
@@ -6536,6 +7027,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(module_core_size));
 	fprintf(fp, "         module_core_text_size: %ld\n",
 		OFFSET(module_core_text_size));
+	fprintf(fp, "         module_init_size: %ld\n",
+		OFFSET(module_init_size));
 	fprintf(fp, "         module_init_text_size: %ld\n",
 		OFFSET(module_init_text_size));
 	fprintf(fp, "            module_module_init: %ld\n",
@@ -6546,6 +7039,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(module_symtab));
 	fprintf(fp, "                 module_strtab: %ld\n",
 		OFFSET(module_strtab));
+	fprintf(fp, "                 module_percpu: %ld\n",
+		OFFSET(module_percpu));
 
 	fprintf(fp, "             module_sect_attrs: %ld\n",
 		OFFSET(module_sect_attrs));
@@ -7343,6 +7838,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(radix_tree_root_height));
         fprintf(fp, "         radix_tree_root_rnode: %ld\n",
                 OFFSET(radix_tree_root_rnode));
+        fprintf(fp, "         radix_tree_node_slots: %ld\n",
+                OFFSET(radix_tree_node_slots));
 
 	fprintf(fp, "            x8664_pda_pcurrent: %ld\n",
 		OFFSET(x8664_pda_pcurrent));
@@ -7480,6 +7977,9 @@ dump_offset_table(char *spec, ulong makestruct)
         fprintf(fp, "                   thread_info: %ld\n", SIZE(thread_info));
         fprintf(fp, "                 softirq_state: %ld\n", 
 		SIZE(softirq_state));
+        fprintf(fp, "                softirq_action: %ld\n", 
+		SIZE(softirq_action));
+
         fprintf(fp, "                   desc_struct: %ld\n", SIZE(desc_struct));
 	fprintf(fp, "                       umode_t: %ld\n", SIZE(umode_t));
 	fprintf(fp, "                        dentry: %ld\n", SIZE(dentry));
@@ -7539,6 +8039,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                      resource: %ld\n", SIZE(resource));
 	fprintf(fp, "                      runqueue: %ld\n", SIZE(runqueue));
 	fprintf(fp, "                    irq_desc_t: %ld\n", SIZE(irq_desc_t));
+	fprintf(fp, "                      irq_data: %ld\n", SIZE(irq_data));
 	fprintf(fp, "                    task_union: %ld\n", SIZE(task_union));
 	fprintf(fp, "                  thread_union: %ld\n", SIZE(thread_union));
 	fprintf(fp, "                    prio_array: %ld\n", SIZE(prio_array));
@@ -7914,6 +8415,10 @@ section_header_info(bfd *bfd, asection *section, void *reqptr)
 			st->dwarf_eh_frame_file_offset = (off_t)section->filepos;
 			st->dwarf_eh_frame_size = (ulong)bfd_section_size(bfd, section);
 		}
+                if (STREQ(bfd_get_section_name(bfd, section), ".debug_frame")) {
+			st->dwarf_debug_frame_file_offset = (off_t)section->filepos;
+			st->dwarf_debug_frame_size = (ulong)bfd_section_size(bfd, section);
+		}
 		break;
 
 	case (ulong)MODULE_SECTIONS:
@@ -7933,6 +8438,10 @@ section_header_info(bfd *bfd, asection *section, void *reqptr)
                 if (STREQ(bfd_get_section_name(bfd, section), ".eh_frame")) {
 			st->dwarf_eh_frame_file_offset = (off_t)section->filepos;
 			st->dwarf_eh_frame_size = (ulong)bfd_section_size(bfd, section);
+		}
+                if (STREQ(bfd_get_section_name(bfd, section), ".debug_frame")) {
+			st->dwarf_debug_frame_file_offset = (off_t)section->filepos;
+			st->dwarf_debug_frame_size = (ulong)bfd_section_size(bfd, section);
 		}
 		break;
 
@@ -7989,6 +8498,14 @@ store_section_data(struct load_module *lm, bfd *bfd, asection *section)
 	lm->mod_section_data[i].section = section;
 	lm->mod_section_data[i].priority = prio;
 	lm->mod_section_data[i].flags = section->flags & ~SEC_FOUND;
+	/* 
+	 * The percpu section isn't included in kallsyms or module_core area.
+	 */
+	if (lm->mod_percpu &&
+	    (STREQ(name,".data.percpu") || STREQ(name, ".data..percpu"))) {
+		lm->mod_percpu_size = bfd_section_size(bfd, section);
+		lm->mod_section_data[i].flags |= SEC_FOUND;
+	}
 	lm->mod_section_data[i].size = bfd_section_size(bfd, section);
 	lm->mod_section_data[i].offset = 0;
 	if (strlen(name) < MAX_MOD_SEC_NAME)
@@ -8434,9 +8951,22 @@ add_symbol_file(struct load_module *lm)
 	{
 		secname = lm->mod_section_data[i].name;
 		if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
-		    !STREQ(secname, ".text")) {
+		    (!STREQ(secname, ".text") &&
+		     !STREQ(secname, ".data.percpu") &&
+		     !STREQ(secname, ".data..percpu"))) {
 			sprintf(buf, " -s %s 0x%lx", secname, 
 				lm->mod_section_data[i].offset + lm->mod_base);
+			len += strlen(buf);
+		}
+	}
+
+	for (i = 0; i < lm->mod_sections; i++)
+	{
+		secname = lm->mod_section_data[i].name;
+		if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
+		    (STREQ(secname, ".data.percpu") ||
+		     STREQ(secname, ".data..percpu"))) {
+			sprintf(buf, " -s %s 0x%lx", secname, lm->mod_percpu);
 			len += strlen(buf);
 		}
 	}
@@ -8459,6 +8989,31 @@ add_symbol_file(struct load_module *lm)
 }
 
 #ifdef GDB_7_0
+static int 
+add_symbol_file_percpu(struct load_module *lm, struct gnu_request *req, int buflen)
+{
+	char pbuf[BUFSIZE];
+	int i, len;
+	char *secname;
+
+	len = strlen(req->buf);
+	for (i = 0; i < lm->mod_sections; i++) {
+		secname = lm->mod_section_data[i].name;
+		if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
+		    (STREQ(secname, ".data.percpu") ||
+		     STREQ(secname, ".data..percpu"))) {
+			sprintf(pbuf, " -s %s 0x%lx", secname, lm->mod_percpu);
+			while ((len + strlen(pbuf)) >= buflen) {
+				RESIZEBUF(req->buf, buflen, buflen * 2);
+				buflen *= 2;
+			}
+			strcat(req->buf, pbuf);
+			len += strlen(pbuf);
+		}
+	}
+	return buflen;
+}
+
 /*
  *  Gather the module section data from the in-kernel data structures.
  */
@@ -8472,7 +9027,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 	char section_name[BUFSIZE];
 	ulong section_vaddr;
 
-	if (!(st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3|MODSECT_UNKNOWN))) {
+	if (!(st->flags & (MODSECT_VMASK|MODSECT_UNKNOWN))) {
 		STRUCT_SIZE_INIT(module_sect_attr, "module_sect_attr");
 		MEMBER_OFFSET_INIT(module_sect_attrs, 
 			"module", "sect_attrs");
@@ -8512,7 +9067,8 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 		if ((st->flags & MODSECT_UNKNOWN) || 
 		    !VALID_STRUCT(module_sect_attr) ||
-		    INVALID_MEMBER(attribute_owner) ||
+		    (INVALID_MEMBER(attribute_owner) && 
+		     (st->flags & (MODSECT_V1|MODSECT_V2))) ||
 		    INVALID_MEMBER(module_sect_attrs) ||
 		    INVALID_MEMBER(module_sect_attr_name) ||
 		    INVALID_MEMBER(module_sect_attr_address)) {
@@ -8520,6 +9076,8 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 				error(WARNING, 
 				    "module section data structures "
 				    "unrecognized or changed\n");
+			st->flags &= ~(MODSECT_VMASK);
+			st->flags |= MODSECT_UNKNOWN;
 			return FALSE;
 		}
 	} else if (st->flags & MODSECT_UNKNOWN)
@@ -8532,7 +9090,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 	array_entry = attribute = 0;
 
-	switch (st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3))
+	switch (st->flags & MODSECT_VMASK)
 	{
 	case MODSECT_V1:
 		array_entry = vaddr + OFFSET(module_sections_attrs);
@@ -8562,7 +9120,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 	for (done = FALSE; !done; array_entry += SIZE(module_sect_attr)) {
 
-		switch (st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3))
+		switch (st->flags & MODSECT_VMASK)
 		{
 		case MODSECT_V1:
 			attribute = array_entry + OFFSET(module_sect_attr_attr);
@@ -8574,7 +9132,11 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 			break;
 		}
 	
-		owner = attribute + OFFSET(attribute_owner);
+		if (st->flags & (MODSECT_V1|MODSECT_V2))
+			owner = attribute + OFFSET(attribute_owner);
+		else
+			owner = UNUSED;
+
 		address = array_entry + OFFSET(module_sect_attr_address);
 		switch (name_type)
 		{
@@ -8597,7 +9159,10 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 		if (CRASHDEBUG(2)) {
 			fprintf(fp, "attribute: %lx ", attribute);
-			fprintf(fp, "    owner: %lx ", owner);
+			if (owner == UNUSED)
+				fprintf(fp, "    owner: (not used)");
+			else
+				fprintf(fp, "    owner: %lx ", owner);
 			fprintf(fp, "     name: %lx ", name);
 			fprintf(fp, "  address: %lx\n", address);
 		}
@@ -8668,6 +9233,11 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 		return FALSE;
 	}
 
+	/* 
+	 * Special case for per-cpu symbols 
+	 */
+	buflen = add_symbol_file_percpu(lm, req, buflen);
+
 	lm->mod_flags |= MOD_NOPATCH;
         req->command = GNU_ADD_SYMBOL_FILE;
 	req->addr = (ulong)lm;
@@ -8703,9 +9273,11 @@ load_module_index(struct syment *sp)
         for (i = 0; i < st->mods_installed; i++) {
                 lm = &st->load_modules[i];
 
-                if ((value >= lm->mod_base) &&
-                    (value < (lm->mod_base + lm->mod_size))) 
+		if (IN_MODULE(value, lm))
                         return i;
+
+		if (IN_MODULE_INIT(value, lm))
+			return i;
         }
 
 	return (error(FATAL, "cannot find %lx (%s) in module space\n",
@@ -8807,7 +9379,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 
 	if (!lm->mod_load_symtable) {
 	        if ((lm->mod_load_symtable = (struct syment *)
-	             malloc(symalloc * sizeof(struct syment))) == NULL)
+	             calloc(symalloc, sizeof(struct syment))) == NULL)
 	                error(FATAL, "module syment space malloc: %s\n",
 	                        strerror(errno));
 
@@ -8945,7 +9517,12 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 				else if ((spx = kallsyms_module_symbol(lm, &syminfo))) {
 					syminfo.value = spx->value;
 					found = TRUE;
-                                } else {
+				} else if (lm->mod_percpu &&
+					(STREQ(secname, ".data.percpu") ||
+					STREQ(secname, ".data..percpu"))) {
+					syminfo.value += lm->mod_percpu;
+					found = TRUE;
+				} else {
                                         syminfo.value += lm->mod_section_data[i].offset + lm->mod_base;
                                         found = TRUE;
                                 }
@@ -8960,6 +9537,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
                             syminfo.type)) {
                                 sp->value = syminfo.value;
                                 sp->type = syminfo.type;
+				sp->flags |= MODULE_SYMBOL;
                                 namespace_ctl(NAMESPACE_INSTALL,
                                         &lm->mod_load_namespace, sp, name);
 
@@ -9016,6 +9594,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 
 			lm->mod_load_symend->value = spx->value;
 			lm->mod_load_symend->type = spx->type;
+			lm->mod_load_symend->flags |= MODULE_SYMBOL;
 			lm->mod_load_symend++;
 			lm->mod_load_symcnt++;
 		} 
@@ -9028,9 +9607,10 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
                 compare_syms);
 
 	lm->mod_load_symend--;
-	if (!MODULE_END(lm->mod_load_symend))
-		error(INFO, "%s: last symbol is not _MODULE_END_%s?\n",
-			lm->mod_name, lm->mod_name);
+	if (!MODULE_END(lm->mod_load_symend) &&
+	    !IN_MODULE_PERCPU(lm->mod_load_symend->value, lm))
+		error(INFO, "%s: last symbol: %s is not _MODULE_END_%s?\n",
+			lm->mod_name, lm->mod_load_symend->name, lm->mod_name);
 
         lm->mod_symtable = lm->mod_load_symtable;
         lm->mod_symend = lm->mod_load_symend;
@@ -9039,7 +9619,6 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 	lm->mod_flags |= MOD_LOAD_SYMS;
 
 	st->flags |= LOAD_MODULE_SYMS;
-
 }
 
 /*
@@ -9082,6 +9661,7 @@ delete_load_module(ulong base_addr)
 			lm->mod_text_start = lm->mod_data_start = 0; 
 			lm->mod_bss_start = lm->mod_rodata_start = 0;
 			lm->mod_sections = 0;
+			lm->mod_percpu_size = 0;
 			if (lm->mod_section_data)
 				free(lm->mod_section_data);
 			lm->mod_section_data = (struct mod_section_data *)0;
@@ -9116,6 +9696,7 @@ delete_load_module(ulong base_addr)
                         lm->mod_load_symcnt = lm->mod_symalloc = 0;
                         lm->mod_text_start = lm->mod_data_start = 0;
 			lm->mod_bss_start = lm->mod_rodata_start = 0;
+			lm->mod_percpu_size = 0;
 			lm->mod_sections = 0;
 			if (lm->mod_section_data)
 				free(lm->mod_section_data);
@@ -9557,7 +10138,6 @@ clear_text_value_cache(void)
  *  new one.
  */
 
-#define allocated pad1
 #define last_sp addr2
 
 int 
@@ -9593,10 +10173,10 @@ patch_kernel_symbol(struct gnu_request *req)
 
 	sp = (struct syment *)req->last_sp; 
 	sp += sp ? 1 : 0;
-	if (sp && (sp->cnt == 1) && !(sp->allocated) && 
+	if (sp && (sp->cnt == 1) && !(sp->flags & SYMBOL_NAME_USED) && 
 	    STREQ(sp->name, req->name)) {
                 *((ulong *)req->addr) = sp->value;
-                sp->allocated = TRUE;
+                sp->flags |= SYMBOL_NAME_USED;
                 req->last_sp = (ulong)sp;
 	} else {
 		switch (c = get_syment_array(req->name, sp_array, 1000))
@@ -9606,16 +10186,16 @@ patch_kernel_symbol(struct gnu_request *req)
 	
 		case 1: 
 			*((ulong *)req->addr) = sp_array[0]->value;
-			sp_array[0]->allocated = TRUE;
+			sp_array[0]->flags |= SYMBOL_NAME_USED;
 			req->last_sp = (ulong)sp_array[0];
 			break;
 	
 		default:
 			for (i = 0; i < c; i++) {
-				if (sp_array[i]->allocated)
+				if (sp_array[i]->flags & SYMBOL_NAME_USED)
 					continue;
 				*((ulong *)req->addr) = sp_array[i]->value;
-				sp_array[i]->allocated = TRUE;
+				sp_array[i]->flags |= SYMBOL_NAME_USED;
 				req->last_sp = (ulong)sp_array[i];
 				break;
 			}
@@ -9626,7 +10206,6 @@ patch_kernel_symbol(struct gnu_request *req)
 	return TRUE;
 }
 
-#undef allocated
 #undef last_sp
 
 /*
