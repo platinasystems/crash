@@ -249,6 +249,12 @@ is_netdump(char *file, ulong source_query)
 				goto bailout;
 			break;
 
+		case EM_ARM:
+			if (machine_type_mismatch(file, "ARM", NULL,
+			    source_query))
+				goto bailout;
+			break;
+
 		case EM_AARCH64:
 			if (machine_type_mismatch(file, "ARM64", NULL,
 			    source_query))
@@ -475,6 +481,9 @@ check_dumpfile_size(char *file)
 	struct stat64 stat;
 	struct pt_load_segment *pls;
 	uint64_t segment_end;
+
+	if (is_ramdump_image())
+		return;
 
 	if (stat64(file, &stat) < 0)
 		return;
@@ -1134,6 +1143,8 @@ netdump_memory_dump(FILE *fp)
 		break;
 	}
 
+	dump_ramdump_data();
+
 	nd->ofp = fpsave;
         return TRUE;
 }
@@ -1209,6 +1220,9 @@ dump_Elf32_Ehdr(Elf32_Ehdr *elf)
 	case ELFOSABI_STANDALONE:
 		netdump_print("(ELFOSABI_STANDALONE)\n");
 		break;
+	case ELFOSABI_LINUX:
+		netdump_print("(ELFOSABI_LINUX)\n");
+		break;
         default:
                 netdump_print("(?)\n");
 	}
@@ -1255,6 +1269,9 @@ dump_Elf32_Ehdr(Elf32_Ehdr *elf)
         netdump_print("              e_machine: %d ", elf->e_machine);
 	switch (elf->e_machine) 
 	{
+	case EM_ARM:
+		netdump_print("(EM_ARM)\n");
+		break;
 	case EM_386:
 		netdump_print("(EM_386)\n");
 		break;
@@ -1347,6 +1364,9 @@ dump_Elf64_Ehdr(Elf64_Ehdr *elf)
 	case ELFOSABI_STANDALONE:
 		netdump_print("(ELFOSABI_STANDALONE)\n");
 		break;
+	case ELFOSABI_LINUX:
+		netdump_print("(ELFOSABI_LINUX)\n");
+		break;
         default:
                 netdump_print("(?)\n");
 	}
@@ -1407,6 +1427,12 @@ dump_Elf64_Ehdr(Elf64_Ehdr *elf)
                 break;
 	case EM_S390:
                 netdump_print("(EM_S390)\n");
+                break;
+	case EM_ARM:
+                netdump_print("(EM_ARM)\n");
+                break;
+	case EM_AARCH64:
+                netdump_print("(EM_AARCH64)\n");
                 break;
         default:
                 netdump_print("(unsupported)\n");

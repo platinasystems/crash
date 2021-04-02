@@ -437,6 +437,27 @@ cpu_load_seg (FILE *fp, struct qemu_x86_seg *seg, int size)
 	seg->flags = get_be32 (fp);
 }
 
+static bool
+v12_has_xsave_state(FILE *fp)
+{
+	char name[257];
+	bool ret = true;
+	long offset = ftell(fp); // save offset
+
+        /*
+	 * peek into byte stream to check for APIC vmstate
+	 */
+	if (getc(fp) == QEMU_VM_SECTION_FULL) {
+		get_be32(fp); // skip section id
+		get_string(fp, name);
+		if (strcmp(name, "apic") == 0)
+			ret = false;
+	}
+	fseek(fp, offset, SEEK_SET); // restore offset
+
+	return ret;
+}
+
 static uint32_t
 cpu_load (struct qemu_device *d, FILE *fp, int size)
 {
@@ -617,6 +638,14 @@ retry:
 		dx86->tsc_aux = get_be64 (fp);
 		dx86->kvm.system_time_msr = get_be64 (fp);
 		dx86->kvm.wall_clock_msr = get_be64 (fp);
+	}
+
+	if (version_id >= 12 && v12_has_xsave_state(fp)) {
+		dx86->xcr0 = get_be64 (fp);
+		dx86->xstate_bv = get_be64 (fp);
+
+		for (i = 0; i < nregs; i++)
+			get_qemu128 (fp, &dx86->ymmh_regs[i]);
 	}
 
 store:
@@ -855,6 +884,10 @@ device_get (const struct qemu_device_loader *devices,
 
 next_device:
 	devp = devices;
+	if (sec == QEMU_VM_SUBSECTION) {
+		get_string(fp, name);
+		goto search_device;
+	}
 	section_id = get_be32 (fp);
 	if (sec != QEMU_VM_SECTION_START &&
 	    sec != QEMU_VM_SECTION_FULL)
@@ -868,6 +901,7 @@ next_device:
 	while (devp->name && strcmp (devp->name, name))
 		devp++;
 	if (!devp->name) {
+search_device:
 		dprintf("device_get: unknown/unsupported: \"%s\"\n", name);
 		if ((next_device_offset = device_search(devices, fp))) {
 			fseek(fp, next_device_offset, SEEK_CUR);
