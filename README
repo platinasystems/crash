@@ -69,7 +69,7 @@
      After the kernel is re-compiled, the uncompressed "vmlinux" kernel
      that is created in the top-level kernel build directory must be saved.
 
-  To build this utility, simply uncompress the tar file, enter the crash-6.0.6
+  To build this utility, simply uncompress the tar file, enter the crash-6.1.0
   subdirectory, and type "make".  The initial build will take several minutes 
   because the gdb module must be configured and and built.  Alternatively, the
   crash source RPM file may be installed and built, and the resultant crash
@@ -90,13 +90,13 @@
 
     $ crash
     
-    crash 6.0.6
+    crash 6.1.0
     Copyright (C) 2002-2012  Red Hat, Inc.
-    Copyright (C) 2004, 2005, 2006  IBM Corporation
+    Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
-    Copyright (C) 2005, 2006  Fujitsu Limited
+    Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
-    Copyright (C) 2005  NEC Corporation
+    Copyright (C) 2005, 2011  NEC Corporation
     Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
@@ -115,7 +115,7 @@
           KERNEL: /boot/vmlinux
         DUMPFILE: /dev/mem
             CPUS: 1
-            DATE: Fri Apr 27 10:06:25 2012
+            DATE: Thu Sep 27 15:19:15 2012
           UPTIME: 10 days, 22:55:18
     LOAD AVERAGE: 0.08, 0.03, 0.01
            TASKS: 42
@@ -132,18 +132,18 @@
 
     crash> help
 
-    *              files          mod            runq           union          
-    alias          foreach        mount          search         vm             
-    ascii          fuser          net            set            vtop           
-    bt             gdb            p              sig            waitq          
-    btop           help           ps             struct         whatis         
-    dev            irq            pte            swap           wr             
-    dis            kmem           ptob           sym            q              
-    eval           list           ptov           sys            
-    exit           log            rd             task           
-    extend         mach           repeat         timer          
+    *              files          mach           repeat         timer          
+    alias          foreach        mod            runq           tree           
+    ascii          fuser          mount          search         union          
+    bt             gdb            net            set            vm             
+    btop           help           p              sig            vtop           
+    dev            ipcs           ps             struct         waitq          
+    dis            irq            pte            swap           whatis         
+    eval           kmem           ptob           sym            wr             
+    exit           list           ptov           sys            q              
+    extend         log            rd             task           
     
-    crash version: 6.0.6    gdb version: 7.3.1
+    crash version: 6.1.0    gdb version: 7.3.1
     For help on any command above, enter "help <command>".
     For help on input options, enter "help input".
     For help on output options, enter "help output".
@@ -156,13 +156,13 @@
 
     $ crash vmlinux vmcore
  
-    crash 6.0.6
+    crash 6.1.0
     Copyright (C) 2002-2012  Red Hat, Inc.
-    Copyright (C) 2004, 2005, 2006  IBM Corporation
+    Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
-    Copyright (C) 2005, 2006  Fujitsu Limited
+    Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
-    Copyright (C) 2005  NEC Corporation
+    Copyright (C) 2005, 2011  NEC Corporation
     Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
@@ -203,13 +203,13 @@
 
     $ crash vmlinux.17 lcore.cr.17
 
-    crash 6.0.6
+    crash 6.1.0
     Copyright (C) 2002-2012  Red Hat, Inc.
-    Copyright (C) 2004, 2005, 2006  IBM Corporation
+    Copyright (C) 2004, 2005, 2006, 2010  IBM Corporation
     Copyright (C) 1999-2006  Hewlett-Packard Co
-    Copyright (C) 2005, 2006  Fujitsu Limited
+    Copyright (C) 2005, 2006, 2011, 2012  Fujitsu Limited
     Copyright (C) 2006, 2007  VA Linux Systems Japan K.K.
-    Copyright (C) 2005  NEC Corporation
+    Copyright (C) 2005, 2011  NEC Corporation
     Copyright (C) 1999, 2002, 2007  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,

@@ -151,9 +151,21 @@ net_init(void)
         	MEMBER_OFFSET_INIT(neighbour_dev, "neighbour", "dev");
         	MEMBER_OFFSET_INIT(neighbour_nud_state,  
 			"neighbour", "nud_state");
-		MEMBER_OFFSET_INIT(neigh_table_hash_buckets, 
-			"neigh_table", "hash_buckets");
-		MEMBER_OFFSET_INIT(neigh_table_key_len, 
+		MEMBER_OFFSET_INIT(neigh_table_nht_ptr, "neigh_table", "nht");
+		if (VALID_MEMBER(neigh_table_nht_ptr)) {
+			MEMBER_OFFSET_INIT(neigh_table_hash_mask,
+				"neigh_hash_table", "hash_mask");
+			MEMBER_OFFSET_INIT(neigh_table_hash_shift,
+				"neigh_hash_table", "hash_shift");
+			MEMBER_OFFSET_INIT(neigh_table_hash_buckets,
+				"neigh_hash_table", "hash_buckets");
+		} else {
+			MEMBER_OFFSET_INIT(neigh_table_hash_buckets,
+				"neigh_table", "hash_buckets");
+			MEMBER_OFFSET_INIT(neigh_table_hash_mask,
+				"neigh_table", "hash_mask");
+		}
+		MEMBER_OFFSET_INIT(neigh_table_key_len,
 			"neigh_table", "key_len");
 
         	MEMBER_OFFSET_INIT(in_device_ifa_list,  
@@ -280,9 +292,11 @@ net_init(void)
  * The net command...
  */
 
-#define NETOPTS	  "n:asSR:"
+#define NETOPTS	  "n:asSR:xd"
 #define s_FLAG FOREACH_s_FLAG
 #define S_FLAG FOREACH_S_FLAG
+#define x_FLAG FOREACH_x_FLAG
+#define d_FLAG FOREACH_d_FLAG
 
 #define NET_REF_FOUND             (0x1)
 #define NET_REF_HEXNUM            (0x2)
@@ -332,20 +346,34 @@ cmd_net(void)
 			return;
 
 		case 's':
-			if (sflag)
+			if (sflag & S_FLAG)
 				error(INFO, 
 				    "only one -s or -S option allowed\n");
 			else
-				sflag = s_FLAG;
+				sflag |= s_FLAG;
 		        break;
 
 		case 'S':
-			if (sflag)
+			if (sflag & s_FLAG)
 				error(INFO, 
 				    "only one -s or -S option allowed\n");
 			else
-				sflag = S_FLAG;
+				sflag |= S_FLAG;
             		break;
+
+		case 'x':
+			if (sflag & d_FLAG)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			sflag |= x_FLAG;
+			break;
+
+		case 'd':
+			if (sflag & x_FLAG)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			sflag |= d_FLAG;
+			break;
 
 		default:
 			argerrs++;
@@ -524,27 +552,26 @@ show_net_devices_v3(void)
  * Perform the actual work of dumping the ARP table...
  */
 #define ARP_HEADING \
-	"IP ADDRESS      HW TYPE    HW ADDRESS         DEVICE  STATE"
+	"NEIGHBOUR        IP ADDRESS      HW TYPE    HW ADDRESS         DEVICE  STATE"
 
 static void
 dump_arp(void)
 {
 	ulong	arp_tbl;		/* address of arp_tbl */
 	ulong	*hash_buckets;
+	ulong	hash;
 	long	hash_bytes;
-	int	nhash_buckets;
+	int	nhash_buckets = 0;
 	int	key_len;
 	int	i;
 	int	header_printed = 0;
+	int	hash_mask = 0;
+	ulong	nht;
 
 	if (!symbol_exists("arp_tbl")) 
 		error(FATAL, "arp_tbl does not exist in this kernel\n");
 
 	arp_tbl = symbol_value("arp_tbl");
-
-	nhash_buckets = (i = ARRAY_LENGTH(neigh_table_hash_buckets)) ?
-		i : get_array_length("neigh_table.hash_buckets", 
-			NULL, sizeof(void *));
 
 	/*
 	 *  NOTE: 2.6.8 -> 2.6.9 neigh_table struct changed from:
@@ -553,10 +580,41 @@ dump_arp(void)
 	 *  to
 	 *    struct neighbour **hash_buckets;
 	 *
-	 *  Even after hardwiring and testing with the correct
-	 *  array size, other changes cause this command to break
-	 *  down, so it needs to be looked at by someone who cares...
+	 *  Use 'hash_mask' as indicator to decide if we're dealing
+	 *  with an array or a pointer.
+	 *
+	 * Around 2.6.37 neigh_hash_table struct has been introduced
+	 * and pointer to it has been added to neigh_table.
 	 */
+	if (VALID_MEMBER(neigh_table_nht_ptr)) {
+		readmem(arp_tbl + OFFSET(neigh_table_nht_ptr),
+			KVADDR, &nht, sizeof(nht),
+			"neigh_table nht", FAULT_ON_ERROR);
+		/* NB! Re-use of offsets like neigh_table_hash_mask
+		 * with neigh_hash_table structure */
+		if (VALID_MEMBER(neigh_table_hash_mask)) {
+			readmem(nht + OFFSET(neigh_table_hash_mask),
+				KVADDR, &hash_mask, sizeof(hash_mask),
+				"neigh_hash_table hash_mask", FAULT_ON_ERROR);
+
+			nhash_buckets = hash_mask + 1;
+		} else if (VALID_MEMBER(neigh_table_hash_shift)) {
+			readmem(nht + OFFSET(neigh_table_hash_shift),
+				KVADDR, &hash_mask, sizeof(hash_mask),
+				"neigh_hash_table hash_shift", FAULT_ON_ERROR);
+
+			nhash_buckets = 1U << hash_mask;
+		}
+	} else if (VALID_MEMBER(neigh_table_hash_mask)) {
+		readmem(arp_tbl + OFFSET(neigh_table_hash_mask),
+			KVADDR, &hash_mask, sizeof(hash_mask),
+			"neigh_table hash_mask", FAULT_ON_ERROR);
+
+		nhash_buckets = hash_mask + 1;
+	} else
+		nhash_buckets = (i = ARRAY_LENGTH(neigh_table_hash_buckets)) ?
+			i : get_array_length("neigh_table.hash_buckets", 
+				NULL, sizeof(void *));
 
 	if (nhash_buckets == 0) {
 		option_not_supported('a');
@@ -571,9 +629,25 @@ dump_arp(void)
 		KVADDR, &key_len, sizeof(key_len),
 		"neigh_table key_len", FAULT_ON_ERROR);
 
-	readmem(arp_tbl + OFFSET(neigh_table_hash_buckets), 
-		KVADDR, hash_buckets, hash_bytes,
-		"neigh_table hash_buckets", FAULT_ON_ERROR);
+	if (VALID_MEMBER(neigh_table_nht_ptr)) {
+		readmem(nht + OFFSET(neigh_table_hash_buckets),
+			KVADDR, &hash, sizeof(hash),
+			"neigh_hash_table hash_buckets ptr", FAULT_ON_ERROR);
+
+		readmem(hash, KVADDR, hash_buckets, hash_bytes,
+			"neigh_hash_table hash_buckets", FAULT_ON_ERROR);
+	} else if (hash_mask) {
+		readmem(arp_tbl + OFFSET(neigh_table_hash_buckets), 
+			KVADDR, &hash, sizeof(hash),
+			"neigh_table hash_buckets pointer", FAULT_ON_ERROR);
+		
+		readmem(hash,
+			KVADDR, hash_buckets, hash_bytes,
+			"neigh_table hash_buckets", FAULT_ON_ERROR);
+	} else
+		readmem(arp_tbl + OFFSET(neigh_table_hash_buckets), 
+			KVADDR, hash_buckets, hash_bytes,
+			"neigh_table hash_buckets", FAULT_ON_ERROR);
 
 	for (i = 0; i < nhash_buckets; i++) {
 		if (hash_buckets[i] != (ulong)NULL) {
@@ -627,7 +701,7 @@ print_neighbour_q(ulong addr, int key_len)
 			FAULT_ON_ERROR);
 
 		in_addr.s_addr = ipaddr;
-		fprintf(fp, "%-16s", inet_ntoa(in_addr));
+		fprintf(fp, "%-16lx %-16s", addr, inet_ntoa(in_addr));
 
 		switch (dinfo.dev_type) {
 		case ARPHRD_ETHER:
@@ -686,7 +760,6 @@ print_neighbour_q(ulong addr, int key_len)
 		}
 
 		fprintf(fp, " %-6s  ", dinfo.dev_name);
-		fprintf(fp, "%02x ", state);
 
 		arp_state_to_flags(state);
 
@@ -1041,7 +1114,7 @@ do {									\
 		if (blen != 0) {					\
 			sprintf(bp, "|%s", (s));			\
 		} else {						\
-			sprintf(bp, "(%s", (s));			\
+			sprintf(bp, "%s", (s));				\
 		}							\
 	}								\
 } while(0)
@@ -1104,7 +1177,7 @@ arp_state_to_flags(unsigned char state)
 	}
 
 	if (had_flags) {
-		fprintf(fp, "%s)\n", flag_buffer);
+		fprintf(fp, "%s\n", flag_buffer);
 		/* fprintf(fp, "%29.29s%s)\n", " ",  flag_buffer); */
 	}
 }
@@ -1400,9 +1473,17 @@ sym_socket_dump(ulong file,
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char *socket_hdr = BITS32() ? socket_hdr_32 : socket_hdr_64;
+	unsigned int radix;
 
 	file_buf = fill_file_cache(file);
 	dentry = ULONG(file_buf + OFFSET(file_f_dentry));
+
+	if (flag & d_FLAG)
+		radix = 10;
+	else if (flag & x_FLAG)
+		radix = 16;
+	else
+		radix = 0;
 
     	if (!dentry)
         	return FALSE;
@@ -1499,17 +1580,17 @@ sym_socket_dump(ulong file,
 			mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX, 
 			MKSTR(sock)));
 
-    		dump_struct("socket", struct_socket, 0);
+    		dump_struct("socket", struct_socket, radix);
 		switch (net->flags & (SOCK_V1|SOCK_V2))  
 		{
 		case SOCK_V1:
-    			dump_struct("sock", sock, 0);
+    			dump_struct("sock", sock, radix);
 			break;
 		case SOCK_V2:
 			if (STRUCT_EXISTS("inet_sock") && !(net->flags & NO_INET_SOCK))
-				dump_struct("inet_sock", sock, 0);
+				dump_struct("inet_sock", sock, radix);
 			else if (STRUCT_EXISTS("sock"))
-				dump_struct("sock", sock, 0);
+				dump_struct("sock", sock, radix);
 			else
 				fprintf(fp, "\nunable to display inet_sock structure\n");
 			break;

@@ -44,7 +44,7 @@ static void ia64_dump_switch_stack(ulong, ulong);
 static void ia64_cmd_mach(void);
 static int ia64_get_smp_cpus(void);
 static void ia64_display_machine_stats(void);
-static void ia64_display_cpu_data(void);
+static void ia64_display_cpu_data(unsigned int);
 static void ia64_display_memmap(void);
 static void ia64_create_memmap(void);
 static ulong check_mem_limit(void);
@@ -2298,17 +2298,33 @@ ia64_get_smp_cpus(void)
 void
 ia64_cmd_mach(void)
 {
-        int c;
+        int c, cflag, mflag;
+	unsigned int radix;
 
-        while ((c = getopt(argcnt, args, "cm")) != EOF) {
+	cflag = mflag = radix = 0;
+
+        while ((c = getopt(argcnt, args, "cmxd")) != EOF) {
                 switch(c)
                 {
 		case 'c':
-			ia64_display_cpu_data();
-			return;
+			cflag++;
+			break;
 		case 'm':
+			mflag++;
 			ia64_display_memmap();
-			return;
+			break;
+		case 'x':
+			if (radix == 10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+		case 'd':
+			if (radix == 16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
                 default:
                         argerrs++;
                         break;
@@ -2318,7 +2334,11 @@ ia64_cmd_mach(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	ia64_display_machine_stats();
+	if (cflag)
+		ia64_display_cpu_data(radix);
+
+	if (!cflag && !mflag)
+		ia64_display_machine_stats();
 }
 
 /*
@@ -2364,7 +2384,7 @@ ia64_display_machine_stats(void)
 }
 
 static void 
-ia64_display_cpu_data(void)
+ia64_display_cpu_data(unsigned int radix)
 {
         int cpu;
 	ulong cpu_data;
@@ -2382,7 +2402,7 @@ ia64_display_cpu_data(void)
         for (cpu = 0; cpu < kt->cpus; cpu++) {
                 fprintf(fp, "%sCPU %d: %s\n", cpu ? "\n" : "", cpu,
 			array_location_known ? "" : "(boot)");
-                dump_struct("cpuinfo_ia64", cpu_data, 0);
+                dump_struct("cpuinfo_ia64", cpu_data, radix);
 
 		if (!array_location_known)
 			break;

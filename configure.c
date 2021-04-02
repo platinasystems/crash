@@ -86,7 +86,7 @@ void make_spec_file(struct supported_gdb_version *);
 void set_initial_target(struct supported_gdb_version *);
 char *target_to_name(int);
 int name_to_target(char *);
-char *get_extra_flags(char *);
+char *get_extra_flags(char *, char *);
 
 #define TRUE 1
 #define FALSE 0
@@ -614,8 +614,9 @@ build_configure(struct supported_gdb_version *sp)
                 break;
 	}
 
-	ldflags = get_extra_flags("LDFLAGS.extra");
-	cflags = get_extra_flags("CFLAGS.extra");
+	ldflags = get_extra_flags("LDFLAGS.extra", NULL);
+	cflags = get_extra_flags("CFLAGS.extra", NULL);
+	gdb_conf_flags = get_extra_flags("GDBFLAGS.extra", gdb_conf_flags);
 
 	makefile_setup(&fp1, &fp2);
 
@@ -1239,7 +1240,7 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("commands. The extensions can be loaded in crash via the \"extend\" command.\n");
 	printf("\n");
 	printf("The following extensions are provided:\n");
-	printf("* sial:   Provides C-like language for writing dump analysis scripts\n");
+	printf("* eppic:  Provides C-like language for writing dump analysis scripts\n");
 	printf("* dminfo: Device-mapper target analyzer\n");
 	printf("* snap:   Takes a snapshot of live memory and creates a kdump dumpfile\n");
         printf("* trace:  Displays kernel tracing data and traced events that occurred prior to a panic.\n"); 
@@ -1263,9 +1264,9 @@ make_spec_file(struct supported_gdb_version *sp)
 	printf("mkdir -p %%{buildroot}%%{_includedir}/crash\n");
 	printf("cp defs.h %%{buildroot}%%{_includedir}/crash\n");
 	printf("mkdir -p %%{buildroot}%%{_libdir}/crash/extensions\n");
-	printf("if [ -f extensions/sial.so ]\n");
+	printf("if [ -f extensions/eppic.so ]\n");
 	printf("then\n");
-	printf("cp extensions/sial.so %%{buildroot}%%{_libdir}/crash/extensions\n");
+	printf("cp extensions/eppic.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("fi\n");
 	printf("cp extensions/dminfo.so %%{buildroot}%%{_libdir}/crash/extensions\n");
 	printf("cp extensions/snap.so %%{buildroot}%%{_libdir}/crash/extensions\n");
@@ -1491,21 +1492,24 @@ name_to_target(char *name)
 }
 
 char *
-get_extra_flags(char *filename)
+get_extra_flags(char *filename, char *initial)
 {
 	FILE *fp;
 	char inbuf[512];
 	char buf[512];
 
 	if (!file_exists(filename))
-		return NULL;
+		return (initial ? initial : NULL);
 
 	if ((fp = fopen(filename, "r")) == NULL) {
 		perror(filename);
-		return NULL;
+		return (initial ? initial : NULL);
 	}
 
-	buf[0] = '\0';
+	if (initial)
+		strcpy(buf, initial);
+	else
+		buf[0] = '\0';
 
 	while (fgets(inbuf, 512, fp)) {
 		strip_linefeeds(inbuf);

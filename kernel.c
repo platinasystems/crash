@@ -19,6 +19,7 @@
 #include "xen_hyper_defs.h"
 #include <elf.h>
 #include <libgen.h>
+#include <ctype.h>
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
 static char *find_module_objfile(char *, char *, char *);
@@ -48,6 +49,8 @@ static void verify_namelist(void);
 static char *debug_kernel_version(char *);
 static int restore_stack(struct bt_info *);
 static ulong __xen_m2p(ulonglong, ulong);
+static ulong __xen_pvops_m2p_l2(ulonglong, ulong);
+static ulong __xen_pvops_m2p_l3(ulonglong, ulong);
 static int search_mapping_page(ulong, ulong *, ulong *, ulong *);
 static void read_in_kernel_config_err(int, char *);
 static void BUG_bytes_init(void);
@@ -55,6 +58,10 @@ static int BUG_x86(void);
 static int BUG_x86_64(void);
 static void cpu_maps_init(void);
 static void get_xtime(struct timespec *);
+static char *log_from_idx(uint32_t, char *);
+static uint32_t log_next(uint32_t, char *);
+static void dump_log_entry(char *, int);
+static void dump_variable_length_record_log(int);
 
 
 /*
@@ -67,6 +74,7 @@ kernel_init()
 	char *p1, *p2, buf[BUFSIZE];
 	struct syment *sp1, *sp2;
 	char *rqstruct;
+	char *rq_timestamp_name = NULL;
 	char *irq_desc_type_name;	
 	ulong pv_init_ops;
 
@@ -141,9 +149,19 @@ kernel_init()
                 if ((kt->m2p_page = (char *)malloc(PAGESIZE())) == NULL)
                        	error(FATAL, "cannot malloc m2p page.");
 
-		kt->pvops_xen.p2m_top_entries = get_array_length("p2m_top", NULL, 0);
-		kt->pvops_xen.p2m_top = symbol_value("p2m_top");
-		kt->pvops_xen.p2m_missing = symbol_value("p2m_missing");
+		if (symbol_exists("p2m_mid_missing")) {
+			kt->pvops_xen.p2m_top_entries = XEN_P2M_TOP_PER_PAGE;
+			get_symbol_data("p2m_top", sizeof(ulong),
+						&kt->pvops_xen.p2m_top);
+			get_symbol_data("p2m_mid_missing", sizeof(ulong),
+						&kt->pvops_xen.p2m_mid_missing);
+			get_symbol_data("p2m_missing", sizeof(ulong),
+						&kt->pvops_xen.p2m_missing);
+		} else {
+			kt->pvops_xen.p2m_top_entries = get_array_length("p2m_top", NULL, 0);
+			kt->pvops_xen.p2m_top = symbol_value("p2m_top");
+			kt->pvops_xen.p2m_missing = symbol_value("p2m_missing");
+		}
 	}
 
 	if (symbol_exists("smp_num_cpus")) {
@@ -167,6 +185,7 @@ kernel_init()
 		kt->flags |= SMP|PER_CPU_OFF;
 	
 	MEMBER_OFFSET_INIT(timekeeper_xtime, "timekeeper", "xtime");
+	MEMBER_OFFSET_INIT(timekeeper_xtime_sec, "timekeeper", "xtime_sec");
 	get_xtime(&kt->date);
 	
 	if (pc->flags & GET_TIMESTAMP) {
@@ -225,11 +244,18 @@ kernel_init()
 			&kt->__per_cpu_offset[0]);
                 kt->flags |= PER_CPU_OFF;
 	}
-	if (STRUCT_EXISTS("runqueue"))
+	if (STRUCT_EXISTS("runqueue")) {
 		rqstruct = "runqueue";
-	else if (STRUCT_EXISTS("rq"))
+		rq_timestamp_name = "timestamp_last_tick";
+	} else if (STRUCT_EXISTS("rq")) {
 		rqstruct = "rq";
-	else {
+		if (MEMBER_EXISTS("rq", "clock"))
+			rq_timestamp_name = "clock";
+		else if (MEMBER_EXISTS("rq", "most_recent_timestamp"))
+			rq_timestamp_name = "most_recent_timestamp";
+		else if (MEMBER_EXISTS("rq", "timestamp_last_tick"))
+			rq_timestamp_name = "timestamp_last_tick";
+	} else {
 		rqstruct = NULL;
 		error(FATAL, "neither runqueue nor rq structures exist\n");
 	}
@@ -275,6 +301,7 @@ kernel_init()
 	MEMBER_OFFSET_INIT(runqueue_active, rqstruct, "active");
 	MEMBER_OFFSET_INIT(runqueue_expired, rqstruct, "expired");
 	MEMBER_OFFSET_INIT(runqueue_arrays, rqstruct, "arrays");
+	MEMBER_OFFSET_INIT(rq_timestamp, rqstruct, rq_timestamp_name);
 	MEMBER_OFFSET_INIT(prio_array_queue, "prio_array", "queue");
         MEMBER_OFFSET_INIT(prio_array_nr_active, "prio_array", "nr_active");
 	STRUCT_SIZE_INIT(runqueue, rqstruct); 
@@ -631,6 +658,22 @@ cpu_map_addr(const char *type)
 	return 0;
 }
 
+static char *
+cpu_map_type(char *name)
+{
+	char map_symbol[32];
+
+	sprintf(map_symbol, "cpu_%s_map", name);
+	if (kernel_symbol_exists(map_symbol))
+		return "map";
+
+        sprintf(map_symbol, "cpu_%s_mask", name);
+        if (kernel_symbol_exists(map_symbol))
+		return "mask";
+
+	return NULL;
+}
+
 /*
  * Get cpu map (possible, online, etc.) size
  */
@@ -703,12 +746,22 @@ cpu_maps_init(void)
 			for (c = 0; c < BITS_PER_LONG; c++)
 				if (*maskptr & (0x1UL << c)) {
 					cpu = (i * BITS_PER_LONG) + c;
+					if (cpu >= NR_CPUS) {
+						error(WARNING, 
+						    "cpu_%s_%s indicates more than"
+						    " %d (NR_CPUS) cpus\n",
+							mapinfo[m].name, 
+							cpu_map_type(mapinfo[m].name), 
+							NR_CPUS);
+						break;
+					}
 					kt->cpu_flags[cpu] |= mapinfo[m].cpu_flag;
 				}
 		}
 
 		if (CRASHDEBUG(1)) {
-			fprintf(fp, "cpu_%s_map: ", mapinfo[m].name);
+			fprintf(fp, "cpu_%s_%s: ", mapinfo[m].name,
+				cpu_map_type(mapinfo[m].name));
 			for (i = 0; i < NR_CPUS; i++) {
 				if (kt->cpu_flags[i] & mapinfo[m].cpu_flag)
 					fprintf(fp, "%d ", i);
@@ -1855,7 +1908,7 @@ cmd_bt(void)
 	if (kt->flags & USE_OLD_BT)
 		bt->flags |= BT_OLD_BACK_TRACE;
 
-        while ((c = getopt(argcnt, args, "D:fFI:S:aloreEgstTd:R:O")) != EOF) {
+        while ((c = getopt(argcnt, args, "D:fFI:S:aloreEgstTdxR:O")) != EOF) {
                 switch (c)
 		{
 		case 'f':
@@ -1930,8 +1983,18 @@ cmd_bt(void)
 #endif
 			break;
 
+		case 'x':
+			if (bt->radix == 10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			bt->radix = 16;
+			break;
+
 		case 'd':
-			bt->debug = dtol(optarg, FAULT_ON_ERROR, NULL);
+			if (bt->radix == 16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			bt->radix = 10;
 			break;
 
 		case 'I':
@@ -1954,6 +2017,8 @@ cmd_bt(void)
 			bt->flags |= BT_FRAMESIZE_DEBUG;
 			if (STREQ(optarg, "dump"))
 				hook.esp = 1;
+			else if (STRNEQ(optarg, "level-"))
+				bt->debug = dtol(optarg+6, FAULT_ON_ERROR, NULL);
 			else if (STREQ(optarg, "validate"))
 				hook.esp = (ulong)-1;
 			else if (STREQ(optarg, "novalidate"))
@@ -1992,7 +2057,7 @@ cmd_bt(void)
 			break;
 
 		case 's':
-			bt->flags |= BT_SYMBOLIC_ARGS;
+			bt->flags |= BT_SYMBOL_OFFSET;
 			break;
 
 		case 'T':
@@ -2158,12 +2223,15 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
 	int i;
 	ulong *up;
 	struct load_module *lm;
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 
 	if (bt->flags & BT_TEXT_SYMBOLS) {
 		if (!(bt->flags & BT_TEXT_SYMBOLS_ALL))
 			fprintf(fp, "%sSTART: %s at %lx\n",
 				space(VADDR_PRLEN > 8 ? 14 : 6),
+				bt->flags & BT_SYMBOL_OFFSET ?
+				value_to_symstr(eip, buf2, bt->radix) :
 		        	closest_symbol(eip), eip);
 	}
 
@@ -2186,10 +2254,12 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
                                	fprintf(fp, "  %s[%s] %s at %lx",
 					bt->flags & BT_ERROR_MASK ?
 					"  " : "",
-					mkstring(buf, VADDR_PRLEN, 
+					mkstring(buf1, VADDR_PRLEN, 
 					RJUST|LONG_HEX,
                                		MKSTR(bt->stackbase + 
 					(i * sizeof(long)))),
+					bt->flags & BT_SYMBOL_OFFSET ?
+					value_to_symstr(*up, buf2, bt->radix) :
 					closest_symbol(*up), *up);
 				if (module_symbol(*up, NULL, &lm, NULL, 0))
 					fprintf(fp, " [%s]", lm->mod_name);
@@ -2198,7 +2268,7 @@ print_stack_text_syms(struct bt_info *bt, ulong esp, ulong eip)
                                	fprintf(fp, "%lx: %s\n",
                                        	bt->stackbase + 
 					(i * sizeof(long)),
-                                       	value_to_symstr(*up, buf, 0));
+                                       	value_to_symstr(*up, buf1, 0));
 		}
 	}
 
@@ -2615,6 +2685,7 @@ dump_bt_info(struct bt_info *bt, char *where)
 		bt->call_target : "none");
 	fprintf(fp, "   eframe_ip: %lx\n", bt->eframe_ip);
 	fprintf(fp, "       debug: %lx\n", bt->debug);
+	fprintf(fp, "       radix: %ld\n", bt->radix);
 }
 
 /*
@@ -3847,15 +3918,21 @@ void
 cmd_log(void)
 {
 	int c;
-	int msg_level;
+	int msg_flags;
 
-	msg_level = FALSE;
+	msg_flags = 0;
 
-        while ((c = getopt(argcnt, args, "m")) != EOF) {
+        while ((c = getopt(argcnt, args, "tdm")) != EOF) {
                 switch(c)
                 {
+		case 't':
+			msg_flags |= SHOW_LOG_TEXT;
+			break;
+		case 'd': 
+			msg_flags |= SHOW_LOG_DICT;
+			break;
                 case 'm':
-                        msg_level = TRUE;
+                        msg_flags |= SHOW_LOG_LEVEL;
                         break;
                 default:
                         argerrs++;
@@ -3866,20 +3943,33 @@ cmd_log(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	dump_log(msg_level);
+	dump_log(msg_flags);
 }
 
 
 void 
-dump_log(int msg_level)
+dump_log(int msg_flags)
 {
-	int i, len, tmp;
+	int i, len, tmp, show_level;
 	ulong log_buf, log_end;
 	char *buf;
 	char last;
 	ulong index;
 	struct syment *nsp;
 	int log_wrap, loglevel, log_buf_len;
+
+	if (kernel_symbol_exists("log_first_idx") && 
+	    kernel_symbol_exists("log_next_idx")) {
+		dump_variable_length_record_log(msg_flags);
+		return;
+	}
+
+	if (msg_flags & SHOW_LOG_DICT)
+		option_not_supported('d');
+	if ((msg_flags & SHOW_LOG_TEXT) && STREQ(pc->curcmd, "log"))
+		option_not_supported('t');
+
+	show_level = msg_flags & SHOW_LOG_LEVEL ? TRUE : FALSE;
 
 	if (symbol_exists("log_buf_len")) {
 		get_symbol_data("log_buf_len", sizeof(int), &log_buf_len);
@@ -3908,8 +3998,11 @@ dump_log(int msg_level)
 	} else
 		get_symbol_data("log_end", len, &log_end);
 
-        readmem(log_buf, KVADDR, buf,
-        	log_buf_len, "log_buf contents", FAULT_ON_ERROR);
+	if (!readmem(log_buf, KVADDR, buf,
+	    log_buf_len, "log_buf contents", RETURN_ON_ERROR|QUIET)) {
+		error(WARNING, "\ncannot read log_buf contents\n");
+		return;
+	}
 
 	if (log_end < log_buf_len)
 		index = 0;
@@ -3927,7 +4020,7 @@ dump_log(int msg_level)
 wrap_around:
 
 	for (i = index; i < log_buf_len; i++) {
-                if (loglevel && !msg_level) {
+                if (loglevel && !show_level) {
                         switch (buf[i])
                         {
                         case '>':
@@ -3968,6 +4061,217 @@ wrap_around:
 		fprintf(fp, "\n");
 
 	FREEBUF(buf);
+}
+
+/* 
+ * get log record by index; idx must point to valid message.
+ */
+static char *
+log_from_idx(uint32_t idx, char *logbuf)
+{
+	char *logptr;
+	uint16_t msglen;
+
+	logptr = logbuf + idx;
+
+	/*
+	 * A length == 0 record is the end of buffer marker. 
+	 * Wrap around and return the message at the start of 
+	 * the buffer.
+	 */
+
+	msglen = USHORT(logptr + OFFSET(log_len));
+	if (!msglen)
+		logptr = logbuf;
+
+	return logptr;
+}
+
+/* 
+ * get next record index; idx must point to valid message. 
+ */
+static uint32_t 
+log_next(uint32_t idx, char *logbuf)
+{
+	char *logptr;
+	uint16_t msglen;
+
+	logptr = logbuf + idx;
+
+	/*
+	 * A length == 0 record is the end of buffer marker. Wrap around and
+	 * read the message at the start of the buffer as *this* one, and
+	 * return the one after that.
+	 */
+
+	msglen = USHORT(logptr + OFFSET(log_len));
+	if (!msglen) {
+		msglen = USHORT(logbuf + OFFSET(log_len));
+		return msglen;
+	}
+
+        return idx + msglen;
+}
+
+static void
+dump_log_entry(char *logptr, int msg_flags)
+{
+	int indent;
+	char *msg, *p;
+	uint16_t i, text_len, dict_len, level;
+	uint64_t ts_nsec;
+	ulonglong nanos; 
+	ulong rem;
+	char buf[BUFSIZE];
+	int ilen;
+
+	ilen = 0;
+	text_len = USHORT(logptr + OFFSET(log_text_len));
+	dict_len = USHORT(logptr + OFFSET(log_dict_len));
+	if (VALID_MEMBER(log_level)) {
+		/*
+		 *  Initially a "u16 level", then a "u8 level:3"
+		 */
+		if (SIZE(log_level) == sizeof(short))
+			level = USHORT(logptr + OFFSET(log_level));
+		else
+			level = UCHAR(logptr + OFFSET(log_level));
+	} else
+		level = UCHAR(logptr + OFFSET(log_flags_level));
+	ts_nsec = ULONGLONG(logptr + OFFSET(log_ts_nsec));
+
+	msg = logptr + SIZE(log);
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, 
+		    "\nlog %lx -> msg: %lx ts_nsec: %lld flags/level: %x"
+		    " text_len: %d dict_len: %d\n", 
+			(ulong)logptr, (ulong)msg, (ulonglong)ts_nsec, 
+			level, text_len, dict_len);
+
+	if ((msg_flags & SHOW_LOG_TEXT) == 0) {
+		nanos = (ulonglong)ts_nsec / (ulonglong)1000000000;
+		rem = (ulonglong)ts_nsec % (ulonglong)1000000000;
+		sprintf(buf, "[%5lld.%06ld] ", nanos, rem/1000);
+		ilen = strlen(buf);
+		fprintf(fp, buf);
+	}
+
+	if (msg_flags & SHOW_LOG_LEVEL) {
+		sprintf(buf, "<%x>", level);
+		ilen += strlen(buf);
+		fprintf(fp, buf);
+	}
+
+	for (i = 0, p = msg; i < text_len; i++, p++)
+		fputc(isprint(*p) ? *p : '.', fp);
+	
+	if (dict_len & (msg_flags & SHOW_LOG_DICT)) {
+		fprintf(fp, "\n");
+		indent = TRUE;
+
+		for (i = 0; i < dict_len; i++, p++) {
+			if (indent) {
+				fprintf(fp, "%s", space(ilen));
+				indent = FALSE;
+			}
+			if (isprint(*p))
+				fputc(*p, fp);
+			else if (*p == NULLCHAR) {
+				fputc('\n', fp);
+				indent = TRUE;
+			} else
+				fputc('.', fp);
+		}
+	}
+	fprintf(fp, "\n");
+}
+
+/* 
+ *  Handle the new variable-length-record log_buf.
+ */
+static void
+dump_variable_length_record_log(int msg_flags)
+{
+	uint32_t idx, log_first_idx, log_next_idx, log_buf_len;
+	ulong log_buf;
+	char *logptr, *logbuf;
+
+	if (INVALID_SIZE(log)) {
+		STRUCT_SIZE_INIT(log, "log");
+		MEMBER_OFFSET_INIT(log_ts_nsec, "log", "ts_nsec");
+		MEMBER_OFFSET_INIT(log_len, "log", "len");
+		MEMBER_OFFSET_INIT(log_text_len, "log", "text_len");
+		MEMBER_OFFSET_INIT(log_dict_len, "log", "dict_len");
+		MEMBER_OFFSET_INIT(log_level, "log", "level");
+		MEMBER_SIZE_INIT(log_level, "log", "level");
+		MEMBER_OFFSET_INIT(log_flags_level, "log", "flags_level");
+			
+		/*
+		 * If things change, don't kill a dumpfile session 
+		 * searching for a panic message.
+		 */
+		if (INVALID_SIZE(log) ||
+		    INVALID_MEMBER(log_ts_nsec) ||
+		    INVALID_MEMBER(log_len) ||
+		    INVALID_MEMBER(log_text_len) ||
+		    INVALID_MEMBER(log_dict_len) ||
+		    (INVALID_MEMBER(log_level) && INVALID_MEMBER(log_flags_level)) ||
+		    !kernel_symbol_exists("log_buf_len") ||
+		    !kernel_symbol_exists("log_buf")) {
+			error(WARNING, "\nlog buf data structure(s) have changed\n");
+			return;
+		}
+	}
+
+	get_symbol_data("log_first_idx", sizeof(uint32_t), &log_first_idx);
+	get_symbol_data("log_next_idx", sizeof(uint32_t), &log_next_idx);
+	get_symbol_data("log_buf_len", sizeof(uint32_t), &log_buf_len);
+	get_symbol_data("log_buf", sizeof(char *), &log_buf);
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "log_buf: %lx\n", (ulong)log_buf);
+		fprintf(fp, "log_buf_len: %d\n", log_buf_len);
+		fprintf(fp, "log_first_idx: %d\n", log_first_idx);
+		fprintf(fp, "log_next_idx: %d\n", log_next_idx);
+	}
+
+	logbuf = GETBUF(log_buf_len);
+
+	if (!readmem(log_buf, KVADDR, logbuf,
+	    log_buf_len, "log_buf contents", RETURN_ON_ERROR|QUIET)) {
+		error(WARNING, "\ncannot read log_buf contents\n");
+		FREEBUF(logbuf);
+		return;
+	}
+
+	hq_open();
+
+	idx = log_first_idx;
+	while (idx != log_next_idx) {
+		logptr = log_from_idx(idx, logbuf);
+
+		dump_log_entry(logptr, msg_flags);
+
+		if (!hq_enter((ulong)logptr)) {
+			error(INFO, "\nduplicate log_buf message pointer\n");
+			break;
+		}
+
+		idx = log_next(idx, logbuf);
+
+		if (idx >= log_buf_len) {
+			error(INFO, "\ninvalid log_buf entry encountered\n");
+			break;
+		}
+
+		if (CRASHDEBUG(1) && (idx == log_next_idx))
+			fprintf(fp, "\nfound log_next_idx OK\n");
+	}
+
+	hq_close();
+
+	FREEBUF(logbuf);
 }
 
 
@@ -4769,6 +5073,8 @@ no_cpu_flags:
 	fprintf(fp, "              pvops_xen:\n");
 	fprintf(fp, "                    p2m_top: %lx\n", kt->pvops_xen.p2m_top);
 	fprintf(fp, "            p2m_top_entries: %d\n", kt->pvops_xen.p2m_top_entries);
+	if (symbol_exists("p2m_mid_missing"))
+		fprintf(fp, "            p2m_mid_missing: %lx\n", kt->pvops_xen.p2m_mid_missing);
 	fprintf(fp, "                p2m_missing: %lx\n", kt->pvops_xen.p2m_missing);
 }
 
@@ -7116,15 +7422,9 @@ xen_m2p(ulonglong machine)
 static ulong
 __xen_m2p(ulonglong machine, ulong mfn)
 {
-	ulong mapping, p2m, kmfn, pfn, p, i, e, c;
+	ulong c, i, kmfn, mapping, p, pfn;
 	ulong start, end;
-	ulong *mp;
-
-	mp = (ulong *)kt->m2p_page;
-	if (PVOPS_XEN())
-		mapping = UNINITIALIZED;
-	else
-		mapping = kt->phys_to_machine_mapping;
+	ulong *mp = (ulong *)kt->m2p_page;
 
 	/*
 	 *  Check the FIFO cache first.
@@ -7174,55 +7474,21 @@ __xen_m2p(ulonglong machine, ulong mfn)
 		 *  beginning of the p2m_top array, caching the contiguous
 		 *  range containing the found machine address.
 		 */
-		for (e = p = 0, p2m = kt->pvops_xen.p2m_top;
-		     e < kt->pvops_xen.p2m_top_entries; 
-		     e++, p += XEN_PFNS_PER_PAGE, p2m += sizeof(void *)) {
+		if (symbol_exists("p2m_mid_missing"))
+			pfn = __xen_pvops_m2p_l3(machine, mfn);
+		else
+			pfn = __xen_pvops_m2p_l2(machine, mfn);
 
-			if (!readmem(p2m, KVADDR, &mapping,
-			    sizeof(void *), "p2m_top", RETURN_ON_ERROR))
-				error(FATAL, "cannot access p2m_top[] entry\n");
-
-			if (mapping != kt->last_mapping_read) {
-				if (mapping != kt->pvops_xen.p2m_missing) {
-					if (!readmem(mapping, KVADDR, mp, 
-					    PAGESIZE(), "p2m_top page", 
-					    RETURN_ON_ERROR))
-						error(FATAL, 
-				     	    	    "cannot access "
-						    "p2m_top[] page\n");
-					kt->last_mapping_read = mapping;
-				}
-			}
-
-			if (mapping == kt->pvops_xen.p2m_missing)
-				continue;
-
-			kt->p2m_pages_searched++;
-
-			if (search_mapping_page(mfn, &i, &start, &end)) {
-				pfn = p + i;
-				if (CRASHDEBUG(1))
-				    console("pages: %d mfn: %lx (%llx) p: %ld"
-					" i: %ld pfn: %lx (%llx)\n",
-					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
-					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
-	
-				c = kt->p2m_cache_index;
-				kt->p2m_mapping_cache[c].start = start;
-				kt->p2m_mapping_cache[c].end = end;
-				kt->p2m_mapping_cache[c].mapping = mapping;
-				kt->p2m_mapping_cache[c].pfn = p;
-				kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
-	
-				return pfn;
-			}
-		}
+		if (pfn != XEN_MFN_NOT_FOUND)
+			return pfn;
 	} else {
 		/*
 		 *  The machine address was not cached, so search from the
 		 *  beginning of the phys_to_machine_mapping array, caching
 		 *  the contiguous range containing the found machine address.
 		 */
+		mapping = kt->phys_to_machine_mapping;
+
 		for (p = 0; p < kt->p2m_table_size; p += XEN_PFNS_PER_PAGE) 
 		{
 			if (mapping != kt->last_mapping_read) {
@@ -7263,6 +7529,115 @@ __xen_m2p(ulonglong machine, ulong mfn)
 		console("machine address %llx not found\n", machine);
 	
 	return (XEN_MFN_NOT_FOUND);
+}
+
+static ulong
+__xen_pvops_m2p_l2(ulonglong machine, ulong mfn)
+{
+	ulong c, e, end, i, mapping, p, p2m, pfn, start;
+
+	for (e = p = 0, p2m = kt->pvops_xen.p2m_top;
+	     e < kt->pvops_xen.p2m_top_entries;
+	     e++, p += XEN_PFNS_PER_PAGE, p2m += sizeof(void *)) {
+
+		if (!readmem(p2m, KVADDR, &mapping, sizeof(void *),
+						"p2m_top", RETURN_ON_ERROR))
+			error(FATAL, "cannot access p2m_top[] entry\n");
+
+		if (mapping == kt->pvops_xen.p2m_missing)
+			continue;
+
+		if (mapping != kt->last_mapping_read) {
+			if (!readmem(mapping, KVADDR, (void *)kt->m2p_page,
+					PAGESIZE(), "p2m_top page", RETURN_ON_ERROR))
+				error(FATAL, "cannot access p2m_top[] page\n");
+
+			kt->last_mapping_read = mapping;
+		}
+
+		kt->p2m_pages_searched++;
+
+		if (search_mapping_page(mfn, &i, &start, &end)) {
+			pfn = p + i;
+			if (CRASHDEBUG(1))
+			    console("pages: %d mfn: %lx (%llx) p: %ld"
+				" i: %ld pfn: %lx (%llx)\n",
+				(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
+				p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+
+			c = kt->p2m_cache_index;
+			kt->p2m_mapping_cache[c].start = start;
+			kt->p2m_mapping_cache[c].end = end;
+			kt->p2m_mapping_cache[c].mapping = mapping;
+			kt->p2m_mapping_cache[c].pfn = p;
+			kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
+
+			return pfn;
+		}
+	}
+
+	return XEN_MFN_NOT_FOUND;
+}
+
+static ulong
+__xen_pvops_m2p_l3(ulonglong machine, ulong mfn)
+{
+	ulong c, end, i, j, k, mapping, p;
+	ulong p2m_mid, p2m_top, pfn, start;
+
+	p2m_top = kt->pvops_xen.p2m_top;
+
+	for (i = 0; i < XEN_P2M_TOP_PER_PAGE; ++i, p2m_top += sizeof(void *)) {
+		if (!readmem(p2m_top, KVADDR, &mapping,
+				sizeof(void *), "p2m_top", RETURN_ON_ERROR))
+			error(FATAL, "cannot access p2m_top[] entry\n");
+
+		if (mapping == kt->pvops_xen.p2m_mid_missing)
+			continue;
+
+		p2m_mid = mapping;
+
+		for (j = 0; j < XEN_P2M_MID_PER_PAGE; ++j, p2m_mid += sizeof(void *)) {
+			if (!readmem(p2m_mid, KVADDR, &mapping,
+					sizeof(void *), "p2m_mid", RETURN_ON_ERROR))
+				error(FATAL, "cannot access p2m_mid[] entry\n");
+
+			if (mapping == kt->pvops_xen.p2m_missing)
+				continue;
+
+			if (mapping != kt->last_mapping_read) {
+				if (!readmem(mapping, KVADDR, (void *)kt->m2p_page,
+						PAGESIZE(), "p2m_mid page", RETURN_ON_ERROR))
+					error(FATAL, "cannot access p2m_mid[] page\n");
+
+				kt->last_mapping_read = mapping;
+			}
+
+			if (!search_mapping_page(mfn, &k, &start, &end))
+				continue;
+
+			p = i * XEN_P2M_MID_PER_PAGE * XEN_P2M_PER_PAGE;
+			p += j * XEN_P2M_PER_PAGE;
+			pfn = p + k;
+
+			if (CRASHDEBUG(1))
+				console("pages: %d mfn: %lx (%llx) p: %ld"
+					" i: %ld j: %ld k: %ld pfn: %lx (%llx)\n",
+					(p / XEN_P2M_PER_PAGE) + 1, mfn, machine,
+					p, i, j, k, pfn, XEN_PFN_TO_PSEUDO(pfn));
+
+			c = kt->p2m_cache_index;
+			kt->p2m_mapping_cache[c].start = start;
+			kt->p2m_mapping_cache[c].end = end;
+			kt->p2m_mapping_cache[c].mapping = mapping;
+			kt->p2m_mapping_cache[c].pfn = p;
+			kt->p2m_cache_index = (c + 1) % P2M_MAPPING_CACHE;
+
+			return pfn;
+		}
+	}
+
+	return XEN_MFN_NOT_FOUND;
 }
 
 /*
@@ -7790,12 +8165,19 @@ static void
 get_xtime(struct timespec *date)
 {
 	struct syment *sp;
+	uint64_t xtime_sec;
 
 	if (VALID_MEMBER(timekeeper_xtime) &&
 	    (sp = kernel_symbol_search("timekeeper"))) {
                 readmem(sp->value + OFFSET(timekeeper_xtime), KVADDR, 
 			date, sizeof(struct timespec),
                         "timekeeper xtime", RETURN_ON_ERROR);
+	} else if (VALID_MEMBER(timekeeper_xtime_sec) &&
+	    (sp = kernel_symbol_search("timekeeper"))) {
+                readmem(sp->value + OFFSET(timekeeper_xtime_sec), KVADDR, 
+			&xtime_sec, sizeof(uint64_t),
+                        "timekeeper xtime_sec", RETURN_ON_ERROR);
+		date->tv_sec = (__time_t)xtime_sec;
 	} else if (kernel_symbol_exists("xtime"))
 		get_symbol_data("xtime", sizeof(struct timespec), date);
 }

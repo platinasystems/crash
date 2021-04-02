@@ -136,7 +136,13 @@ typedef uint32_t	Elf_Word;
 
 #if defined(X86) || defined(X86_64)
 #define xen_hyper_per_cpu(var, cpu)  \
-	((ulong)(var) + (((ulong)(cpu))<<xht->percpu_shift))
+	({ ulong __var_addr; \
+	   if (xht->__per_cpu_offset) \
+		__var_addr = (xht->flags & XEN_HYPER_SMP) ? \
+			((ulong)(var) + xht->__per_cpu_offset[cpu]) : (ulong)(var); \
+	   else \
+		__var_addr = (ulong)(var) + ((ulong)(cpu) << xht->percpu_shift); \
+	   __var_addr; })
 #elif defined(IA64)
 #define xen_hyper_per_cpu(var, cpu)  \
 	((xht->flags & XEN_HYPER_SMP) ? \

@@ -64,7 +64,6 @@ xen_hyper_init(void)
 	machdep->get_smp_cpus();
 	machdep->memory_size();
 
-#ifdef IA64
 	if (symbol_exists("__per_cpu_offset")) {
 		xht->flags |= XEN_HYPER_SMP;
 		if((xht->__per_cpu_offset = malloc(sizeof(ulong) * XEN_HYPER_MAX_CPUS())) == NULL) {
@@ -76,7 +75,6 @@ xen_hyper_init(void)
 			error(FATAL, "cannot read __per_cpu_offset.\n");
 		}
 	}
-#endif
 
 #if defined(X86) || defined(X86_64)
 	if (symbol_exists("__per_cpu_shift")) {
@@ -399,7 +397,8 @@ xen_hyper_misc_init(void)
 	XEN_HYPER_STRUCT_SIZE_INIT(schedule_data, "schedule_data");
 	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_schedule_lock, "schedule_data", "schedule_lock");
 	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_curr, "schedule_data", "curr");
-	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_idle, "schedule_data", "idle");
+	if (MEMBER_EXISTS("schedule_data", "idle"))
+		XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_idle, "schedule_data", "idle");
 	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_sched_priv, "schedule_data", "sched_priv");
 	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_s_timer, "schedule_data", "s_timer");
 	XEN_HYPER_MEMBER_OFFSET_INIT(schedule_data_tick, "schedule_data", "tick");
@@ -541,7 +540,10 @@ xen_hyper_schedule_init(void)
 		}
 		schc->cpu_id = cpuid;
 		schc->curr = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_curr));
-		schc->idle = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_idle));
+		if (MEMBER_EXISTS("schedule_data", "idle"))
+			schc->idle = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_idle));
+		else
+			schc->idle = xht->idle_vcpu_array[cpuid];
 		schc->sched_priv =
 			ULONG(buf + XEN_HYPER_OFFSET(schedule_data_sched_priv));
 		if (XEN_HYPER_VALID_MEMBER(schedule_data_tick))
@@ -633,18 +635,18 @@ xen_hyper_dumpinfo_init(void)
 	}
 
 	/* allocate a context area */
-	size = sizeof(struct xen_hyper_dumpinfo_context) * XEN_HYPER_MAX_CPUS();
+	size = sizeof(struct xen_hyper_dumpinfo_context) * machdep->get_smp_cpus();
 	if((xhdit->context_array = malloc(size)) == NULL) {
 		error(FATAL, "cannot malloc dumpinfo table context space.\n");
 	}
 	BZERO(xhdit->context_array, size);
-	size = sizeof(struct xen_hyper_dumpinfo_context_xen_core) * XEN_HYPER_MAX_CPUS();
+	size = sizeof(struct xen_hyper_dumpinfo_context_xen_core) * machdep->get_smp_cpus();
 	if((xhdit->context_xen_core_array = malloc(size)) == NULL) {
 		error(FATAL, "cannot malloc dumpinfo table context_xen_core_array space.\n");
 	}
 	BZERO(xhdit->context_xen_core_array, size);
 	addr = symbol_value("per_cpu__crash_notes");
-	for (i = 0; i < XEN_HYPER_MAX_CPUS(); i++) {
+	for (i = 0; i < machdep->get_smp_cpus(); i++) {
 		ulong addr_notes;
 
 		addr_notes = xen_hyper_per_cpu(addr, i);
@@ -1879,11 +1881,9 @@ xen_hyper_get_cpu_info(void)
 	uint *cpu_idx;
 	int i, j, cpus;
 
-	get_symbol_data("max_cpus", sizeof(xht->max_cpus), &xht->max_cpus);
 	XEN_HYPER_STRUCT_SIZE_INIT(cpumask_t, "cpumask_t");
-	if (XEN_HYPER_SIZE(cpumask_t) * 8 > xht->max_cpus) {
-		xht->max_cpus = XEN_HYPER_SIZE(cpumask_t) * 8;
-	}
+	xht->max_cpus = XEN_HYPER_SIZE(cpumask_t) * 8;
+
 	if (xht->cpumask) {
 		free(xht->cpumask);
 	}

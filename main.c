@@ -66,6 +66,8 @@ static struct option long_options[] = {
 	{"kvmio", required_argument, 0, 0},
 	{"no_elf_notes", 0, 0, 0},
 	{"osrelease", required_argument, 0, 0},
+	{"hex", 0, 0, 0},
+	{"dec", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -245,6 +247,17 @@ main(int argc, char **argv)
 				pc->flags2 |= GET_OSRELEASE;
 				get_osrelease(optarg);
 			}
+
+			else if (STREQ(long_options[option_index].name, "hex")) {
+				pc->flags2 |= RADIX_OVERRIDE;
+				pc->output_radix = 16;
+			}
+
+			else if (STREQ(long_options[option_index].name, "dec")) {
+				pc->flags2 |= RADIX_OVERRIDE;
+				pc->output_radix = 10;
+			}
+			
 
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
@@ -627,8 +640,7 @@ main_loop(void)
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
 		show_untrusted_files();
-		if (SADUMP_DUMPFILE())
-			sadump_kdump_backup_region_init();
+		kdump_backup_region_init();
 		if (XEN_HYPER_MODE()) {
 #ifdef XEN_HYPERVISOR_ARCH
 			machdep_init(POST_GDB);
@@ -1315,6 +1327,10 @@ dump_program_context(void)
 		fprintf(fp, "%sREMOTE_DAEMON", others++ ? "|" : "");
 	if (pc->flags2 & LIVE_DUMP)
 		fprintf(fp, "%sLIVE_DUMP", others++ ? "|" : "");
+	if (pc->flags2 & RADIX_OVERRIDE)
+		fprintf(fp, "%sRADIX_OVERRIDE", others++ ? "|" : "");
+	if (pc->flags2 & QEMU_MEM_DUMP)
+		fprintf(fp, "%sQEMU_MEM_DUMP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
@@ -1550,6 +1566,8 @@ dump_program_context(void)
 	fprintf(fp, "           curext: %lx\n", (ulong)pc->curext); 
 	fprintf(fp, "             sbrk: %lx\n", (ulong)pc->sbrk); 
 	fprintf(fp, "          cleanup: %s\n", pc->cleanup);
+	fprintf(fp, "            scope: %lx %s\n", pc->scope,
+		pc->scope ? "" : "(not set)");
 }
 
 char *

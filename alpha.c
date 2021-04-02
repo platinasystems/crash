@@ -1,8 +1,8 @@
 /* alpha.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,7 +34,7 @@ static void alpha_cmd_mach(void);
 static int alpha_get_smp_cpus(void);
 static void alpha_display_machine_stats(void);
 static void alpha_dump_line_number(char *, ulong);
-static void display_hwrpb(void);
+static void display_hwrpb(unsigned int);
 static void alpha_post_init(void);
 static struct line_number_hook alpha_line_number_hooks[];
 
@@ -2611,14 +2611,31 @@ alpha_get_smp_cpus(void)
 void
 alpha_cmd_mach(void)
 {
-        int c;
+        int c, cflag;
+	unsigned int radix;
 
-        while ((c = getopt(argcnt, args, "c")) != EOF) {
+	cflag = radix = 0;
+
+        while ((c = getopt(argcnt, args, "cxd")) != EOF) {
                 switch(c)
                 {
 		case 'c':
-			display_hwrpb();
-			return;
+			cflag++;
+			break;
+
+		case 'x':
+			if (radix == 10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+
+		case 'd':
+			if (radix == 16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
 
                 default:
                         argerrs++;
@@ -2629,7 +2646,10 @@ alpha_cmd_mach(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-	alpha_display_machine_stats();
+	if (cflag)
+		display_hwrpb(radix);
+	else
+		alpha_display_machine_stats();
 }
 
 /*
@@ -2664,7 +2684,7 @@ alpha_display_machine_stats(void)
  *  Display the hwrpb_struct and each percpu_struct.
  */
 static void
-display_hwrpb(void)
+display_hwrpb(unsigned int radix)
 {
 	int cpu;
 	ulong hwrpb, percpu;
@@ -2680,12 +2700,12 @@ display_hwrpb(void)
                 "hwrpb processor_size", FAULT_ON_ERROR);
 
 	fprintf(fp, "HWRPB:\n");
-	dump_struct("hwrpb_struct", hwrpb, 0);
+	dump_struct("hwrpb_struct", hwrpb, radix);
 
 	for (cpu = 0; cpu < kt->cpus; cpu++) {
 		fprintf(fp, "\nCPU %d:\n", cpu); 
 		percpu = hwrpb + processor_offset + (processor_size * cpu);
-		dump_struct("percpu_struct", percpu, 0);
+		dump_struct("percpu_struct", percpu, radix);
 	}
 }
 

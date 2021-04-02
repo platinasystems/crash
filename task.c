@@ -53,6 +53,7 @@ static ulong get_curr_task(int, char *);
 static long rq_idx(int);
 static long cpu_idx(int);
 static void dump_runq(void);
+static void dump_on_rq_timestamp(void);
 static void dump_runqueues(void);
 static void dump_prio_array(int, ulong, char *);
 struct rb_root;
@@ -4632,7 +4633,7 @@ task_state_string(ulong task, char *buf, int verbose)
 
 	if (valid_task_state(_TRACING_STOPPED_) &&
 	    (state & _TRACING_STOPPED_)) {
-		sprintf(buf, "ST"); 
+		sprintf(buf, "TR"); 
 		valid++; 
 		set++;
 	}
@@ -5024,7 +5025,7 @@ get_panicmsg(char *buf)
                 return(buf);
 
 	open_tmpfile();
-	dump_log(FALSE);
+	dump_log(SHOW_LOG_TEXT);
 
 	/*
 	 *  First check for a SYSRQ-generated crash, and set the
@@ -5271,6 +5272,7 @@ cmd_foreach(void)
 		    STREQ(args[optind], "IN") ||
 		    STREQ(args[optind], "UN") ||
 		    STREQ(args[optind], "ST") ||
+		    STREQ(args[optind], "TR") ||
 		    STREQ(args[optind], "ZO") ||
 		    STREQ(args[optind], "DE") ||
 		    STREQ(args[optind], "SW")) {
@@ -5285,6 +5287,8 @@ cmd_foreach(void)
 				fd->state = _UNINTERRUPTIBLE_;
 			else if (STREQ(args[optind], "ST"))
 				fd->state = _STOPPED_;
+			else if (STREQ(args[optind], "TR"))
+				fd->state = _TRACING_STOPPED_;
 			else if (STREQ(args[optind], "ZO"))
 				fd->state = _ZOMBIE_;
 			else if (STREQ(args[optind], "DE"))
@@ -5496,6 +5500,10 @@ foreach(struct foreach_data *fd)
 				fd->flags |= FOREACH_s_FLAG;
 				break;
 			}
+			if ((fd->flags & (FOREACH_x_FLAG|FOREACH_d_FLAG)) ==
+			    (FOREACH_x_FLAG|FOREACH_d_FLAG))
+				error(FATAL, 
+				    "net: -x and -d options are mutually exclusive\n");
 			break;
 
 		case FOREACH_VTOP:
@@ -5512,6 +5520,10 @@ foreach(struct foreach_data *fd)
 			break;
 
 		case FOREACH_VM:
+			if ((fd->flags & (FOREACH_x_FLAG|FOREACH_d_FLAG)) ==
+			    (FOREACH_x_FLAG|FOREACH_d_FLAG))
+				error(FATAL, 
+				    "vm: -x and -d options are mutually exclusive\n");
                         if (count_bits_long(fd->flags &
                             (FOREACH_i_FLAG|FOREACH_p_FLAG|
                              FOREACH_m_FLAG|FOREACH_v_FLAG)) > 1)
@@ -5531,6 +5543,11 @@ foreach(struct foreach_data *fd)
 			break;
 
 		case FOREACH_BT:
+			if ((fd->flags & (FOREACH_x_FLAG|FOREACH_d_FLAG)) ==
+			    (FOREACH_x_FLAG|FOREACH_d_FLAG))
+				error(FATAL, 
+				    "bt: -x and -d options are mutually exclusive\n");
+
                         if ((fd->flags & FOREACH_l_FLAG) && GDB_PATCHED()) {
 				error(INFO, "line numbers are not available\n");
 				fd->flags &= ~FOREACH_l_FLAG;
@@ -5675,7 +5692,7 @@ foreach(struct foreach_data *fd)
 				if (fd->flags & FOREACH_r_FLAG)
 					bt->flags |= BT_RAW;
 				if (fd->flags & FOREACH_s_FLAG)
-					bt->flags |= BT_SYMBOLIC_ARGS;
+					bt->flags |= BT_SYMBOL_OFFSET;
 				if (fd->flags & FOREACH_t_FLAG)
 					bt->flags |= BT_TEXT_SYMBOLS;
 				if (fd->flags & FOREACH_T_FLAG) {
@@ -5697,6 +5714,10 @@ foreach(struct foreach_data *fd)
                                         bt->flags |= BT_FULL;
                                 if (fd->flags & FOREACH_F_FLAG) 
                                         bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
+                                if (fd->flags & FOREACH_x_FLAG) 
+					bt->radix = 16;
+                                if (fd->flags & FOREACH_d_FLAG) 
+					bt->radix = 10;
 				if (fd->reference)
 					bt->ref = ref;
 				back_trace(bt); 
@@ -5704,6 +5725,11 @@ foreach(struct foreach_data *fd)
 
 			case FOREACH_VM:
 				pc->curcmd = "vm";
+				cmdflags = 0;
+				if (fd->flags & FOREACH_x_FLAG)
+					cmdflags = PRINT_RADIX_16;
+				else if (fd->flags & FOREACH_d_FLAG)
+					cmdflags = PRINT_RADIX_10;
 				if (fd->flags & FOREACH_i_FLAG)
 					vm_area_dump(tc->task, 
 					    PRINT_INODES, 0, NULL);
@@ -5713,10 +5739,10 @@ foreach(struct foreach_data *fd)
 					    fd->reference ? ref : NULL);
 				else if (fd->flags & FOREACH_m_FLAG)
 					vm_area_dump(tc->task, 
-					    PRINT_MM_STRUCT, 0, NULL);
+					    PRINT_MM_STRUCT|cmdflags, 0, NULL);
 				else if (fd->flags & FOREACH_v_FLAG)
 					vm_area_dump(tc->task, 
-					    PRINT_VMA_STRUCTS, 0, NULL);
+					    PRINT_VMA_STRUCTS|cmdflags, 0, NULL);
 				else
 					vm_area_dump(tc->task, 0, 0, 
 					    fd->reference ? ref : NULL);
@@ -6662,7 +6688,8 @@ get_active_set(void)
 			runq = symbol_value("pcpu_info");
 		else
 			return FALSE;
-	}
+	} else
+		runq = rq_sp->value;
 
 	if (!tt->active_set &&
 	    !(tt->active_set = (ulong *)calloc(NR_CPUS, sizeof(ulong))))	
@@ -7000,12 +7027,16 @@ cmd_runq(void)
 {
         int c;
 	int sched_debug = 0;
+	int dump_timestamp_flag = 0;
 
-        while ((c = getopt(argcnt, args, "d")) != EOF) {
+        while ((c = getopt(argcnt, args, "dt")) != EOF) {
                 switch(c)
                 {
 		case 'd':
 			sched_debug = 1;
+			break;
+		case 't':
+			dump_timestamp_flag = 1;
 			break;
                 default:
                         argerrs++;
@@ -7017,12 +7048,75 @@ cmd_runq(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
+	if (dump_timestamp_flag) {
+                dump_on_rq_timestamp();
+                return;
+        }
+
+
 	if (sched_debug) {
 		dump_on_rq_tasks();
 		return;
 	}
 
 	dump_runq();
+}
+
+/*
+ *  Displays the runqueue and active task timestamps of each cpu.
+ */
+static void
+dump_on_rq_timestamp(void)
+{
+	ulong runq;
+	char buf[BUFSIZE];
+	char format[15];
+	struct syment *rq_sp;
+	struct task_context *tc;
+	int cpu, len, indent;
+	ulonglong timestamp;
+
+	indent = runq = 0;
+
+	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
+		error(FATAL, "per-cpu runqueues do not exist\n");
+
+	for (cpu = 0; cpu < kt->cpus; cpu++) {
+		if ((kt->flags & SMP) && (kt->flags &PER_CPU_OFF))
+			runq = rq_sp->value + kt->__per_cpu_offset[cpu];
+		else
+			runq = rq_sp->value;
+
+		readmem(runq + OFFSET(rq_timestamp), KVADDR, &timestamp,
+			sizeof(ulonglong), "per-cpu rq timestamp",
+			FAULT_ON_ERROR);
+
+                sprintf(buf, pc->output_radix == 10 ? "%llu" : "%llx",
+			timestamp);
+		fprintf(fp, "%sCPU %d: %s\n", cpu < 10 ? " " : "", 
+			cpu, buf);
+		len = strlen(buf);
+
+		if ((tc = task_to_context(tt->active_set[cpu]))){
+			if (cpu < 10)
+				indent = 7;
+			else if (cpu < 100)
+				indent = 8;
+			else if (cpu < 1000)
+				indent = 9;
+			if (cpu < 10)
+				indent++;
+
+			timestamp = task_last_run(tc->task);
+			sprintf(format, "%c0%dll%c", '%', len,
+				pc->output_radix == 10 ? 'u' : 'x');
+			sprintf(buf, format, timestamp);
+			fprintf(fp, "%s%s  PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
+				space(indent), buf, tc->pid, tc->task, tc->comm);
+		} else
+			fprintf(fp, "\n"); 
+
+	}
 }
 
 /*
@@ -7456,12 +7550,12 @@ dump_CFS_runqueues(void)
 	char *runqbuf, *cfs_rq_buf;
 	ulong tasks_timeline ATTRIBUTE_UNUSED;
 	struct task_context *tc;
-	long nr_running, cfs_rq_nr_running;
 	struct rb_root *root;
 	struct syment *rq_sp, *init_sp;
 
 	if (!VALID_STRUCT(cfs_rq)) {
 		STRUCT_SIZE_INIT(cfs_rq, "cfs_rq");
+		STRUCT_SIZE_INIT(rt_rq, "rt_rq");
 		MEMBER_OFFSET_INIT(rq_rt, "rq", "rt");
 		MEMBER_OFFSET_INIT(rq_nr_running, "rq", "nr_running");
 		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
@@ -7471,6 +7565,8 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(sched_entity_cfs_rq, "sched_entity", 
 			"cfs_rq");
 		MEMBER_OFFSET_INIT(sched_entity_my_q, "sched_entity", 
+			"my_q");
+		MEMBER_OFFSET_INIT(sched_rt_entity_my_q, "sched_rt_entity",
 			"my_q");
 		MEMBER_OFFSET_INIT(sched_entity_on_rq, "sched_entity", "on_rq");
 		MEMBER_OFFSET_INIT(cfs_rq_rb_leftmost, "cfs_rq", "rb_leftmost");
@@ -7484,10 +7580,14 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(task_struct_on_rq, "task_struct", "on_rq");
                 MEMBER_OFFSET_INIT(task_struct_prio, "task_struct",
                         "prio");
+		MEMBER_OFFSET_INIT(task_struct_rt, "task_struct", "rt");
+		MEMBER_OFFSET_INIT(sched_rt_entity_run_list, "sched_rt_entity", 
+			"run_list");
+		MEMBER_OFFSET_INIT(rt_prio_array_queue, "rt_prio_array", "queue");
 	}
 
 	if (!(rq_sp = per_cpu_symbol_search("per_cpu__runqueues")))
-		error(FATAL, "per-cpu runqueues does not exist\n");
+		error(FATAL, "per-cpu runqueues do not exist\n");
 
         runqbuf = GETBUF(SIZE(runqueue));
 	if ((init_sp = per_cpu_symbol_search("per_cpu__init_cfs_rq")))
@@ -7527,22 +7627,15 @@ dump_CFS_runqueues(void)
 
 			readmem(cfs_rq, KVADDR, cfs_rq_buf, SIZE(cfs_rq),
 				"per-cpu cfs_rq", FAULT_ON_ERROR);
-			nr_running = LONG(cfs_rq_buf + OFFSET(rq_nr_running));
-	                cfs_rq_nr_running = ULONG(cfs_rq_buf + 
-				OFFSET(cfs_rq_nr_running));
 			root = (struct rb_root *)(cfs_rq + 
 				OFFSET(cfs_rq_tasks_timeline));
 		} else {
 			cfs_rq = runq + OFFSET(rq_cfs);
-			nr_running = LONG(runqbuf + OFFSET(rq_nr_running));
-	                cfs_rq_nr_running = ULONG(runqbuf + OFFSET(rq_cfs) + 
-				OFFSET(cfs_rq_nr_running));
 			root = (struct rb_root *)(runq + OFFSET(rq_cfs) + 
 				OFFSET(cfs_rq_tasks_timeline));
 		}
 
-		dump_RT_prio_array(nr_running != cfs_rq_nr_running,
-			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
+		dump_RT_prio_array(0, runq + OFFSET(rq_rt) + OFFSET(rt_rq_active),
 			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
 
 		fprintf(fp, "  CFS RB_ROOT: %lx\n", (ulong)root);
@@ -7562,7 +7655,7 @@ dump_CFS_runqueues(void)
 }
 
 static void
-dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
+dump_RT_prio_array(int depth, ulong k_prio_array, char *u_prio_array)
 {
 	int i, c, tot, cnt, qheads;
 	ulong offset, kvaddr, uvaddr;
@@ -7570,38 +7663,37 @@ dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
         struct list_data list_data, *ld;
 	struct task_context *tc;
 	ulong *tlist;
+	ulong my_q, task_addr;
+	char *rt_rq_buf;
 
-	fprintf(fp, "  RT PRIO_ARRAY: %lx\n",  k_prio_array);
+	if (!depth)
+		fprintf(fp, "  RT PRIO_ARRAY: %lx\n",  k_prio_array);
 
-	if (!active) {
-		INDENT(5);
-		fprintf(fp, "[no tasks queued]\n");	
-		return;
-	}
-
-        qheads = (i = ARRAY_LENGTH(prio_array_queue)) ?
-                i : get_array_length("prio_array.queue", NULL, SIZE(list_head));
+        qheads = (i = ARRAY_LENGTH(rt_prio_array_queue)) ?
+                i : get_array_length("rt_prio_array.queue", NULL, SIZE(list_head));
 
 	ld = &list_data;
 
 	for (i = tot = 0; i < qheads; i++) {
-		offset =  OFFSET(prio_array_queue) + (i * SIZE(list_head));
+		offset =  OFFSET(rt_prio_array_queue) + (i * SIZE(list_head));
 		kvaddr = k_prio_array + offset;
 		uvaddr = (ulong)u_prio_array + offset;
 		BCOPY((char *)uvaddr, (char *)&list_head[0], sizeof(ulong)*2);
 
 		if (CRASHDEBUG(1))
-			fprintf(fp, "prio_array[%d] @ %lx => %lx/%lx\n", 
+			fprintf(fp, "rt_prio_array[%d] @ %lx => %lx/%lx\n", 
 				i, kvaddr, list_head[0], list_head[1]);
 
 		if ((list_head[0] == kvaddr) && (list_head[1] == kvaddr))
 			continue;
 
-		fprintf(fp, "     [%3d] ", i);
-
 		BZERO(ld, sizeof(struct list_data));
 		ld->start = list_head[0];
-		ld->list_head_offset = OFFSET(task_struct_run_list);
+		if (VALID_MEMBER(task_struct_rt) &&
+		    VALID_MEMBER(sched_rt_entity_run_list))
+			ld->list_head_offset = OFFSET(sched_rt_entity_run_list);
+		else
+			ld->list_head_offset = OFFSET(task_struct_run_list);
 		ld->end = kvaddr;
 		hq_open();
 		cnt = do_list(ld);
@@ -7609,10 +7701,34 @@ dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
 		tlist = (ulong *)GETBUF((cnt) * sizeof(ulong));
 		cnt = retrieve_list(tlist, cnt);
 		for (c = 0; c < cnt; c++) {
-			if (!(tc = task_to_context(tlist[c])))
+			task_addr = tlist[c];
+			if (VALID_MEMBER(sched_rt_entity_my_q)) {
+				readmem(tlist[c] + OFFSET(sched_rt_entity_my_q),
+					KVADDR, &my_q, sizeof(ulong), "my_q",
+					FAULT_ON_ERROR);
+				if (my_q) {
+					rt_rq_buf = GETBUF(SIZE(rt_rq));
+					readmem(my_q, KVADDR, rt_rq_buf,
+						SIZE(rt_rq), "rt_rq",
+						FAULT_ON_ERROR);
+
+					INDENT(5 + 6 * depth);
+					fprintf(fp, "[%3d] ", i);
+					fprintf(fp, "GROUP RT PRIO_ARRAY: %lx\n",
+						my_q + OFFSET(rt_rq_active));
+					tot++;
+					dump_RT_prio_array(depth + 1,
+						my_q + OFFSET(rt_rq_active),
+						&rt_rq_buf[OFFSET(rt_rq_active)]);
+					continue;
+				} else
+					task_addr -= OFFSET(task_struct_rt);
+			}
+			if (!(tc = task_to_context(task_addr)))
 				continue;
-			if (c)
-				INDENT(11);
+
+			INDENT(5 + 6 * depth);
+			fprintf(fp, "[%3d] ", i);
 			fprintf(fp, "PID: %-5ld  TASK: %lx  COMMAND: \"%s\"\n",
 				tc->pid, tc->task, tc->comm);
 			tot++;
@@ -7621,7 +7737,7 @@ dump_RT_prio_array(int active, ulong k_prio_array, char *u_prio_array)
 	}
 
 	if (!tot) {
-		INDENT(5);
+		INDENT(5 + 9 * depth);
 		fprintf(fp, "[no tasks queued]\n");	
 	}
 }

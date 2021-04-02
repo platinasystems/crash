@@ -87,24 +87,35 @@ struct meminfo {           /* general purpose memory information structure */
 struct searchinfo {
 	int mode;
 	int vcnt;
+	int val;
 	int context;
 	int memtype;
+	int do_task_header;
+	int tasks_found;
+	struct task_context *task_context;
+	ulong vaddr_start;
+	ulong vaddr_end;
+	ulonglong paddr_start;
+	ulonglong paddr_end;
 	union {
 		/* default ulong search */
 		struct {
 			ulong value[MAXARGS];
+			char *opt_string[MAXARGS];
 			ulong mask;
 		} s_ulong;
 
 		/* uint search */
 		struct {
 			uint value[MAXARGS];
+			char *opt_string[MAXARGS];
 			uint mask;
 		} s_uint;
 
 		/* ushort search */
 		struct {
 			ushort value[MAXARGS];
+			char *opt_string[MAXARGS];
 			ushort mask;
 		} s_ushort;
 
@@ -115,6 +126,7 @@ struct searchinfo {
 			int started_flag;  /* string search needs history */
 		} s_chars;
 	} s_parms;
+	char buf[BUFSIZE];
 };
 
 static char *memtype_string(int, int);
@@ -143,7 +155,7 @@ static void dump_kmem_cache_percpu_v1(struct meminfo *);
 static void dump_kmem_cache_percpu_v2(struct meminfo *);
 static void dump_kmem_cache_slub(struct meminfo *);
 static void dump_kmem_cache_info_v2(struct meminfo *);
-static void kmem_cache_list_slub(void);
+static void kmem_cache_list_common(void);
 static ulong get_cpu_slab_ptr(struct meminfo *, int, ulong *);
 static unsigned int oo_order(ulong);
 static unsigned int oo_objects(ulong);
@@ -178,6 +190,7 @@ static int dump_page_lists(struct meminfo *);
 static void dump_kmeminfo(void);
 static int page_to_phys(ulong, physaddr_t *); 
 static void display_memory(ulonglong, long, ulong, int, void *); 
+static char *show_opt_string(struct searchinfo *);
 static void display_with_pre_and_post(void *, ulonglong, struct searchinfo *);
 static ulong search_ulong(ulong *, ulong, int, struct searchinfo *);
 static ulong search_uint(ulong *, ulong, int, struct searchinfo *);
@@ -187,8 +200,8 @@ static ulonglong search_ulong_p(ulong *, ulonglong, int, struct searchinfo *);
 static ulonglong search_uint_p(ulong *, ulonglong, int, struct searchinfo *);
 static ulonglong search_ushort_p(ulong *, ulonglong, int, struct searchinfo *);
 static ulonglong search_chars_p(ulong *, ulonglong, int, struct searchinfo *);
-static void search_virtual(ulong, ulong, int, struct searchinfo *);
-static void search_physical(ulonglong, ulonglong, struct searchinfo *);
+static void search_virtual(struct searchinfo *);
+static void search_physical(struct searchinfo *);
 static int next_upage(struct task_context *, ulong, ulong *);
 static int next_kpage(ulong, ulong *);
 static int next_physpage(ulonglong, ulonglong *);
@@ -490,6 +503,16 @@ vm_init(void)
 			STRUCT_SIZE_INIT(kmem_cache_s, "kmem_cache");
 			MEMBER_OFFSET_INIT(kmem_cache_s_num, "kmem_cache", "num");
 			MEMBER_OFFSET_INIT(kmem_cache_s_next, "kmem_cache", "next");
+			if (INVALID_MEMBER(kmem_cache_s_next)) {
+				/* 
+				 * slab/slub unification starting in Linux 3.6.
+				 */
+				MEMBER_OFFSET_INIT(kmem_cache_s_next, "kmem_cache", "list");
+				MEMBER_OFFSET_INIT(kmem_cache_list, "kmem_cache", "list");
+				MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
+				MEMBER_OFFSET_INIT(kmem_cache_size, "kmem_cache", "size");
+				STRUCT_SIZE_INIT(kmem_cache, "kmem_cache");
+			}
 			MEMBER_OFFSET_INIT(kmem_cache_s_name, "kmem_cache", "name");
 			MEMBER_OFFSET_INIT(kmem_cache_s_colour_off, "kmem_cache", 
 				"colour_off");
@@ -499,6 +522,9 @@ vm_init(void)
 			else if (MEMBER_EXISTS("kmem_cache", "buffer_size"))
 				MEMBER_OFFSET_INIT(kmem_cache_s_objsize, "kmem_cache", 
 					"buffer_size");
+			else if (MEMBER_EXISTS("kmem_cache", "size"))
+				MEMBER_OFFSET_INIT(kmem_cache_s_objsize, "kmem_cache", 
+					"size");
 			MEMBER_OFFSET_INIT(kmem_cache_s_flags, "kmem_cache", "flags");
 			MEMBER_OFFSET_INIT(kmem_cache_s_gfporder,  
 				"kmem_cache", "gfporder");
@@ -518,11 +544,8 @@ vm_init(void)
 						get_symbol_data("nr_node_ids", sizeof(int),
 							&nr_node_ids);
 						vt->kmem_cache_len_nodes = nr_node_ids;
-					} else {
-						error(INFO, "nr_node_ids: symbol does not exist\n");
-						error(INFO, "unable to initialize kmem slab cache subsystem\n\n");
-						vt->flags |= KMEM_CACHE_UNAVAIL;
-					}
+					} else
+						vt->kmem_cache_len_nodes = 1;
 				} else
 					ARRAY_LENGTH_INIT(vt->kmem_cache_len_nodes, NULL, 
 						"kmem_cache.nodelists", NULL, 0);
@@ -566,6 +589,9 @@ vm_init(void)
 		STRUCT_SIZE_INIT(kmem_cache, "kmem_cache");
 		MEMBER_OFFSET_INIT(kmem_cache_size, "kmem_cache", "size");
 		MEMBER_OFFSET_INIT(kmem_cache_objsize, "kmem_cache", "objsize");
+		if (INVALID_MEMBER(kmem_cache_objsize))
+			MEMBER_OFFSET_INIT(kmem_cache_objsize, "kmem_cache", 
+				"object_size");
 		MEMBER_OFFSET_INIT(kmem_cache_offset, "kmem_cache", "offset");
 		MEMBER_OFFSET_INIT(kmem_cache_order, "kmem_cache", "order");
 		MEMBER_OFFSET_INIT(kmem_cache_local_node, "kmem_cache", "local_node");
@@ -1919,12 +1945,20 @@ accessible(ulong kva)
 #define WRITE_ERRMSG     "write error: %s address: %llx  type: \"%s\"\n"
 #define PAGE_EXCLUDED_ERRMSG  "page excluded: %s address: %llx  type: \"%s\"\n"
 
+#define RETURN_ON_PARTIAL_READ() \
+	if ((error_handle & RETURN_PARTIAL) && (size < orig_size)) {		\
+		if (CRASHDEBUG(1))						\
+			error(INFO, "RETURN_PARTIAL: \"%s\" read: %ld of %ld\n",\
+				type, orig_size - size, orig_size);		\
+		return TRUE;							\
+	}
+
 int
 readmem(ulonglong addr, int memtype, void *buffer, long size,
 	char *type, ulong error_handle)
 {
 	int fd;
-	long cnt;
+	long cnt, orig_size;
 	physaddr_t paddr;
 	ulonglong pseudo;
 	char *bufptr;
@@ -1935,6 +1969,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 			error_handle_string(error_handle), (ulong)buffer);
 
 	bufptr = (char *)buffer;
+	orig_size = size;
 
 	if (size <= 0) {
 		if (PRINT_ERROR_MESSAGE)
@@ -2049,6 +2084,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                         goto readmem_error;
 
 		case PAGE_EXCLUDED:
+			RETURN_ON_PARTIAL_READ();
                         if (PRINT_ERROR_MESSAGE)
                         	error(INFO, PAGE_EXCLUDED_ERRMSG, memtype_string(memtype, 0), addr, type);
                         goto readmem_error;
@@ -2080,6 +2116,7 @@ readmem_error:
                 RESTART();
 
         case (RETURN_ON_ERROR):
+        case (RETURN_PARTIAL|RETURN_ON_ERROR):
 	case (QUIET|RETURN_ON_ERROR):
 		break;
         }
@@ -2193,10 +2230,11 @@ write_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 /*
  *  The first required reads of memory are done in kernel_init(),
  *  so if there's a fatal read error of /dev/mem, display a warning
- *  message if it appears that CONFIG_STRICT_DEVMEM is in effect, 
- *  which only allows the first 256 pages of physical memory to 
- *  be accessed:
+ *  message if it appears that CONFIG_STRICT_DEVMEM is in effect.
+ *  On x86 and x86_64, only the first 256 pages of physical memory
+ *  are accessible:
  *
+ *    #ifdef CONFIG_STRICT_DEVMEM
  *    int devmem_is_allowed(unsigned long pagenr)
  *    {
  *            if (pagenr <= 256)
@@ -2205,28 +2243,58 @@ write_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
  *                    return 1;
  *            return 0;
  *    }
+ *    #endif
+ *
+ *  It would probably suffice to simply check for the existence of 
+ *  devmem_is_allowed(), but on x86 and x86_64 verify pfn 256 reads OK,
+ *  and 257 fails.
+ *
+ *  Update: a patch has been posted to LKML to fix the off-by-one error
+ *  by changing "<= 256" to "< 256":
+ *
+ *     https://lkml.org/lkml/2012/8/28/357
+ *
+ *  The X86/X86_64 lower-boundary pfn check below has been changed 
+ *  (preemptively) from 256 to 255.
+ *
+ *  In any case, if that x86/x86_64 check fails to prove CONFIG_STRICT_DEVMEM 
+ *  is configured, then the function will check that "jiffies" can be read,
+ *  as is done for the other architectures.
+ *
  */
 static int
 devmem_is_restricted(void)
 {
 	long tmp;
+	int restricted;
+
+	restricted = FALSE;
 
 	if (STREQ(pc->live_memsrc, "/dev/mem") &&
-	    kernel_symbol_exists("devmem_is_allowed") &&
-	    readmem(256*PAGESIZE(), PHYSADDR, &tmp,
-	    sizeof(long), "devmem_is_allowed - pfn 256",
-	    QUIET|RETURN_ON_ERROR) &&
-	    !(readmem(257*PAGESIZE(), PHYSADDR, &tmp,
-            sizeof(long), "devmem_is_allowed - pfn 257",
-            QUIET|RETURN_ON_ERROR))) {
-		error(INFO, 
- 	      	    "\nthis kernel may be configured with CONFIG_STRICT_DEVMEM,"
-                    " which\n       renders /dev/mem unusable as a live memory "
-                    "source.\n\n");
-		return TRUE;
+	    kernel_symbol_exists("devmem_is_allowed")) {
+	    	if (machine_type("X86") || machine_type("X86_64")) {
+			if (readmem(255*PAGESIZE(), PHYSADDR, &tmp,
+			    sizeof(long), "devmem_is_allowed - pfn 255",
+			    QUIET|RETURN_ON_ERROR) &&
+			    !(readmem(257*PAGESIZE(), PHYSADDR, &tmp,
+			    sizeof(long), "devmem_is_allowed - pfn 257",
+			    QUIET|RETURN_ON_ERROR)))
+				restricted = TRUE;
+		} 
+		if (kernel_symbol_exists("jiffies") &&
+		    !readmem(symbol_value("jiffies"), KVADDR, &tmp,
+		    sizeof(ulong), "devmem_is_allowed - jiffies", 
+		    QUIET|RETURN_ON_ERROR))
+			restricted = TRUE;
+
+		if (restricted)
+			error(INFO, 
+ 	    		    "\nthis kernel may be configured with CONFIG_STRICT_DEVMEM,"
+			    " which\n       renders /dev/mem unusable as a live memory "
+			    "source.\n\n");
 	}
 
-	return FALSE;
+	return restricted;
 }
 
 static int
@@ -2448,6 +2516,8 @@ char *error_handle_string(ulong error_handle)
 		sprintf(&ebuf[strlen(ebuf)], "%sQ", others++ ? "|" : "");
 	if (error_handle & HEX_BIAS)
 		sprintf(&ebuf[strlen(ebuf)], "%sHB", others++ ? "|" : "");
+	if (error_handle & RETURN_PARTIAL)
+		sprintf(&ebuf[strlen(ebuf)], "%sRP", others++ ? "|" : "");
 
 	strcat(ebuf, ")");
 
@@ -2962,9 +3032,9 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 void
 cmd_ptov(void)
 {
-	int c;
+	int c, unknown;
 	ulong vaddr;
-	physaddr_t paddr;
+	physaddr_t paddr, paddr_test;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	int others;
@@ -2986,10 +3056,14 @@ cmd_ptov(void)
 		paddr = htoll(args[optind], FAULT_ON_ERROR, NULL);
 		vaddr = PTOV(paddr);
 
+		unknown = BITS32() && (!kvtop(0, vaddr, &paddr_test, 0) || 
+		    (paddr_test != paddr));
+
 		fprintf(fp, "%s%s  %s\n", others++ ? "\n" : "", 
 		    mkstring(buf1, VADDR_PRLEN, LJUST, "VIRTUAL"),
 		    mkstring(buf2, VADDR_PRLEN, LJUST, "PHYSICAL"));
-		fprintf(fp, "%s  %s\n",
+		fprintf(fp, "%s  %s\n", unknown ? 
+		    mkstring(buf1, VADDR_PRLEN, LJUST, "unknown") :
 		    mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX, MKSTR(vaddr)),
                     mkstring(buf2, VADDR_PRLEN, LJUST|LONGLONG_HEX, 
 			MKSTR(&paddr)));
@@ -3055,14 +3129,16 @@ cmd_vm(void)
 	ulonglong llvalue;
 	struct task_context *tc;
 	struct reference reference, *ref;
+	unsigned int radix;
 	int subsequent;
 
 	flag = 0;
 	single_vma = 0;
+	radix = 0;
 	ref = NULL;
 	BZERO(&reference, sizeof(struct reference));
 
-        while ((c = getopt(argcnt, args, "f:pmvR:P:")) != EOF) {
+        while ((c = getopt(argcnt, args, "f:pmvR:P:xd")) != EOF) {
                 switch(c)
 		{
 		case 'f':
@@ -3116,6 +3192,20 @@ cmd_vm(void)
 			}
 			break;
 
+		case 'x':
+			if (radix == 10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+
+		case 'd':
+			if (radix == 16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
+
 		default:
 			argerrs++;
 			break;
@@ -3124,6 +3214,11 @@ cmd_vm(void)
 
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (radix == 10)
+		flag |= PRINT_RADIX_10;
+	else if (radix == 16)
+		flag |= PRINT_RADIX_16;
 
 	if (!args[optind]) {
 		if (!ref)
@@ -3415,6 +3510,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 	ulong vm_file, inode;
 	ulong dentry, vfsmnt;
 	ulong single_vma;
+	unsigned int radix;
 	int single_vma_found;
 	int found;
 	struct task_mem_usage task_mem_usage, *tm;
@@ -3435,6 +3531,13 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		single_vma = vaddr;
 		vaddr = 0;
 	}
+
+	if (flag & PRINT_RADIX_10)
+		radix = 10;
+	else if (flag & PRINT_RADIX_16)
+		radix = 16;
+	else
+		radix = 0;
 
 	if (ref) {
 		ref->cmdflags = VM_REF_SEARCH;
@@ -3463,7 +3566,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
                 return (ulong)NULL;
 
 	if (flag & PRINT_MM_STRUCT) {
-		dump_struct("mm_struct", tm->mm_struct_addr, 0);
+		dump_struct("mm_struct", tm->mm_struct_addr, radix);
                 return (ulong)NULL;
 	}
 
@@ -3506,7 +3609,7 @@ vm_area_dump(ulong task, ulong flag, ulong vaddr, struct reference *ref)
 		}
 
 		if (flag & PRINT_VMA_STRUCTS) {
-			dump_struct("vm_area_struct", vma, 0);
+			dump_struct("vm_area_struct", vma, radix);
 			continue;
 		}
 
@@ -7685,8 +7788,8 @@ kmem_cache_list(void)
 		return;
 	}
 
-	if (vt->flags & KMALLOC_SLUB) {
-		kmem_cache_list_slub();
+	if (vt->flags & (KMALLOC_SLUB|KMALLOC_COMMON)) {
+		kmem_cache_list_common();
 		return;		
 	}
 
@@ -7906,11 +8009,22 @@ kmem_cache_init(void)
 	/*
 	 *  Pre-2.6 versions used the "cache_cache" as the head of the
 	 *  slab chain list.  2.6 uses the "cache_chain" list_head.
+         *  In 3.6 SLAB and SLUB use the "slab_caches" list_head.
 	 */
-        if (vt->flags & PERCPU_KMALLOC_V2) {
-                get_symbol_data("cache_chain", sizeof(ulong), &cache);
+	if (vt->flags & PERCPU_KMALLOC_V2) {
+		if (kernel_symbol_exists("cache_chain")) {
+			get_symbol_data("cache_chain", sizeof(ulong), &cache);
+			cache_end = symbol_value("cache_chain");
+		} else if (kernel_symbol_exists("slab_caches")) {
+			vt->flags |= KMALLOC_COMMON;
+			get_symbol_data("slab_caches", sizeof(ulong), &cache);
+			cache_end = symbol_value("slab_caches");
+		} else {
+			error(INFO, 
+			    "unable to initialize kmem slab cache subsystem\n\n");
+			return;
+		}
 		cache -= next_offset;
-                cache_end = symbol_value("cache_chain");
         } else
                 cache = cache_end = symbol_value("cache_cache");
 
@@ -7945,7 +8059,6 @@ kmem_cache_init(void)
 		}
 
 		tmp = (ulong)(UINT(cache_buf + num_offset));
-
                 if (tmp > max_cnum)
                         max_cnum = tmp;
 
@@ -8041,8 +8154,10 @@ kmem_cache_downsize(void)
 	if ((THIS_KERNEL_VERSION < LINUX(2,6,22)) ||
 	    !(vt->flags & PERCPU_KMALLOC_V2_NODES) ||
 	    !kernel_symbol_exists("cache_cache") ||
-	    !MEMBER_EXISTS("kmem_cache", "buffer_size"))
+	    (!MEMBER_EXISTS("kmem_cache", "buffer_size") &&
+	     !MEMBER_EXISTS("kmem_cache", "size"))) {
 		return;
+	}
 
 	if (vt->flags & NODELISTS_IS_PTR) {
 		/* 
@@ -8059,6 +8174,9 @@ kmem_cache_downsize(void)
 		ARRAY_LENGTH(kmem_cache_s_array) = nr_cpu_ids;
 		ASSIGN_SIZE(kmem_cache_s) = OFFSET(kmem_cache_s_array) +
 			sizeof(ulong) * nr_cpu_ids;
+		if (CRASHDEBUG(1))
+			fprintf(fp, "kmem_cache_downsize: %ld to %ld\n",
+				STRUCT_SIZE("kmem_cache"), SIZE(kmem_cache_s));
 		return;
 	}
 
@@ -8188,6 +8306,9 @@ kmem_cache_s_array:
 
 kmem_cache_s_array_nodes:
 
+	if (CRASHDEBUG(3))
+		fprintf(fp, "kmem_cache: %lx\n", cache);
+
 	if (!readmem(cache+OFFSET(kmem_cache_s_array),
             KVADDR, &cpudata[0], 
 	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
@@ -8200,6 +8321,8 @@ kmem_cache_s_array_nodes:
                     KVADDR, &limit, sizeof(int),
                     "array cache limit", RETURN_ON_ERROR))
 			goto bail_out;
+		if (CRASHDEBUG(3))
+			fprintf(fp, "  array limit[%d]: %d\n", i, limit);
                 if (limit > max_limit)
                         max_limit = limit;
         }
@@ -8228,6 +8351,10 @@ kmem_cache_s_array_nodes:
 			if (readmem(shared + OFFSET(array_cache_limit),
 	       		    KVADDR, &limit, sizeof(int), "shared array_cache limit",
 		            RETURN_ON_ERROR|QUIET)) {
+				if (CRASHDEBUG(3))
+					fprintf(fp, 
+					    "  shared node limit[%d]: %d\n", 
+						i, limit);
 				if (limit > max_limit)
 					max_limit = limit;
 				break;
@@ -8840,9 +8967,15 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 			KVADDR, &cache_end, sizeof(ulong),
 			"kmem_cache_s next", FAULT_ON_ERROR);
 	else {
-		get_symbol_data("cache_chain", sizeof(ulong), &si->cache);
-		si->cache -= OFFSET(kmem_cache_s_next);
-		cache_end = symbol_value("cache_chain");
+		if (vt->flags & KMALLOC_COMMON) {
+			get_symbol_data("slab_caches", sizeof(ulong), &si->cache);
+			si->cache -= OFFSET(kmem_cache_s_next);
+			cache_end = symbol_value("slab_caches");
+		} else {
+			get_symbol_data("cache_chain", sizeof(ulong), &si->cache);
+			si->cache -= OFFSET(kmem_cache_s_next);
+			cache_end = symbol_value("cache_chain");
+		}
 	}
 
 	if (si->flags & ADDRESS_SPECIFIED) {
@@ -11352,6 +11485,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sVM_STAT", others++ ? "|" : "");\
 	if (vt->flags & KMALLOC_SLUB)
 		fprintf(fp, "%sKMALLOC_SLUB", others++ ? "|" : "");\
+	if (vt->flags & KMALLOC_COMMON)
+		fprintf(fp, "%sKMALLOC_COMMON", others++ ? "|" : "");\
 	if (vt->flags & CONFIG_NUMA)
 		fprintf(fp, "%sCONFIG_NUMA", others++ ? "|" : "");\
 	if (vt->flags & VM_EVENT)
@@ -11681,22 +11816,26 @@ generic_get_kvaddr_ranges(struct vaddr_range *rp)
 void
 cmd_search(void)
 {
-        int i, c, ranges, context, max;
+        int i, c, memtype, ranges, context, max;
 	ulonglong start, end;
-	ulong mask, memtype, len;
+	ulong value, mask, len;
 	ulong uvaddr_start, uvaddr_end;
-	ulong kvaddr_start, kvaddr_end, range_start, range_end;
-	int sflag, Kflag, Vflag, pflag;
+	ulong kvaddr_start, kvaddr_end, range_end;
+	int sflag, Kflag, Vflag, pflag, tflag;
 	struct searchinfo searchinfo;
 	struct syment *sp;
 	struct node_table *nt;
 	struct vaddr_range vaddr_ranges[MAX_KVADDR_RANGES];
 	struct vaddr_range *vrp;
+	struct task_context *tc;
 
-#define vaddr_overflow(ADDR) (BITS32() && ((ADDR) > 0xffffffffULL))
+#define vaddr_overflow(ADDR)   (BITS32() && ((ADDR) > 0xffffffffULL))
+#define uint_overflow(VALUE)   ((VALUE) > 0xffffffffUL) 
+#define ushort_overflow(VALUE) ((VALUE) > 0xffffUL) 
 
 	context = max = 0;
-	start = end = mask = sflag = pflag = Kflag = Vflag = memtype = len = 0;
+	start = end = 0;
+	value = mask = sflag = pflag = Kflag = Vflag = memtype = len = tflag = 0;
 	kvaddr_start = kvaddr_end = 0;
 	uvaddr_start = UNINITIALIZED;
 	uvaddr_end = COMMON_VADDR_SPACE() ? (ulong)(-1) : machdep->kvbase;
@@ -11733,7 +11872,7 @@ cmd_search(void)
 
 	searchinfo.mode = SEARCH_ULONG;	/* default search */
 
-        while ((c = getopt(argcnt, args, "l:ukKVps:e:v:m:hwcx:")) != EOF) {
+        while ((c = getopt(argcnt, args, "tl:ukKVps:e:v:m:hwcx:")) != EOF) {
                 switch(c)
                 {
 		case 'u':
@@ -11838,11 +11977,24 @@ cmd_search(void)
 			context = dtoi(optarg, FAULT_ON_ERROR, NULL);
 			break;
 
+		case 't':
+			if (XEN_HYPER_MODE())
+				error(FATAL, 
+ 			 	    "-t option is not applicable to the "
+				    "Xen hypervisor\n");
+			tflag++;
+			break;
+
                 default:
                         argerrs++;
                         break;
                 }
         }
+
+	if (tflag && (memtype || start || end || len)) 
+		error(FATAL, 
+		    "-t option cannot be used with other "
+		    "memory-selection options\n");
 
 	if (XEN_HYPER_MODE()) {
 		memtype = KVADDR;
@@ -11852,11 +12004,12 @@ cmd_search(void)
 				" the Xen hypervisor\n");
 	} else if (!memtype) {
 		memtype = KVADDR;
-		if (!sflag++)
+		if (!tflag && !sflag++)
 			start = vrp[0].start;	
 	}
 
-        if (argerrs || !sflag || !args[optind] || (len && end) || !memtype)
+        if (argerrs || (!sflag && !tflag) || !args[optind] || 
+	    (len && end) || !memtype)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
 	searchinfo.memtype = memtype;
@@ -11876,6 +12029,8 @@ cmd_search(void)
 		break;
 
 	case KVADDR:
+		if (tflag)
+			break;
 		if (vaddr_overflow(start) ||
 		    !IS_KVADDR((ulong)start)) {
 			error(INFO, "invalid kernel virtual address: %llx\n",
@@ -11894,7 +12049,7 @@ cmd_search(void)
 	/*
 	 *  Set up ending address if necessary.
 	 */
-	if (!end && !len) {
+	if (!end && !len && !tflag) {
 		switch (memtype)
 		{
 		case UVADDR:
@@ -11948,6 +12103,8 @@ cmd_search(void)
 		break;
 
 	case KVADDR:
+		if (tflag)
+			break;
 		kvaddr_start = (ulong)start;
 		kvaddr_end = (ulong)end;
 
@@ -12012,25 +12169,65 @@ cmd_search(void)
 		searchinfo.context = context;
 	}
 		
-	searchinfo.vcnt = 0;
+	searchinfo.vcnt = 0; 
+	searchinfo.val = UNUSED;
+
 	while (args[optind]) {
 		switch (searchinfo.mode) 
 		{
 		case SEARCH_ULONG:
-			searchinfo.s_parms.s_ulong.value[searchinfo.vcnt] = 
-				htol(args[optind], FAULT_ON_ERROR, NULL);
+			if (can_eval(args[optind])) {
+				value = eval(args[optind], FAULT_ON_ERROR, NULL);
+				searchinfo.s_parms.s_ulong.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else if (symbol_exists(args[optind])) {
+				value = symbol_value(args[optind]);
+				searchinfo.s_parms.s_ulong.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else
+				value = htol(args[optind], FAULT_ON_ERROR, NULL);
+			searchinfo.s_parms.s_ulong.value[searchinfo.vcnt] = value;
 			searchinfo.vcnt++;
 			break;
+
 		case SEARCH_UINT:
-			searchinfo.s_parms.s_uint.value[searchinfo.vcnt] = 
-				htol(args[optind], FAULT_ON_ERROR, NULL);
+			if (can_eval(args[optind])) {
+				value = eval(args[optind], FAULT_ON_ERROR, NULL);
+				searchinfo.s_parms.s_uint.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else if (symbol_exists(args[optind])) {
+				value = symbol_value(args[optind]);
+				searchinfo.s_parms.s_uint.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else
+				value = htol(args[optind], FAULT_ON_ERROR, NULL);
+
+			searchinfo.s_parms.s_uint.value[searchinfo.vcnt] = value;
+			if (uint_overflow(value))
+				error(FATAL, "value too large for -w option: %lx %s\n", 
+					value, show_opt_string(&searchinfo));
 			searchinfo.vcnt++;
 			break;
+
 		case SEARCH_USHORT:
-			searchinfo.s_parms.s_ushort.value[searchinfo.vcnt] = 
-				htol(args[optind], FAULT_ON_ERROR, NULL);
+			if (can_eval(args[optind])) {
+				value = eval(args[optind], FAULT_ON_ERROR, NULL);
+				searchinfo.s_parms.s_ushort.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else if (symbol_exists(args[optind])) {
+				value = symbol_value(args[optind]);
+				searchinfo.s_parms.s_ushort.opt_string[searchinfo.vcnt] =
+					mask ? NULL : args[optind];
+			} else
+				value = htol(args[optind], FAULT_ON_ERROR, NULL);
+
+			searchinfo.s_parms.s_ushort.value[searchinfo.vcnt] = value;
+			if (ushort_overflow(value))
+				error(FATAL, "value too large for -h option: %lx %s\n", 
+					value, show_opt_string(&searchinfo));
 			searchinfo.vcnt++;
 			break;
+
 		case SEARCH_CHARS:
 			/* parser can deliver empty strings */
 			if (strlen(args[optind])) { 
@@ -12051,18 +12248,35 @@ cmd_search(void)
 	switch (memtype)
 	{
 	case PHYSADDR:
-		search_physical(start, end, &searchinfo);
+		searchinfo.paddr_start = start;
+		searchinfo.paddr_end = end;
+		search_physical(&searchinfo);
 		break;
 
 	case UVADDR:
-		search_virtual(uvaddr_start, uvaddr_end, memtype, 
-			&searchinfo);
+		searchinfo.vaddr_start = uvaddr_start;
+		searchinfo.vaddr_end = uvaddr_end;
+		search_virtual(&searchinfo);
 		break;
 
 	case KVADDR:
 		if (XEN_HYPER_MODE()) {
-			search_virtual(kvaddr_start, kvaddr_end, memtype, 
-				&searchinfo);
+			searchinfo.vaddr_start = kvaddr_start;
+			searchinfo.vaddr_end = kvaddr_end;
+			search_virtual(&searchinfo);
+			break;
+		}
+
+		if (tflag) {
+			searchinfo.tasks_found = 0;
+			tc = FIRST_CONTEXT();
+			for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
+				searchinfo.vaddr_start = GET_STACKBASE(tc->task); 
+				searchinfo.vaddr_end = GET_STACKTOP(tc->task);
+				searchinfo.task_context = tc;
+				searchinfo.do_task_header = TRUE;
+				search_virtual(&searchinfo);
+			}
 			break;
 		}
 
@@ -12071,13 +12285,6 @@ cmd_search(void)
 			if ((kvaddr_start >= vrp[i].end) ||
 			    (kvaddr_end <= vrp[i].start)) 
 				continue;
-
-			range_start = kvaddr_start > vrp[i].start ?
-				kvaddr_start : vrp[i].start;
-			range_end = (kvaddr_end < vrp[i].end) ?
-				kvaddr_end : vrp[i].end;
-
-			pc->curcmd_private = vrp[i].type;
 
 			switch (vrp[i].type)
 			{
@@ -12095,8 +12302,15 @@ cmd_search(void)
 				break;
 			}
 
-			search_virtual(range_start, range_end, memtype,
-					 &searchinfo);
+			pc->curcmd_private = vrp[i].type;
+
+			searchinfo.vaddr_start =
+				kvaddr_start > vrp[i].start ?
+				kvaddr_start : vrp[i].start;
+			searchinfo.vaddr_end =
+				(kvaddr_end < vrp[i].end) ?
+				kvaddr_end : vrp[i].end;
+			search_virtual(&searchinfo);
 		}
 		break;
 	}
@@ -12105,6 +12319,38 @@ cmd_search(void)
 /*
  *  Do the work for cmd_search().
  */
+
+static char *
+show_opt_string(struct searchinfo *si)
+{
+	char *opt_string;
+	int index;
+
+	index = (si->val == UNUSED) ? si->vcnt : si->val;
+
+	switch (si->mode)
+	{
+	case SEARCH_USHORT:
+		opt_string = si->s_parms.s_ushort.opt_string[index];
+		break;
+	case SEARCH_UINT:
+		opt_string = si->s_parms.s_uint.opt_string[index];
+		break;
+	case SEARCH_ULONG:
+	default:
+		opt_string = si->s_parms.s_ulong.opt_string[index];
+		break;
+	}
+
+	if (!opt_string)
+		return "";
+	else if (FIRSTCHAR(opt_string) == '(')
+		return opt_string;
+	else {
+		sprintf(si->buf, "(%s)", opt_string);
+		return si->buf;
+	}
+}
 
 #define SEARCHMASK(X) ((X) | mask) 
 
@@ -12159,13 +12405,16 @@ display_with_pre_and_post(void *bufptr, ulonglong addr, struct searchinfo *si)
 	switch(si->mode)
 	{
 	case SEARCH_ULONG:
-		fprintf(fp, "%lx\n", *((ulong *)bufptr));
+		fprintf(fp, "%lx %s\n", *((ulong *)bufptr),
+			show_opt_string(si));
 		break;
 	case SEARCH_UINT:
-		fprintf(fp, "%x\n", *((uint *)bufptr));
+		fprintf(fp, "%x %s\n", *((uint *)bufptr),
+			show_opt_string(si));
 		break;
 	case SEARCH_USHORT:
-		fprintf(fp, "%x\n", *((ushort *)bufptr));
+		fprintf(fp, "%x %s\n", *((ushort *)bufptr),
+			show_opt_string(si));
 		break;
 	}
 
@@ -12177,15 +12426,23 @@ display_with_pre_and_post(void *bufptr, ulonglong addr, struct searchinfo *si)
 static ulong
 search_ulong(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	ulong mask = si->s_parms.s_ulong.mask;
 	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*bufptr) == 
+			    SEARCHMASK(si->s_parms.s_ulong.value[si->val])) {
+				if (si->do_task_header) {
+					print_task_header(fp, si->task_context, 
+						si->tasks_found);
+					si->do_task_header = FALSE;
+					si->tasks_found++;
+				}
 				if (si->context)
 					display_with_pre_and_post(bufptr, addr, si);
-				else
-					fprintf(fp, "%lx: %lx\n", addr, *bufptr);
+				else 
+					fprintf(fp, "%lx: %lx %s\n", addr, *bufptr,
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12196,15 +12453,17 @@ search_ulong(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 static ulonglong
 search_ulong_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	ulong mask = si->s_parms.s_ulong.mask;
 	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*bufptr) == 
+			    SEARCHMASK(si->s_parms.s_ulong.value[si->val])) {
 				if (si->context)
 					display_with_pre_and_post(bufptr, addr, si);
 				else
-					fprintf(fp, "%llx: %lx\n", addr, *bufptr);
+					fprintf(fp, "%llx: %lx %s\n", addr, *bufptr,
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12214,18 +12473,26 @@ search_ulong_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si
 static ulong
 search_uint(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	int cnt = longcnt * (sizeof(long)/sizeof(int));
 	uint *ptr = (uint *)bufptr;
 	uint mask = si->s_parms.s_uint.mask;
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*ptr) == 
+			    SEARCHMASK(si->s_parms.s_uint.value[si->val])) {
+				if (si->do_task_header) {
+					print_task_header(fp, si->task_context, 
+						si->tasks_found);
+					si->do_task_header = FALSE;
+					si->tasks_found++;
+				}
 				if (si->context)
 					display_with_pre_and_post(ptr, addr, si);
 				else
-					fprintf(fp, "%lx: %x\n", addr, *ptr);
+					fprintf(fp, "%lx: %x %s\n", addr, *ptr, 
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12236,18 +12503,20 @@ search_uint(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 static ulonglong
 search_uint_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	int cnt = longcnt * (sizeof(long)/sizeof(int));
 	uint *ptr = (uint *)bufptr;
 	uint mask = si->s_parms.s_uint.mask;
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*ptr) == 
+			    SEARCHMASK(si->s_parms.s_uint.value[si->val])) {
 				if (si->context)
 					display_with_pre_and_post(ptr, addr, si);
 				else
-					fprintf(fp, "%llx: %x\n", addr, *ptr);
+					fprintf(fp, "%llx: %x %s\n", addr, *ptr, 
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12257,18 +12526,26 @@ search_uint_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
 static ulong
 search_ushort(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	int cnt = longcnt * (sizeof(long)/sizeof(short));
 	ushort *ptr = (ushort *)bufptr;
 	ushort mask = si->s_parms.s_ushort.mask;
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*ptr) == 
+			    SEARCHMASK(si->s_parms.s_ushort.value[si->val])) {
+				if (si->do_task_header) {
+					print_task_header(fp, si->task_context, 
+						si->tasks_found);
+					si->do_task_header = FALSE;
+					si->tasks_found++;
+				}
 				if (si->context)
 					display_with_pre_and_post(ptr, addr, si);
 				else
-					fprintf(fp, "%lx: %x\n", addr, *ptr);
+					fprintf(fp, "%lx: %x %s\n", addr, *ptr, 
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12279,18 +12556,20 @@ search_ushort(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 static ulonglong
 search_ushort_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
 {
-	int i, j;
+	int i;
 	int cnt = longcnt * (sizeof(long)/sizeof(short));
 	ushort *ptr = (ushort *)bufptr;
 	ushort mask = si->s_parms.s_ushort.mask;
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
-		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j])) {
+		for (si->val = 0; si->val < si->vcnt; si->val++) {
+			if (SEARCHMASK(*ptr) == 
+			    SEARCHMASK(si->s_parms.s_ushort.value[si->val])) {
 				if (si->context)
 					display_with_pre_and_post(ptr, addr, si);
 				else
-					fprintf(fp, "%llx: %x\n", addr, *ptr);
+					fprintf(fp, "%llx: %x %s\n", addr, *ptr,
+						show_opt_string(si));
 			}
                 }
 	}
@@ -12319,9 +12598,16 @@ ulonglong cross_match_next_addr_p; /* the expected starting value of the next ph
 #define CHARS_CTX 56
 
 static void
-report_match(ulong addr, char *ptr1, int len1, char *ptr2, int len2)
+report_match(struct searchinfo *si, ulong addr, char *ptr1, int len1, char *ptr2, int len2)
 {
 	int i;
+
+	if (si->do_task_header) {
+		print_task_header(fp, si->task_context, si->tasks_found);
+		si->do_task_header = FALSE;
+		si->tasks_found++;
+	}
+
 	fprintf(fp, "%lx: ", addr);
 	for (i = 0; i < len1; i++) {
 		if (isprint(ptr1[i]))
@@ -12364,7 +12650,7 @@ search_chars(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 				for (i = 0; i < len - 1; i++) {
 					if (cross[j].hit[i] &&
 						!strncmp(&target[len - 1 - i], ptr, i + 1)) 
-							report_match(cross[j].addr + i, 
+							report_match(si, cross[j].addr + i, 
 									target, len,
 									&ptr[i+1], 
 									CHARS_CTX - len);
@@ -12398,7 +12684,7 @@ search_chars(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 					int slen = CHARS_CTX;
 					if ((i + CHARS_CTX) > charcnt) 
 						slen = charcnt - i;
-					report_match(addr, ptr, slen, (char *)0, 0);
+					report_match(si, addr, ptr, slen, (char *)0, 0);
 				}
 			}
 		}
@@ -12496,8 +12782,9 @@ search_chars_p(ulong *bufptr, ulonglong addr_p, int longcnt, struct searchinfo *
 }
 
 static void
-search_virtual(ulong start, ulong end, int memtype, struct searchinfo *si)
+search_virtual(struct searchinfo *si)
 {
+	ulong start, end;
 	ulong pp, next, *ubp;
 	int wordcnt, lastpage;
 	ulong page;
@@ -12506,6 +12793,8 @@ search_virtual(ulong start, ulong end, int memtype, struct searchinfo *si)
 	ulong pct, pages_read, pages_checked;
 	time_t begin, finish;
 
+	start = si->vaddr_start;
+	end = si->vaddr_end;
 	pages_read = pages_checked = 0;
 	begin = finish = 0;
 
@@ -12544,7 +12833,7 @@ search_virtual(ulong start, ulong end, int memtype, struct searchinfo *si)
 			goto virtual;
 		}
 
-                switch (memtype)
+                switch (si->memtype)
                 {
                 case UVADDR:
                         if (!uvtop(CURRENT_CONTEXT(), pp, &paddr, 0) ||
@@ -12621,8 +12910,9 @@ done:
 
 
 static void
-search_physical(ulonglong start_in, ulonglong end_in, struct searchinfo *si)
+search_physical(struct searchinfo *si)
 {
+	ulonglong start_in, end_in;
 	ulong *ubp;
 	int wordcnt, lastpage;
 	ulonglong pnext, ppp;
@@ -12631,6 +12921,8 @@ search_physical(ulonglong start_in, ulonglong end_in, struct searchinfo *si)
 	time_t begin, finish;
 	ulong page;
 
+	start_in = si->paddr_start;
+	end_in = si->paddr_end;
 	pages_read = pages_checked = 0;
 	begin = finish = 0;
 
@@ -15332,25 +15624,22 @@ kmem_cache_init_slub(void)
 }
 
 static void 
-kmem_cache_list_slub(void)
+kmem_cache_list_common(void)
 {
         int i, cnt;
         ulong *cache_list;
         ulong name;
-	char *cache_buf;
 	char buf[BUFSIZE];
 
 	cnt = get_kmem_cache_list(&cache_list);
-	cache_buf = GETBUF(SIZE(kmem_cache));
 
 	for (i = 0; i < cnt; i++) {
 		fprintf(fp, "%lx ", cache_list[i]);
 
-		readmem(cache_list[i], KVADDR, cache_buf, 
-			SIZE(kmem_cache), "kmem_cache buffer", 
-			FAULT_ON_ERROR);
+		readmem(cache_list[i] + OFFSET(kmem_cache_name), 
+			KVADDR, &name, sizeof(char *),
+			"kmem_cache.name", FAULT_ON_ERROR);
 
-		name = ULONG(cache_buf + OFFSET(kmem_cache_name)); 
 		if (!read_string(name, buf, BUFSIZE-1))
 			sprintf(buf, "(unknown)\n");
 		
@@ -15358,7 +15647,6 @@ kmem_cache_list_slub(void)
 	}
 
 	FREEBUF(cache_list);
-	FREEBUF(cache_buf);
 }
 
 #define DUMP_KMEM_CACHE_INFO_SLUB()  dump_kmem_cache_info_slub(si)
@@ -15443,8 +15731,10 @@ dump_kmem_cache_slub(struct meminfo *si)
 		reqname = si->reqname;
 
 	for (i = 0; i < si->cache_count; i++) {
+		BZERO(si->cache_buf, SIZE(kmem_cache));
 		if (!readmem(si->cache_list[i], KVADDR, si->cache_buf, 
-		    SIZE(kmem_cache), "kmem_cache buffer", RETURN_ON_ERROR))
+		    SIZE(kmem_cache), "kmem_cache buffer", 
+		    RETURN_ON_ERROR|RETURN_PARTIAL))
 			goto next_cache;
 
 		name = ULONG(si->cache_buf + OFFSET(kmem_cache_name)); 
@@ -15948,22 +16238,19 @@ is_kmem_cache_addr_slub(ulong vaddr, char *kbuf)
         int i, cnt;
         ulong *cache_list;
         ulong name;
-        char *cache_buf;
         int found;
 
         cnt = get_kmem_cache_list(&cache_list);
-        cache_buf = GETBUF(SIZE(kmem_cache));
 	
         for (i = 0, found = FALSE; i < cnt; i++) {
 		if (cache_list[i] != vaddr)
 			continue;
 
-                if (!readmem(cache_list[i], KVADDR, cache_buf,
-		    SIZE(kmem_cache), "kmem_cache buffer",
-		    RETURN_ON_ERROR))
+		if (!readmem(cache_list[i] + OFFSET(kmem_cache_name), 
+		    KVADDR, &name, sizeof(char *),
+		    "kmem_cache.name", RETURN_ON_ERROR))
 			break;
 
-                name = ULONG(cache_buf + OFFSET(kmem_cache_name));
                 if (!read_string(name, kbuf, BUFSIZE-1))
 			sprintf(kbuf, "(unknown)");
 
@@ -15972,7 +16259,6 @@ is_kmem_cache_addr_slub(ulong vaddr, char *kbuf)
         }
 
         FREEBUF(cache_list);
-        FREEBUF(cache_buf);
 
 	return (found ? kbuf : NULL);
 }
@@ -16067,17 +16353,23 @@ count_partial(ulong node, struct meminfo *si)
 	ulong list_head, next;
 	short inuse;
 	ulong total_inuse;
+	ulong count = 0;
 
+	count = 0;
 	total_inuse = 0;
 	list_head = node + OFFSET(kmem_cache_node_partial);
 	if (!readmem(list_head, KVADDR, &next, sizeof(ulong),
 	    "kmem_cache_node.partial", RETURN_ON_ERROR))
 		return -1;
 
+	hq_open();
+
 	while (next != list_head) {
 		if (!readmem(next - OFFSET(page_lru) + OFFSET(page_inuse), 
-		    KVADDR, &inuse, sizeof(ushort), "page.inuse", RETURN_ON_ERROR))
+		    KVADDR, &inuse, sizeof(ushort), "page.inuse", RETURN_ON_ERROR)) {
+			hq_close();
 			return -1;
+		}
 		if (inuse == -1) {
 			error(INFO, "%s: partial list: page.inuse: -1\n",
 				si->curname);
@@ -16085,14 +16377,34 @@ count_partial(ulong node, struct meminfo *si)
 		}
 		total_inuse += inuse;
 		if (!readmem(next, KVADDR, &next, sizeof(ulong),
-		    "page.lru.next", RETURN_ON_ERROR))
+		    "page.lru.next", RETURN_ON_ERROR)) {
+			hq_close();
 			return -1;
+		}
 		if (!IS_KVADDR(next)) {
 			error(INFO, "%s: partial list: page.lru.next: %lx\n", 
 				si->curname, next);
 			break;
 		}
+
+		/*
+		 *  Keep track of the last 1000 entries, and check
+		 *  whether the list has recursed back onto itself.
+		 */
+		if ((++count % 1000) == 0) {
+			hq_close();
+			hq_open();
+		}
+		if (!hq_enter(next)) {
+			error(INFO, 
+			    "%s: partial list: list corrupt: recurses back onto itself\n",
+				 si->curname);
+			hq_close();
+			return -1;
+		}
 	}
+
+	hq_close();
 	return total_inuse;
 }
 
@@ -16102,7 +16414,7 @@ is_slab_page(struct meminfo *si, char *buf)
 	int i, cnt;
 	ulong page_slab, page_flags, name;
         ulong *cache_list;
-        char *cache_buf, *retval;
+        char *retval;
 
 	if (!(vt->flags & KMALLOC_SLUB))
 		return NULL;
@@ -16125,16 +16437,14 @@ is_slab_page(struct meminfo *si, char *buf)
 
 	retval = NULL;
         cnt = get_kmem_cache_list(&cache_list);
-        cache_buf = GETBUF(SIZE(kmem_cache));
 
 	for (i = 0; i < cnt; i++) {
 		if (page_slab == cache_list[i]) {
-			if (!readmem(cache_list[i], KVADDR, cache_buf,
-			    SIZE(kmem_cache), "kmem_cache buffer",
-			    QUIET|RETURN_ON_ERROR))
+			if (!readmem(cache_list[i] + OFFSET(kmem_cache_name), 
+			    KVADDR, &name, sizeof(char *),
+			    "kmem_cache.name", QUIET|RETURN_ON_ERROR))
 				goto bailout;
 
-			name = ULONG(cache_buf + OFFSET(kmem_cache_name));
 			if (!read_string(name, buf, BUFSIZE-1))
 				goto bailout;
 
@@ -16145,7 +16455,6 @@ is_slab_page(struct meminfo *si, char *buf)
 
 bailout:
 	FREEBUF(cache_list);
-	FREEBUF(cache_buf);
 
 	return retval;
 }
@@ -16268,7 +16577,6 @@ get_kmem_cache_by_name(char *request)
         int i, cnt;
         ulong *cache_list;
         ulong name;
-        char *cache_buf;
         char buf[BUFSIZE];
         ulong found;
 
@@ -16277,11 +16585,10 @@ get_kmem_cache_by_name(char *request)
         found = 0;
 
         for (i = 0; i < cnt; i++) {
-                readmem(cache_list[i], KVADDR, cache_buf,
-                        SIZE(kmem_cache), "kmem_cache buffer",
-                        FAULT_ON_ERROR);
+		readmem(cache_list[i] + OFFSET(kmem_cache_name), 
+			KVADDR, &name, sizeof(char *),
+			"kmem_cache.name", FAULT_ON_ERROR);
 
-                name = ULONG(cache_buf + OFFSET(kmem_cache_name));
                 if (!read_string(name, buf, BUFSIZE-1))
 			continue;
 
@@ -16292,7 +16599,6 @@ get_kmem_cache_by_name(char *request)
         }
 
         FREEBUF(cache_list);
-        FREEBUF(cache_buf);
 
         return found;
 }

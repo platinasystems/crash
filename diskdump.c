@@ -117,8 +117,11 @@ map_cpus_to_prstatus_kdump_cmprs(void)
 	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
 
 	for (i = 0, j = 0; i < nrcpus; i++) {
-		if (in_cpu_map(ONLINE, i))
+		if (in_cpu_map(ONLINE, i)) {
 			dd->nt_prstatus_percpu[i] = nt_ptr[j++];
+			dd->num_prstatus_notes = 
+				MAX(dd->num_prstatus_notes, i+1);
+		}
 	}
 
 	FREEBUF(nt_ptr);
@@ -391,12 +394,13 @@ restart:
 	if ((DISKDUMP_VALID() &&
              (sizeof(*header) + sizeof(void *) * header->nr_cpus > block_size)) ||
              header->nr_cpus <= 0) {
-                error(INFO, "%s: invalid nr_cpus value: %d\n",
+                error(WARNING, "%s: invalid nr_cpus value: %d\n",
                         DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
                         header->nr_cpus);
 		if (!machine_type("S390") && !machine_type("S390X")) {
 			/* s390 can get register information also from memory */
-			goto err;
+			if (DISKDUMP_VALID())
+				goto err;
 		}
         }
 
@@ -673,6 +677,15 @@ is_diskdump(char *file)
 	if (pc->flags2 & GET_OSRELEASE) 
 		diskdump_get_osrelease();
 
+#ifdef LZO
+	if (lzo_init() == LZO_E_OK)
+		dd->flags |= LZO_SUPPORTED;
+#endif
+
+#ifdef SNAPPY
+	dd->flags |= SNAPPY_SUPPORTED;
+#endif
+
 	return TRUE;
 }
 
@@ -827,7 +840,7 @@ cache_page(physaddr_t paddr)
 			return READ_ERROR;
 	}
 
-	if (pd.flags & DUMP_DH_COMPRESSED) {
+	if (pd.flags & DUMP_DH_COMPRESSED_ZLIB) {
 		retlen = block_size;
 		ret = uncompress((unsigned char *)dd->page_cache_hdr[i].pg_bufptr,
 		                 &retlen,
@@ -839,6 +852,56 @@ cache_page(physaddr_t paddr)
 				ret);
 			return READ_ERROR;
 		}
+	} else if (pd.flags & DUMP_DH_COMPRESSED_LZO) {
+
+		if (!(dd->flags & LZO_SUPPORTED)) {
+			error(INFO, "%s: uncompress failed: no lzo compression support\n",
+			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+			return READ_ERROR;
+		}
+
+#ifdef LZO
+		retlen = block_size;
+		ret = lzo1x_decompress_safe((unsigned char *)dd->compressed_page,
+					    pd.size,
+					    (unsigned char *)dd->page_cache_hdr[i].pg_bufptr,
+					    &retlen,
+					    LZO1X_MEM_DECOMPRESS);
+		if ((ret != LZO_E_OK) || (retlen != block_size)) {
+			error(INFO, "%s: uncompress failed: %d\n", 
+				DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+				ret);
+			return READ_ERROR;
+		}
+#endif
+	} else if (pd.flags & DUMP_DH_COMPRESSED_SNAPPY) {
+
+		if (!(dd->flags & SNAPPY_SUPPORTED)) {
+			error(INFO, "%s: uncompress failed: no snappy compression support\n",
+			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
+			return READ_ERROR;
+		}
+
+#ifdef SNAPPY
+		ret = snappy_uncompressed_length((char *)dd->compressed_page,
+						 pd.size, &retlen);
+		if (ret != SNAPPY_OK) {
+			error(INFO, "%s: uncompress failed: %d\n",
+			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			      ret);
+			return READ_ERROR;
+		}
+
+		ret = snappy_uncompress((char *)dd->compressed_page, pd.size,
+					(char *)dd->page_cache_hdr[i].pg_bufptr,
+					&retlen);
+		if ((ret != SNAPPY_OK) || (retlen != block_size)) {
+			error(INFO, "%s: uncompress failed: %d\n", 
+			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
+			      ret);
+			return READ_ERROR;
+		}
+#endif
 	} else
 		memcpy(dd->page_cache_hdr[i].pg_bufptr,
 		       dd->compressed_page, block_size);
@@ -991,6 +1054,9 @@ get_diskdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
 	Elf32_Nhdr *note;
 	int len;
 
+	if (KDUMP_CMPRS_VALID())
+		ppc_relocate_nt_prstatus_percpu(dd->nt_prstatus_percpu,
+						&dd->num_prstatus_notes);
 	if (KDUMP_CMPRS_VALID() &&
 		(bt->task == tt->panic_task || 
 		(is_task_active(bt->task) && dd->num_prstatus_notes > 1))) {
@@ -1003,7 +1069,7 @@ get_diskdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
 					"panic" : "active", bt->task);
 		len = sizeof(Elf32_Nhdr);
 		len = roundup(len + note->n_namesz, 4);
-		 bt->machdep = (void *)((char *)note + len +
+		bt->machdep = (void *)((char *)note + len +
 			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
 	}
 
@@ -1199,6 +1265,7 @@ dump_nt_prstatus_offset(FILE *fp)
 	Elf32_Nhdr *note32 = NULL;
 	Elf64_Nhdr *note64 = NULL;
 	size_t tot, len = 0;
+	int cnt;
 
 	if (KDUMP_CMPRS_VALID() && !(dd->flags & NO_ELF_NOTES) &&
 	    (dd->header->header_version >= 4) &&
@@ -1208,17 +1275,19 @@ dump_nt_prstatus_offset(FILE *fp)
 		offset = sub_header_kdump->offset_note;
 
 		fprintf(fp, "  NT_PRSTATUS_offset: ");
-		for (tot = 0; tot < size; tot += len) {
+		for (tot = cnt = 0; tot < size; tot += len) {
 			if (machine_type("X86_64") || machine_type("S390X")) {
 				note64 = (void *)dd->notes_buf + tot;
 				len = sizeof(Elf64_Nhdr);
 				len = roundup(len + note64->n_namesz, 4);
 				len = roundup(len + note64->n_descsz, 4);
 
-				if (note64->n_type == NT_PRSTATUS)
+				if (note64->n_type == NT_PRSTATUS) {
 					fprintf(fp, "%s%lx\n",
 						(tot == 0) ? "" : "                      ",
 						(ulong)(offset + tot));
+					cnt++;
+				}
 
 			} else if (machine_type("X86") || machine_type("PPC")) {
 				note32 = (void *)dd->notes_buf + tot;
@@ -1226,12 +1295,16 @@ dump_nt_prstatus_offset(FILE *fp)
 				len = roundup(len + note32->n_namesz, 4);
 				len = roundup(len + note32->n_descsz, 4);
 
-				if (note32->n_type == NT_PRSTATUS)
+				if (note32->n_type == NT_PRSTATUS) {
 					fprintf(fp, "%s%lx\n",
 						(tot == 0) ? "" : "                      ",
 						(ulong)(offset + tot));
+					cnt++;
+				}
 			}
 		}
+		if (!cnt)
+			fprintf(fp, "\n");
 	}
 }
 
@@ -1266,6 +1339,10 @@ __diskdump_memory_dump(FILE *fp)
                 fprintf(fp, "%sZERO_EXCLUDED", others++ ? "|" : "");
 	if (dd->flags & NO_ELF_NOTES)
 		fprintf(fp, "%sNO_ELF_NOTES", others++ ? "|" : "");
+	if (dd->flags & LZO_SUPPORTED)
+		fprintf(fp, "%sLZO_SUPPORTED", others++ ? "|" : "");
+	if (dd->flags & SNAPPY_SUPPORTED)
+		fprintf(fp, "%sSNAPPY_SUPPORTED", others++ ? "|" : "");
         fprintf(fp, ") %s\n", FLAT_FORMAT() ? "[FLAT]" : "");
         fprintf(fp, "               dfd: %d\n", dd->dfd);
         fprintf(fp, "               ofp: %lx\n", (ulong)dd->ofp);
@@ -1413,9 +1490,11 @@ __diskdump_memory_dump(FILE *fp)
 			fprintf(fp, "             end_pfn: %lu\n", dd->sub_header_kdump->end_pfn);
 		}
 		if (dh->header_version >= 3) {
-			fprintf(fp, "   offset_vmcoreinfo: %lx\n",
+			fprintf(fp, "   offset_vmcoreinfo: %lu (0x%lx)\n",
+				(ulong)dd->sub_header_kdump->offset_vmcoreinfo,
 				(ulong)dd->sub_header_kdump->offset_vmcoreinfo);
-			fprintf(fp, "     size_vmcoreinfo: %lu\n",
+			fprintf(fp, "     size_vmcoreinfo: %lu (0x%lx)\n",
+				dd->sub_header_kdump->size_vmcoreinfo,
 				dd->sub_header_kdump->size_vmcoreinfo);
 			if (dd->sub_header_kdump->offset_vmcoreinfo &&
 				dd->sub_header_kdump->size_vmcoreinfo) {
@@ -1423,9 +1502,11 @@ __diskdump_memory_dump(FILE *fp)
 			}
 		}
 		if (dh->header_version >= 4) {
-			fprintf(fp, "         offset_note: %lx\n",
+			fprintf(fp, "         offset_note: %lu (0x%lx)\n",
+				(ulong)dd->sub_header_kdump->offset_note,
 				(ulong)dd->sub_header_kdump->offset_note);
-			fprintf(fp, "           size_note: %lu\n",
+			fprintf(fp, "           size_note: %lu (0x%lx)\n",
+				dd->sub_header_kdump->size_note,
 				dd->sub_header_kdump->size_note);
 			fprintf(fp, "  num_prstatus_notes: %d\n",
 				dd->num_prstatus_notes);
@@ -1438,9 +1519,11 @@ __diskdump_memory_dump(FILE *fp)
 			dump_nt_prstatus_offset(fp);
 		}
 		if (dh->header_version >= 5) {
-			fprintf(fp, "    offset_eraseinfo: %lx\n",
+			fprintf(fp, "    offset_eraseinfo: %lu (0x%lx)\n",
+				(ulong)dd->sub_header_kdump->offset_eraseinfo,
 				(ulong)dd->sub_header_kdump->offset_eraseinfo);
-			fprintf(fp, "      size_eraseinfo: %lu\n",
+			fprintf(fp, "      size_eraseinfo: %lu (0x%lx)\n",
+				dd->sub_header_kdump->size_eraseinfo,
 				dd->sub_header_kdump->size_eraseinfo);
 			if (dd->sub_header_kdump->offset_eraseinfo &&
 				dd->sub_header_kdump->size_eraseinfo) {

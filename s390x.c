@@ -1,8 +1,8 @@
 /* s390.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005, 2006, 2010 Michael Holzheu, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -117,6 +117,11 @@ static int s390x_get_kvaddr_ranges(struct vaddr_range *);
 static int set_s390x_max_physmem_bits(void);
 
 /*
+ * struct lowcore name (old: "_lowcore", new: "lowcore")
+ */
+static char *lc_struct;
+
+/*
  * Read a unsigned long value from address
  */
 static unsigned long readmem_ul(unsigned long addr)
@@ -132,11 +137,16 @@ static unsigned long readmem_ul(unsigned long addr)
  */
 static void s390x_offsets_init(void)
 {
-	if (MEMBER_EXISTS("_lowcore", "st_status_fixed_logout"))
-		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+	if (STRUCT_EXISTS("lowcore"))
+		lc_struct = "lowcore";
+	else
+		lc_struct = "_lowcore";
+
+	if (MEMBER_EXISTS(lc_struct, "st_status_fixed_logout"))
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, lc_struct,
 				   "st_status_fixed_logout");
 	else
-		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
+		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, lc_struct,
 				   "psw_save_area");
 	if (!STRUCT_EXISTS("stack_frame")) {
 		ASSIGN_OFFSET(s390_stack_frame_back_chain) = 0;
@@ -398,6 +408,7 @@ s390x_init(int when)
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = NULL;
 		vt->flags |= COMMON_VADDR;
+		s390x_check_live();
 		break;
 
 	case POST_GDB:
@@ -413,7 +424,6 @@ s390x_init(int when)
 		break;
 
 	case POST_INIT:
-		s390x_check_live();
 		break;
 	}
 }
@@ -568,10 +578,23 @@ static ulong _kl_rsg_table_deref_s390x(ulong vaddr, ulong table,
 	if ((entry & 0xcULL) != (level << 2))
 		return 0;
 	/* Check if the region table entry has the invalid bit set. */
-	if (entry & 0x40ULL)
+	if (entry & 0x20ULL)
 		return 0;
 	/* Region table entry is valid and well formed. */
 	return entry;
+}
+
+/* Check for swap entry */
+static int swap_entry(ulong entry)
+{
+	if (THIS_KERNEL_VERSION < LINUX(2,6,19)) {
+		if ((entry & 0x601ULL) == 0x600ULL)
+			return 1;
+	} else {
+		if ((entry & 0x403ULL) == 0x403ULL)
+			return 1;
+	}
+	return 0;
 }
 
 /* Page table traversal function */
@@ -583,13 +606,11 @@ static ulong _kl_pg_table_deref_s390x(ulong vaddr, ulong table)
 	readmem(table + offset, KVADDR, &entry, sizeof(entry), "entry",
 		FAULT_ON_ERROR);
 	/*
-	 * Check if the page table entry could be read and doesn't have
-	 * any of the reserved bits set.
+	 * Return zero if the page table entry has any of the reserved bits
+	 * set (0x900) or the invalid bit (0x400) is set and it is not a
+	 * swap entry.
 	 */
-	if (entry & 0x900ULL)
-		return 0;
-	/* Check if the page table entry has the invalid bit set. */
-	if (entry & 0x400ULL)
+	if ((entry & 0xd00ULL) && !swap_entry(entry))
 		return 0;
 	/* Page table entry is valid and well formed. */
 	return entry;
@@ -601,6 +622,7 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 	ulong entry, paddr;
 	int level, len;
 
+	*phys_addr = 0;
 	/*
 	 * Walk the region and segment tables.
 	 * We assume that the table length field in the asce is set to the
@@ -619,7 +641,7 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 	while (level >= 0) {
 		entry = _kl_rsg_table_deref_s390x(vaddr, table, len, level);
 		if (!entry)
-			return 0;
+			return FALSE;
 		table = entry & ~0xfffULL;
 		len = entry & 0x3ULL;
 		level--;
@@ -636,6 +658,12 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 	entry = _kl_pg_table_deref_s390x(vaddr, entry & ~0x7ffULL);
 	if (!entry)
 		return FALSE;
+
+	/* For swap entries we have to return FALSE and phys_addr = PTE */
+	if (swap_entry(entry)) {
+		*phys_addr = entry;
+		return FALSE;
+	}
 
 	/* Isolate the page origin from the page table entry. */
 	paddr = entry & ~0xfffULL;
@@ -890,9 +918,9 @@ static void get_int_stack(char *stack_name, char *lc, unsigned long *start,
 		stack_addr = symbol_value("restart_stack");
 		stack_addr = readmem_ul(stack_addr);
 	} else {
-		if (!MEMBER_EXISTS("_lowcore", stack_name))
+		if (!MEMBER_EXISTS(lc_struct, stack_name))
 			return;
-		stack_addr = ULONG(lc + MEMBER_OFFSET("_lowcore", stack_name));
+		stack_addr = ULONG(lc + MEMBER_OFFSET(lc_struct, stack_name));
 	}
 	if (stack_addr == 0)
 		return;
@@ -962,12 +990,22 @@ static void print_frame(struct bt_info *bt, int cnt, unsigned long sp,
 {
 	struct load_module *lm;
 	char *sym;
+	ulong offset;
+	struct syment *symp;
+	char *name_plus_offset;
+	char buf[BUFSIZE];
 
 	if (bt_reference_check(bt, r14))
 		return;
 	fprintf(fp, "%s#%d [%08lx] ", cnt < 10 ? " " : "", cnt, sp);
 	sym = closest_symbol(r14);
-	fprintf(fp, "%s at %lx", sym, r14);
+	name_plus_offset = NULL;
+	if (bt->flags & BT_SYMBOL_OFFSET) {
+		symp = value_search(r14, &offset);
+		if (symp && offset)
+			name_plus_offset = value_to_symstr(r14, buf, bt->radix);
+	}
+	fprintf(fp, "%s at %lx", name_plus_offset ? name_plus_offset : sym, r14);
 	if (module_symbol(r14, NULL, &lm, NULL, 0))
 		fprintf(fp, " [%s]", lm->mod_name);
 	fprintf(fp, "\n");
@@ -1163,22 +1201,22 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 		if (bt->flags & BT_LINE_NUMBERS)
 			s390x_dump_line_number(tmp[1]);
 	}
-	ptr = lc + MEMBER_OFFSET("_lowcore","prefixreg_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "prefixreg_save_area");
 	tmp[0] = UINT(ptr);
 	fprintf(fp,"  -prefix   : %#010lx\n", tmp[0]);
 	
-	ptr = lc + MEMBER_OFFSET("_lowcore","cpu_timer_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "cpu_timer_save_area");
 	tmp[0]=UINT(ptr);
 	tmp[1]=UINT(ptr + S390X_WORD_SIZE);
 	fprintf(fp,"  -cpu timer: %#010lx %#010lx\n", tmp[0],tmp[1]);
 
-	ptr = lc + MEMBER_OFFSET("_lowcore","clock_comp_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "clock_comp_save_area");
 	tmp[0]=UINT(ptr);
 	tmp[1]=UINT(ptr + S390X_WORD_SIZE);
 	fprintf(fp,"  -clock cmp: %#010lx %#010lx\n", tmp[0], tmp[1]);
 
 	fprintf(fp,"  -general registers:\n");
-	ptr = lc + MEMBER_OFFSET("_lowcore","gpregs_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "gpregs_save_area");
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr + S390X_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390X_WORD_SIZE);
@@ -1205,7 +1243,7 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
 
 	fprintf(fp,"  -access registers:\n");
-	ptr = lc + MEMBER_OFFSET("_lowcore","access_regs_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "access_regs_save_area");
 	tmp[0]=UINT(ptr);
 	tmp[1]=UINT(ptr + 4);
 	tmp[2]=UINT(ptr + 2 * 4);
@@ -1232,7 +1270,7 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 		tmp[0], tmp[1], tmp[2], tmp[3]);
 
 	fprintf(fp,"  -control registers:\n");
-	ptr = lc + MEMBER_OFFSET("_lowcore","cregs_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "cregs_save_area");
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr + S390X_WORD_SIZE);
 	tmp[2]=ULONG(ptr + 2 * S390X_WORD_SIZE);
@@ -1258,7 +1296,7 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
 
-	ptr = lc + MEMBER_OFFSET("_lowcore","floating_pt_save_area");
+	ptr = lc + MEMBER_OFFSET(lc_struct, "floating_pt_save_area");
 	fprintf(fp,"  -floating point registers:\n");
 	tmp[0]=ULONG(ptr);
 	tmp[1]=ULONG(ptr +  S390X_WORD_SIZE);
@@ -1301,8 +1339,8 @@ s390x_get_stack_frame(struct bt_info *bt, ulong *eip, ulong *esp)
 
 	/* get the stack pointer */
 	if(esp){
-		if(s390x_has_cpu(bt)){
-			ksp = ULONG(lowcore + MEMBER_OFFSET("_lowcore",
+		if (!LIVE() && s390x_has_cpu(bt)) {
+			ksp = ULONG(lowcore + MEMBER_OFFSET(lc_struct,
 				"gpregs_save_area") + (15 * S390X_WORD_SIZE));
 		} else {
 			readmem(bt->task + OFFSET(task_struct_thread_ksp), 

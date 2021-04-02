@@ -64,11 +64,11 @@ store_flat_data_array(char *file, struct flat_data **fda)
 
 	fd = open(file, O_RDONLY);
 	if (fd < 0) {
-		error(INFO, "unable to open dump file %s", file);
+		error(INFO, "unable to open dump file %s\n", file);
 		return -1;
 	}
 	if (lseek(fd, MAX_SIZE_MDF_HEADER, SEEK_SET) < 0) {
-		error(INFO, "unable to seek dump file %s", file);
+		error(INFO, "unable to seek dump file %s\n", file);
 		close(fd);
 		return -1;
 	}
@@ -79,14 +79,14 @@ store_flat_data_array(char *file, struct flat_data **fda)
 					 * num_allocated;
 			ptr = realloc(ptr, size_allocated);
 			if (ptr == NULL) {
-				error(INFO, "unable to allocate");
+				error(INFO, "unable to allocate\n");
 				break;
 			}
 		}
 		offset_fdh = lseek(fd, 0x0, SEEK_CUR);
 
 		if (read(fd, &fdh, sizeof(fdh)) < 0) {
-			error(INFO, "unable to read dump file %s", file);
+			error(INFO, "unable to read dump file %s\n", file);
 			break;
 		}
 		if (!is_bigendian()){
@@ -105,7 +105,7 @@ store_flat_data_array(char *file, struct flat_data **fda)
 
 		/* seek for next makedumpfile_data_header. */
 		if (lseek(fd, fdh.buf_size, SEEK_CUR) < 0) {
-			error(INFO, "unable to seek dump file %s", file);
+			error(INFO, "unable to seek dump file %s\n", file);
 			break;
 		}
 	}
@@ -177,11 +177,11 @@ check_flattened_format(char *file)
 
 	fd = open(file, O_RDONLY);
 	if (fd < 0) {
-		error(INFO, "unable to open dump file %s", file);
+		error(INFO, "unable to open dump file %s\n", file);
 		return;
 	}
 	if (read(fd, &fh, sizeof(fh)) < 0) {
-		error(INFO, "unable to read dump file %s", file);
+		error(INFO, "unable to read dump file %s\n", file);
 		close(fd);
 		return;
 	}

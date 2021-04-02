@@ -590,24 +590,35 @@ xen_hyper_dump_log(void)
 	ulong conring;
 	char *buf;
 	char last;
+	uint32_t conring_size;
 
-	conring = symbol_value("conring");
+	if (get_symbol_type("conring", NULL, NULL) == TYPE_CODE_ARRAY)
+		conring = symbol_value("conring");
+	else
+		get_symbol_data("conring", sizeof(ulong), &conring);
+
 	get_symbol_data("conringc", sizeof(uint), &conringc);
 	get_symbol_data("conringp", sizeof(uint), &conringp);
+
+	if (symbol_exists("conring_size"))
+		get_symbol_data("conring_size", sizeof(uint32_t), &conring_size);
+	else
+		conring_size = XEN_HYPER_CONRING_SIZE;
+
 	warp = FALSE;
-	if (conringp >= XEN_HYPER_CONRING_SIZE) {
-		if ((start = conringp & (XEN_HYPER_CONRING_SIZE - 1))) {
+	if (conringp >= conring_size) {
+		if ((start = conringp & (conring_size - 1))) {
 			warp = TRUE;
 		}
 	} else {
 		start = 0;
 	}
 
-	buf = GETBUF(XEN_HYPER_CONRING_SIZE);
-	readmem(conring, KVADDR, buf, XEN_HYPER_CONRING_SIZE,
+	buf = GETBUF(conring_size);
+	readmem(conring, KVADDR, buf, conring_size,
 		"conring contents", FAULT_ON_ERROR);
 	idx = start;
-	len = XEN_HYPER_CONRING_SIZE;
+	len = conring_size;
 	last = 0;
 
 wrap_around:

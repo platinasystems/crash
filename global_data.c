@@ -1,8 +1,8 @@
 /* global_data.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -84,6 +84,7 @@ struct command_table_entry linux_command_table[] = {
 	{"fuser",   cmd_fuser,   help_fuser,   REFRESH_TASK_TABLE},
 	{"gdb",     cmd_gdb,     help_gdb,     REFRESH_TASK_TABLE},
         {"help",    cmd_help,    help_help,    0},
+	{"ipcs",    cmd_ipcs,    help_ipcs,    REFRESH_TASK_TABLE},
 	{"irq",     cmd_irq,     help_irq,     0},
 	{"kmem",    cmd_kmem,    help_kmem,    0},
 	{"list",    cmd_list,    help__list,   REFRESH_TASK_TABLE},
@@ -99,6 +100,7 @@ struct command_table_entry linux_command_table[] = {
 	{"ptob",    cmd_ptob,    help_ptob,    0},
 	{"ptov",    cmd_ptov,    help_ptov,    0},
         {"q",       cmd_quit,    help_quit,    0},
+        {"tree",    cmd_tree,    help_tree,    REFRESH_TASK_TABLE},
         {"rd",      cmd_rd,      help_rd,      0},
 	{"repeat",  cmd_repeat,  help_repeat,  0},
 	{"runq",    cmd_runq,    help_runq,    REFRESH_TASK_TABLE},

@@ -20,6 +20,7 @@
 
 #include "defs.h"
 #include "netdump.h"
+#include "sadump.h"
 
 static struct vmcore_data vmcore_data = { 0 };
 static struct vmcore_data *nd = &vmcore_data;
@@ -932,6 +933,8 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
+	if (nd->flags & QEMU_MEM_DUMP_KDUMP_BACKUP)
+		netdump_print("%sQEMU_MEM_DUMP_KDUMP_BACKUP", others++ ? "|" : "");
 	netdump_print(") %s\n", FLAT_FORMAT() ? "[FLAT]" : "");
 	if ((pc->flags & RUNTIME) && symbol_exists("dump_level")) {
 		int dump_level;
@@ -1042,10 +1045,11 @@ netdump_memory_dump(FILE *fp)
 				nd->xen_kdump_data->p2m_mfn_frame_list[i]);
 		if (i) netdump_print("\n");
 	}
-	netdump_print("       num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
-	netdump_print("               vmcoreinfo: %lx\n", (ulong)nd->vmcoreinfo);
-	netdump_print("          size_vmcoreinfo: %d\n", nd->size_vmcoreinfo);
-	netdump_print("       nt_prstatus_percpu: ");
+	netdump_print("     num_prstatus_notes: %d\n", nd->num_prstatus_notes);
+	netdump_print("         num_qemu_notes: %d\n", nd->num_qemu_notes);
+	netdump_print("             vmcoreinfo: %lx\n", (ulong)nd->vmcoreinfo);
+	netdump_print("        size_vmcoreinfo: %d\n", nd->size_vmcoreinfo);
+	netdump_print("     nt_prstatus_percpu: ");
         wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
         flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
 	if (nd->num_prstatus_notes == 1)
@@ -1058,7 +1062,23 @@ netdump_memory_dump(FILE *fp)
 				nd->nt_prstatus_percpu[i]);
         	}
 	}
-	netdump_print("\n\n");
+	netdump_print("\n");
+	netdump_print("         nt_qemu_percpu: ");
+	if (nd->num_qemu_notes == 1)
+		netdump_print("%.*lx\n", flen, nd->nt_qemu_percpu[0]);
+	else {
+	       	for (i = 0; i < nd->num_qemu_notes; i++) {
+                	if ((i % wrap) == 0)
+                        	netdump_print("\n        ");
+                	netdump_print("%.*lx ", flen, 
+				nd->nt_qemu_percpu[i]);
+        	}
+	}
+	netdump_print("\n");
+	netdump_print("       backup_src_start: %llx\n", nd->backup_src_start);
+	netdump_print("        backup_src_size: %lx\n", nd->backup_src_size);
+	netdump_print("          backup_offset: %llx\n", nd->backup_offset);
+	netdump_print("\n");
 
         switch (DUMPFILE_FORMAT(nd->flags))
 	{
@@ -1670,13 +1690,13 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	char buf[BUFSIZE];
 	char *ptr;
 	ulong *uptr;
-	int xen_core, vmcoreinfo, eraseinfo;
+	int xen_core, vmcoreinfo, eraseinfo, qemuinfo;
 	uint64_t remaining, notesize;
 
 	note = (Elf32_Nhdr *)((char *)nd->elf32 + offset);
 
         BZERO(buf, BUFSIZE);
-	xen_core = vmcoreinfo = eraseinfo = FALSE;
+	xen_core = vmcoreinfo = eraseinfo = qemuinfo = FALSE;
         ptr = (char *)note + sizeof(Elf32_Nhdr);
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
@@ -1767,6 +1787,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
 		vmcoreinfo = STRNEQ(buf, "VMCOREINFO");
 		eraseinfo = STRNEQ(buf, "ERASEINFO");
+		qemuinfo = STRNEQ(buf, "QEMU");
 		if (xen_core) {
 			netdump_print("(unknown Xen n_type)\n"); 
 			if (store)
@@ -1785,6 +1806,9 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 				pc->flags2 |= ERASEINFO_DATA;
 		} else
 			netdump_print("(?)\n");
+
+		if (qemuinfo)
+			pc->flags2 |= QEMU_MEM_DUMP;
 		break;
 
 	case NT_XEN_KDUMP_CR3: 
@@ -1857,6 +1881,16 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 	if (xen_core)
 		uptr = (ulong *)roundup((ulong)uptr, 4);
 
+	if (store && qemuinfo) {
+		for(i=0; i<NR_CPUS; i++) {
+			if (!nd->nt_qemu_percpu[i]) {
+				nd->nt_qemu_percpu[i] = (void *)uptr;
+				nd->num_qemu_notes++;
+				break;
+			}
+		}
+	}
+
 	if (vmcoreinfo || eraseinfo) {
                 netdump_print("                         ");
                 ptr += note->n_namesz + 1;
@@ -1900,14 +1934,14 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	ulonglong *uptr;
 	int *iptr;
 	ulong *up;
-	int xen_core, vmcoreinfo, eraseinfo;
+	int xen_core, vmcoreinfo, eraseinfo, qemuinfo;
 	uint64_t remaining, notesize;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
         BZERO(buf, BUFSIZE);
         ptr = (char *)note + sizeof(Elf64_Nhdr);
-	xen_core = vmcoreinfo = eraseinfo = FALSE;
+	xen_core = vmcoreinfo = eraseinfo = qemuinfo = FALSE;
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
 		error(WARNING, 
@@ -2028,6 +2062,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		xen_core = STRNEQ(buf, "XEN CORE") || STRNEQ(buf, "Xen");
 		vmcoreinfo = STRNEQ(buf, "VMCOREINFO");
 		eraseinfo = STRNEQ(buf, "ERASEINFO");
+		qemuinfo = STRNEQ(buf, "QEMU");
                 if (xen_core) {
                         netdump_print("(unknown Xen n_type)\n");
 			if (store)
@@ -2050,6 +2085,9 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 				pc->flags2 |= ERASEINFO_DATA;
                 } else
                         netdump_print("(?)\n");
+
+		if (qemuinfo)
+			pc->flags2 |= QEMU_MEM_DUMP;
                 break;
 
 	case NT_XEN_KDUMP_CR3: 
@@ -2128,6 +2166,16 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	
 		if (xen_core)
 			uptr = (ulonglong *)roundup((ulong)uptr, 4);
+	}
+
+	if (store && qemuinfo) {
+		for(i=0; i<NR_CPUS; i++) {
+			if (!nd->nt_qemu_percpu[i]) {
+				nd->nt_qemu_percpu[i] = (void *)uptr;
+				nd->num_qemu_notes++;
+				break;
+			}
+		}
 	}
 
 	if (BITS32() && (xen_core || (note->n_type == NT_PRSTATUS))) {
@@ -2406,6 +2454,7 @@ retry:
 		    STREQ(sym, "start_disk_dump") ||
 		    (STREQ(sym, "crash_kexec") && !KVMDUMP_DUMPFILE()) ||
 		    STREQ(sym, "disk_dump")) {
+crash_kexec:
 			*eip = *up;
 			*esp = search ?
 			    bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
@@ -2444,7 +2493,9 @@ next_sysrq:
 			pc->flags |= SYSRQ;
 			for (i++, up++; i < LONGS_PER_STACK; i++, up++) {
 				sym = closest_symbol(*up);
-                		if (STREQ(sym, "sysrq_handle_crash")) 
+				if (STREQ(sym, "crash_kexec") && !KVMDUMP_DUMPFILE())
+					goto crash_kexec;
+				if (STREQ(sym, "sysrq_handle_crash")) 
 					goto next_sysrq; 
 			}
 			if (!panic)
@@ -2595,6 +2646,9 @@ get_netdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
 	Elf32_Nhdr *note;
 	size_t len;
 
+	ppc_relocate_nt_prstatus_percpu(nd->nt_prstatus_percpu,
+					&nd->num_prstatus_notes);
+
 	if ((bt->task == tt->panic_task) ||
 		(is_task_active(bt->task) && nd->num_prstatus_notes > 1)) {
 		/*	
@@ -2698,6 +2752,18 @@ int
 read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
 	physaddr_t paddr_in = paddr;
+
+	if ((nd->flags & QEMU_MEM_DUMP_KDUMP_BACKUP) &&
+	    (paddr >= nd->backup_src_start) &&
+	    (paddr < nd->backup_src_start + nd->backup_src_size)) {
+
+		paddr += nd->backup_offset - nd->backup_src_start;
+
+		if (CRASHDEBUG(1))
+			error(INFO,
+			    "qemu_mem_dump: kdump backup region: %#llx => %#llx\n",
+			    paddr_in, paddr);
+	}
 
 	if (XEN_CORE_DUMPFILE() && !XEN_HYPER_MODE()) {
 	    	if (!(nd->xen_kdump_data->flags & KDUMP_P2M_INIT)) {
@@ -3468,4 +3534,333 @@ kdump_get_osrelease(void)
 		free(string);
 	} else 
 		pc->flags2 &= ~GET_OSRELEASE;
+}
+
+void
+dump_registers_for_qemu_mem_dump(void)
+{
+	int i;
+	QEMUCPUState *ptr;
+	FILE *fpsave;
+
+	fpsave = nd->ofp;
+	nd->ofp = fp;
+
+	for (i=0; i<nd->num_qemu_notes; i++) {
+		ptr = (QEMUCPUState *)nd->nt_qemu_percpu[i];
+
+		if (i)
+			netdump_print("\n");
+		netdump_print("CPU %d:\n", i);
+
+		if (CRASHDEBUG(1))
+			netdump_print("  version:%08lx      size:%08lx\n",
+				ptr->version, ptr->size);
+		netdump_print("  rax:%016llx  rbx:%016llx  rcx:%016llx\n",
+			ptr->rax, ptr->rbx, ptr->rcx);
+		netdump_print("  rdx:%016llx  rsi:%016llx  rdi:%016llx\n",
+			ptr->rdx, ptr->rsi, ptr->rdi);
+		netdump_print("  rsp:%016llx  rbp:%016llx  ",
+			ptr->rsp, ptr->rbp);
+	
+		if (DUMPFILE_FORMAT(nd->flags) == KDUMP_ELF64) {
+			netdump_print(" r8:%016llx\n",
+				ptr->r8);
+			netdump_print("   r9:%016llx  r10:%016llx  r11:%016llx\n",
+				ptr->r9, ptr->r10, ptr->r11);
+			netdump_print("  r12:%016llx  r13:%016llx  r14:%016llx\n",
+				ptr->r12, ptr->r13, ptr->r14);
+			netdump_print("  r15:%016llx",
+				ptr->r15);
+		} else
+                        netdump_print("\n");
+
+		netdump_print("  rip:%016llx  rflags:%08llx\n",
+			ptr->rip, ptr->rflags);
+		netdump_print("  cs:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->cs.selector, ptr->cs.limit, ptr->cs.flags,
+			ptr->cs.pad, ptr->cs.base);
+		netdump_print("  ds:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->ds.selector, ptr->ds.limit, ptr->ds.flags,
+			ptr->ds.pad, ptr->ds.base);
+		netdump_print("  es:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->es.selector, ptr->es.limit, ptr->es.flags,
+			ptr->es.pad, ptr->es.base);
+		netdump_print("  fs:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->fs.selector, ptr->fs.limit, ptr->fs.flags,
+			ptr->fs.pad, ptr->fs.base);
+		netdump_print("  gs:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->gs.selector, ptr->gs.limit, ptr->gs.flags,
+			ptr->gs.pad, ptr->gs.base);
+		netdump_print("  ss:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->ss.selector, ptr->ss.limit, ptr->ss.flags,
+			ptr->ss.pad, ptr->ss.base);
+		netdump_print("  ldt:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->ldt.selector, ptr->ldt.limit, ptr->ldt.flags,
+			ptr->ldt.pad, ptr->ldt.base);
+		netdump_print("  tr:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->tr.selector, ptr->tr.limit, ptr->tr.flags,
+			ptr->tr.pad, ptr->tr.base);
+		netdump_print("  gdt:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->gdt.selector, ptr->gdt.limit, ptr->gdt.flags,
+			ptr->gdt.pad, ptr->gdt.base);
+		netdump_print("  idt:\n    selector:%08lx  limit:%08lx  flags:%08lx\n\
+    pad:%08lx  base:%016llx\n",
+			ptr->idt.selector, ptr->idt.limit, ptr->idt.flags,
+			ptr->idt.pad, ptr->idt.base);
+		netdump_print("  cr[0]:%016llx  cr[1]:%016llx  cr[2]:%016llx\n",
+			ptr->cr[0], ptr->cr[1], ptr->cr[2]);
+		netdump_print("  cr[3]:%016llx  cr[4]:%016llx\n",
+			ptr->cr[3], ptr->cr[4]);
+	}
+
+	nd->ofp = fpsave;
+}
+
+/* 
+ * kdump saves the first 640kB physical memory for BIOS to use the
+ * range on boot of 2nd kernel. Read request to the 640k should be 
+ * translated to the back up region. This function searches kexec
+ * resources for the backup region.
+ */
+void
+kdump_backup_region_init(void)
+{
+	char buf[BUFSIZE];
+	ulong i, total, kexec_crash_image_p, elfcorehdr_p;
+	Elf32_Off e_phoff32;
+	Elf64_Off e_phoff64;
+	uint16_t e_phnum, e_phentsize;
+	ulonglong backup_offset;
+	ulonglong backup_src_start;
+	ulong backup_src_size;
+	int kimage_segment_len;
+	size_t bufsize;
+	struct vmcore_data *vd;
+	struct sadump_data *sd;
+	int is_32_bit;  
+	char typename[BUFSIZE];
+
+	e_phoff32 = e_phoff64 = 0;
+	vd = NULL;
+	sd = NULL;
+
+	if (SADUMP_DUMPFILE()) {
+		sd = get_sadump_data();
+		is_32_bit = FALSE;
+		sprintf(typename, "sadump");
+	} else if (pc->flags2 & QEMU_MEM_DUMP) {
+		vd = get_kdump_vmcore_data();
+		if (vd->flags & KDUMP_ELF32)
+			is_32_bit = TRUE;
+		else
+			is_32_bit = FALSE;
+		sprintf(typename, "qemu mem dump");
+	} else
+		return;
+
+	if (!readmem(symbol_value("kexec_crash_image"), KVADDR,
+		     &kexec_crash_image_p, sizeof(ulong),
+		     "kexec backup region: kexec_crash_image",
+		     QUIET|RETURN_ON_ERROR))
+		goto error;
+
+	if (!kexec_crash_image_p) {
+		if (CRASHDEBUG(1))
+			error(INFO, "%s: kexec_crash_image not loaded\n", typename);
+		return;
+	}
+
+	kimage_segment_len = get_array_length("kimage.segment", NULL,
+					      STRUCT_SIZE("kexec_segment"));
+
+	if (!readmem(kexec_crash_image_p + MEMBER_OFFSET("kimage", "segment"),
+		     KVADDR, buf, MEMBER_SIZE("kimage", "segment"),
+		     "kexec backup region: kexec_crash_image->segment",
+		     QUIET|RETURN_ON_ERROR))
+		goto error;
+
+	elfcorehdr_p = 0;
+	for (i = 0; i < kimage_segment_len; ++i) {
+		char e_ident[EI_NIDENT];
+		ulong mem;
+
+		mem = ULONG(buf + i * STRUCT_SIZE("kexec_segment") +
+			    MEMBER_OFFSET("kexec_segment", "mem"));
+		if (!mem)
+			continue;
+
+		if (!readmem(mem, PHYSADDR, e_ident, SELFMAG,
+			     "elfcorehdr: e_ident",
+			     QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		if (strncmp(ELFMAG, e_ident, SELFMAG) == 0) {
+			elfcorehdr_p = mem;
+			break;
+		}
+	}
+	if (!elfcorehdr_p) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+	"%s: elfcorehdr not found in segments of kexec_crash_image\n", typename);
+		goto error;
+	}
+	
+	if (is_32_bit) {
+		if (!readmem(elfcorehdr_p, PHYSADDR, buf, STRUCT_SIZE("elf32_hdr"),
+			"elfcorehdr", QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		e_phnum = USHORT(buf + MEMBER_OFFSET("elf32_hdr", "e_phnum"));
+		e_phentsize = USHORT(buf + MEMBER_OFFSET("elf32_hdr", "e_phentsize"));
+		e_phoff32 = ULONG(buf + MEMBER_OFFSET("elf32_hdr", "e_phoff"));
+	} else {
+		if (!readmem(elfcorehdr_p, PHYSADDR, buf, STRUCT_SIZE("elf64_hdr"),
+			    "elfcorehdr", QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		e_phnum = USHORT(buf + MEMBER_OFFSET("elf64_hdr", "e_phnum"));
+		e_phentsize = USHORT(buf + MEMBER_OFFSET("elf64_hdr", "e_phentsize"));
+		e_phoff64 = ULONG(buf + MEMBER_OFFSET("elf64_hdr", "e_phoff"));
+	}
+
+	backup_src_start = backup_src_size = backup_offset = 0;
+
+	for (i = 0; i < e_phnum; ++i) {
+		uint32_t p_type;
+		Elf32_Off p_offset32;
+		Elf64_Off p_offset64;
+		Elf32_Addr p_paddr32;
+		Elf64_Addr p_paddr64;
+		uint32_t p_memsz32;
+		uint64_t p_memsz64;
+
+		if (is_32_bit) {
+			if (!readmem(elfcorehdr_p + e_phoff32 + i * e_phentsize,
+				    PHYSADDR, buf, e_phentsize,
+				    "elfcorehdr: program header",
+				    QUIET|RETURN_ON_ERROR))
+				goto error;
+
+			p_type = UINT(buf+MEMBER_OFFSET("elf32_phdr","p_type"));
+			p_offset32 = ULONG(buf+MEMBER_OFFSET("elf32_phdr","p_offset"));
+			p_paddr32 = ULONG(buf+MEMBER_OFFSET("elf32_phdr","p_paddr"));
+			p_memsz32 = ULONG(buf+MEMBER_OFFSET("elf32_phdr","p_memsz"));
+		} else {
+			if (!readmem(elfcorehdr_p + e_phoff64 + i * e_phentsize,
+				    PHYSADDR, buf, e_phentsize,
+				    "elfcorehdr: program header",
+				    QUIET|RETURN_ON_ERROR))
+				goto error;
+
+			p_type = UINT(buf+MEMBER_OFFSET("elf64_phdr","p_type"));
+			p_offset64 = ULONG(buf+MEMBER_OFFSET("elf64_phdr","p_offset"));
+			p_paddr64 = ULONG(buf+MEMBER_OFFSET("elf64_phdr","p_paddr"));
+			p_memsz64 = ULONG(buf+MEMBER_OFFSET("elf64_phdr","p_memsz"));
+		}
+
+		/*
+		 * kexec marks backup region PT_LOAD by assigning
+		 * backup region address in p_offset, and p_addr in
+		 * p_offsets for other PT_LOAD entries.
+		 */
+		if (is_32_bit) {
+			if (p_type == PT_LOAD &&
+			    p_paddr32 <= KEXEC_BACKUP_SRC_END &&
+			    p_paddr32 != p_offset32) {
+
+				backup_src_start = p_paddr32;
+				backup_src_size = p_memsz32;
+				backup_offset = p_offset32;
+
+				if (CRASHDEBUG(1))
+					error(INFO,
+				"%s: kexec backup region found: "
+				"START: %#016llx SIZE: %#016lx OFFSET: %#016llx\n",
+				typename, backup_src_start, backup_src_size, backup_offset);
+
+				break;
+			}
+		} else {
+			if (p_type == PT_LOAD &&
+			    p_paddr64 <= KEXEC_BACKUP_SRC_END &&
+			    p_paddr64 != p_offset64) {
+
+				backup_src_start = p_paddr64;
+				backup_src_size = p_memsz64;
+				backup_offset = p_offset64;
+
+				if (CRASHDEBUG(1))
+					error(INFO,
+				"%s: kexec backup region found: "
+				"START: %#016llx SIZE: %#016lx OFFSET: %#016llx\n",
+				typename, backup_src_start, backup_src_size, backup_offset);
+
+				break;
+			}
+		}
+	}
+
+	if (!backup_offset) {
+		if (CRASHDEBUG(1))
+	error(WARNING, "%s: backup region not found in elfcorehdr\n", typename);
+		return;
+	}
+
+	bufsize = BUFSIZE;
+	for (total = 0; total < backup_src_size; total += bufsize) {
+		char backup_buf[BUFSIZE];
+		int j;
+
+		if (backup_src_size - total < BUFSIZE)
+			bufsize = backup_src_size - total;
+
+		if (!readmem(backup_offset + total, PHYSADDR, backup_buf,
+			     bufsize, "backup source", QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		/*
+		 * We're assuming the backup region is initialized
+		 * with 0 filled if kdump has not run.
+		 */
+		for (j = 0; j < bufsize; ++j) {
+			if (backup_buf[j]) {
+
+				if (SADUMP_DUMPFILE()) {
+					sd->flags |= SADUMP_KDUMP_BACKUP;
+					sd->backup_src_start = backup_src_start;
+					sd->backup_src_size = backup_src_size;
+					sd->backup_offset = backup_offset;
+				} else if (pc->flags2 & QEMU_MEM_DUMP) {
+					vd->flags |= QEMU_MEM_DUMP_KDUMP_BACKUP;
+					vd->backup_src_start = backup_src_start;
+					vd->backup_src_size = backup_src_size;
+					vd->backup_offset = backup_offset;
+				}
+
+				if (CRASHDEBUG(1))
+error(INFO, "%s: backup region is used: %llx\n", typename, backup_offset + total + j);
+
+				return;
+			}
+		}
+	}
+
+	if (CRASHDEBUG(1))
+		error(INFO, "%s: kexec backup region not used\n", typename);
+
+	return;
+
+error:
+	error(WARNING, "failed to init kexec backup region\n");
 }

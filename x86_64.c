@@ -67,7 +67,7 @@ static int x86_64_dis_filter(ulong, char *, unsigned int);
 static void x86_64_cmd_mach(void);
 static int x86_64_get_smp_cpus(void);
 static void x86_64_display_machine_stats(void);
-static void x86_64_display_cpu_data(void);
+static void x86_64_display_cpu_data(unsigned int);
 static void x86_64_display_memmap(void);
 static void x86_64_dump_line_number(ulong);
 static struct line_number_hook x86_64_line_number_hooks[];
@@ -91,6 +91,8 @@ static void x86_64_framepointer_init(void);
 static int x86_64_virt_phys_base(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
 static int x86_64_pvops_xendump_p2m_create(struct xendump_data *);
+static int x86_64_pvops_xendump_p2m_l2_create(struct xendump_data *);
+static int x86_64_pvops_xendump_p2m_l3_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
 static int x86_64_xendump_page_index(ulong, struct xendump_data *);
 static int x86_64_xen_kdump_p2m_create(struct xen_kdump_data *);
@@ -2560,10 +2562,11 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 {
 	ulong rsp, offset, locking_func;
 	struct syment *sp, *spl;
-	char *name;
+	char *name, *name_plus_offset;
 	int i, result; 
 	long eframe_check;
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 	struct load_module *lm;
 
 	eframe_check = -1;
@@ -2576,14 +2579,19 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 
 	name = sp->name;
 
+	if (offset && (bt->flags & BT_SYMBOL_OFFSET))
+		name_plus_offset = value_to_symstr(text, buf2, bt->radix);
+	else
+		name_plus_offset = NULL;
+
 	if (bt->flags & BT_TEXT_SYMBOLS) {
 		if (bt->flags & BT_EXCEPTION_FRAME)
 			rsp = bt->stkptr;
 		else
 			rsp = bt->stackbase + (stkindex * sizeof(long));
                 fprintf(ofp, "  [%s] %s at %lx",
-                	mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(rsp)),
-                        name, text);
+                	mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(rsp)),
+			name_plus_offset ? name_plus_offset : name, text);
 		if (module_symbol(text, NULL, &lm, NULL, 0))
 			fprintf(ofp, " [%s]", lm->mod_name);
 		fprintf(ofp, "\n");
@@ -2652,8 +2660,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 		bt->frameptr = rsp + sizeof(ulong);
 	}
 
-        fprintf(ofp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
-		rsp, name, text);
+       	fprintf(ofp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
+		rsp, name_plus_offset ? name_plus_offset : name, text);
 
 	if (STREQ(name, "tracesys"))
 		fprintf(ofp, " (via system_call)");
@@ -2671,9 +2679,9 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	fprintf(ofp, "\n");
 
         if (bt->flags & BT_LINE_NUMBERS) {
-                get_line_number(text, buf, FALSE);
-                if (strlen(buf))
-                        fprintf(ofp, "    %s\n", buf);
+                get_line_number(text, buf1, FALSE);
+                if (strlen(buf1))
+                        fprintf(ofp, "    %s\n", buf1);
 	}
 
 	if (eframe_check >= 0) {
@@ -4846,18 +4854,36 @@ x86_64_get_smp_cpus(void)
 void
 x86_64_cmd_mach(void)
 {
-        int c;
+        int c, cflag, mflag;
+	unsigned int radix;
+	
+	cflag = mflag = radix = 0;
 
-        while ((c = getopt(argcnt, args, "cm")) != EOF) {
+        while ((c = getopt(argcnt, args, "cmxd")) != EOF) {
                 switch(c)
                 {
                 case 'c':
-                        x86_64_display_cpu_data();
-                        return;
+			cflag++;
+			break;
 
                 case 'm':
+			mflag++;
                         x86_64_display_memmap();
-                        return;
+			break;
+
+		case 'x':
+			if (radix == 10)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 16;
+			break;
+
+		case 'd':
+			if (radix == 16)
+				error(FATAL,
+					"-d and -x are mutually exclusive\n");
+			radix = 10;
+			break;
 
                 default:
                         argerrs++;
@@ -4868,7 +4894,11 @@ x86_64_cmd_mach(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
-        x86_64_display_machine_stats();
+	if (cflag)
+		x86_64_display_cpu_data(radix);
+
+	if (!cflag && !mflag)
+        	x86_64_display_machine_stats();
 }
 
 /*
@@ -4933,7 +4963,7 @@ x86_64_display_machine_stats(void)
  *  "mach -c" 
  */
 static void 
-x86_64_display_cpu_data(void)
+x86_64_display_cpu_data(unsigned int radix)
 {
         int cpu, cpus, boot_cpu, _cpu_pda;
         ulong cpu_data;
@@ -4974,17 +5004,17 @@ x86_64_display_cpu_data(void)
 		if (per_cpu)
 			cpu_data = per_cpu->value + kt->__per_cpu_offset[cpu];
 
-                dump_struct("cpuinfo_x86", cpu_data, 0);
+                dump_struct("cpuinfo_x86", cpu_data, radix);
 
 		if (_cpu_pda) {
 			readmem(cpu_pda, KVADDR, &cpu_pda_addr,
 				sizeof(unsigned long), "_cpu_pda addr", FAULT_ON_ERROR);
 			fprintf(fp, "\n");
-			dump_struct("x8664_pda", cpu_pda_addr, 0);
+			dump_struct("x8664_pda", cpu_pda_addr, radix);
 			cpu_pda += sizeof(void *);
 		} else if (VALID_STRUCT(x8664_pda)) {
 			fprintf(fp, "\n");
-			dump_struct("x8664_pda", cpu_pda, 0);
+			dump_struct("x8664_pda", cpu_pda, radix);
 			cpu_pda += SIZE(x8664_pda);
 		}
 
@@ -6050,7 +6080,7 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 static int 
 x86_64_pvops_xendump_p2m_create(struct xendump_data *xd)
 {
-	int i, p, idx;
+	int i;
 	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
 	ulong *up;
 	off_t offset; 
@@ -6110,20 +6140,28 @@ x86_64_pvops_xendump_p2m_create(struct xendump_data *xd)
 	    malloc(xd->xc_core.p2m_frames * sizeof(ulong))) == NULL)
         	error(FATAL, "cannot malloc p2m_frame_list");
 
+	if (symbol_exists("p2m_mid_missing"))
+		return x86_64_pvops_xendump_p2m_l3_create(xd);
+	else
+		return x86_64_pvops_xendump_p2m_l2_create(xd);
+}
+
+static int x86_64_pvops_xendump_p2m_l2_create(struct xendump_data *xd)
+{
+	int i, idx, p;
+	ulong kvaddr, *up;
+
 	machdep->last_ptbl_read = BADADDR;
+
 	kvaddr = symbol_value("p2m_top");
 
 	for (p = 0; p < xd->xc_core.p2m_frames; p += XEN_PFNS_PER_PAGE) {
 		if (!x86_64_xendump_load_page(kvaddr, xd))
 			return FALSE;
 
-		if ((idx = x86_64_xendump_page_index(kvaddr, xd)) == MFN_NOT_FOUND)
-			return FALSE;
-
-		if (CRASHDEBUG(7)) {
+		if (CRASHDEBUG(7))
  			x86_64_debug_dump_page(xd->ofp, xd->page,
                        		"contents of page:");
-		}
 
 		up = (ulong *)(xd->page);
 
@@ -6132,15 +6170,100 @@ x86_64_pvops_xendump_p2m_create(struct xendump_data *xd)
 				break;
 			if ((idx = x86_64_xendump_page_index(*up, xd)) == MFN_NOT_FOUND)
 				return FALSE;
-			xd->xc_core.p2m_frame_index_list[p+i] = idx; 
+			xd->xc_core.p2m_frame_index_list[p+i] = idx;
 		}
 
 		kvaddr += PAGESIZE();
 	}
-	
+
 	machdep->last_ptbl_read = 0;
 
 	return TRUE;
+}
+
+static int x86_64_pvops_xendump_p2m_l3_create(struct xendump_data *xd)
+{
+	int i, idx, j, p2m_frame, ret = FALSE;
+	ulong kvaddr, *p2m_mid, p2m_mid_missing, p2m_missing, *p2m_top;
+
+	p2m_top = NULL;
+	machdep->last_ptbl_read = BADADDR;
+
+	kvaddr = symbol_value("p2m_missing");
+
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		goto err;
+
+	p2m_missing = *(ulong *)(xd->page + PAGEOFFSET(kvaddr));
+
+	kvaddr = symbol_value("p2m_mid_missing");
+
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		goto err;
+
+	p2m_mid_missing = *(ulong *)(xd->page + PAGEOFFSET(kvaddr));
+
+	kvaddr = symbol_value("p2m_top");
+
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		goto err;
+
+	kvaddr = *(ulong *)(xd->page + PAGEOFFSET(kvaddr));
+
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		goto err;
+
+	if (CRASHDEBUG(7))
+		x86_64_debug_dump_page(xd->ofp, xd->page,
+					"contents of p2m_top page:");
+
+	p2m_top = (ulong *)GETBUF(PAGESIZE());
+
+	memcpy(p2m_top, xd->page, PAGESIZE());
+
+	for (i = 0; i < XEN_P2M_TOP_PER_PAGE; ++i) {
+		p2m_frame = i * XEN_P2M_MID_PER_PAGE;
+
+		if (p2m_frame >= xd->xc_core.p2m_frames)
+			break;
+
+		if (p2m_top[i] == p2m_mid_missing)
+			continue;
+
+		if (!x86_64_xendump_load_page(p2m_top[i], xd))
+			goto err;
+
+		if (CRASHDEBUG(7))
+			x86_64_debug_dump_page(xd->ofp, xd->page,
+						"contents of p2m_mid page:");
+
+		p2m_mid = (ulong *)xd->page;
+
+		for (j = 0; j < XEN_P2M_MID_PER_PAGE; ++j, ++p2m_frame) {
+			if (p2m_frame >= xd->xc_core.p2m_frames)
+				break;
+
+			if (p2m_mid[j] == p2m_missing)
+				continue;
+
+			idx = x86_64_xendump_page_index(p2m_mid[j], xd);
+
+			if (idx == MFN_NOT_FOUND)
+				goto err;
+
+			xd->xc_core.p2m_frame_index_list[p2m_frame] = idx;
+		}
+	}
+
+	machdep->last_ptbl_read = 0;
+
+	ret = TRUE;
+
+err:
+	if (p2m_top)
+		FREEBUF(p2m_top);
+
+	return ret;
 }
 
 static void
@@ -6533,9 +6656,10 @@ x86_64_print_stack_entry_hyper(struct bt_info *bt, FILE *ofp, int level,
 {
 	ulong rsp, offset;
 	struct syment *sp;
-	char *name;
+	char *name, *name_plus_offset;
 	int result; 
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 
 	offset = 0;
 	sp = value_search(text, &offset);
@@ -6543,6 +6667,11 @@ x86_64_print_stack_entry_hyper(struct bt_info *bt, FILE *ofp, int level,
 		return BACKTRACE_ENTRY_IGNORED;
 
 	name = sp->name;
+
+	if (offset && (bt->flags & BT_SYMBOL_OFFSET))
+		name_plus_offset = value_to_symstr(text, buf2, bt->radix);
+	else
+		name_plus_offset = NULL;
 
 	if (STREQ(name, "syscall_enter"))
 		result = BACKTRACE_COMPLETE;
@@ -6558,12 +6687,12 @@ x86_64_print_stack_entry_hyper(struct bt_info *bt, FILE *ofp, int level,
 	}
 
         fprintf(ofp, "%s#%d [%8lx] %s at %lx\n", level < 10 ? " " : "", level,
-		rsp, name, text);
+		rsp, name_plus_offset ? name_plus_offset : name, text);
 
         if (bt->flags & BT_LINE_NUMBERS) {
-                get_line_number(text, buf, FALSE);
-                if (strlen(buf))
-                        fprintf(ofp, "    %s\n", buf);
+                get_line_number(text, buf1, FALSE);
+                if (strlen(buf1))
+                        fprintf(ofp, "    %s\n", buf1);
 	}
 
 	if (BT_REFERENCE_CHECK(bt))

@@ -6,8 +6,8 @@
 /*
  *  unwind.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2012 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2012 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -1695,9 +1695,11 @@ unwind_v3(struct bt_info *bt)
         struct syment *sm;
 	struct pt_regs *pt;
         int frame;
-        char *name;
+        char *name, *name_plus_offset;
+	ulong offset;
 	struct load_module *lm;
 	static int unw_in_progress = FALSE;
+	char buf[BUFSIZE];
 
 	if (bt->debug)
 		CRASHDEBUG_SUSPEND(bt->debug);
@@ -1728,9 +1730,12 @@ restart:
                        		break;
 		}
 
-                if ((sm = value_search(ip, NULL)))
+		name_plus_offset = NULL;
+                if ((sm = value_search(ip, &offset))) {
                         name = sm->name;
-                else
+			if ((bt->flags & BT_SYMBOL_OFFSET) && offset)
+				name_plus_offset = value_to_symstr(ip, buf, bt->radix);
+                } else
                         name = "(unknown)";
 
                 if (BT_REFERENCE_CHECK(bt)) {
@@ -1754,7 +1759,7 @@ restart:
                 } else {
                         fprintf(fp, "%s#%d [BSP:%lx] %s at %lx",
                                 frame >= 10 ? "" : " ", frame,
-                                bsp, name, ip);
+                                bsp, name_plus_offset ? name_plus_offset : name, ip);
 			if (module_symbol(ip, NULL, &lm, NULL, 0))
 				fprintf(fp, " [%s]", lm->mod_name);
 			fprintf(fp, "\n");

@@ -24,6 +24,7 @@ static int nr_cpu_ids;
  * lockless ring_buffer and old non-lockless ring_buffer are both supported.
  */
 static int lockless_ring_buffer;
+static int per_cpu_buffer_sizes;
 
 #define koffset(struct, member) struct##_##member##_offset
 
@@ -37,6 +38,7 @@ static int koffset(ring_buffer, buffers);
 
 static int koffset(ring_buffer_per_cpu, cpu);
 static int koffset(ring_buffer_per_cpu, pages);
+static int koffset(ring_buffer_per_cpu, nr_pages);
 static int koffset(ring_buffer_per_cpu, head_page);
 static int koffset(ring_buffer_per_cpu, tail_page);
 static int koffset(ring_buffer_per_cpu, commit_page);
@@ -71,6 +73,7 @@ struct ring_buffer_per_cpu {
 	ulong real_head_page;
 
 	int head_page_index;
+	unsigned int nr_pages;
 	ulong *pages;
 
 	ulong *linear_pages;
@@ -144,7 +147,14 @@ static int init_offsets(void)
 	init_offset(trace_array, buffer);
 	init_offset(tracer, name);
 
-	init_offset(ring_buffer, pages);
+	if (MEMBER_EXISTS("ring_buffer_per_cpu", "nr_pages")) {
+		per_cpu_buffer_sizes = 1;
+		if (verbose)
+			fprintf(fp, "per cpu buffer sizes\n");
+	}
+
+	if (!per_cpu_buffer_sizes)
+		init_offset(ring_buffer, pages);
 	init_offset(ring_buffer, flags);
 	init_offset(ring_buffer, cpus);
 	init_offset(ring_buffer, buffers);
@@ -155,6 +165,8 @@ static int init_offsets(void)
 			fprintf(fp, "lockless\n");
 	}
 
+	if (per_cpu_buffer_sizes)
+		init_offset(ring_buffer_per_cpu, nr_pages);
 	init_offset(ring_buffer_per_cpu, cpu);
 	init_offset(ring_buffer_per_cpu, pages);
 	init_offset(ring_buffer_per_cpu, head_page);
@@ -320,8 +332,6 @@ done:
 	return 0;
 
 out_fail:
-	free(cpu_buffer->pages);
-	free(cpu_buffer->linear_pages);
 	return -1;
 }
 
@@ -364,6 +374,12 @@ static int ftrace_init_buffers(struct ring_buffer_per_cpu *buffers,
 		buffer_read_value(reader_page);
 		buffer_read_value(overrun);
 		buffer_read_value(entries);
+		if (per_cpu_buffer_sizes) {
+			buffer_read_value(nr_pages);
+			pages = buffers[i].nr_pages;
+		} else
+			buffers[i].nr_pages = pages;
+
 #undef buffer_read_value
 
 		if (ftrace_init_pages(buffers + i, pages) < 0)

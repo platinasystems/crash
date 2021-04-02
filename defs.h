@@ -48,12 +48,18 @@
 #include <sys/time.h>
 #include <execinfo.h> /* backtrace() */
 #include <regex.h>
+#ifdef LZO
+#include <lzo/lzo1x.h>
+#endif
+#ifdef SNAPPY
+#include <snappy-c.h>
+#endif
 
 #ifndef ATTRIBUTE_UNUSED
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "4.0"
+#define BASELEVEL_REVISION  "6.1.0"
 
 #undef TRUE
 #undef FALSE
@@ -267,6 +273,8 @@ struct number_option {
 #define KCORE_LOCAL    (0x100)     
 #define KCORE_ELF32    (0x200)
 #define KCORE_ELF64    (0x400)
+#define QEMU_MEM_DUMP_KDUMP_BACKUP \
+                       (0x800)
 #define KVMDUMP_LOCAL    (0x1)
 #define KVMDUMP_VALID()  (kvm->flags & (KVMDUMP_LOCAL))
 
@@ -279,6 +287,8 @@ struct number_option {
 #define ZERO_EXCLUDED       (0x8)
 #define DUMPFILE_SPLIT      (0x10)
 #define NO_ELF_NOTES        (0x20)
+#define LZO_SUPPORTED       (0x40)
+#define SNAPPY_SUPPORTED    (0x80)
 #define DISKDUMP_VALID()    (dd->flags & DISKDUMP_LOCAL)
 #define KDUMP_CMPRS_VALID() (dd->flags & KDUMP_CMPRS_LOCAL)
 #define KDUMP_SPLIT()       (dd->flags & DUMPFILE_SPLIT)
@@ -306,6 +316,7 @@ struct number_option {
 #define QUIET            (0x4)
 #define HEX_BIAS         (0x8)
 #define LONG_LONG       (0x10)
+#define RETURN_PARTIAL  (0x20)
 
 #define SEEK_ERROR       (-1)
 #define READ_ERROR       (-2)
@@ -482,12 +493,15 @@ struct program_context {
 #define LIVE_DUMP      (0x40ULL)
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
+#define RADIX_OVERRIDE (0x80ULL)
+#define QEMU_MEM_DUMP (0x100ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
 	FILE *args_ifile;		/* per-command args input file */
         void (*cmd_cleanup)(void *);    /* per-command cleanup function */
 	void *cmd_cleanup_arg;          /* optional cleanup function argument */
+	ulong scope;			/* optional text context address */
 };
 
 #define READMEM  pc->readmem
@@ -590,6 +604,10 @@ struct new_utsname {
 
 #define XEN_MACHADDR_NOT_FOUND   (~0ULL) 
 
+#define XEN_P2M_PER_PAGE	(PAGESIZE() / sizeof(unsigned long))
+#define XEN_P2M_MID_PER_PAGE	(PAGESIZE() / sizeof(unsigned long *))
+#define XEN_P2M_TOP_PER_PAGE	(PAGESIZE() / sizeof(unsigned long **))
+
 struct kernel_table {                   /* kernel data */
 	ulong flags;
 	ulong stext;
@@ -650,6 +668,7 @@ struct kernel_table {                   /* kernel data */
 	struct pvops_xen_info {
 		int p2m_top_entries;
 		ulong p2m_top;
+		ulong p2m_mid_missing;
 		ulong p2m_missing;
 	} pvops_xen;
 	int highest_irq;
@@ -815,6 +834,7 @@ struct bt_info {
 	void *machdep;
         ulong debug;
 	ulong eframe_ip;
+	ulong radix;
 };
 
 #define STACK_OFFSET_TYPE(OFF) \
@@ -1716,6 +1736,62 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mount_mnt;
 	long task_struct_exit_state;
 	long timekeeper_xtime;
+	long file_f_op;
+	long file_private_data;
+	long hstate_order;
+	long hugetlbfs_sb_info_hstate;
+	long idr_layer_ary;
+	long idr_layer_layer;
+	long idr_layers;
+	long idr_top;
+	long ipc_id_ary_p;
+	long ipc_ids_entries;
+	long ipc_ids_max_id;
+	long ipc_ids_ipcs_idr;
+	long ipc_ids_in_use;
+	long ipc_namespace_ids;
+	long kern_ipc_perm_deleted;
+	long kern_ipc_perm_key;
+	long kern_ipc_perm_mode;
+	long kern_ipc_perm_uid;
+	long kern_ipc_perm_id;
+	long kern_ipc_perm_seq;
+	long nsproxy_ipc_ns;
+	long shmem_inode_info_swapped;
+	long shmem_inode_info_vfs_inode;
+	long shm_file_data_file;
+	long shmid_kernel_shm_file;
+	long shmid_kernel_shm_nattch;
+	long shmid_kernel_shm_perm;
+	long shmid_kernel_shm_segsz;
+	long shmid_kernel_id;
+	long sem_array_sem_perm;
+	long sem_array_sem_id;
+	long sem_array_sem_nsems;
+	long msg_queue_q_perm;
+	long msg_queue_q_id;
+	long msg_queue_q_cbytes;
+	long msg_queue_q_qnum;
+	long super_block_s_fs_info;
+	long rq_timestamp;
+	long radix_tree_node_height;
+	long rb_root_rb_node;
+	long rb_node_rb_left;
+	long rb_node_rb_right;
+	long rt_prio_array_queue;
+	long task_struct_rt;
+	long sched_rt_entity_run_list;
+	long log_ts_nsec;
+	long log_len;
+	long log_text_len;
+	long log_dict_len;
+	long log_level;
+	long log_flags_level;
+	long timekeeper_xtime_sec;
+	long neigh_table_hash_mask;
+	long sched_rt_entity_my_q;
+	long neigh_table_hash_shift;
+	long neigh_table_nht_ptr;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1843,6 +1919,14 @@ struct size_table {         /* stash of commonly-used sizes */
 	long rq_in_flight;
 	long class_private_devices;
 	long mount;
+	long hstate;
+	long ipc_ids;
+	long shmid_kernel;
+	long sem_array;
+	long msg_queue;
+	long log;
+	long log_level;
+	long rt_rq;
 };
 
 struct array_table {
@@ -1872,6 +1956,7 @@ struct array_table {
 	int pid_hash;
 	int kmem_cache_node;
 	int kmem_cache_cpu_slab;
+	int rt_prio_array_queue;
 };
 
 /*
@@ -1942,6 +2027,7 @@ struct builtin_debug_table {
 #define ULONG_PTR(ADDR) *((ulong **)((char *)(ADDR)))
 #define USHORT(ADDR)    *((ushort *)((char *)(ADDR)))
 #define SHORT(ADDR)     *((short *)((char *)(ADDR)))
+#define UCHAR(ADDR)     *((unsigned char *)((char *)(ADDR)))
 #define VOID_PTR(ADDR)  *((void **)((char *)(ADDR)))
 
 struct node_table {
@@ -2033,6 +2119,7 @@ struct vm_table {                /* kernel VM-related data */
 #define SWAPINFO_V1            (0x200000)
 #define SWAPINFO_V2            (0x400000)
 #define NODELISTS_IS_PTR       (0x800000)
+#define KMALLOC_COMMON        (0x1000000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2053,6 +2140,7 @@ struct datatype_member {        /* minimal definition of a structure/union */
 	ulong flags;
 	char *tagname;         /* tagname and value for enums */
 	long value;
+	ulong vaddr;
 };
 
 #define union_name struct_name
@@ -2074,6 +2162,23 @@ struct list_data {             /* generic structure used by do_list() to walk */
 #define LIST_HEAD_POINTER    (VERBOSE << 4)
 #define RETURN_ON_DUPLICATE  (VERBOSE << 5)
 #define RETURN_ON_LIST_ERROR (VERBOSE << 6)
+#define LIST_STRUCT_RADIX_10 (VERBOSE << 7)
+#define LIST_STRUCT_RADIX_16 (VERBOSE << 8)
+
+struct tree_data {
+	ulong flags;
+	ulong start;
+	long node_member_offset;
+	char **structname;
+	int structname_args;
+};
+
+#define TREE_ROOT_OFFSET_ENTERED  (VERBOSE << 1)
+#define TREE_NODE_OFFSET_ENTERED  (VERBOSE << 2)
+#define TREE_NODE_POINTER         (VERBOSE << 3)
+#define TREE_POSITION_DISPLAY     (VERBOSE << 4)
+#define TREE_STRUCT_RADIX_10      (VERBOSE << 5)
+#define TREE_STRUCT_RADIX_16      (VERBOSE << 6)
 
 #define ALIAS_RUNTIME  (1)
 #define ALIAS_RCLOCAL  (2)
@@ -2128,7 +2233,7 @@ struct syment {
 #define NAMESPACE_INSTALL  (4)
 #define NAMESPACE_COMPLETE (5)
 
-struct namespace {
+struct symbol_namespace {
 	char *address;
 	size_t size;
 	long index;
@@ -2167,11 +2272,11 @@ struct symbol_table_data {
         double val_hash_searches;
         double val_hash_iterations;
         struct syment *symname_hash[SYMNAME_HASH];
-	struct namespace namespace;
+	struct symbol_namespace kernel_namespace;
 	struct syment *ext_module_symtable;
 	struct syment *ext_module_symend;
 	long ext_module_symcnt;
-	struct namespace ext_module_namespace;
+	struct symbol_namespace ext_module_namespace;
 	int mods_installed;
 	struct load_module *current;
 	struct load_module *load_modules;
@@ -2252,7 +2357,7 @@ struct load_module {
         struct syment *mod_load_symtable;
         struct syment *mod_load_symend;
         long mod_symalloc;
-	struct namespace mod_load_namespace;
+	struct symbol_namespace mod_load_namespace;
 	ulong mod_size_of_struct;
         ulong mod_text_start;
 	ulong mod_etext_guess;
@@ -2297,6 +2402,8 @@ struct load_module {
 #define PRINT_MM_STRUCT   (0x20)
 #define PRINT_VMA_STRUCTS (0x40)
 #define PRINT_SINGLE_VMA  (0x80)
+#define PRINT_RADIX_10   (0x100)
+#define PRINT_RADIX_16   (0x200)
 
 #define MIN_PAGE_SIZE  (4096)
 
@@ -2355,6 +2462,7 @@ struct load_module {
 
 #define IS_VMALLOC_ADDR(X) 	arm_is_vmalloc_addr((ulong)(X))
 
+#define DEFAULT_MODULES_VADDR	(machdep->kvbase - 16 * 1024 * 1024)
 #define MODULES_VADDR   	(machdep->machspec->modules_vaddr)
 #define MODULES_END     	(machdep->machspec->modules_end)
 #define VMALLOC_START   	(machdep->machspec->vmalloc_start_addr)
@@ -2717,6 +2825,7 @@ struct machine_specific {
 	ulong _page_accessed;
 	ulong _page_hwwrite;
 	ulong _page_shared;
+	ulong _page_k_rw;
 
 	/* platform special vtop */
 	int (*vtop_special)(ulong vaddr, physaddr_t *paddr, int verbose);
@@ -2755,6 +2864,7 @@ struct machine_specific {
 #define _PAGE_ACCESSED  (machdep->machspec->_page_accessed)	/* R: page referenced */
 #define _PAGE_HWWRITE   (machdep->machspec->_page_hwwrite)	/* software: _PAGE_RW & _PAGE_DIRTY */
 #define _PAGE_SHARED    (machdep->machspec->_page_shared)
+#define _PAGE_K_RW	(machdep->machspec->_page_k_rw)		/* privilege only write access allowed */
 
 /* Default values for PAGE flags */
 #define DEFAULT_PAGE_PRESENT   0x001
@@ -2788,8 +2898,6 @@ struct machine_specific {
 #define BOOK3E_PAGE_BAP_UR	0x000008 /* User Readable */
 #define BOOK3E_PAGE_BAP_SW	0x000010
 #define BOOK3E_PAGE_BAP_UW	0x000020 /* User Writable */
-#define BOOK3E_PAGE_USER	BOOK3E_PAGE_BAP_SR | BOOK3E_PAGE_BAP_UR
-#define BOOK3E_PAGE_RW		BOOK3E_PAGE_BAP_SW | BOOK3E_PAGE_BAP_UW
 #define BOOK3E_PAGE_DIRTY	0x001000
 #define BOOK3E_PAGE_ACCESSED	0x040000
 #define BOOK3E_PAGE_GUARDED	0x100000
@@ -2798,6 +2906,9 @@ struct machine_specific {
 #define BOOK3E_PAGE_WRITETHRU	0x800000
 #define BOOK3E_PAGE_HWWRITE	0
 #define BOOK3E_PAGE_SHARED	0
+#define BOOK3E_PAGE_USER	(BOOK3E_PAGE_BAP_SR | BOOK3E_PAGE_BAP_UR)
+#define BOOK3E_PAGE_RW		(BOOK3E_PAGE_BAP_SW | BOOK3E_PAGE_BAP_UW)
+#define BOOK3E_PAGE_KERNEL_RW	(BOOK3E_PAGE_BAP_SW | BOOK3E_PAGE_BAP_SR | BOOK3E_PAGE_DIRTY)
 
 /* FSL BOOKE */
 #define FSL_BOOKE_PAGE_PRESENT	0x00001
@@ -3452,7 +3563,11 @@ struct gnu_request {
 	char *name;
 	ulong length;
 	int typecode;
+#if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0) 
 	char *typename;
+#else
+	char *type_name;
+#endif
 	char *target_typename;
 	ulong target_length;
 	int target_typecode;
@@ -3495,6 +3610,7 @@ struct gnu_request {
 #define GNU_PATCH_SYMBOL_VALUES  (14)
 #define GNU_GET_SYMBOL_TYPE      (15)
 #define GNU_USER_PRINT_OPTION 	 (16)
+#define GNU_SET_CRASH_BLOCK      (17)
 #define GNU_DEBUG_COMMAND       (100)
 /*
  *  GNU flags
@@ -3654,6 +3770,7 @@ void cmd_ascii(void);        /* tools.c */
 void cmd_set(void);          /* tools.c */
 void cmd_eval(void);         /* tools.c */
 void cmd_list(void);         /* tools.c */
+void cmd_tree(void);         /* tools.c */
 void cmd_template(void);     /* tools.c */
 void cmd_alias(void);        /* cmdline.c */
 void cmd_repeat(void);       /* cmdline.c */
@@ -3698,6 +3815,7 @@ void cmd_extend(void);       /* extensions.c */
 void cmd_s390dbf(void);
 #endif
 void cmd_map(void);          /* kvmdump.c */
+void cmd_ipcs(void);         /* ipcs.c */
 
 /*
  *  main.c
@@ -3829,6 +3947,8 @@ char *shift_string_right(char *, int);
 int bracketed(char *, char *, int);
 void backspace(int);
 int do_list(struct list_data *);
+void do_rdtree(struct tree_data *);
+void do_rbtree(struct tree_data *);
 int retrieve_list(ulong *, int);
 long power(long, int);
 long long ll_power(long long, long long);
@@ -4145,6 +4265,7 @@ extern char *help_help[];
 extern char *help_irq[];
 extern char *help_kmem[];
 extern char *help__list[];
+extern char *help_tree[];
 extern char *help_log[];
 extern char *help_mach[];
 extern char *help_mod[];
@@ -4159,6 +4280,7 @@ extern char *help_quit[];
 extern char *help_rd[];
 extern char *help_repeat[];
 extern char *help_runq[];
+extern char *help_ipcs[];
 extern char *help_search[];
 extern char *help_set[];
 extern char *help_sig[];
@@ -4274,6 +4396,9 @@ void clone_bt_info(struct bt_info *, struct bt_info *, struct task_context *);
 void dump_kernel_table(int);
 void dump_bt_info(struct bt_info *, char *where);
 void dump_log(int);
+#define SHOW_LOG_LEVEL (0x1)
+#define SHOW_LOG_DICT  (0x2)
+#define SHOW_LOG_TEXT  (0x4)
 void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
@@ -4339,6 +4464,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_KDUMP_ELF_REGS   (0x80000000000ULL)
 #define BT_USER_SPACE      (0x100000000000ULL)
 #define BT_KERNEL_SPACE    (0x200000000000ULL)
+#define BT_SYMBOL_OFFSET   (BT_SYMBOLIC_ARGS)
 
 #define BT_REF_HEXVAL         (0x1)
 #define BT_REF_SYMBOL         (0x2)
@@ -4693,11 +4819,14 @@ void ppc64_dump_machdep_table(ulong);
 #ifdef PPC
 void ppc_init(int);
 void ppc_dump_machdep_table(ulong);
+void ppc_relocate_nt_prstatus_percpu(void **, uint *);
 #define display_idt_table() \
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
 /* This should match PPC_FEATURE_BOOKE from include/asm-powerpc/cputable.h */
 #define CPU_BOOKE (0x00008000)
+#else
+#define ppc_relocate_nt_prstatus_percpu(X,Y) do {} while (0)
 #endif
 
 /*
@@ -4882,6 +5011,8 @@ int proc_kcore_init(FILE *);
 int read_proc_kcore(int, void *, int, ulong, physaddr_t);
 int write_proc_kcore(int, void *, int, ulong, physaddr_t);
 int kcore_memory_dump(FILE *);
+void dump_registers_for_qemu_mem_dump(void);
+void kdump_backup_region_init(void);
 
 /*
  *  diskdump.c
@@ -4991,7 +5122,8 @@ void sadump_show_diskset(void);
 int sadump_is_zero_excluded(void);
 void sadump_set_zero_excluded(void);
 void sadump_unset_zero_excluded(void);
-void sadump_kdump_backup_region_init(void);
+struct sadump_data;
+struct sadump_data *get_sadump_data(void);
 
 /*
  * qemu.c
@@ -5324,6 +5456,7 @@ int gdb_CRASHDEBUG(ulong);
 void dump_gdb_data(void);
 void update_gdb_hooks(void);
 void gdb_readnow_warning(void);
+int gdb_set_crash_scope(ulong, char *);
 extern int *gdb_output_format;
 extern unsigned int *gdb_print_max;
 extern int *gdb_prettyprint_structs;

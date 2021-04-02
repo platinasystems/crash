@@ -204,7 +204,7 @@ struct sadump_data {
 
 /* Backup Region, First 640K of System RAM. */
 #define KEXEC_BACKUP_SRC_END	0x0009ffff
-	ulong backup_src_start;
+	ulonglong backup_src_start;
 	ulong backup_src_size;
 	ulonglong backup_offset;
 };
