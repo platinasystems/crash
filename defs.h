@@ -350,7 +350,9 @@ struct program_context {
 	ulong cmdgenspec;		/* specified command generation num */
 	ulong curcmd_flags;		/* general purpose per-command flag */
 #define XEN_MACHINE_ADDR  (0x1)
-#define REPEAT (0x2)
+#define REPEAT            (0x2)
+#define IDLE_TASK_SHOWN   (0x4)
+#define TASK_SPECIFIED    (0x8)
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
 	int sigint_cnt;                 /* number of ignored SIGINTs */
@@ -962,6 +964,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long mm_struct_anon_rss;
 	long mm_struct_total_vm;
 	long mm_struct_start_code;
+	long mm_struct_arg_start;
+	long mm_struct_arg_end;
+	long mm_struct_env_start;
+	long mm_struct_env_end;
         long vm_area_struct_vm_mm;
         long vm_area_struct_vm_next;
         long vm_area_struct_vm_end;
@@ -2726,17 +2732,21 @@ extern long _ZOMBIE_;
 /*
  *  ps command options.
  */
-#define PS_BY_PID      (0x1)
-#define PS_BY_TASK     (0x2)
-#define PS_BY_CMD      (0x4)
-#define PS_SHOW_ALL    (0x8)
-#define PS_PPID_LIST  (0x10)
-#define PS_CHILD_LIST (0x20)
-#define PS_KERNEL     (0x40)
-#define PS_USER       (0x80)
-#define PS_TIMES     (0x100)
-#define PS_KSTACKP   (0x200)
-#define PS_LAST_RUN  (0x400)
+#define PS_BY_PID       (0x1)
+#define PS_BY_TASK      (0x2)
+#define PS_BY_CMD       (0x4)
+#define PS_SHOW_ALL     (0x8)
+#define PS_PPID_LIST   (0x10)
+#define PS_CHILD_LIST  (0x20)
+#define PS_KERNEL      (0x40)
+#define PS_USER        (0x80)
+#define PS_TIMES      (0x100)
+#define PS_KSTACKP    (0x200)
+#define PS_LAST_RUN   (0x400)
+#define PS_ARGV_ENVP  (0x800)
+#define PS_TGID_LIST (0x1000)
+
+#define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN)
 
 #define MAX_PS_ARGS    (100)   /* maximum command-line specific requests */
 
@@ -3281,10 +3291,12 @@ char *task_state_string(ulong, char *, int);
 ulong task_flags(ulong);
 ulong task_state(ulong);
 ulong task_mm(ulong, int);
+ulong task_tgid(ulong);
 ulonglong task_last_run(ulong);
 int comm_exists(char *);
 struct task_context *task_to_context(ulong);
 struct task_context *pid_to_context(ulong);
+struct task_context *tgid_to_context(ulong);
 ulong stkptr_to_task(ulong);
 ulong task_to_thread_info(ulong);
 ulong task_to_stackbase(ulong);

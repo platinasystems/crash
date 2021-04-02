@@ -5801,6 +5801,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mm_struct_total_vm));
 	fprintf(fp, "          mm_struct_start_code: %ld\n", 
 		OFFSET(mm_struct_start_code));
+	fprintf(fp, "           mm_struct_arg_start: %ld\n", 
+		OFFSET(mm_struct_arg_start));
+	fprintf(fp, "             mm_struct_arg_end: %ld\n", 
+		OFFSET(mm_struct_arg_end));
+	fprintf(fp, "           mm_struct_env_start: %ld\n", 
+		OFFSET(mm_struct_env_start));
+	fprintf(fp, "             mm_struct_env_end: %ld\n", 
+		OFFSET(mm_struct_env_end));
 
 	fprintf(fp, "          vm_area_struct_vm_mm: %ld\n", 
 		OFFSET(vm_area_struct_vm_mm));
