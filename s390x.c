@@ -836,10 +836,15 @@ s390x_back_trace_cmd(struct bt_info *bt)
 	unsigned long panic_start = 0, panic_end = 0;
 	unsigned long stack_end, stack_start, stack_base;
 	unsigned long r14;
+	int cpu = bt->tc->processor;
 
 	if (bt->hp && bt->hp->eip) {
 		error(WARNING,
 	        "instruction pointer argument ignored on this architecture!\n");
+	}
+	if (is_task_active(bt->task) && !(kt->cpu_flags[cpu] & ONLINE)) {
+		fprintf(fp, " CPU offline\n");
+		return;
 	}
 	ksp = bt->stkptr;
 

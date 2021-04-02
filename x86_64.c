@@ -80,7 +80,9 @@ static void x86_64_post_init(void);
 static void parse_cmdline_args(void);
 static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
+static void x86_64_thread_return_init(void);
 static void x86_64_framepointer_init(void);
+static void x86_64_xendump_phys_base(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
 static int x86_64_xendump_page_index(ulong, struct xendump_data *);
@@ -309,10 +311,19 @@ x86_64_init(int when)
 		}
 		MEMBER_OFFSET_INIT(user_regs_struct_rip,
 			"user_regs_struct", "rip");
+		if (INVALID_MEMBER(user_regs_struct_rip))
+			MEMBER_OFFSET_INIT(user_regs_struct_rip,
+				"user_regs_struct", "ip");
 		MEMBER_OFFSET_INIT(user_regs_struct_rsp,
 			"user_regs_struct", "rsp");
+		if (INVALID_MEMBER(user_regs_struct_rsp))
+			MEMBER_OFFSET_INIT(user_regs_struct_rsp,
+				"user_regs_struct", "sp");
 		MEMBER_OFFSET_INIT(user_regs_struct_eflags,
 			"user_regs_struct", "eflags");
+		if (INVALID_MEMBER(user_regs_struct_eflags))
+			MEMBER_OFFSET_INIT(user_regs_struct_eflags,
+				"user_regs_struct", "flags");
 		MEMBER_OFFSET_INIT(user_regs_struct_cs,
 			"user_regs_struct", "cs");
 		MEMBER_OFFSET_INIT(user_regs_struct_ss,
@@ -391,6 +402,7 @@ x86_64_init(int when)
                 }
 		x86_64_irq_eframe_link_init();
 		x86_64_framepointer_init();
+		x86_64_thread_return_init();
 		break;
 
 	case POST_VM:
@@ -602,6 +614,7 @@ x86_64_dump_machdep_table(ulong arg)
 	if (ms->crash_nmi_rsp)
 		fprintf(fp, "\n");
 	fprintf(fp, "            vsyscall_page: %lx\n", ms->vsyscall_page); 
+	fprintf(fp, "            thread_return: %lx\n", ms->thread_return); 
 
 	fprintf(fp, "                  stkinfo: isize: %d\n", 
 		ms->stkinfo.isize);
@@ -1974,7 +1987,7 @@ x86_64_verify_symbol(const char *name, ulong value, char type)
 			if (STRNEQ(name, "per_cpu") || 
 			    STREQ(name, "__per_cpu_end"))
 				return TRUE;
-			if (type == 'V')
+			if ((type == 'V') || (type == 'd') || (type == 'D'))
 				return TRUE;
 		}
 
@@ -2309,6 +2322,56 @@ text_lock_function(char *name, struct bt_info *bt, ulong locktext)
 
 }
 
+/*
+ * As of 2.6.29, the handy check for the "error_exit:" label
+ * no longer applies; it became an entry point that was jmp'd to 
+ * after the exception handler was called.  Therefore, if the 
+ * return address is an offset from any of these functions, 
+ * then the exception frame should be checked for:
+ *
+ * .macro errorentry sym do_sym
+ * errorentry invalid_TSS do_invalid_TSS
+ * errorentry segment_not_present do_segment_not_present
+ * errorentry alignment_check do_alignment_check
+ * errorentry xen_stack_segment do_stack_segment
+ * errorentry general_protection do_general_protection
+ * errorentry page_fault do_page_fault
+ *
+ * .macro zeroentry sym do_sym
+ * zeroentry divide_error do_divide_error
+ * zeroentry overflow do_overflow
+ * zeroentry bounds do_bounds
+ * zeroentry invalid_op do_invalid_op
+ * zeroentry device_not_available do_device_not_available
+ * zeroentry coprocessor_segment_overrun do_coprocessor_segment_overrun
+ * zeroentry spurious_interrupt_bug do_spurious_interrupt_bug
+ * zeroentry coprocessor_error do_coprocessor_error
+ * zeroentry simd_coprocessor_error do_simd_coprocessor_error
+ * zeroentry xen_hypervisor_callback xen_do_hypervisor_callback
+ * zeroentry xen_debug do_debug
+ * zeroentry xen_int3 do_int3
+*/
+static const char *exception_functions[] = {
+	"invalid_TSS",
+	"segment_not_present",
+	"alignment_check",
+	"xen_stack_segment",
+	"general_protection",
+	"page_fault",
+	"divide_error",
+	"overflow",
+	"bounds",
+	"invalid_op",
+	"device_not_available",
+	"coprocessor_segment_overrun",
+	"spurious_interrupt_bug",
+	"coprocessor_error",
+	"simd_coprocessor_error",
+	"xen_hypervisor_callback",
+	"xen_debug",
+	"xen_int3",
+	NULL,
+};
 
 /*
  *  print one entry of a stack trace
@@ -2325,7 +2388,7 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	ulong rsp, offset, locking_func;
 	struct syment *sp, *spl;
 	char *name;
-	int result; 
+	int i, result; 
 	long eframe_check;
 	char buf[BUFSIZE];
 
@@ -2373,8 +2436,16 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 		}
 	}
 
-	if (STREQ(name, "invalid_op"))
-		eframe_check = 8;
+	if ((THIS_KERNEL_VERSION >= LINUX(2,6,29)) && 
+	    (eframe_check == -1) && offset && 
+	    !(bt->flags & (BT_EXCEPTION_FRAME|BT_START|BT_SCHEDULE))) { 
+		for (i = 0; exception_functions[i]; i++) {
+			if (STREQ(name, exception_functions[i])) {
+				eframe_check = 8;
+				break;
+			}
+		}
+	}
 
 	if (bt->flags & BT_SCHEDULE)
 		name = "schedule";
@@ -2587,6 +2658,7 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	struct machine_specific *ms;
 	ulong last_process_stack_eframe;
 	ulong user_mode_eframe;
+	char *rip_symbol;
 
         /*
          *  User may have made a run-time switch.
@@ -2873,7 +2945,9 @@ in_exception_stack:
 	 */
         if (!done && 
 	    !(bt->flags & (BT_TEXT_SYMBOLS|BT_EXCEPTION_STACK|BT_IRQSTACK)) &&
-	    STREQ(closest_symbol(bt->instptr), "thread_return")) {
+            (rip_symbol = closest_symbol(bt->instptr)) &&
+	    (STREQ(rip_symbol, "thread_return") || 
+	     STREQ(rip_symbol, "schedule"))) {
 		bt->flags |= BT_SCHEDULE;
 		i = (rsp - bt->stackbase)/sizeof(ulong);
 		x86_64_print_stack_entry(bt, ofp, level, 
@@ -4076,7 +4150,7 @@ x86_64_get_sp(struct bt_info *bt)
 
 /*
  *  Get the saved PC from the task's thread_struct if it exists;
- *  otherwise just use the "thread_return" label value.
+ *  otherwise just use the pre-determined thread_return value.
  */
 static ulong
 x86_64_get_pc(struct bt_info *bt)
@@ -4084,7 +4158,7 @@ x86_64_get_pc(struct bt_info *bt)
         ulong offset, rip;
 
 	if (INVALID_MEMBER(thread_struct_rip))
-		return symbol_value("thread_return");
+		return machdep->machspec->thread_return;
 
         if (tt->flags & THREAD_INFO) {
                 readmem(bt->task + OFFSET(task_struct_thread) +
@@ -4094,7 +4168,7 @@ x86_64_get_pc(struct bt_info *bt)
 		if (rip)
 			return rip;
 		else
-			return symbol_value("thread_return");
+			return machdep->machspec->thread_return;
         }
 
         offset = OFFSET(task_struct_thread) + OFFSET(thread_struct_rip);
@@ -4809,6 +4883,52 @@ x86_64_framepointer_init(void)
 		machdep->flags |= FRAMEPOINTER;
 }
 
+static void
+x86_64_thread_return_init(void)
+{
+	int found;
+	struct syment *sp, *spn;
+	ulong max_instructions, address;
+	char buf[BUFSIZE];
+
+	if ((sp = symbol_search("thread_return"))) {
+		machdep->machspec->thread_return = sp->value;
+		return;
+	}
+
+	if (!(sp = symbol_search("schedule")) ||
+	    !(spn = next_symbol(NULL, sp))) {
+		error(WARNING, "schedule: symbol does not exist\n");
+		return;
+	}
+	max_instructions = spn->value - sp->value;
+	found = FALSE;
+
+	open_tmpfile();
+
+        sprintf(buf, "x/%ldi 0x%lx",
+		max_instructions, sp->value);
+
+        if (!gdb_pass_through(buf, pc->tmpfile, GNU_RETURN_ON_ERROR))
+		return;
+
+	rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (found)
+			break;
+		if (strstr(buf, "__switch_to"))
+			found = TRUE;
+	}
+	close_tmpfile();
+
+	if (found && extract_hex(buf, &address, NULLCHAR, TRUE))
+		machdep->machspec->thread_return = address;
+	else {
+		machdep->machspec->thread_return = symbol_value("schedule");
+		error(INFO, "cannot determing thread return address\n");
+	}
+}
+
 static void 
 x86_64_irq_eframe_link_init(void)
 {
@@ -5281,9 +5401,49 @@ x86_64_calc_phys_base(void)
 				break;
 			}
 		}
+
+		x86_64_xendump_phys_base();
 	}
 }
 
+/*
+ *  Because the xendump phys_base calculation is so speculative,
+ *  first verify and then possibly override it by trying to read
+ *  linux_banner from a range of typical physical offsets.
+ */
+static void
+x86_64_xendump_phys_base(void)
+{
+	char buf[BUFSIZE];
+	struct syment *sp;
+	ulong phys, linux_banner_phys;
+
+	if (!(sp = symbol_search("linux_banner")) ||
+	    !((sp->type == 'R') || (sp->type == 'r')))
+		return;
+
+	linux_banner_phys = sp->value - __START_KERNEL_map;
+
+	if (readmem(linux_banner_phys + machdep->machspec->phys_base,
+	    PHYSADDR, buf, strlen("Linux version"), "xendump linux_banner", 
+	    QUIET|RETURN_ON_ERROR) && STRNEQ(buf, "Linux version"))
+		return;
+
+	for (phys = (ulong)(-MEGABYTES(16)); phys != MEGABYTES(16+1); 
+	     phys += MEGABYTES(1)) {
+		if (readmem(linux_banner_phys + phys, PHYSADDR, buf,
+		    strlen("Linux version"), "xendump linux_banner", 
+		    QUIET|RETURN_ON_ERROR) && STRNEQ(buf, "Linux version")) {
+			if (CRASHDEBUG(1))
+				fprintf(fp,
+				    "xendump phys_base: %lx %s\n", phys, 
+					machdep->machspec->phys_base != phys ?
+					"override" : "");
+			machdep->machspec->phys_base = phys;
+			return;
+		}
+	}
+}
 
 /*
  *  Create an index of mfns for each page that makes up the
@@ -5569,6 +5729,7 @@ x86_64_get_xendump_regs(struct xendump_data *xd, struct bt_info *bt, ulong *rip,
 	ulong task, xrip, xrsp;
 	off_t offset;
 	struct syment *sp;
+	char *rip_symbol;
 	int cpu;
 
         if (INVALID_MEMBER(vcpu_guest_context_user_regs) ||
@@ -5616,7 +5777,8 @@ generic:
 	 *  then the thread_struct rsp is stale.  It has to be coming 
 	 *  from a callback via the interrupt stack.
 	 */
-	if (is_task_active(bt->task) && (symbol_value("thread_return") == *rip)) {
+	if (is_task_active(bt->task) && (rip_symbol = closest_symbol(*rip)) && 
+	    (STREQ(rip_symbol, "thread_return") || STREQ(rip_symbol, "schedule"))) {
 		cpu = bt->tc->processor;
 		xrsp = machdep->machspec->stkinfo.ibase[cpu] + 
 			machdep->machspec->stkinfo.isize - sizeof(ulong);
@@ -6454,11 +6616,13 @@ x86_64_get_active_set(void)
 	if (ACTIVE())
 		return;
 
+	ms = machdep->machspec;
+	if (!ms->current)
+		return;
+
 	if (CRASHDEBUG(1))
 		fprintf(fp, "x86_64_get_active_set: runqueue vs. %s\n",
 			VALID_STRUCT(x8664_pda) ? "x8664_pda" : "current_task");
-
-        ms = machdep->machspec;
 
 	for (c = 0; c < kt->cpus; c++) {
 

@@ -751,8 +751,8 @@ void ppc64_vmemmap_init(void)
 
         ld =  &list_data;
         BZERO(ld, sizeof(struct list_data));
-	if (!readmem(symbol_value("vmemmap_list")+OFFSET(list_head_next),
-	    KVADDR, &ld->start, sizeof(void *), "vmemmap_list.next",
+	if (!readmem(symbol_value("vmemmap_list"),
+	    KVADDR, &ld->start, sizeof(void *), "vmemmap_list",
 	    RETURN_ON_ERROR))
 		return;
         ld->end = symbol_value("vmemmap_list");
@@ -771,27 +771,26 @@ void ppc64_vmemmap_init(void)
         vmemmap_buf = GETBUF(backing_size);
 	for (i = 0; i < cnt; i++) {
 		if (!readmem(vmemmap_list[i], KVADDR, vmemmap_buf, 
-		   backing_size, "vmemmap_backing", RETURN_ON_ERROR))
+		   backing_size, "vmemmap_backing", RETURN_ON_ERROR)) {
+			free(ms->vmemmap_list);
 			goto out;
+		}
 
 		ms->vmemmap_list[i].phys = ULONG(vmemmap_buf + phys_offset);
 		ms->vmemmap_list[i].virt = ULONG(vmemmap_buf + virt_addr_offset);
+
+		if (ms->vmemmap_list[i].virt < ms->vmemmap_base)
+			ms->vmemmap_base = ms->vmemmap_list[i].virt;
 	}
 
-	if (ms->vmemmap_base != ms->vmemmap_list[0].virt) {
-		ms->vmemmap_base = ms->vmemmap_list[0].virt;
-		if (CRASHDEBUG(1))
-			fprintf(fp, 
-			    "ppc64_vmemmap_init: vmemmap base: %lx\n",
-				ms->vmemmap_base);
-	}
-
-        ms->vmemmap_cnt = cnt;
+	ms->vmemmap_cnt = cnt;
 	machdep->flags |= VMEMMAP_AWARE;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "ppc64_vmemmap_init: vmemmap base: %lx\n",
+			ms->vmemmap_base);
 out:
 	FREEBUF(vmemmap_buf);
 	FREEBUF(vmemmap_list);
-	machdep->flags |= VMEMMAP_AWARE;
 }
 
 /*

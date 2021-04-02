@@ -1,8 +1,8 @@
 /* 
  * kvmdump.h
  *
- * Copyright (C) 2009 David Anderson
- * Copyright (C) 2009 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2009, 2010 David Anderson
+ * Copyright (C) 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,16 +15,27 @@
  * GNU General Public License for more details.
  */
 
+struct mapinfo_trailer {
+	uint64_t map_start_offset;
+	uint64_t phys_base;
+	uint32_t cpu_version_id;
+	uint32_t ram_version_id;
+	uint64_t checksum;
+	uint64_t magic;
+};
+
+#define MAPFILE_MAGIC (0xfeedbabedeadbeefULL)
+#define CHKSUM_SIZE   (4096)
+
 #define KVMDUMP_CACHED_PAGES 32
 
 struct kvmdump_data {
 	ulong flags;
 	FILE *ofp;
-	FILE *mem;
 	FILE *vmp;
-	ulong *debug;
-	ulong phys_base;
-	uint64_t last_ram_offset;
+	int mapfd;
+	int vmfd;
+	struct mapinfo_trailer mapinfo;
         /* page cache */
         struct kvm_page_cache_hdr {
                 uint64_t paddr;
@@ -38,14 +49,19 @@ struct kvmdump_data {
 	ulong accesses;
 	ulong hit_count;
 	ulong compresses;
+	uint64_t kvbase;
+	ulong *debug;
 };
+
+#define TMPFILE           (0x2)
+#define MAPFILE           (0x4)
+#define MAPFILE_FOUND     (0x8)
+#define MAPFILE_APPENDED (0x10)
 
 extern struct kvmdump_data *kvm;
 
 #undef dprintf
 #define dprintf(x...)   do { if (*(kvm->debug)) fprintf(kvm->ofp, x); } while (0)
 
-#define MEMFILE_OFFSET(addr) ((off_t)((((uint64_t)addr/(uint64_t)4096)) * sizeof(off_t))) 
-
-int store_memfile_offset(uint64_t, off_t *);
-int load_memfile_offset(uint64_t, off_t *);
+int store_mapfile_offset(uint64_t, off_t *);
+int load_mapfile_offset(uint64_t, off_t *);

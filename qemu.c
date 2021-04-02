@@ -1,7 +1,7 @@
 /*
  * Derive kernel base from a QEMU saved VM file
  *
- * Copyright (C) 2009 Red Hat, Inc.
+ * Copyright (C) 2009, 2010 Red Hat, Inc.
  * Written by Paolo Bonzini.
  *
  * Portions Copyright (C) 2009 David Anderson
@@ -196,14 +196,50 @@ get_idt_base(struct qemu_device_list *dl)
 static uint64_t
 get_kernel_base(struct qemu_device_list *dl)
 {
+	int i;
+	uint64_t kernel_base = -1;
+	uint64_t base_vaddr, last, mask;
 	struct qemu_device_x86 *dx86 = (struct qemu_device_x86 *)
 		device_find_instance (dl, "cpu", 0);
 	struct qemu_device_ram *dram = (struct qemu_device_ram *)
 		device_find_instance (dl, "ram", 0);
 
-	uint64_t base_vaddr = dx86->idt.base & ~((1LL << 30) - 1);
-	dprintf ("Virtual base address guessed at %llx\n", (unsigned long long)base_vaddr);
-	return get_phys_page(dx86, dram, base_vaddr);
+	for (i = 30, last = -1; (kernel_base == -1) && (i >= 20); i--)
+        {
+                mask = ~((1LL << i) - 1);
+                base_vaddr = dx86->idt.base & mask;
+		if (base_vaddr == last)
+			continue;
+		if (base_vaddr < kvm->kvbase) {
+			fprintf(stderr, 
+			    "WARNING: IDT base contains: %llx\n         "
+			    "cannot determine physical base address: defaulting to 0\n\n", 
+				(unsigned long long)base_vaddr);
+			return 0;
+		}
+		dprintf("get_kernel_base: %llx\n", (unsigned long long)base_vaddr);
+                kernel_base = get_phys_page(dx86, dram, base_vaddr);
+		last = base_vaddr;
+        }
+
+        if (kernel_base != -1) {
+		dprintf("kvbase: %llx vaddr used: %llx physical: %llx\n",
+			(unsigned long long)kvm->kvbase,
+			(unsigned long long)base_vaddr,
+			(unsigned long long)kernel_base);
+		/*
+		 *  Subtract the offset between the virtual address used
+		 *  and the kernel's base virtual address.
+		 */
+                kernel_base -= (base_vaddr - kvm->kvbase);
+        } else {
+		fprintf(stderr, 
+			"WARNING: cannot determine physical base address:"
+			" defaulting to 0\n\n");
+		kernel_base = 0;
+	}
+
+	return kernel_base;
 }
 
 
@@ -249,12 +285,15 @@ qemu_init(char *filename)
 {
 	struct qemu_device_list *dl;
 	struct qemu_device_ram *dram;
-	uint64_t idt;
+	uint64_t idt = 0;
 
 	if (CRASHDEBUG(1))
 		dump_qemu_header(kvm->ofp);
 
 	rewind(kvm->vmp);
+
+	if (kvm->flags & (MAPFILE|MAPFILE_APPENDED))
+		return TRUE;
 
 	please_wait("scanning KVM dumpfile");
 
@@ -270,22 +309,23 @@ qemu_init(char *filename)
 	please_wait_done();
 
 	if (dl) {
-		/*
-		 *  TBD: the IDT base is a kernel virtual address -- verify here
-		 *  that it makes sense for the host machine type.
-		 */
-		idt = get_idt_base(dl);
-		kvm->phys_base = get_kernel_base(dl);
+		if (machine_type("X86_64")) {
+			idt = get_idt_base(dl);
+			kvm->mapinfo.phys_base = get_kernel_base(dl);
+		}
+
 		dram = (struct qemu_device_ram *) 
 			device_find_instance (dl, "ram", 0);
-		kvm->last_ram_offset = dram->last_ram_offset;
 
 		if (CRASHDEBUG(1)) {
-			fprintf(kvm->ofp, "IDT: %llx\n", (ulonglong)idt);
-			fprintf(kvm->ofp, "physical kernel base: %lx\n", 
-				kvm->phys_base); 
+			if (machine_type("X86_64")) {
+				fprintf(kvm->ofp, "IDT: %llx\n", 
+					(ulonglong)idt);
+				fprintf(kvm->ofp, "physical kernel base: %llx\n", 
+					(ulonglong)kvm->mapinfo.phys_base); 
+			}
 			fprintf(kvm->ofp, "last RAM offset: %llx\n", 
-				(ulonglong)kvm->last_ram_offset); 
+				(ulonglong)dram->last_ram_offset); 
 		}
 
 		device_list_free (dl);

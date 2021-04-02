@@ -1,7 +1,7 @@
 /*
  * Qemu save VM loader
  *
- * Copyright (C) 2009 Red Hat, Inc.
+ * Copyright (C) 2009, 2010 Red Hat, Inc.
  * Written by Paolo Bonzini.
  *
  * Portions Copyright (C) 2009 David Anderson
@@ -209,12 +209,12 @@ ram_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
 		else if (header & RAM_SAVE_FLAG_COMPRESS) {
 //			dram->offsets[addr / 4096] =
 			entry = RAM_OFFSET_COMPRESSED | getc(fp);
-			store_memfile_offset(addr, &entry);
+			store_mapfile_offset(addr, &entry);
 		}
 		else if (header & RAM_SAVE_FLAG_PAGE) {
 //			dram->offsets[addr / 4096] = ftell (fp);
 			entry = ftell(fp);
-			store_memfile_offset(addr, &entry);
+			store_mapfile_offset(addr, &entry);
 			fseek (fp, 4096, SEEK_CUR);
 		}
 
@@ -241,7 +241,7 @@ ram_read_phys_page (struct qemu_device_ram *dram, void *buf, uint64_t addr)
                 return false;
         assert ((addr & 0xfff) == 0);
 //	ofs = dram->offsets[addr / 4096];
-	if (load_memfile_offset(addr, &ofs) < 0)
+	if (load_mapfile_offset(addr, &ofs) < 0)
 		return 0;
 	if ((ofs & RAM_OFFSET_COMPRESSED) == RAM_OFFSET_COMPRESSED)
 		memset (buf, ofs & 255, 4096);
@@ -262,6 +262,7 @@ ram_init_load (struct qemu_device_list *dl,
 	};
 
 	assert (version_id == 3);
+	kvm->mapinfo.ram_version_id = version_id;
 	return device_alloc (dl, sizeof (struct qemu_device_ram),
 			     &ram, section_id, instance_id);
 }
@@ -481,7 +482,9 @@ cpu_init_load_32 (struct qemu_device_list *dl,
 	};
 
 	assert (!live);
-	assert (version_id >= 4 && version_id <= 9);
+//	assert (version_id >= 4 && version_id <= 9);
+	assert (version_id >= 4 && version_id <= 12);
+	kvm->mapinfo.cpu_version_id = version_id;
 	dx86 = (struct qemu_device_x86 *)
 		device_alloc (dl, sizeof (struct qemu_device_x86),
 			      &cpu, section_id, instance_id);
@@ -508,7 +511,9 @@ cpu_init_load_64 (struct qemu_device_list *dl,
 	};
 
 	assert (!live);
-	assert (version_id >= 4 && version_id <= 9);
+//	assert (version_id >= 4 && version_id <= 9);
+	assert (version_id >= 4 && version_id <= 12);
+	kvm->mapinfo.cpu_version_id = version_id;
 	dx86 = (struct qemu_device_x86 *)
 		device_alloc (dl, sizeof (struct qemu_device_x86),
 			      &cpu, section_id, instance_id);
@@ -638,6 +643,7 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 	   FILE *fp)
 {
 	struct qemu_device_list *result = NULL;
+	struct qemu_device *last = NULL;;
 	size_t items;
 
 	switch (get_be32 (fp)) {
@@ -664,6 +670,8 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 	if (get_be32 (fp) != 3)
 		return NULL;
 
+	dprintf("\n");
+
 	result = calloc (1, sizeof (struct qemu_device_list));
 	for (;;) {
 		struct qemu_device *d;
@@ -679,7 +687,10 @@ qemu_load (const struct qemu_device_loader *devices, uint32_t required_features,
 		if (!d)
 			break;
 
-		dprintf("qemu_load: \"%s\"\n", d->vtbl->name);
+		if (d != last) {
+			dprintf("qemu_load: \"%s\"\n", d->vtbl->name);
+			last = d;
+		}
 
 		features = d->vtbl->load (d, fp, sec);
 		if (feof (fp) || ferror (fp))
@@ -711,11 +722,12 @@ int
 is_qemu_vm_file(char *filename)
 {
 	struct libvirt_header header;
+	FILE *vmp;
 	int retval;
 	size_t items;
 	char *xml;
 
-	if ((kvm->vmp = fopen(filename, "r")) == NULL) {
+	if ((vmp = fopen(filename, "r")) == NULL) {
 		error(INFO, "%s: %s\n", filename, strerror(errno));
 		return FALSE;
 	}
@@ -723,25 +735,25 @@ is_qemu_vm_file(char *filename)
 	retval = FALSE;
 	xml = NULL;
 
-	switch (get_be32(kvm->vmp)) 
+	switch (get_be32(vmp)) 
 	{
 	case QEMU_VM_FILE_MAGIC:
 		retval = TRUE;
 		break;
 
 	case LIBVIRT_QEMU_VM_FILE_MAGIC: 
-		rewind(kvm->vmp);
-		items = fread(&header.magic[0], sizeof(header), 1, kvm->vmp); 
+		rewind(vmp);
+		items = fread(&header.magic[0], sizeof(header), 1, vmp); 
 		if (STRNEQ(header.magic, "LibvirtQemudSave")) {
 			if ((xml = (char *)malloc(header.xml_length))) {
-				items = fread(xml, header.xml_length, 1, kvm->vmp);
+				items = fread(xml, header.xml_length, 1, vmp);
 				/*
 				 *  Parse here if necessary or desirable.
 				 */
 			} else
-				fseek(kvm->vmp, header.xml_length, SEEK_CUR);
+				fseek(vmp, header.xml_length, SEEK_CUR);
 
-			if (get_be32(kvm->vmp) == QEMU_VM_FILE_MAGIC)
+			if (get_be32(vmp) == QEMU_VM_FILE_MAGIC)
 				retval = TRUE;
 		}
 		break;
@@ -752,8 +764,17 @@ is_qemu_vm_file(char *filename)
 
 	if (xml)
 		free(xml);
-	if (retval == FALSE)
-		fclose(kvm->vmp);
+
+	switch (retval) 
+	{
+	case TRUE:
+		kvm->vmp = vmp;
+		kvm->vmfd = fileno(vmp);
+		break;
+	case FALSE:
+		fclose(vmp);
+		break;
+	}
 
 	return retval;
 }

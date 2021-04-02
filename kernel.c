@@ -3872,6 +3872,10 @@ display_sys_stats(void)
 			fprintf(fp, "  [PARTIAL DUMP]");
 
 		fprintf(fp, "\n");
+
+		if (KVMDUMP_DUMPFILE() && pc->kvmdump_mapfile)
+			fprintf(fp, "     MAPFILE: %s\n",
+				pc->kvmdump_mapfile);
 	}
 	
 	fprintf(fp, "        CPUS: %d\n",
