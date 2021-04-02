@@ -180,12 +180,13 @@ static int page_to_nid(ulong);
 static int get_kmem_cache_list(ulong **);
 static int get_kmem_cache_slub_data(long, struct meminfo *);
 static ulong compound_head(ulong);
-static long count_partial(ulong);
+static long count_partial(ulong, struct meminfo *);
 static ulong get_freepointer(struct meminfo *, void *);
 static int count_free_objects(struct meminfo *, ulong);
 char *is_slab_page(struct meminfo *, char *);
 static void do_node_lists_slub(struct meminfo *, ulong, int);
 static void check_devmem_is_allowed(void);
+static int verify_pfn(ulong);
 
 /*
  *  Memory display modes specific to this file.
@@ -7370,6 +7371,7 @@ kmem_cache_init(void)
 
 	if (vt->flags & KMALLOC_SLUB) {
 		kmem_cache_init_slub();
+		please_wait_done();
 		return;
 	}
 
@@ -11856,6 +11858,9 @@ dump_memory_nodes(int initialize)
 				node_start_mapnr = node_start_pfn;
 				node_start_paddr = PTOB(node_start_pfn);
 			if (badaddr && IS_SPARSEMEM()) {
+				if (!verify_pfn(node_start_pfn))
+					error(WARNING, "questionable node_start_pfn: %lx\n",
+						node_start_pfn);
 				phys = PTOB(node_start_pfn);
                                 if (phys_to_page(phys, &pp))
                                 	node_mem_map = pp;
@@ -12135,6 +12140,28 @@ dump_memory_nodes(int initialize)
 
 	if (!initialize && IS_SPARSEMEM())
 		dump_mem_sections();
+}
+
+/*
+ *  At least verify that page-shifted physical address.
+ */
+static int
+verify_pfn(ulong pfn)
+{
+	int i;
+	physaddr_t mask;
+
+	if (!machdep->max_physmem_bits)
+		return TRUE;
+	
+	mask = 0;
+	for (i = machdep->max_physmem_bits; i < machdep->bits; i++)
+		mask |= ((physaddr_t)1 << i);
+		
+	if (mask & BTOP(pfn))
+		return FALSE;
+
+	return TRUE;
 }
 
 static void
@@ -12741,6 +12768,14 @@ nr_to_section(ulong nr)
 	ulong addr;
 	ulong *mem_sec = vt->mem_sec;
 
+	if (IS_SPARSEMEM_EX()) {
+		if (SECTION_NR_TO_ROOT(nr) >= NR_SECTION_ROOTS()) {
+			error(WARNING, 
+			   "sparsemem: invalid section number: %ld\n", nr);
+			return 0;
+		}
+	}
+
 	if ((mem_sec[SECTION_NR_TO_ROOT(nr)] == 0) || 
 	    !IS_KVADDR(mem_sec[SECTION_NR_TO_ROOT(nr)]))
 		return 0;
@@ -12863,7 +12898,7 @@ dump_mem_sections(void)
                 mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "CODED_MEM_MAP"),
                 mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "MEM_MAP"));
 
-	for (nr = 0; nr <= nr_mem_sections ; nr++) {
+	for (nr = 0; nr < nr_mem_sections ; nr++) {
 		if ((addr = valid_section_nr(nr))) {
 			coded_mem_map = section_mem_map_addr(addr);
 			mem_map = sparse_decode_mem_map(coded_mem_map,nr);
@@ -13742,7 +13777,7 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 		switch (cmd)
 		{
 		case GET_SLUB_OBJECTS:
-			if ((p = count_partial(node_ptr)) < 0)
+			if ((p = count_partial(node_ptr, si)) < 0)
 				return FALSE;
 			total_objects += p;
 			break;
@@ -14055,6 +14090,12 @@ do_node_lists_slub(struct meminfo *si, ulong node_ptr, int node)
                 if (!readmem(next, KVADDR, &next, sizeof(ulong),
                     "page.lru.next", RETURN_ON_ERROR))
                         return;
+
+		if (!IS_KVADDR(next)) {
+			error(INFO, "%s: partial list: page.lru.next: %lx\n", 
+				si->curname, next);
+			return;
+		}
         }
 
 #define SLAB_STORE_USER (0x00010000UL)
@@ -14086,6 +14127,12 @@ do_node_lists_slub(struct meminfo *si, ulong node_ptr, int node)
                 if (!readmem(next, KVADDR, &next, sizeof(ulong),
                     "page.lru.next", RETURN_ON_ERROR))
                         return;
+
+		if (!IS_KVADDR(next)) {
+			error(INFO, "%s: full list: page.lru.next: %lx\n", 
+				si->curname, next);
+			return;
+		}
         }
 }
 
@@ -14210,7 +14257,7 @@ compound_head(ulong page)
 }
 
 long 
-count_partial(ulong node)
+count_partial(ulong node, struct meminfo *si)
 {
 	ulong list_head, next;
 	short inuse;
@@ -14223,13 +14270,23 @@ count_partial(ulong node)
 		return -1;
 
 	while (next != list_head) {
-		if (!readmem(next - OFFSET(page_lru) + OFFSET(page_inuse), KVADDR, &inuse, 
-		    sizeof(ushort), "page.inuse", RETURN_ON_ERROR))
+		if (!readmem(next - OFFSET(page_lru) + OFFSET(page_inuse), 
+		    KVADDR, &inuse, sizeof(ushort), "page.inuse", RETURN_ON_ERROR))
 			return -1;
+		if (inuse == -1) {
+			error(INFO, "%s: partial list: page.inuse: -1\n",
+				si->curname);
+			break;
+		}
 		total_inuse += inuse;
 		if (!readmem(next, KVADDR, &next, sizeof(ulong),
 		    "page.lru.next", RETURN_ON_ERROR))
 			return -1;
+		if (!IS_KVADDR(next)) {
+			error(INFO, "%s: partial list: page.lru.next: %lx\n", 
+				si->curname, next);
+			break;
+		}
 	}
 	return total_inuse;
 }

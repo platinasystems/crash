@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.7 2008/10/28 18:53:10 anderson Exp $
+ * $Id: sial.c,v 1.8 2009/04/30 20:04:02 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -83,6 +83,14 @@ struct command_table_entry {               /* one for each command in menu */
 };
 extern FILE *fp; 
 extern char *crash_global_cmd();
+
+typedef unsigned long long int ulonglong;
+extern int readmem(ulonglong, int, void *, long, char *, ulong);
+extern int symbol_exists(char *);
+extern ulong symbol_value(char *);
+extern void cmd_usage(char *, int);
+extern void register_extension(struct command_table_entry *);
+
 
 //
 /////////////////////////////////////////////////////////////////////////

@@ -316,6 +316,10 @@ in_extensions_library(char *lib, char *buf)
 	if (file_exists(buf, NULL))
 		return TRUE;
  
+       	sprintf(buf, "./extensions/%s", lib);
+	if (file_exists(buf, NULL))
+		return TRUE;
+
 	return FALSE;
 }
 

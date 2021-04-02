@@ -106,6 +106,7 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 
 EXTENSIONS=extensions
 EXTENSION_SOURCE_FILES=${EXTENSIONS}/Makefile ${EXTENSIONS}/echo.c ${EXTENSIONS}/dminfo.c \
+	${EXTENSIONS}/snap.c ${EXTENSIONS}/snap.mk \
         ${EXTENSIONS}/libsial/Makefile \
         ${EXTENSIONS}/libsial/mkbaseop.c \
         ${EXTENSIONS}/libsial/README \
@@ -479,7 +480,7 @@ gdb_files: make_configure
 
 show_files:
 	@if [ -f ${PROGRAM}  ]; then \
-		./${PROGRAM} --no_scroll --no_crashrc -h README > README; echo $?; fi
+		./${PROGRAM} --no_scroll --no_crashrc -h README > README; fi
 	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING README \
 	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES}
 
@@ -503,7 +504,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-8.9
+RELEASE=4.0-8.11
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

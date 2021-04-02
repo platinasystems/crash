@@ -4,7 +4,7 @@
    1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004
    Free Software Foundation, Inc.
    Portions Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
-   Copyright (c) 2002, 2003, 2004, 2005, 2007 Red Hat, Inc. All rights reserved.
+   Copyright (c) 2002, 2003, 2004, 2005, 2007, 2009 Red Hat, Inc. All rights reserved.
 
    This file is part of GDB.
 
@@ -4696,7 +4696,8 @@ gdb_delete_symbol_file(struct gnu_request *req)
         register struct objfile *objfile;
 
         ALL_OBJFILES(objfile) {
-                if (STREQ(objfile->name, req->name)) {
+                if (STREQ(objfile->name, req->name) || 
+		    same_file(objfile->name, req->name)) {
                 	free_objfile(objfile);
 			break;
                 }

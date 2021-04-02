@@ -260,6 +260,7 @@ struct number_option {
 #define FATAL_RESTART  (3)
 #define WARNING        (4)
 #define NOTE           (5)
+#define CONT           (6)
 #define FATAL_ERROR(x) (((x) == FATAL) || ((x) == FATAL_RESTART))
 
 #define CONSOLE_OFF(x) ((x) = console_off())
@@ -381,6 +382,7 @@ struct program_context {
 #define BAD_INSTRUCTION    (0x80)
 #define UD2A_INSTRUCTION  (0x100)
 #define IRQ_IN_USE        (0x200)
+#define MODULE_TREE       (0x400)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -547,6 +549,7 @@ struct kernel_table {                   /* kernel data */
 	ulong p2m_mfn_cache_hits;
 	ulong p2m_page_cache_hits;
 	ulong relocate;
+	char *module_tree;
 };
 
 /*
@@ -1464,6 +1467,14 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long sched_info_last_arrival;
 	long page_objects;
 	long kmem_cache_oo;
+	long char_device_struct_cdev;
+	long char_device_struct_baseminor;
+	long cdev_ops;
+	long probe_next;
+	long probe_dev;
+	long probe_data;
+	long kobj_map_probes;
+	long task_struct_prio;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1569,6 +1580,9 @@ struct size_table {         /* stash of commonly-used sizes */
 	long cfs_rq;
 	long pcpu_info;
 	long vcpu_struct;
+	long cdev;
+	long probe;
+	long kobj_map;
 };
 
 struct array_table {
@@ -1894,6 +1908,7 @@ struct symbol_table_data {
 	struct load_module *load_modules;
 	off_t dwarf_eh_frame_file_offset;
 	ulong dwarf_eh_frame_size;
+	ulong first_ksymbol;
 };
 
 /* flags for st */
@@ -1909,6 +1924,7 @@ struct symbol_table_data {
 #define CRC_MATCHES      (0x100)
 #define ADD_SYMBOL_FILE  (0x200)
 #define USE_OLD_ADD_SYM  (0x400)
+#define PERCPU_SYMS      (0x800)
 
 #endif /* !GDB_COMMON */
 
@@ -2137,7 +2153,10 @@ struct load_module {
 #define VMEMMAP_VADDR_2_6_24       0xffffe20000000000
 #define VMEMMAP_END_2_6_24         0xffffe2ffffffffff
 
+#define VMALLOC_START_ADDR_2_6_26  0xffffffffa0000000
+
 #define PAGE_OFFSET_2_6_27         0xffff880000000000
+#define MODULES_END_2_6_27         0xffffffffff000000
 
 #define USERSPACE_TOP_XEN          0x0000800000000000
 #define PAGE_OFFSET_XEN            0xffff880000000000
@@ -2152,6 +2171,13 @@ struct load_module {
 #define VMALLOC_END_XEN_RHEL4         0xffffff7fffffffff
 #define MODULES_VADDR_XEN_RHEL4       0xffffffffa0000000
 #define MODULES_END_XEN_RHEL4         0xffffffffafffffff
+
+#define VMALLOC_START_ADDR_2_6_31  0xffffc90000000000
+#define VMALLOC_END_2_6_31         0xffffe8ffffffffff
+#define VMEMMAP_VADDR_2_6_31       0xffffea0000000000
+#define VMEMMAP_END_2_6_31         0xffffeaffffffffff
+#define MODULES_VADDR_2_6_31       0xffffffffa0000000
+#define MODULES_END_2_6_31         0xffffffffff000000
 
 #define PTOV(X)               ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)               x86_64_VTOP((ulong)(X))
@@ -2239,29 +2265,29 @@ struct load_module {
 #define _CPU_PDA_READ2(CPU, BUFFER) \
  	((readmem(symbol_value("_cpu_pda"),				\
 		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),		\
-		 "_cpu_pda addr", FAULT_ON_ERROR)) &&			\
+		 "_cpu_pda addr", RETURN_ON_ERROR)) &&			\
  	(readmem(cpu_pda_addr + ((CPU) * sizeof(void *)),		\
 		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),		\
-		 "_cpu_pda addr", FAULT_ON_ERROR)) &&			\
+		 "_cpu_pda addr", RETURN_ON_ERROR)) &&			\
 	(cpu_pda_addr) &&						\
 	(readmem(cpu_pda_addr, KVADDR, (BUFFER), SIZE(x8664_pda),	\
-		 "cpu_pda entry", FAULT_ON_ERROR)))
+		 "cpu_pda entry", RETURN_ON_ERROR)))
 
 #define _CPU_PDA_READ(CPU, BUFFER) \
 	((STRNEQ("_cpu_pda", closest_symbol((symbol_value("_cpu_pda") +	\
 	     ((CPU) * sizeof(unsigned long)))))) &&			\
  	(readmem(symbol_value("_cpu_pda") + ((CPU) * sizeof(void *)),   \
 		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),          \
-		 "_cpu_pda addr", FAULT_ON_ERROR)) &&	   	        \
+		 "_cpu_pda addr", RETURN_ON_ERROR)) &&	   	        \
 	(readmem(cpu_pda_addr, KVADDR, (BUFFER), SIZE(x8664_pda),       \
-		 "cpu_pda entry", FAULT_ON_ERROR)))
+		 "cpu_pda entry", RETURN_ON_ERROR)))
 
 #define CPU_PDA_READ(CPU, BUFFER) \
 	(STRNEQ("cpu_pda", closest_symbol((symbol_value("cpu_pda") +	\
 	     ((CPU) * SIZE(x8664_pda))))) &&				\
         readmem(symbol_value("cpu_pda") + ((CPU) * SIZE(x8664_pda)),	\
              KVADDR, (BUFFER), SIZE(x8664_pda), "cpu_pda entry",	\
-             FAULT_ON_ERROR))
+             RETURN_ON_ERROR))
 
 #define VALID_LEVEL4_PGT_ADDR(X) \
 	(((X) == VIRTPAGEBASE(X)) && IS_KVADDR(X) && !IS_VMALLOC_ADDR(X))
@@ -2269,6 +2295,7 @@ struct load_module {
 #define _SECTION_SIZE_BITS	  27
 #define _MAX_PHYSMEM_BITS	  40
 #define _MAX_PHYSMEM_BITS_2_6_26  44
+#define _MAX_PHYSMEM_BITS_2_6_31  46
 
 #endif  /* X86_64 */
 
@@ -3281,7 +3308,7 @@ uint32_t swap32(uint32_t, int);
  *  symbols.c 
  */
 void symtab_init(void);
-char *check_specified_debug_file(void);
+char *check_specified_kernel_debug_file(void);
 void no_debugging_data(int);
 void get_text_init_space(void);
 int is_kernel_text(ulong);
@@ -3427,7 +3454,7 @@ int is_a_tty(char *);
 int file_exists(char *, struct stat *);
 int file_readable(char *);
 int is_directory(char *);
-char *search_directory_tree(char *, char *);
+char *search_directory_tree(char *, char *, int);
 void open_tmpfile(void);
 void close_tmpfile(void);
 void open_tmpfile2(void);
@@ -3627,6 +3654,7 @@ void verify_spinlock(void);
 void non_matching_kernel(void);
 struct load_module *modref_to_load_module(char *);
 void unlink_module(struct load_module *);
+int check_specified_module_tree(char *, char *);
 int is_system_call(char *, ulong);
 void generic_dump_irq(int);
 int generic_dis_filter(ulong, char *);
@@ -3647,6 +3675,7 @@ int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
 void back_trace(struct bt_info *);
+ulong cpu_map_addr(const char *type);
 #define BT_RAW                     (0x1ULL)
 #define BT_SYMBOLIC_ARGS           (0x2ULL)
 #define BT_FULL                    (0x4ULL)
@@ -3846,6 +3875,8 @@ struct machine_specific {
 	ulong irq_eframe_link;
 	struct x86_64_pt_regs_offsets pto;
 	struct x86_64_stkinfo stkinfo;
+	ulong *current;
+	ulong *crash_nmi_rsp;
 };
 
 #define KSYMS_START    (0x1)
@@ -4133,6 +4164,9 @@ void set_xen_phys_start(char *);
 ulong xen_phys_start(void);
 int xen_major_version(void);
 int xen_minor_version(void);
+int get_netdump_arch(void);
+void *get_regs_from_elf_notes(struct task_context *);
+void map_cpus_to_prstatus(void);
 
 /*
  *  diskdump.c

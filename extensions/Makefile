@@ -1,8 +1,8 @@
 #
 # Makefile for building crash shared object extensions
 #
-# Copyright (C) 2005, 2007 David Anderson
-# Copyright (C) 2005, 2007 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2005, 2007, 2009 David Anderson
+# Copyright (C) 2005, 2007, 2009 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -29,10 +29,10 @@ CONTRIB_SO := $(patsubst %.c,%.so,$(wildcard *.c))
 all: link_defs $(CONTRIB_SO)
 	
 link_defs:
-	@if [ ! -f defs.h ]; then \
-	  ln -s ../defs.h; fi 
+	@rm -f defs.h
+	@ln ../defs.h 
 
-$(CONTRIB_SO): %.so: %.c
+$(CONTRIB_SO): %.so: %.c defs.h
 	@if [ -f $*.mk ]; then \
 		make -f $*.mk; \
 	else \

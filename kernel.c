@@ -463,7 +463,26 @@ kernel_init()
 			"char_device_struct", "fops");
 		MEMBER_OFFSET_INIT(char_device_struct_major,
 			"char_device_struct", "major");
+		MEMBER_OFFSET_INIT(char_device_struct_baseminor,
+			"char_device_struct", "baseminor");
+		MEMBER_OFFSET_INIT(char_device_struct_cdev,
+			"char_device_struct", "cdev");
 	}
+
+	STRUCT_SIZE_INIT(cdev, "cdev");
+	if (VALID_STRUCT(cdev)) 
+		MEMBER_OFFSET_INIT(cdev_ops, "cdev", "ops");
+
+	STRUCT_SIZE_INIT(probe, "probe");
+	if (VALID_STRUCT(probe)) {
+		MEMBER_OFFSET_INIT(probe_next, "probe", "next");
+		MEMBER_OFFSET_INIT(probe_dev, "probe", "dev");
+		MEMBER_OFFSET_INIT(probe_data, "probe", "data");
+	}
+
+	STRUCT_SIZE_INIT(kobj_map, "kobj_map");
+	if (VALID_STRUCT(kobj_map)) 
+		MEMBER_OFFSET_INIT(kobj_map_probes, "kobj_map", "probes");
 
 	MEMBER_OFFSET_INIT(module_kallsyms_start, "module", 
 		"kallsyms_start");
@@ -533,6 +552,62 @@ kernel_init()
 }
 
 /*
+ * Get cpu map address.  Types are: possible, online, present and active.
+ * They exist as either:
+ *
+ *  (1) cpu_<type>_map symbols, or 
+ *  (2) what is pointed to by cpu_<type>_mask
+ */
+ulong
+cpu_map_addr(const char *type)
+{
+	char map_symbol[32];
+	ulong addr;
+
+	sprintf(map_symbol, "cpu_%s_map", type);
+	if (kernel_symbol_exists(map_symbol))
+		return symbol_value(map_symbol);
+
+        sprintf(map_symbol, "cpu_%s_mask", type);
+        if (kernel_symbol_exists(map_symbol)) {
+        	get_symbol_data(map_symbol, sizeof(ulong), &addr);
+        	return addr;
+	}
+
+	return 0;
+}
+
+/*
+ * Get cpu map (possible, online, etc.) size
+ */
+static int
+cpu_map_size(const char *type)
+{
+	int len;
+	char map_symbol[32];
+	struct gnu_request req;
+
+        if (LKCD_KERNTYPES()) {
+                if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+                        error(FATAL, "cannot determine type cpumask_t\n");
+		return len;
+	}
+
+	sprintf(map_symbol, "cpu_%s_map", type);
+	if (kernel_symbol_exists(map_symbol)) {
+		len = get_symbol_type(map_symbol, NULL, &req) ==
+                        TYPE_CODE_UNDEF ? sizeof(ulong) : req.length;
+		return len;
+	}
+
+	len = STRUCT_SIZE("cpumask_t");
+	if (len < 0)
+		return sizeof(ulong);
+	else
+		return len;
+}
+
+/*
  *  If the cpu_present_map, cpu_online_map and cpu_possible_maps exist,
  *  set up the kt->cpu_flags[NR_CPUS] with their settings.
  */ 
@@ -541,14 +616,14 @@ cpu_maps_init(void)
 {
         int i, c, m, cpu, len;
         char *buf;
-        ulong *maskptr;
+        ulong *maskptr, addr;
 	struct mapinfo {
 		ulong cpu_flag;
 		char *name;
 	} mapinfo[] = {
-		{ POSSIBLE, "cpu_possible_map" },
-		{ PRESENT, "cpu_present_map" },
-		{ ONLINE, "cpu_online_map" },
+		{ POSSIBLE, "possible" },
+		{ PRESENT, "present" },
+		{ ONLINE, "online" },
 	};
 
 	if ((len = STRUCT_SIZE("cpumask_t")) < 0)
@@ -557,12 +632,13 @@ cpu_maps_init(void)
 	buf = GETBUF(len);
 
 	for (m = 0; m < sizeof(mapinfo)/sizeof(struct mapinfo); m++) {
-		if (!kernel_symbol_exists(mapinfo[m].name))
+		if (!(addr = cpu_map_addr(mapinfo[m].name)))
 			continue;
 
-		if (!readmem(symbol_value(mapinfo[m].name), KVADDR, buf, len,
+		if (!readmem(addr, KVADDR, buf, len,
 		    mapinfo[m].name, RETURN_ON_ERROR)) {
-			error(WARNING, "cannot read %s\n", mapinfo[m].name);
+			error(WARNING, "cannot read cpu_%s_map\n",
+			      mapinfo[m].name);
 			continue;
 		}
 
@@ -578,7 +654,7 @@ cpu_maps_init(void)
 		}
 
 		if (CRASHDEBUG(1)) {
-			fprintf(fp, "%s: ", mapinfo[m].name);
+			fprintf(fp, "cpu_%s_map: ", mapinfo[m].name);
 			for (i = 0; i < NR_CPUS; i++) {
 				if (kt->cpu_flags[i] & mapinfo[m].cpu_flag)
 					fprintf(fp, "%d ", i);
@@ -605,21 +681,21 @@ in_cpu_map(int map, int cpu)
 	switch (map)
 	{
 	case POSSIBLE:
-		if (!kernel_symbol_exists("cpu_possible_map")) {
+		if (!cpu_map_addr("possible")) {
 			error(INFO, "cpu_possible_map does not exist\n");
 			return FALSE;
 		}
 		return (kt->cpu_flags[cpu] & POSSIBLE);
 
 	case PRESENT:
-		if (!kernel_symbol_exists("cpu_present_map")) {
+		if (!cpu_map_addr("present")) {
 			error(INFO, "cpu_present_map does not exist\n");
 			return FALSE;
 		}
 		return (kt->cpu_flags[cpu] & PRESENT);
 
 	case ONLINE:
-		if (!kernel_symbol_exists("cpu_online_map")) {
+		if (!cpu_map_addr("online")) {
 			error(INFO, "cpu_online_map does not exist\n");
 			return FALSE;
 		}
@@ -2114,6 +2190,17 @@ back_trace(struct bt_info *bt)
 		return;
 	}
 
+	if (ACTIVE() && !INSTACK(esp, bt)) {
+		sprintf(buf, "/proc/%ld", bt->tc->pid); 
+		if (!file_exists(buf, NULL))
+			error(INFO, "task no longer exists\n");
+		else 
+			error(INFO, 
+			    "invalid/stale stack pointer for this task: %lx\n", 
+				esp);
+		return;
+	}
+
 	if (bt->flags & 
 	    (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT)) {
 
@@ -2456,7 +2543,7 @@ void
 module_init(void)
 {
 	int i, c;
-        ulong mod, mod_next;
+        ulong size, mod, mod_next;
 	uint nsyms;
 	ulong total, numksyms;
         char *modbuf, *kallsymsbuf;
@@ -2624,10 +2711,27 @@ module_init(void)
 			break;
 
 		case KALLSYMS_V2:
-			if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
+			if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 				numksyms = UINT(modbuf + OFFSET(module_num_symtab));
-			else
+				size = UINT(modbuf + OFFSET(module_core_size));
+			} else {
 				numksyms = ULONG(modbuf + OFFSET(module_num_symtab));
+				size = ULONG(modbuf + OFFSET(module_core_size));
+			}
+
+			if (!size) {
+				/*
+				 *  Bail out here instead of a crashing with a 
+				 *  getbuf(0) failure during storage later on.
+				 */
+				error(WARNING, 
+				    "invalid kernel module size: 0\n");
+					kt->mods_installed = 0;
+					kt->flags |= NO_MODULE_ACCESS;
+				FREEBUF(modbuf); 
+				return;
+			}
+
 			total += numksyms; 
 			break;
 		}
@@ -2799,7 +2903,7 @@ void
 cmd_mod(void)
 {
 	int c;
-	char *objfile, *modref, *tree;
+	char *objfile, *modref, *tree, *symlink;
 	ulong flag, address;
 	char buf[BUFSIZE];
 
@@ -2817,11 +2921,11 @@ cmd_mod(void)
 		return;
 	}
 
-	modref = objfile = tree = NULL;
+	modref = objfile = tree = symlink = NULL;
 	address = 0;
 	flag = LIST_MODULE_HDR;
 
-        while ((c = getopt(argcnt, args, "rd:Ds:St:o")) != EOF) {
+        while ((c = getopt(argcnt, args, "rd:Ds:So")) != EOF) {
                 switch(c)
 		{
                 case 'r':
@@ -2866,15 +2970,6 @@ cmd_mod(void)
 				    "-o option is not applicable to this kernel version\n");
                         st->flags |= USE_OLD_ADD_SYM;
 			return;
-
-		case 't':
-			if (is_directory(optarg))
-				tree = optarg;
-			else {
-                		error(INFO, "%s is not a directory\n", args[2]);
-                                cmd_usage(pc->curcmd, SYNOPSIS);
-			}
-			break;
 
 		case 'S':
 			if (flag) 
@@ -2979,8 +3074,50 @@ cmd_mod(void)
 		break;
 	}
 
+	if ((flag == LOAD_ALL_MODULE_SYMBOLS) &&
+	    (tree || kt->module_tree)) {
+		if (!tree)
+			tree = kt->module_tree;
+
+		pc->curcmd_flags |= MODULE_TREE;
+	}
+
 	do_module_cmd(flag, modref, address, objfile, tree);
 
+	if (symlink)
+		FREEBUF(symlink);
+}
+
+int
+check_specified_module_tree(char *module, char *gdb_buffer)
+{
+	char *p1, *treebuf;
+	int retval;
+
+	retval = FALSE;
+
+	if (!(pc->curcmd_flags & MODULE_TREE))
+		return retval;
+	/*
+	 *  Search for "/lib/modules" in the module name string
+	 *  and insert "/usr/lib/debug" there.
+	 */
+	if (strstr(module, "/lib/modules")) {
+		treebuf = GETBUF(strlen(module) + strlen("/usr/lib/debug") +
+                        strlen(".debug") + 1);
+		strcpy(treebuf, module);
+		p1 = strstr(treebuf, "/lib/modules");
+		shift_string_right(p1, strlen("/usr/lib/debug"));
+		BCOPY("/usr/lib/debug", p1, strlen("/usr/lib/debug"));
+		strcat(treebuf, ".debug");
+		if (file_exists(treebuf, NULL)) {
+			strcpy(gdb_buffer, treebuf);
+			retval = TRUE;
+		}
+		FREEBUF(treebuf);
+	}
+
+	return retval;
 }
 
 
@@ -3290,12 +3427,12 @@ module_objfile_search(char *modref, char *filename, char *tree)
 	}
 
 	if (tree) {
-		if (!(retbuf = search_directory_tree(tree, file))) {
+		if (!(retbuf = search_directory_tree(tree, file, 1))) {
 			switch (kt->flags & (KMOD_V1|KMOD_V2))
 			{
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
-				retbuf = search_directory_tree(tree, file);
+				retbuf = search_directory_tree(tree, file, 1);
 			}
 		}
 		return retbuf;
@@ -3303,28 +3440,28 @@ module_objfile_search(char *modref, char *filename, char *tree)
 
 	sprintf(dir, "%s/%s", DEFAULT_REDHAT_DEBUG_LOCATION, 
 		kt->utsname.release);
-	retbuf = search_directory_tree(dir, file);
+	retbuf = search_directory_tree(dir, file, 0);
 
 	if (!retbuf) {
 		sprintf(dir, "/lib/modules/%s/updates", kt->utsname.release);
-		if (!(retbuf = search_directory_tree(dir, file))) {
+		if (!(retbuf = search_directory_tree(dir, file, 0))) {
 			switch (kt->flags & (KMOD_V1|KMOD_V2))
 			{
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
-				retbuf = search_directory_tree(dir, file);
+				retbuf = search_directory_tree(dir, file, 0);
 			}
 		}
 	}
 
 	if (!retbuf) {
 		sprintf(dir, "/lib/modules/%s", kt->utsname.release);
-		if (!(retbuf = search_directory_tree(dir, file))) {
+		if (!(retbuf = search_directory_tree(dir, file, 0))) {
 			switch (kt->flags & (KMOD_V1|KMOD_V2))
 			{
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
-				retbuf = search_directory_tree(dir, file);
+				retbuf = search_directory_tree(dir, file, 0);
 			}
 		}
 	}
@@ -4101,6 +4238,8 @@ dump_kernel_table(int verbose)
         fprintf(fp, "   module_list: %lx\n", kt->module_list);
         fprintf(fp, " kernel_module: %lx\n", kt->kernel_module);
 	fprintf(fp, "mods_installed: %d\n", kt->mods_installed);
+	fprintf(fp, "   module_tree: %s\n", kt->module_tree ? 
+		kt->module_tree : "(not used)");
 	if (!(pc->flags & KERNEL_DEBUG_QUERY) && ACTIVE()) 
                 get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
         fprintf(fp, "          date: %s\n",
@@ -4187,7 +4326,7 @@ dump_kernel_table(int verbose)
 	}
 	fprintf(fp, "\n");
 	fprintf(fp, "       cpu_possible_map: ");
-	if (kernel_symbol_exists("cpu_possible_map")) {
+	if (cpu_map_addr("possible")) {
 		for (i = 0; i < nr_cpus; i++) {
 			if (kt->cpu_flags[i] & POSSIBLE)
 				fprintf(fp, "%d ", i);
@@ -4196,7 +4335,7 @@ dump_kernel_table(int verbose)
 	} else
 		fprintf(fp, "(does not exist)\n");
 	fprintf(fp, "        cpu_present_map: ");
-	if (kernel_symbol_exists("cpu_present_map")) {
+	if (cpu_map_addr("present")) {
 		for (i = 0; i < nr_cpus; i++) {
 			if (kt->cpu_flags[i] & PRESENT)
 				fprintf(fp, "%d ", i);
@@ -4205,7 +4344,7 @@ dump_kernel_table(int verbose)
 	} else
 		fprintf(fp, "(does not exist)\n");
 	fprintf(fp, "         cpu_online_map: ");
-	if (kernel_symbol_exists("cpu_online_map")) {
+	if (cpu_map_addr("online")) {
 		for (i = 0; i < nr_cpus; i++) {
 			if (kt->cpu_flags[i] & ONLINE)
 				fprintf(fp, "%d ", i);
@@ -5923,34 +6062,29 @@ int
 get_cpus_online()
 {
 	int i, len, online;
-	struct gnu_request req;
 	char *buf;
-	ulong *maskptr;
+	ulong *maskptr, addr;
 
-	if (!symbol_exists("cpu_online_map")) 
+	if (!(addr = cpu_map_addr("online")))
 		return 0;
 
-	if (LKCD_KERNTYPES()) {
-		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
-			error(FATAL, "cannot determine type cpumask_t\n");
-	} else
-		len = get_symbol_type("cpu_online_map", NULL, &req) ==
-			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+	len = cpu_map_size("online");
 	buf = GETBUF(len);
 
 	online = 0;
 
-        if (readmem(symbol_value("cpu_online_map"), KVADDR, buf, len,
-            "cpu_online_map", RETURN_ON_ERROR)) {
+        if (readmem(addr, KVADDR, buf, len, 
+	    "cpu_online_map", RETURN_ON_ERROR)) {
 
 		maskptr = (ulong *)buf;
 		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
 			online += count_bits_long(*maskptr);
 
-		FREEBUF(buf);
 		if (CRASHDEBUG(1))
 			error(INFO, "get_cpus_online: online: %d\n", online);
 	}
+
+	FREEBUF(buf);
 
 	return online;
 }
@@ -5962,34 +6096,29 @@ int
 get_cpus_present()
 {
 	int i, len, present;
-	struct gnu_request req;
 	char *buf;
-	ulong *maskptr;
+	ulong *maskptr, addr;
 
-	if (!symbol_exists("cpu_present_map")) 
+	if (!(addr = cpu_map_addr("present"))) 
 		return 0;
 
-	if (LKCD_KERNTYPES()) {
-		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
-			error(FATAL, "cannot determine type cpumask_t\n");
-	} else
-		len = get_symbol_type("cpu_present_map", NULL, &req) ==
-			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+	len = cpu_map_size("present");
 	buf = GETBUF(len);
 
 	present = 0;
 
-        if (readmem(symbol_value("cpu_present_map"), KVADDR, buf, len,
-            "cpu_present_map", RETURN_ON_ERROR)) {
+		if (readmem(addr, KVADDR, buf, len,
+		    "cpu_present_map", RETURN_ON_ERROR)) {
 
 		maskptr = (ulong *)buf;
 		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
 			present += count_bits_long(*maskptr);
 
-		FREEBUF(buf);
 		if (CRASHDEBUG(1))
 			error(INFO, "get_cpus_present: present: %d\n", present);
 	}
+
+	FREEBUF(buf);
 
 	return present;
 }
@@ -6001,35 +6130,30 @@ int
 get_cpus_possible()
 {
 	int i, len, possible;
-	struct gnu_request req;
 	char *buf;
-	ulong *maskptr;
+	ulong *maskptr, addr;
 
-	if (!symbol_exists("cpu_possible_map"))
+	if (!(addr = cpu_map_addr("possible")))
 		return 0;
 
-	if (LKCD_KERNTYPES()) {
-		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
-			error(FATAL, "cannot determine type cpumask_t\n");
-	} else
-		len = get_symbol_type("cpu_possible_map", NULL, &req) ==
-			TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+	len = cpu_map_size("possible");
 	buf = GETBUF(len);
 
 	possible = 0;
 
-	if (readmem(symbol_value("cpu_possible_map"), KVADDR, buf, len,
+	if (readmem(addr, KVADDR, buf, len,
 		"cpu_possible_map", RETURN_ON_ERROR)) {
 
 		maskptr = (ulong *)buf;
 		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
 			possible += count_bits_long(*maskptr);
 
-		FREEBUF(buf);
 		if (CRASHDEBUG(1))
 			error(INFO, "get_cpus_possible: possible: %d\n",
 				possible);
 	}
+
+	FREEBUF(buf);
 
 	return possible;
 }
