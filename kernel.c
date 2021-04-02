@@ -933,6 +933,10 @@ verify_namelist()
 	}
 
         if (CRASHDEBUG(1)) {
+		error(WARNING, 
+		    "\ncannot find matching kernel version in %s file:\n\n",
+			namelist);
+			
                	fprintf(fp, "verify_namelist:\n");
                 fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
                 fprintf(fp, "utsname version: %s\n", kt->utsname.version);

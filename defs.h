@@ -46,6 +46,7 @@
 #include <sys/param.h>
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <execinfo.h> /* backtrace() */
 
 #define BASELEVEL_REVISION  "4.0"
 
@@ -183,6 +184,7 @@ struct number_option {
 #define PLEASE_WAIT   (0x200000000000000ULL)
 #define IFILE_ERROR   (0x400000000000000ULL)
 #define KERNTYPES     (0x800000000000000ULL)
+#define MINIMAL_MODE (0x1000000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
@@ -1797,18 +1799,18 @@ struct alias_data {                 /* command alias storage */
 	char argbuf[1];
 };
 
-static inline void
-save_return_address(ulong *retaddr)
-{
-	retaddr[0] = (ulong) __builtin_return_address(0);
-#if defined(X86) || defined(PPC) || defined(X86_64) || defined(PPC64)
-	if (__builtin_frame_address(1))
-		retaddr[1] = (ulong) __builtin_return_address(1);
-	if (__builtin_frame_address(2))
-                retaddr[2] = (ulong) __builtin_return_address(2);
-	if (__builtin_frame_address(3))
-                retaddr[3] = (ulong) __builtin_return_address(3);
-#endif
+#define NUMBER_STACKFRAMES 4
+
+#define SAVE_RETURN_ADDRESS(retaddr) \
+{ 									\
+	int i; 								\
+	int saved_stacks; 						\
+									\
+	saved_stacks = backtrace((void **)retaddr, NUMBER_STACKFRAMES); \
+									\
+	/* explicitely zero out the invalid addresses */		\
+	for (i = saved_stacks; i < NUMBER_STACKFRAMES; i++)		\
+		retaddr[i] = 0;						\
 }
 
 #endif /* !GDB_COMMON */
@@ -3135,6 +3137,7 @@ int received_SIGINT(void);
 void debug_redirect(char *);
 int CRASHPAGER_valid(void);
 char *setup_scroll_command(void);
+int minimal_functions(char *);
 
 /*
  *  tools.c

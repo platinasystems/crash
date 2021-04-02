@@ -306,12 +306,15 @@ task_init(void)
 
 		get_symbol_data("cfq_slice_async", sizeof(int), 
 			&cfq_slice_async);
-		machdep->hz = cfq_slice_async * 25; 
 
-		if (CRASHDEBUG(2))
-			fprintf(fp, 
-			    "cfq_slice_async exitsts: setting hz to %d\n", 
-				machdep->hz);
+		if (cfq_slice_async) {
+			machdep->hz = cfq_slice_async * 25; 
+
+			if (CRASHDEBUG(2))
+				fprintf(fp, 
+			    	    "cfq_slice_async exists: setting hz to %d\n", 
+					machdep->hz);
+		}
 	}
 
 	if (VALID_MEMBER(runqueue_arrays)) 

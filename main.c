@@ -57,6 +57,7 @@ static struct option long_options[] = {
         {"no_scroll", 0, 0, 0},
         {"reloc", required_argument, 0, 0},
 	{"active", 0, 0, 0},
+	{"minimal", 0, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -200,6 +201,9 @@ main(int argc, char **argv)
 				} 
 				kt->flags |= RELOC_SET;
 			}
+
+			else if (STREQ(long_options[option_index].name, "minimal")) 
+				pc->flags |= MINIMAL_MODE;
 
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
@@ -496,7 +500,7 @@ main_loop(void)
 #else
         		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
-		} else {
+		} else if (!(pc->flags & MINIMAL_MODE)) {
 			read_in_kernel_config(IKCFG_INIT);
 			kernel_init();
 			machdep_init(POST_GDB);
@@ -521,15 +525,20 @@ main_loop(void)
 #ifdef XEN_HYPERVISOR_ARCH
 			xen_hyper_display_sys_stats();
 			xen_hyper_show_vcpu_context(XEN_HYPER_VCPU_LAST_CONTEXT());
+                	fprintf(fp, "\n");
 #else
         		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
-		} else {
+		} else if (!(pc->flags & MINIMAL_MODE)) {
 			display_sys_stats();
 			show_context(CURRENT_CONTEXT());
+                	fprintf(fp, "\n");
 		}
-                fprintf(fp, "\n");
         }
+
+	if (pc->flags & MINIMAL_MODE)
+            error(NOTE, 
+		"minimal mode commands: log, dis, rd, sym, eval and exit\n\n");
 
         pc->flags |= RUNTIME;
 
@@ -607,14 +616,22 @@ reattempt:
         if (is_datatype_command()) 
                 goto reattempt;
 
-	if (is_gdb_command(TRUE, FAULT_ON_ERROR)) 
+	if (!(pc->flags & MINIMAL_MODE) &&
+	    is_gdb_command(TRUE, FAULT_ON_ERROR)) 
 		goto reattempt;
 
 	if (REMOTE() && remote_execute())
 		return;
 
 	pc->curcmd = pc->program_name;
-	error(INFO, "command not found: %s\n", args[0]);
+
+	if (pc->flags & MINIMAL_MODE)
+		error(INFO, 
+		    "%s: command not available in minimal mode\n"
+		    "NOTE: minimal mode commands: log, dis, rd, sym, eval and exit\n",
+			args[0]);
+	else
+		error(INFO, "command not found: %s\n", args[0]);
 
 	if (pc->curcmd_flags & REPEAT)
 		pc->curcmd_flags &= ~REPEAT;
@@ -629,6 +646,9 @@ get_command_table_entry(char *name)
 {       
         struct command_table_entry *cp;
         struct extension_table *ext;
+	
+	if ((pc->flags & MINIMAL_MODE) && !minimal_functions(name)) 
+		return NULL;
   
 	for (cp = pc->cmd_table; cp->name; cp++) {
                 if (STREQ(cp->name, name))
@@ -1062,6 +1082,9 @@ dump_program_context(void)
         if (pc->flags & IFILE_ERROR)
                 sprintf(&buf[strlen(buf)],
                         "%sIFILE_ERROR", others++ ? "|" : "");
+        if (pc->flags & MINIMAL_MODE)
+                sprintf(&buf[strlen(buf)],
+                        "%sMINIMAL_MODE", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");

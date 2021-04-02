@@ -1312,6 +1312,14 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		lm_mcnt = mcnt;
 		mcnt++;
 
+		if (nsyms && !IN_MODULE(syms, lm)) {
+			error(WARNING, 
+			    "[%s] module.syms outside of module "
+			    "address space (%lx)\n\n",
+				lm->mod_name, syms);
+			nsyms = 0;
+		}
+
 		if (nsyms) {
 			modsymbuf = GETBUF(sizeof(struct kernel_symbol)*nsyms);
 			readmem((ulong)syms, KVADDR, modsymbuf,
@@ -8913,8 +8921,8 @@ OFFSET_option(long offset1, long offset2, char *func, char *file, int line,
 		return offset2;
 
 	if (pc->flags & DATADEBUG) {
-        	ulong retaddr[4] = { 0 };
-		save_return_address(retaddr);
+        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, 	
 		    "invalid (optional) structure member offsets: %s or %s",
 			item1, item2);
@@ -8936,8 +8944,8 @@ SIZE_option(long size1, long size2, char *func, char *file, int line,
                 return size2;
 
         if (pc->flags & DATADEBUG) {
-        	ulong retaddr[4] = { 0 };
-		save_return_address(retaddr);
+        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid (optional) structure sizes: %s or %s",
 			item1, item2);
                 datatype_error(retaddr, errmsg, func, file, line);
@@ -8964,8 +8972,8 @@ OFFSET_verify(long offset, char *func, char *file, int line, char *item)
 		return offset;
 
 	if (offset < 0) {
-        	ulong retaddr[4] = { 0 };
-		save_return_address(retaddr);
+        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid structure member offset: %s",
 			item);
 		datatype_error(retaddr, errmsg, func, file, line);
@@ -8982,8 +8990,8 @@ SIZE_verify(long size, char *func, char *file, int line, char *item)
                 return size;
 
         if (size < 0) {
-        	ulong retaddr[4] = { 0 };
-		save_return_address(retaddr);
+        	ulong retaddr[NUMBER_STACKFRAMES] = { 0 };
+		SAVE_RETURN_ADDRESS(retaddr);
 		sprintf(errmsg, "invalid structure size: %s", item);
                 datatype_error(retaddr, errmsg, func, file, line);
         }
@@ -9051,7 +9059,7 @@ dump_trace(ulong *retaddr)
 	thisfile = get_thisfile();
 
 	fprintf(stderr, "[%s] error trace: ", thisfile);
-        for (i = 3; i >= 0; i--) {
+        for (i = (NUMBER_STACKFRAMES-1); i >= 0; i--) {
                 if (retaddr[i])
                         fprintf(stderr, "%s%lx%s",
                                 i == 3 ? "" : "=> ",
@@ -9065,7 +9073,7 @@ dump_trace(ulong *retaddr)
 		return;
 	}
 
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i < NUMBER_STACKFRAMES; i++) {
 		if (!(lookfor = retaddr[i]))
 			continue;
 

@@ -34,6 +34,7 @@ static int setup_stdpipe(void);
 static void wait_for_children(ulong);
 #define ZOMBIES_ONLY (1)
 #define ALL_CHILDREN (2)
+int shell_command(char *);
 
 #define READLINE_LIBRARY
 
@@ -481,10 +482,8 @@ setup_redirect(int origin)
 			if (LASTCHAR(p) == '|')
 				error(FATAL_RESTART, "pipe to nowhere?\n");
 
-			if (pc->redirect & REDIRECT_SHELL_COMMAND) {
-				system(p);
-				return REDIRECT_SHELL_COMMAND;
-			} 
+			if (pc->redirect & REDIRECT_SHELL_COMMAND)
+				return shell_command(p);
 
                         if ((pipe = popen(p, "w")) == NULL) {
                                 error(INFO, "cannot open pipe\n");
@@ -829,16 +828,13 @@ close_output(void)
 void
 cmdline_init(void)
 {
-	int fd;
+	int fd = 0;
 
 	/*
 	 *  Stash a copy of the original termios setup. 
          *  Build a raw version for quick use for each command entry.
 	 */ 
-	if (isatty(fileno(stdin))) {
-        	if ((fd = open("/dev/tty", O_RDONLY)) < 0) 
-			error(FATAL, "/dev/tty: %s\n", strerror(errno));
-                
+        if (isatty(fileno(stdin)) && ((fd = open("/dev/tty", O_RDONLY)) >= 0)) {
 		if (tcgetattr(fd, &pc->termios_orig) == -1) 
 			error(FATAL, "tcgetattr /dev/tty: %s\n", 
 				strerror(errno));
@@ -862,8 +858,10 @@ cmdline_init(void)
 		readline_init();
         }
         else {
-        	fprintf(fp, pc->flags & SILENT ? 
-			"" : "    NOTE: stdin: not a tty\n");
+		if (fd < 0)
+			error(INFO, "/dev/tty: %s\n", strerror(errno));
+		if (!(pc->flags & SILENT))
+			fprintf(fp, "NOTE: stdin: not a tty\n\n");
                 fflush(fp);
 		pc->flags &= ~TTY;
         }
@@ -2136,4 +2134,36 @@ wait_for_children(ulong waitflag)
         	}
 		stall(1000);
 	}
+}
+
+/*
+ *  Run an escaped shell command, redirecting the output to
+ *  the current output file.
+ */
+int
+shell_command(char *cmd)
+{
+	FILE *pipe;
+	char buf[BUFSIZE];
+
+	if ((pipe = popen(cmd, "r")) == NULL) {
+		error(INFO, "cannot open pipe: %s\n", cmd);
+		pc->redirect &= ~REDIRECT_SHELL_COMMAND;
+                pc->redirect |= REDIRECT_FAILURE;
+                return REDIRECT_FAILURE;
+        }
+
+        while (fgets(buf, BUFSIZE, pipe))
+		fprintf(fp, buf);
+        pclose(pipe);
+
+	return REDIRECT_SHELL_COMMAND;
+}
+
+int minimal_functions(char *name)
+{
+	return  STREQ("log", name) || STREQ("help",name) || \
+		STREQ("dis", name) || STREQ("q", name)   || \
+		STREQ("sym", name) || STREQ("exit", name)|| \
+		STREQ("rd", name)  || STREQ("eval", name) ; 
 }
