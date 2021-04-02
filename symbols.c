@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2019 David Anderson
- * Copyright (C) 2002-2019 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2020 David Anderson
+ * Copyright (C) 2002-2020 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -597,6 +597,12 @@ kaslr_init(void)
 	    !machine_type("S390X")) || (kt->flags & RELOC_SET))
 		return;
 
+	if (!kt->vmcoreinfo._stext_SYMBOL &&
+	    (string = pc->read_vmcoreinfo("SYMBOL(_stext)"))) {
+		kt->vmcoreinfo._stext_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
+		free(string);
+	}
+
 	/*
 	 *  --kaslr=auto
 	 */
@@ -609,6 +615,11 @@ kaslr_init(void)
 		st->_stext_vmlinux = UNINITIALIZED;
 	}
 
+	if (machine_type("S390X")) {
+		kt->flags2 |= (RELOC_AUTO|KASLR);
+		st->_stext_vmlinux = UNINITIALIZED;
+	}
+
 	if (QEMU_MEM_DUMP_NO_VMCOREINFO()) {
 		if (KDUMP_DUMPFILE() && kdump_kaslr_check()) {
 			kt->flags2 |= KASLR_CHECK;
@@ -616,12 +627,6 @@ kaslr_init(void)
 			kt->flags2 |= KASLR_CHECK;
 		}
 	} else if (KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE()) {
-		if ((string = pc->read_vmcoreinfo("SYMBOL(_stext)"))) {
-			kt->vmcoreinfo._stext_SYMBOL =
-				htol(string, RETURN_ON_ERROR, NULL);
-			free(string);
-		}
-
 		/* Linux 3.14 */
 		if ((string = pc->read_vmcoreinfo("KERNELOFFSET"))) {
 			free(string);
@@ -1601,39 +1606,100 @@ union kernel_symbol {
 		unsigned long value;
 		const char *name;
 	} v1;
-	/* kernel 4.19 introduced relative symbol positionning */
+	/* kernel 4.19 introduced relative symbol positioning */
 	struct kernel_symbol_v2 {
 		int value_offset;
 		int name_offset;
 	} v2;
+	/* kernel 5.4 introduced symbol namespaces */
+	struct kernel_symbol_v3 {
+		int value_offset;
+		int name_offset;
+		int namespace_offset;
+	} v3;
+	struct kernel_symbol_v4 {
+		unsigned long value;
+		const char *name;
+		const char *namespace;
+	} v4;
 };
+
+static size_t
+kernel_symbol_type_init(void)
+{
+	if (MEMBER_EXISTS("kernel_symbol", "value") &&
+	    MEMBER_EXISTS("kernel_symbol", "name")) {
+		if (MEMBER_EXISTS("kernel_symbol", "namespace")) {
+			st->kernel_symbol_type = 4;
+			return (sizeof(struct kernel_symbol_v4));
+		} else {
+			st->kernel_symbol_type = 1;
+			return (sizeof(struct kernel_symbol_v1));
+		}
+	}
+	if (MEMBER_EXISTS("kernel_symbol", "value_offset") &&
+	    MEMBER_EXISTS("kernel_symbol", "name_offset")) {
+		if (MEMBER_EXISTS("kernel_symbol", "namespace_offset")) {
+			st->kernel_symbol_type = 3;
+			return (sizeof(struct kernel_symbol_v3));
+		} else {
+			st->kernel_symbol_type = 2;
+			return (sizeof(struct kernel_symbol_v2));
+		}
+	}
+
+	error(FATAL, "kernel_symbol data structure has changed\n");
+
+	return 0;
+}
 
 static ulong
 modsym_name(ulong syms, union kernel_symbol *modsym, int i)
 {
-	if (VALID_MEMBER(kernel_symbol_value))
+	switch (st->kernel_symbol_type)
+	{
+	case 1:
 		return (ulong)modsym->v1.name;
+	case 2:
+		return (syms + i * sizeof(struct kernel_symbol_v2) +
+			offsetof(struct kernel_symbol_v2, name_offset) +
+			modsym->v2.name_offset);
+	case 3:
+		return (syms + i * sizeof(struct kernel_symbol_v3) +
+			offsetof(struct kernel_symbol_v3, name_offset) +
+			modsym->v3.name_offset);
+	case 4:
+		return (ulong)modsym->v4.name;
+	}
 
-	return syms + i * sizeof(struct kernel_symbol_v2) +
-		offsetof(struct kernel_symbol_v2, name_offset) +
-		modsym->v2.name_offset;
+	return 0;
 }
 
 static ulong
 modsym_value(ulong syms, union kernel_symbol *modsym, int i)
 {
-	if (VALID_MEMBER(kernel_symbol_value))
+	switch (st->kernel_symbol_type)
+	{
+	case 1:
 		return (ulong)modsym->v1.value;
+	case 2:
+		return (syms + i * sizeof(struct kernel_symbol_v2) +
+			offsetof(struct kernel_symbol_v2, value_offset) +
+			modsym->v2.value_offset);
+	case 3:
+		return (syms + i * sizeof(struct kernel_symbol_v3) +
+			offsetof(struct kernel_symbol_v3, value_offset) +
+			modsym->v3.value_offset);
+	case 4:
+		return (ulong)modsym->v4.value;
+	}
 
-	return syms + i * sizeof(struct kernel_symbol_v2) +
-		offsetof(struct kernel_symbol_v2, value_offset) +
-		modsym->v2.value_offset;
+	return 0;
 }
 
 void
 store_module_symbols_v2(ulong total, int mods_installed)
 {
-
         int i, m;
         ulong mod, mod_next; 
 	char *mod_name;
@@ -1669,12 +1735,7 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		  "re-initialization of module symbols not implemented yet!\n");
 	}
 
-	MEMBER_OFFSET_INIT(kernel_symbol_value, "kernel_symbol", "value");
-	if (VALID_MEMBER(kernel_symbol_value)) {
-		kernel_symbol_size = sizeof(struct kernel_symbol_v1);
-	} else {
-		kernel_symbol_size = sizeof(struct kernel_symbol_v2);
-	}
+	kernel_symbol_size = kernel_symbol_type_init();
 
         if ((st->ext_module_symtable = (struct syment *)
              calloc(total, sizeof(struct syment))) == NULL)
@@ -3412,6 +3473,8 @@ dump_symbol_table(void)
 		fprintf(fp, "\n");
 	} else
 		fprintf(fp, "(none)\n");
+
+	fprintf(fp, "  kernel_symbol_type: v%d\n", st->kernel_symbol_type);
 }
 
 
@@ -3591,6 +3654,7 @@ is_compressed_kernel(char *file, char **tmp)
 
 #define GZIP  (1)
 #define BZIP2 (2)
+#define XZ    (3)
 
 #define FNAME (1 << 3)
 
@@ -3640,6 +3704,19 @@ is_compressed_kernel(char *file, char **tmp)
 		type = BZIP2;
 	}
 
+	if (!memcmp(header, "\xfd""7zXZ", 6)) {
+		if (!STRNEQ(basename(file), "vmlinux") &&
+		    !(st->flags & FORCE_DEBUGINFO)) {
+			error(INFO, "%s: compressed file name does not start "
+			    "with \"vmlinux\"\n", file);
+			error(CONT, 
+			    "Use \"-f %s\" on command line to override.\n\n",
+				file);
+			return FALSE;
+		}
+		type = XZ;
+	}
+
 	if (!type)
 		return FALSE;
 
@@ -3673,6 +3750,12 @@ is_compressed_kernel(char *file, char **tmp)
 		sprintf(command, "%s -c %s > %s", 
 			file_exists("/bin/bunzip2", NULL) ?
 			"/bin/bunzip2" : "/usr/bin/bunzip2",
+			file, tempname);
+		break;
+	case XZ:
+		sprintf(command, "%s -c %s > %s", 
+			file_exists("/bin/unxz", NULL) ?
+			"/bin/unxz" : "/usr/bin/unxz",
 			file, tempname);
 		break;
 	}
@@ -4290,7 +4373,7 @@ get_build_directory(char *buf)
 		get_line_number(symbol_value("do_schedule"), buf, FALSE); 
 	else
 		return NULL;
-	if ((p = strstr(buf, "/kernel/")))
+	if ((p = strstr(buf, "/kernel/")) || (p = strstr(buf, "/./arch/")))
 		*p = NULLCHAR;
 	else
 		return(NULL);
@@ -8110,8 +8193,10 @@ parse_for_member_extended(struct datatype_member *dm,
 		 */
 
 		if (current && p && (p - p1 < BUFSIZE)) {
-			strncpy(current->field_name, p1, p - p1);
+//			strncpy(current->field_name, p1, p - p1);  (NOTE: gcc-9.0.1 emits [-Wstringop-truncation] warning)
 			current->field_len = p - p1;
+			memcpy(current->field_name, p1, current->field_len);
+			current->field_name[current->field_len] = '\0';
 		}
 
 		if ( p && (*s_e != '{' || (*s_e == '{' && buf[len] == '}') )) {
@@ -9968,6 +10053,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(rb_node_rb_left));
         fprintf(fp, "              rb_node_rb_right: %ld\n",
                 OFFSET(rb_node_rb_right));
+        fprintf(fp, "    rb_root_cached_rb_leftmost: %ld\n",
+                OFFSET(rb_root_cached_rb_leftmost));
 
 	fprintf(fp, "            x8664_pda_pcurrent: %ld\n",
 		OFFSET(x8664_pda_pcurrent));
@@ -10324,6 +10411,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(hrtimer_function));
 	fprintf(fp, "          timerqueue_head_next: %ld\n",
 		OFFSET(timerqueue_head_next));
+	fprintf(fp, "       timerqueue_head_rb_root: %ld\n",
+		OFFSET(timerqueue_head_rb_root));
 	fprintf(fp, "       timerqueue_node_expires: %ld\n",
 		OFFSET(timerqueue_node_expires));
 	fprintf(fp, "          timerqueue_node_node: %ld\n",

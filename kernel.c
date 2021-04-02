@@ -42,8 +42,8 @@ static void dump_hrtimer_data(const ulong *cpus);
 static void dump_hrtimer_clock_base(const void *, const int);
 static void dump_hrtimer_base(const void *, const int);
 static void dump_active_timers(const void *, ulonglong);
-static int get_expires_len(const int, const ulong *, const int);
-static void print_timer(const void *);
+static int get_expires_len(const int, const ulong *, ulonglong, const int);
+static void print_timer(const void *, ulonglong);
 static ulonglong ktime_to_ns(const void *);
 static void dump_timer_data(const ulong *cpus);
 static void dump_timer_data_tvec_bases_v1(const ulong *cpus);
@@ -52,10 +52,10 @@ static void dump_timer_data_tvec_bases_v3(const ulong *cpus);
 static void dump_timer_data_timer_bases(const ulong *cpus);
 struct tv_range;
 static void init_tv_ranges(struct tv_range *, int, int, int);
-static int do_timer_list(ulong,int, ulong *, void *,ulong *,struct tv_range *);
-static int do_timer_list_v3(ulong, int, ulong *, void *,ulong *);
+static int do_timer_list(ulong,int, ulong *, void *,ulong *, ulong *, struct tv_range *, ulong);
+static int do_timer_list_v3(ulong, int, ulong *, void *,ulong *, ulong *, ulong, long);
 struct timer_bases_data;
-static int do_timer_list_v4(struct timer_bases_data *);
+static int do_timer_list_v4(struct timer_bases_data *, ulong);
 static int compare_timer_data(const void *, const void *);
 static void panic_this_kernel(void);
 static void dump_waitq(ulong, char *);
@@ -783,7 +783,13 @@ kernel_init()
 		MEMBER_OFFSET_INIT(timerqueue_node_expires, 
 			"timerqueue_node", "expires");
 		MEMBER_OFFSET_INIT(timerqueue_node_node, 
-			"timerqueue_node_node", "node");
+			"timerqueue_node", "node");
+		if (INVALID_MEMBER(timerqueue_head_next)) {
+			MEMBER_OFFSET_INIT(timerqueue_head_rb_root,
+				"timerqueue_head", "rb_root");
+			MEMBER_OFFSET_INIT(rb_root_cached_rb_leftmost,
+				"rb_root_cached", "rb_leftmost");
+		}
 	}
 	MEMBER_OFFSET_INIT(hrtimer_softexpires, "hrtimer", "_softexpires");
 	MEMBER_OFFSET_INIT(hrtimer_function, "hrtimer", "function");
@@ -1453,11 +1459,19 @@ list_source_code(struct gnu_request *req, int count_entered)
         char *argv[MAXARGS];
 	struct syment *sp;
 	ulong remaining, offset;
+	struct load_module *lm;
 	char *p1;
 
 	sp = value_search(req->addr, &offset);
 	if (!sp || !is_symbol_text(sp))
 		error(FATAL, "%lx: not a kernel text address\n", req->addr);
+
+	if (module_symbol(req->addr, NULL, &lm, NULL, 0)) {
+		if (!(lm->mod_flags & MOD_LOAD_SYMS))
+			error(FATAL, "%s: module source code is not available\n", lm->mod_name);
+		get_line_number(req->addr, buf1, FALSE);
+	} else if (kt->flags2 & KASLR)
+		req->addr -= (kt->relocate * -1);
 
 	sprintf(buf1, "list *0x%lx", req->addr);
 	open_tmpfile();
@@ -1741,6 +1755,47 @@ duplicates:
 	return FALSE;
 }
 
+static int
+set_reverse_tmpfile_offset(struct gnu_request *req, ulong target)
+{
+	long index, *tmpfile_offsets;
+	ulong curaddr;
+	char buf[BUFSIZE];
+
+	tmpfile_offsets = (long *)GETBUF(sizeof(long) * req->count);
+
+	rewind(pc->tmpfile);
+	index = 0;
+        tmpfile_offsets[index] = ftell(pc->tmpfile);
+
+	while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		strip_beginning_whitespace(buf);
+		if (STRNEQ(buf, "0x")) {
+			extract_hex(buf, &curaddr, ':', TRUE);
+			if (curaddr >= target)
+				break;
+		}
+		index = (index+1) % req->count;
+               	tmpfile_offsets[index] = ftell(pc->tmpfile);
+	}
+
+	if (((index+1) < req->count) && tmpfile_offsets[index+1]) 
+		index++;
+	else
+		index = 0;
+
+	if (fseek(pc->tmpfile, tmpfile_offsets[index], SEEK_SET) < 0) {
+		FREEBUF(tmpfile_offsets);
+		rewind(pc->tmpfile);
+		return FALSE;
+	}
+
+	FREEBUF(tmpfile_offsets);
+
+	return TRUE;
+}
+
+
 /*
  *  This routine disassembles text in one of four manners.  A starting
  *  address, an expression, or symbol must be entered.  Then:
@@ -1931,16 +1986,13 @@ cmd_dis(void)
                 }
 
                 if (args[++optind]) {
-			if (reverse || forward) {
-				error(INFO, 
-			            "count argument ignored with -%s option\n",
-				    	reverse ? "r" : "f");
-			} else {
-                        	req->count = stol(args[optind], 
-					FAULT_ON_ERROR, NULL);
-				req->flags &= ~GNU_FUNCTION_ONLY;
-				count_entered++;
-			}
+			if (forward)
+				forward = FALSE;
+			req->count = stol(args[optind], FAULT_ON_ERROR, NULL);
+			req->flags &= ~GNU_FUNCTION_ONLY;
+			if (!req->count)
+				error(FATAL, "invalid count argument: 0\n"); 
+			count_entered++;
 		}
 
 		if (sources) {
@@ -2023,7 +2075,12 @@ cmd_dis(void)
 			error(FATAL, dis_err, req->addr);
 		}
 
-		rewind(pc->tmpfile);
+		if (reverse && count_entered &&
+		    set_reverse_tmpfile_offset(req, target))
+			count_entered = FALSE;
+		else
+			rewind(pc->tmpfile);
+
 		while (fgets(buf2, BUFSIZE, pc->tmpfile)) {
 			strip_beginning_whitespace(buf2);
 
@@ -2399,7 +2456,7 @@ cmd_bt(void)
 	int i, c;
 	ulong value, *cpus;
         struct task_context *tc;
-	int subsequent, active;
+	int subsequent, active, panic;
 	struct stack_hook hook;
 	struct bt_info bt_info, bt_setup, *bt;
 	struct reference reference;
@@ -2409,7 +2466,7 @@ cmd_bt(void)
 
 	tc = NULL;
 	cpus = NULL;
-	subsequent = active = 0;
+	subsequent = active = panic = 0;
 	hook.eip = hook.esp = 0;
 	refptr = 0;
 	bt = &bt_info;
@@ -2418,7 +2475,7 @@ cmd_bt(void)
 	if (kt->flags & USE_OPT_BT)
 		bt->flags |= BT_OPT_BACK_TRACE;
 
-	while ((c = getopt(argcnt, args, "D:fFI:S:c:aAloreEgstTdxR:Ov")) != EOF) {
+	while ((c = getopt(argcnt, args, "D:fFI:S:c:aAloreEgstTdxR:Ovp")) != EOF) {
                 switch (c)
 		{
 		case 'f':
@@ -2606,6 +2663,14 @@ cmd_bt(void)
 				option_not_supported(c);
 			check_stack_overflow();
 			return;
+		case 'p':
+			if (LIVE())
+				error(FATAL,
+				    "-p option not supported on a live system or live dump\n");
+			if (!tt->panic_task)
+				error(FATAL, "no panic task found!\n");
+			panic++;
+			break;
 
 		default:
 			argerrs++;
@@ -2745,7 +2810,10 @@ cmd_bt(void)
 			tgid = task_tgid(CURRENT_TASK());
 			DO_THREAD_GROUP_BACKTRACE();
 		} else {
-			tc = CURRENT_CONTEXT();
+			if (panic)
+				tc = task_to_context(tt->panic_task);
+			else
+				tc = CURRENT_CONTEXT();
 			DO_TASK_BACKTRACE();
 		}
 		return;
@@ -5679,6 +5747,7 @@ dump_sys_call_table(char *spec, int cnt)
 
 	fprintf(fp, "%s", sys_call_hdr);
 
+	get_build_directory(buf2);
         for (i = 0, sct = sys_call_table; i < NR_syscalls; i++, sct++) {
                 if (!(scp = value_symbol(*sct))) {
 			if (confirmed || CRASHDEBUG(1)) {
@@ -5710,7 +5779,6 @@ dump_sys_call_table(char *spec, int cnt)
 	  	 */
                 sp = value_search(*sct, NULL);
                 spn = next_symbol(NULL, sp);
-		get_build_directory(buf2);
 
 		for (addr = *sct; sp && spn && (addr < spn->value); addr++) {
 			BZERO(buf1, BUFSIZE);
@@ -7504,6 +7572,7 @@ dump_hrtimer_data(const ulong *cpus)
 
 static int expires_len = -1;
 static int softexpires_len = -1;
+static int tte_len = -1;
 
 static void
 dump_hrtimer_clock_base(const void *hrtimer_bases, const int num)
@@ -7567,6 +7636,7 @@ dump_active_timers(const void *base, ulonglong now)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 	char buf4[BUFSIZE];
+	char buf5[BUFSIZE];
 
 	next = 0;
 	timer_list = 0;
@@ -7591,11 +7661,17 @@ next_one:
 		readmem((ulong)(base + OFFSET(hrtimer_clock_base_first)),
 			KVADDR,	&curr, sizeof(curr), "hrtimer_clock_base first",
 			FAULT_ON_ERROR);
-	else
+	else if (VALID_MEMBER(timerqueue_head_next))
 		readmem((ulong)(base + OFFSET(hrtimer_clock_base_active) +
 				OFFSET(timerqueue_head_next)),
 			KVADDR, &curr, sizeof(curr), "hrtimer_clock base",
 			FAULT_ON_ERROR);
+	else
+		readmem((ulong)(base + OFFSET(hrtimer_clock_base_active) +
+				OFFSET(timerqueue_head_rb_root) +
+				OFFSET(rb_root_cached_rb_leftmost)),
+			KVADDR, &curr, sizeof(curr),
+			"hrtimer_clock_base active", FAULT_ON_ERROR);
 
 	while (curr && i < next) {
 		curr = rb_next(curr);
@@ -7626,10 +7702,11 @@ next_one:
 
 	/* dump hrtimers */
 	/* print header */
-	expires_len = get_expires_len(timer_cnt, timer_list, 0);
+	expires_len = get_expires_len(timer_cnt, timer_list, 0, 0);
 	if (expires_len < 7)
 		expires_len = 7;
-	softexpires_len = get_expires_len(timer_cnt, timer_list, 1);
+	softexpires_len = get_expires_len(timer_cnt, timer_list, 0, 1);
+	tte_len = get_expires_len(timer_cnt, timer_list, now, 2);
 
 	if (softexpires_len > -1) {
 		if (softexpires_len < 11)
@@ -7639,9 +7716,10 @@ next_one:
 		sprintf(buf1, "%lld", now);
 		fprintf(fp, "  %s\n", mkstring(buf1, softexpires_len, 
 			CENTER|RJUST, NULL));
-		fprintf(fp, "  %s  %s  %s  %s\n",
+		fprintf(fp, "  %s  %s  %s  %s  %s\n",
 			mkstring(buf1, softexpires_len, CENTER|RJUST, "SOFTEXPIRES"),
 			mkstring(buf2, expires_len, CENTER|RJUST, "EXPIRES"),
+			mkstring(buf5, tte_len, CENTER|RJUST, "TTE"),
 			mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "HRTIMER"),
 			mkstring(buf4, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
 	} else {
@@ -7649,8 +7727,9 @@ next_one:
 			"CURRENT"));
 		sprintf(buf1, "%lld", now);
 		fprintf(fp, "  %s\n", mkstring(buf1, expires_len, CENTER|RJUST, NULL));
-		fprintf(fp, "  %s  %s  %s\n",
+		fprintf(fp, "  %s  %s  %s  %s\n",
 			mkstring(buf1, expires_len, CENTER|RJUST, "EXPIRES"),
+			mkstring(buf5, tte_len, CENTER|RJUST, "TTE"),
 			mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "HRTIMER"),
 			mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
 	}
@@ -7664,12 +7743,12 @@ next_one:
 		else
 			timer = (void *)(timer_list[t] - OFFSET(hrtimer_node));
 
-		print_timer(timer);
+		print_timer(timer, now);
 	}
 }
 
 static int
-get_expires_len(const int timer_cnt, const ulong *timer_list, const int getsoft)
+get_expires_len(const int timer_cnt, const ulong *timer_list, ulonglong now, const int getsoft)
 {
 	void *last_timer;
 	char buf[BUFSIZE];
@@ -7689,7 +7768,7 @@ get_expires_len(const int timer_cnt, const ulong *timer_list, const int getsoft)
 		last_timer = (void *)(timer_list[timer_cnt -1] -
 			OFFSET(hrtimer_node));
 
-	if (getsoft) {
+	if (getsoft == 1) {
 		/* soft expires exist*/
 		if (VALID_MEMBER(hrtimer_softexpires)) {
 			softexpires = ktime_to_ns(last_timer + 
@@ -7704,7 +7783,7 @@ get_expires_len(const int timer_cnt, const ulong *timer_list, const int getsoft)
 			expires = ktime_to_ns(last_timer + OFFSET(hrtimer_node) +
 				OFFSET(timerqueue_node_expires));
 
-		sprintf(buf, "%lld", expires);
+		sprintf(buf, "%lld", getsoft ? expires - now : expires);
 		len = strlen(buf);
 	}
 
@@ -7715,14 +7794,15 @@ get_expires_len(const int timer_cnt, const ulong *timer_list, const int getsoft)
  * print hrtimer and its related information
  */
 static void
-print_timer(const void *timer)
+print_timer(const void *timer, ulonglong now)
 {
-	ulonglong softexpires, expires;
+	ulonglong softexpires, expires, tte;
 	
 	ulong function;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
 
 	/* align information */
 	fprintf(fp, "  ");
@@ -7752,6 +7832,9 @@ print_timer(const void *timer)
 
 	sprintf(buf1, "%lld", expires);
 	fprintf(fp, "%s  ", mkstring(buf2, expires_len, CENTER|RJUST, buf1));
+
+	tte = expires - now;
+	fprintf(fp, "%s  ", mkstring(buf4, tte_len, SLONG_DEC|RJUST, MKSTR((ulong)tte)));
 
 	fprintf(fp, "%lx  ", (ulong)timer);
 
@@ -7808,6 +7891,7 @@ struct timer_data {
 	ulong address; 
 	ulong expires;
 	ulong function;
+	long tte;
 };
 
 struct tv_range {
@@ -7828,14 +7912,15 @@ dump_timer_data(const ulong *cpus)
 	} timer_table[32];
 	char buf[BUFSIZE];
 	char buf1[BUFSIZE];
+	char buf4[BUFSIZE];
         struct timer_struct *tp;
-        ulong mask, highest, function;
+        ulong mask, highest, highest_tte, function;
 	ulong jiffies, timer_jiffies;
 	ulong *vec;
 	long count;
         int vec_root_size, vec_size;
 	struct timer_data *td;
-	int flen, tdx, old_timers_exist;
+	int flen, tlen, tdx, old_timers_exist;
         struct tv_range tv[TVN];
 
 	if (kt->flags2 & TIMER_BASES) {
@@ -7889,15 +7974,15 @@ dump_timer_data(const ulong *cpus)
 	init_tv_ranges(tv, vec_root_size, vec_size, 0);
 
         count += do_timer_list(symbol_value("tv1") + OFFSET(timer_vec_root_vec),
-		vec_root_size, vec, NULL, NULL, tv);
+		vec_root_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(symbol_value("tv2") + OFFSET(timer_vec_vec),
-		vec_size, vec, NULL, NULL, tv);
+		vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(symbol_value("tv3") + OFFSET(timer_vec_vec),
-		vec_size, vec, NULL, NULL, tv);
+		vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(symbol_value("tv4") + OFFSET(timer_vec_vec),
-		vec_size, vec, NULL, NULL, tv);
+		vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(symbol_value("tv4") + OFFSET(timer_vec_vec),
-		vec_size, vec, NULL, NULL, tv);
+		vec_size, vec, NULL, NULL, NULL, tv, 0);
 
 	td = (struct timer_data *)
 		GETBUF((count*2) * sizeof(struct timer_data));
@@ -7909,6 +7994,7 @@ dump_timer_data(const ulong *cpus)
 		get_symbol_data("timer_active", sizeof(ulong), &timer_active);
 
 	highest = 0;
+	highest_tte = 0;
         for (i = 0, mask = 1, tp = timer_table+0; old_timers_exist && mask; 
 	     i++, tp++, mask += mask) {
                 if (mask > timer_active) 
@@ -7920,21 +8006,24 @@ dump_timer_data(const ulong *cpus)
 		td[tdx].address = i;
 		td[tdx].expires = tp->expires;
 		td[tdx].function = (ulong)tp->fn;
+		td[tdx].tte = tp->expires - jiffies;
 		if (td[tdx].expires > highest)
 			highest = td[tdx].expires;
+		if (abs(td[tdx].tte) > highest_tte)
+			highest_tte = abs(td[tdx].tte);
 		tdx++;
         }
 
 	do_timer_list(symbol_value("tv1") + OFFSET(timer_vec_root_vec),
-		vec_root_size, vec, (void *)td, &highest, tv);
+		vec_root_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 	do_timer_list(symbol_value("tv2") + OFFSET(timer_vec_vec),
-		vec_size, vec, (void *)td, &highest, tv);
+		vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 	do_timer_list(symbol_value("tv3") + OFFSET(timer_vec_vec),
-		vec_size, vec, (void *)td, &highest, tv);
+		vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 	do_timer_list(symbol_value("tv4") + OFFSET(timer_vec_vec),
-		vec_size, vec, (void *)td, &highest, tv);
+		vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 	tdx = do_timer_list(symbol_value("tv5") + OFFSET(timer_vec_vec),
-		vec_size, vec, (void *)td, &highest, tv);
+		vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 
         qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
 
@@ -7947,12 +8036,20 @@ dump_timer_data(const ulong *cpus)
 	fprintf(fp, "%s\n", mkstring(buf, flen, CENTER|LJUST, "JIFFIES"));
 	fprintf(fp, "%s\n", mkstring(buf, flen, RJUST|LONG_DEC,MKSTR(jiffies)));
 
-	fprintf(fp, "%s  TIMER_LIST/TABLE  FUNCTION\n",
-		mkstring(buf, flen, CENTER|LJUST, "EXPIRES"));
+	/* +1 accounts possible "-" sign */
+	sprintf(buf4, "%ld", highest_tte);
+	tlen = MAX(strlen(buf4) + 1, strlen("TTE"));
+
+	fprintf(fp, "%s  %s  TIMER_LIST/TABLE  FUNCTION\n",
+		mkstring(buf, flen, CENTER|LJUST, "EXPIRES"),
+		mkstring(buf4, tlen, CENTER|LJUST, "TTE"));
 
         for (i = 0; i < tdx; i++) {
         	fprintf(fp, "%s", 
 		    mkstring(buf, flen, RJUST|LONG_DEC, MKSTR(td[i].expires)));
+
+                fprintf(fp, "  %s",
+                    mkstring(buf4, tlen, RJUST|SLONG_DEC, MKSTR(td[i].tte)));
 
 		if (td[i].address < 32) {
                         sprintf(buf, "timer_table[%ld]", td[i].address);
@@ -7992,15 +8089,16 @@ dump_timer_data(const ulong *cpus)
 static void
 dump_timer_data_tvec_bases_v1(const ulong *cpus)
 {
-	int i, cpu, tdx, flen;
+	int i, cpu, tdx, flen, tlen;
         struct timer_data *td;
         int vec_root_size, vec_size;
         struct tv_range tv[TVN];
-	ulong *vec, jiffies, highest, function;
+	ulong *vec, jiffies, highest, highest_tte, function;
 	long count;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
 
 	/*
          */
@@ -8027,33 +8125,35 @@ next_cpu:
         init_tv_ranges(tv, vec_root_size, vec_size, cpu);
 
         count += do_timer_list(tv[1].base + OFFSET(tvec_root_s_vec),
-                vec_root_size, vec, NULL, NULL, tv);
+                vec_root_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[2].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[3].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[4].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[5].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
 
 	if (count)
         	td = (struct timer_data *)
                 	GETBUF((count*2) * sizeof(struct timer_data));
         tdx = 0;
 	highest = 0;
+	highest_tte = 0;
+
         get_symbol_data("jiffies", sizeof(ulong), &jiffies);
 
         do_timer_list(tv[1].base + OFFSET(tvec_root_s_vec),
-                vec_root_size, vec, (void *)td, &highest, tv);
+                vec_root_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[2].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[3].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[4].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         tdx = do_timer_list(tv[5].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 
         qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
 
@@ -8066,14 +8166,22 @@ next_cpu:
         fprintf(fp, "%s\n", mkstring(buf1,flen, 
 		RJUST|LONG_DEC,MKSTR(jiffies)));
 
-	fprintf(fp, "%s  %s  %s\n",
+        /* +1 accounts possible "-" sign */
+        sprintf(buf4, "%ld", highest_tte);
+        tlen = MAX(strlen(buf4) + 1, strlen("TTE"));
+
+	fprintf(fp, "%s  %s  %s  %s\n",
 		mkstring(buf1, flen, CENTER|RJUST, "EXPIRES"),
+		mkstring(buf4, tlen, CENTER|RJUST, "TTE"),
 		mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "TIMER_LIST"),
 		mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
 
         for (i = 0; i < tdx; i++) {
                 fprintf(fp, "%s",
                     mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(td[i].expires)));
+
+                fprintf(fp, "  %s",
+                    mkstring(buf4, tlen, RJUST|SLONG_DEC, MKSTR(td[i].tte)));
 
                 fprintf(fp, "  %s  ", mkstring(buf1, 
 			MAX(VADDR_PRLEN, strlen("TIMER_LIST")), 
@@ -8112,17 +8220,18 @@ next_cpu:
 static void
 dump_timer_data_tvec_bases_v2(const ulong *cpus)
 {
-	int i, cpu, tdx, flen;
+	int i, cpu, tdx, flen, tlen;
         struct timer_data *td;
         int vec_root_size, vec_size;
         struct tv_range tv[TVN];
-	ulong *vec, jiffies, highest, function;
+	ulong *vec, jiffies, highest, highest_tte, function;
 	ulong tvec_bases;
 	long count;
 	struct syment *sp;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
 
         vec_root_size = (i = ARRAY_LENGTH(tvec_root_s_vec)) ?
                 i : get_array_length("tvec_root_s.vec", NULL, SIZE(list_head));
@@ -8169,33 +8278,35 @@ next_cpu:
         init_tv_ranges(tv, vec_root_size, vec_size, cpu);
 
         count += do_timer_list(tv[1].base + OFFSET(tvec_root_s_vec),
-                vec_root_size, vec, NULL, NULL, tv);
+                vec_root_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[2].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[3].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[4].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
         count += do_timer_list(tv[5].base + OFFSET(tvec_s_vec),
-                vec_size, vec, NULL, NULL, tv);
+                vec_size, vec, NULL, NULL, NULL, tv, 0);
 
 	if (count)
         	td = (struct timer_data *)
                 	GETBUF((count*2) * sizeof(struct timer_data));
         tdx = 0;
 	highest = 0;
+	highest_tte = 0;
+
         get_symbol_data("jiffies", sizeof(ulong), &jiffies);
 
         do_timer_list(tv[1].base + OFFSET(tvec_root_s_vec),
-                vec_root_size, vec, (void *)td, &highest, tv);
+                vec_root_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[2].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[3].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         do_timer_list(tv[4].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
         tdx = do_timer_list(tv[5].base + OFFSET(tvec_s_vec),
-                vec_size, vec, (void *)td, &highest, tv);
+                vec_size, vec, (void *)td, &highest, &highest_tte, tv, jiffies);
 
         qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
 
@@ -8218,14 +8329,22 @@ next_cpu:
         fprintf(fp, "%s\n", mkstring(buf1,flen, 
 		RJUST|LONG_DEC,MKSTR(jiffies)));
 
-	fprintf(fp, "%s  %s  %s\n",
+        /* +1 accounts possible "-" sign */
+        sprintf(buf4, "%ld", highest_tte);
+        tlen = MAX(strlen(buf4) + 1, strlen("TTE"));
+
+	fprintf(fp, "%s  %s  %s  %s\n",
 		mkstring(buf1, flen, CENTER|RJUST, "EXPIRES"),
+		mkstring(buf4, tlen, CENTER|RJUST, "TTE"),
 		mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "TIMER_LIST"),
 		mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
 
         for (i = 0; i < tdx; i++) {
                 fprintf(fp, "%s",
                     mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(td[i].expires)));
+
+                fprintf(fp, "  %s",
+                    mkstring(buf4, tlen, RJUST|SLONG_DEC, MKSTR(td[i].tte)));
 
                 fprintf(fp, "  %s  ", mkstring(buf1, 
 			MAX(VADDR_PRLEN, strlen("TIMER_LIST")), 
@@ -8263,20 +8382,26 @@ next_cpu:
 static void
 dump_timer_data_tvec_bases_v3(const ulong *cpus)
 {
-	int i, cpu, tdx, flen;
+	int i, cpu, tdx, flen, tlen;
 	struct timer_data *td;
 	int vec_root_size, vec_size;
 	struct tv_range tv[TVN];
-	ulong *vec, jiffies, highest, function;
+	ulong *vec, jiffies, highest, highest_tte, function;
 	ulong tvec_bases;
 	long count, head_size;
 	struct syment *sp;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
 
 	vec_root_size = vec_size = 0;
-	head_size = SIZE(hlist_head);
+
+	if (STREQ(MEMBER_TYPE_NAME("tvec_root", "vec"), "list_head"))
+		/* for RHEL7.6 or later */
+		head_size = SIZE(list_head);
+	else
+		head_size = SIZE(hlist_head);
 
 	if ((i = get_array_length("tvec_root.vec", NULL, head_size)))
 		vec_root_size = i;
@@ -8314,33 +8439,35 @@ next_cpu:
 	init_tv_ranges(tv, vec_root_size, vec_size, cpu);
 
 	count += do_timer_list_v3(tv[1].base + OFFSET(tvec_root_s_vec),
-		vec_root_size, vec, NULL, NULL);
+		vec_root_size, vec, NULL, NULL, NULL, 0, head_size);
 	count += do_timer_list_v3(tv[2].base + OFFSET(tvec_s_vec),
-		vec_size, vec, NULL, NULL);
+		vec_size, vec, NULL, NULL, NULL, 0, head_size);
 	count += do_timer_list_v3(tv[3].base + OFFSET(tvec_s_vec),
-		vec_size, vec, NULL, NULL);
+		vec_size, vec, NULL, NULL, NULL, 0, head_size);
 	count += do_timer_list_v3(tv[4].base + OFFSET(tvec_s_vec),
-		vec_size, vec, NULL, NULL);
+		vec_size, vec, NULL, NULL, NULL, 0, head_size);
 	count += do_timer_list_v3(tv[5].base + OFFSET(tvec_s_vec),
-		vec_size, vec, NULL, NULL);
+		vec_size, vec, NULL, NULL, NULL, 0, head_size);
 
 	if (count)
 		td = (struct timer_data *)
 			GETBUF((count*2) * sizeof(struct timer_data));
 	tdx = 0;
 	highest = 0;
+	highest_tte = 0;
+
 	get_symbol_data("jiffies", sizeof(ulong), &jiffies);
 
-	do_timer_list_v3(tv[1].base + OFFSET(tvec_root_s_vec),
-		vec_root_size, vec, (void *)td, &highest);
-	do_timer_list_v3(tv[2].base + OFFSET(tvec_s_vec),
-		vec_size, vec, (void *)td, &highest);
-	do_timer_list_v3(tv[3].base + OFFSET(tvec_s_vec),
-		vec_size, vec, (void *)td, &highest);
-	do_timer_list_v3(tv[4].base + OFFSET(tvec_s_vec),
-		vec_size, vec, (void *)td, &highest);
-	tdx = do_timer_list_v3(tv[5].base + OFFSET(tvec_s_vec),
-		vec_size, vec, (void *)td, &highest);
+	do_timer_list_v3(tv[1].base + OFFSET(tvec_root_s_vec), vec_root_size,
+		vec, (void *)td, &highest, &highest_tte, jiffies, head_size);
+	do_timer_list_v3(tv[2].base + OFFSET(tvec_s_vec), vec_size,
+		vec, (void *)td, &highest, &highest_tte, jiffies, head_size);
+	do_timer_list_v3(tv[3].base + OFFSET(tvec_s_vec), vec_size,
+		vec, (void *)td, &highest, &highest_tte, jiffies, head_size);
+	do_timer_list_v3(tv[4].base + OFFSET(tvec_s_vec), vec_size,
+		vec, (void *)td, &highest, &highest_tte, jiffies, head_size);
+	tdx = do_timer_list_v3(tv[5].base + OFFSET(tvec_s_vec), vec_size,
+		vec, (void *)td, &highest, &highest_tte, jiffies, head_size);
 
 	qsort(td, tdx, sizeof(struct timer_data), compare_timer_data);
 
@@ -8358,14 +8485,22 @@ next_cpu:
 	fprintf(fp, "%s\n", mkstring(buf1,flen, 
 		RJUST|LONG_DEC,MKSTR(jiffies)));
 
-	fprintf(fp, "%s  %s  %s\n",
+	/* +1 accounts possible "-" sign */
+	sprintf(buf4, "%ld", highest_tte);
+	tlen = MAX(strlen(buf4) + 1, strlen("TTE"));
+
+	fprintf(fp, "%s  %s  %s  %s\n",
 		mkstring(buf1, flen, CENTER|RJUST, "EXPIRES"),
+		mkstring(buf4, tlen, CENTER|RJUST, "TTE"),
 		mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "TIMER_LIST"),
 		mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "FUNCTION"));
 
 	for (i = 0; i < tdx; i++) {
 		fprintf(fp, "%s",
 			mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(td[i].expires)));
+
+		fprintf(fp, "  %s",
+			mkstring(buf4, tlen, RJUST|SLONG_DEC, MKSTR(td[i].tte)));
 
 		fprintf(fp, "  %s  ", mkstring(buf1, 
 			MAX(VADDR_PRLEN, strlen("TIMER_LIST")), 
@@ -8506,7 +8641,9 @@ do_timer_list(ulong vec_kvaddr,
 	      ulong *vec, 
 	      void *option, 
 	      ulong *highest,
-	      struct tv_range *tv)
+	      ulong *highest_tte,
+	      struct tv_range *tv,
+	      ulong jiffies)
 {
 	int i, t; 
 	int count, tdx;
@@ -8584,8 +8721,11 @@ do_timer_list(ulong vec_kvaddr,
                                         td[tdx].address = timer_list[t];
                                         td[tdx].expires = expires;
                                         td[tdx].function = function;
+                                        td[tdx].tte = expires - jiffies;
                                         if (highest && (expires > *highest))
                                                 *highest = expires;
+                                        if (highest_tte && (abs(td[tdx].tte) > *highest_tte))
+                                                *highest_tte = abs(td[tdx].tte);
                                         tdx++;
                                 }
 			}
@@ -8648,8 +8788,11 @@ new_timer_list_format:
                                 td[tdx].address = timer_list[t];
                                 td[tdx].expires = expires;
                                 td[tdx].function = function;
+                                td[tdx].tte = expires - jiffies;
                                 if (highest && (expires > *highest))
                                         *highest = expires;
+                                if (highest_tte && (abs(td[tdx].tte) > *highest_tte))
+                                        *highest_tte = abs(td[tdx].tte);
                                 tdx++;
                         }
 		}
@@ -8666,7 +8809,10 @@ do_timer_list_v3(ulong vec_kvaddr,
 	      int size, 
 	      ulong *vec, 
 	      void *option, 
-	      ulong *highest)
+	      ulong *highest,
+	      ulong *highest_tte,
+	      ulong jiffies,
+	      long head_size)
 {
 	int i, t; 
 	int count, tdx;
@@ -8684,19 +8830,24 @@ do_timer_list_v3(ulong vec_kvaddr,
 			tdx++;
 	}
 
-	readmem(vec_kvaddr, KVADDR, vec, SIZE(hlist_head) * size, 
+	readmem(vec_kvaddr, KVADDR, vec, head_size * size,
 		"timer_list vec array", FAULT_ON_ERROR);
 
 	ld = &list_data;
 	timer_list_buf = GETBUF(SIZE(timer_list));
 
-	for (i = count = 0; i < size; i++, vec_kvaddr += SIZE(hlist_head)) {
+	for (i = count = 0; i < size; i++, vec_kvaddr += head_size) {
 
-		if (vec[i] == 0)
-			continue;
+		if (head_size == SIZE(list_head)) {
+			if (vec[i*2] == vec_kvaddr)
+				continue;
+		} else {
+			if (vec[i] == 0)
+				continue;
+		}
 
 		BZERO(ld, sizeof(struct list_data));
-		ld->start = vec[i];
+		ld->start = (head_size == SIZE(list_head)) ? vec[i*2] : vec[i];
 		ld->list_head_offset = OFFSET(timer_list_entry);
 		ld->end = vec_kvaddr;
 		ld->flags = RETURN_ON_LIST_ERROR;
@@ -8732,8 +8883,11 @@ do_timer_list_v3(ulong vec_kvaddr,
 				td[tdx].address = timer_list[t];
 				td[tdx].expires = expires;
 				td[tdx].function = function;
+				td[tdx].tte = expires - jiffies;
 				if (highest && (expires > *highest))
 					*highest = expires;
+				if (highest_tte && (abs(td[tdx].tte) > *highest_tte))
+					*highest_tte = abs(td[tdx].tte);
 				tdx++;
 			}
 		}
@@ -8755,7 +8909,7 @@ struct timer_bases_data {
 };
 
 static int
-do_timer_list_v4(struct timer_bases_data *data)
+do_timer_list_v4(struct timer_bases_data *data, ulong jiffies)
 {
 	int i, t, timer_cnt, found;
 	struct list_data list_data, *ld;
@@ -8815,6 +8969,7 @@ do_timer_list_v4(struct timer_bases_data *data)
 			data->timers[data->cnt].address = timer_list[t];
 			data->timers[data->cnt].expires = expires;
 			data->timers[data->cnt].function = function;
+			data->timers[data->cnt].tte = expires - jiffies;
 			data->cnt++;
 
 			if (data->cnt == data->total) {
@@ -8841,12 +8996,13 @@ do_timer_list_v4(struct timer_bases_data *data)
 static void
 dump_timer_data_timer_bases(const ulong *cpus)
 {
-	int i, cpu, flen, base, nr_bases, found, display, j = 0;
+	int i, cpu, flen, tlen, base, nr_bases, found, display, j = 0;
 	struct syment *sp;
-	ulong timer_base, jiffies, function;
+	ulong timer_base, jiffies, function, highest_tte;
 	struct timer_bases_data data;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
+	char buf4[BUFSIZE];
 
 	if (!(data.num_vectors = get_array_length("timer_base.vectors", NULL, 0)))
 		error(FATAL, "cannot determine timer_base.vectors[] array size\n");
@@ -8901,12 +9057,42 @@ next_base:
 	data.cnt = 0;
 	data.timer_base = timer_base;
 
-	found = do_timer_list_v4(&data);
+	found = do_timer_list_v4(&data, jiffies);
 	
 	qsort(data.timers, found, sizeof(struct timer_data), compare_timer_data);
 
-	fprintf(fp, "  %s     TIMER_LIST     FUNCTION\n",
-		mkstring(buf1, flen, LJUST, "EXPIRES"));
+	highest_tte = 0;
+	for (i = 0; i < found; i++) {
+	    display = FALSE;
+
+	    if (is_kernel_text(data.timers[i].function)) {
+		display = TRUE;
+	    } else {
+		if (readmem(data.timers[i].function, KVADDR, &function,
+		    sizeof(ulong), "timer function",
+		    RETURN_ON_ERROR|QUIET) && is_kernel_text(function)) {
+		    display = TRUE;
+		} else {
+                    if (LIVE())
+			display = FALSE;
+		    else
+			display = TRUE;
+		}
+	    }
+
+	    if (display) {
+		if (abs(data.timers[i].tte) > highest_tte)
+		    highest_tte = abs(data.timers[i].tte);
+	    }
+	}
+
+	/* +1 accounts possible "-" sign */
+	sprintf(buf4, "%ld", highest_tte);
+	tlen = MAX(strlen(buf4) + 1, strlen("TTE"));
+
+	fprintf(fp, "  %s     %s     TIMER_LIST     FUNCTION\n",
+		mkstring(buf1, flen, LJUST, "EXPIRES"),
+		mkstring(buf4, tlen, LJUST, "TTE"));
 
 	for (i = 0; i < found; i++) {
 		display = FALSE;
@@ -8935,6 +9121,8 @@ next_base:
 		if (display) {
 			fprintf(fp, "  %s", 
 				mkstring(buf1, flen, RJUST|LONG_DEC, MKSTR(data.timers[i].expires)));
+			fprintf(fp, "  %s",
+				mkstring(buf4, tlen, RJUST|SLONG_DEC, MKSTR(data.timers[i].tte)));
 			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(data.timers[i].address));
 			fprintf(fp, "  %s  ", mkstring(buf2, 16, CENTER, buf1));
 			fprintf(fp, "%s  <%s>\n",
@@ -9976,7 +10164,7 @@ static int setup_ikconfig(char *config)
 		while (whitespace(*ent))
 			ent++;
 
-		if (ent[0] != '#') {
+		if (STRNEQ(ent, "CONFIG_")) {
 			add_ikconfig_entry(ent,
 					 &ikconfig_all[kt->ikconfig_ents++]);
 			if (kt->ikconfig_ents == IKCONFIG_MAX) {
@@ -11096,7 +11284,8 @@ dump_audit_skb_queue(ulong audit_skb_queue)
 
 	p = skb_buff_head_next;
 	do {
-		ulong data, len, data_len;
+		ulong data, data_len;
+		uint len;
 		uint16_t nlmsg_type;
 		char *buf = NULL;
 
@@ -11107,7 +11296,7 @@ dump_audit_skb_queue(ulong audit_skb_queue)
 			KVADDR,
 			&len,
 			SIZE(sk_buff_len),
-			"sk_buff.data",
+			"sk_buff.len",
 			FAULT_ON_ERROR);
 
 		data_len = len - roundup(SIZE(nlmsghdr), NLMSG_ALIGNTO);

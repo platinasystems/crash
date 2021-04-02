@@ -401,9 +401,10 @@ vm_init(void)
 	STRUCT_SIZE_INIT(vmap_area, "vmap_area");
 	if (VALID_MEMBER(vmap_area_va_start) &&
 	    VALID_MEMBER(vmap_area_va_end) &&
-	    VALID_MEMBER(vmap_area_flags) &&
 	    VALID_MEMBER(vmap_area_list) &&
 	    VALID_MEMBER(vmap_area_vm) &&
+	    (VALID_MEMBER(vmap_area_flags) || 
+		(OFFSET(vmap_area_vm) == MEMBER_OFFSET("vmap_area", "purge_list"))) &&
 	    kernel_symbol_exists("vmap_area_list"))
 		vt->flags |= USE_VMAP_AREA;
 
@@ -1208,9 +1209,9 @@ vm_init(void)
 void
 cmd_rd(void)
 {
-	int c, memtype;
+	int c, memtype, reverse;
 	ulong flag;
-	long count;
+	long bcnt, adjust, count;
 	ulonglong addr, endaddr;
 	ulong offset;
 	struct syment *sp;
@@ -1224,10 +1225,16 @@ cmd_rd(void)
 	tmpfp = NULL;
 	outputfile = NULL;
 	count = -1;
+	adjust = bcnt = 0;
+	reverse = FALSE;
 
-        while ((c = getopt(argcnt, args, "axme:r:pfudDusSNo:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "Raxme:r:pfudDusSNo:81:3:6:")) != EOF) {
                 switch(c)
 		{
+		case 'R':
+			reverse = TRUE;
+			break;
+
 		case 'a':
 			flag &= ~DISPLAY_TYPES;
                         flag |= DISPLAY_ASCII;
@@ -1383,8 +1390,6 @@ cmd_rd(void)
 
 	if (count == -1) {
 		if (endaddr) {
-			long bcnt;
-
 			if (endaddr <= addr)
 				error(FATAL, "invalid ending address: %llx\n",
 					endaddr);
@@ -1428,6 +1433,34 @@ cmd_rd(void)
 	if (memtype == KVADDR) {
 		if (!COMMON_VADDR_SPACE() && !IS_KVADDR(addr))
 			memtype = UVADDR;
+	}
+
+	if (reverse) {
+		if (!count)
+			count = 1;
+
+		switch (flag & (DISPLAY_TYPES))
+		{
+		case DISPLAY_64:
+			bcnt = (count * 8);
+			adjust = bcnt - 8;
+			break;
+		case DISPLAY_32:
+			bcnt = (count * 4);
+			adjust = bcnt - 4;
+			break;
+		case DISPLAY_16:
+			bcnt = (count * 2);
+			adjust = bcnt - 2;
+			break;
+		case DISPLAY_8:
+		case DISPLAY_ASCII:
+		case DISPLAY_RAW:
+			bcnt = count;
+			adjust = bcnt - 1;
+			break;
+		}
+		addr = (count > 1) ? addr - adjust : addr;
 	}
 
 	display_memory(addr, count, flag, memtype, outputfile);
@@ -6316,13 +6349,13 @@ fill_mem_map_cache(ulong pp, ulong ppend, char *page_cache)
                 if (cnt > size)
                         cnt = size;
 
-		if (!readmem(addr, KVADDR, bufptr, size,
+		if (!readmem(addr, KVADDR, bufptr, cnt,
                     "virtual page struct cache", RETURN_ON_ERROR|QUIET)) {
-			BZERO(bufptr, size);
-			if (!(vt->flags & V_MEM_MAP) && ((addr+size) < ppend)) 
+			BZERO(bufptr, cnt);
+			if (!((vt->flags & V_MEM_MAP) || (machdep->flags & VMEMMAP)) && ((addr+cnt) < ppend))
 				error(WARNING, 
 		                   "mem_map[] from %lx to %lx not accessible\n",
-					addr, addr+size);
+					addr, addr+cnt);
 		}
 
 		addr += cnt;
@@ -8710,7 +8743,7 @@ static void
 dump_vmap_area(struct meminfo *vi)
 {
 	int i, cnt;
-	ulong start, end, vm_struct, flags;
+	ulong start, end, vm_struct, flags, vm;
 	struct list_data list_data, *ld;
 	char *vmap_area_buf; 
 	ulong size, pcheck, count, verified; 
@@ -8758,9 +8791,15 @@ dump_vmap_area(struct meminfo *vi)
 		readmem(ld->list_ptr[i], KVADDR, vmap_area_buf,
                         SIZE(vmap_area), "vmap_area struct", FAULT_ON_ERROR); 
 
-		flags = ULONG(vmap_area_buf + OFFSET(vmap_area_flags));
-		if (flags != VM_VM_AREA)
-			continue;
+		if (VALID_MEMBER(vmap_area_flags)) {
+			flags = ULONG(vmap_area_buf + OFFSET(vmap_area_flags));
+			if (flags != VM_VM_AREA)
+				continue;
+		} else {
+			vm = ULONG(vmap_area_buf + OFFSET(vmap_area_vm));
+			if (!vm)
+				continue;
+		}
 		start = ULONG(vmap_area_buf + OFFSET(vmap_area_va_start));
 		end = ULONG(vmap_area_buf + OFFSET(vmap_area_va_end));
 		vm_struct = ULONG(vmap_area_buf + OFFSET(vmap_area_vm));
@@ -17122,13 +17161,22 @@ nr_to_section(ulong nr)
 
 /*
  * We use the lower bits of the mem_map pointer to store
- * a little bit of information.  There should be at least
- * 3 bits here due to 32-bit alignment.
+ * a little bit of information.  The pointer is calculated
+ * as mem_map - section_nr_to_pfn(pnum).  The result is
+ * aligned to the minimum alignment of the two values:
+ *   1. All mem_map arrays are page-aligned.
+ *   2. section_nr_to_pfn() always clears PFN_SECTION_SHIFT
+ *      lowest bits.  PFN_SECTION_SHIFT is arch-specific
+ *      (equal SECTION_SIZE_BITS - PAGE_SHIFT), and the
+ *      worst combination is powerpc with 256k pages,
+ *      which results in PFN_SECTION_SHIFT equal 6.
+ * To sum it up, at least 6 bits are available.
  */
 #define SECTION_MARKED_PRESENT	(1UL<<0)
 #define SECTION_HAS_MEM_MAP	(1UL<<1)
 #define SECTION_IS_ONLINE	(1UL<<2)
-#define SECTION_MAP_LAST_BIT	(1UL<<3)
+#define SECTION_IS_EARLY	(1UL<<3)
+#define SECTION_MAP_LAST_BIT	(1UL<<4)
 #define SECTION_MAP_MASK	(~(SECTION_MAP_LAST_BIT-1))
 
 
@@ -17225,6 +17273,8 @@ fill_mem_section_state(ulong state, char *buf)
 		bufidx += sprintf(buf + bufidx, "%s", "M");
 	if (state & SECTION_IS_ONLINE)
 		bufidx += sprintf(buf + bufidx, "%s", "O");
+	if (state & SECTION_IS_EARLY)
+		bufidx += sprintf(buf + bufidx, "%s", "E");
 }
 
 void 
@@ -17352,27 +17402,41 @@ fill_memory_block_name(ulong memblock, char *name)
 }
 
 static void
-fill_memory_block_srange(ulong start_sec, ulong end_sec, char *srange)
+fill_memory_block_parange(ulong saddr, ulong eaddr, char *parange)
+{
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+
+	memset(parange, 0, sizeof(*parange) * BUFSIZE);
+
+	if (eaddr == ULLONG_MAX)
+		sprintf(parange, "%s",
+			mkstring(buf1, PADDR_PRLEN*2 + 3, CENTER|LONG_HEX, MKSTR(saddr)));
+	else
+		sprintf(parange, "%s - %s",
+			mkstring(buf1, PADDR_PRLEN, RJUST|LONG_HEX, MKSTR(saddr)),
+			mkstring(buf2, PADDR_PRLEN, RJUST|LONG_HEX, MKSTR(eaddr)));
+}
+
+static void
+fill_memory_block_srange(ulong start_sec, char *srange)
 {
 	memset(srange, 0, sizeof(*srange) * BUFSIZE);
 
-	if (start_sec == end_sec)
-		sprintf(srange, "%lu", start_sec);
-	else
-		sprintf(srange, "%lu-%lu", start_sec, end_sec);
+	sprintf(srange, "%lu", start_sec);
 }
 
 static void
 print_memory_block(ulong memory_block)
 {
-	ulong start_sec, end_sec, start_pfn, end_pfn, nid;
+	ulong start_sec, end_sec, nid;
+	ulong memblock_size, mbs, start_addr, end_addr = (ulong)ULLONG_MAX;
 	char statebuf[BUFSIZE];
 	char srangebuf[BUFSIZE];
+	char parangebuf[BUFSIZE];
 	char name[BUFSIZE];
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
-	char buf3[BUFSIZE];
-	char buf4[BUFSIZE];
 	char buf5[BUFSIZE];
 	char buf6[BUFSIZE];
 	char buf7[BUFSIZE];
@@ -17380,42 +17444,47 @@ print_memory_block(ulong memory_block)
 	readmem(memory_block + OFFSET(memory_block_start_section_nr), KVADDR,
 		&start_sec, sizeof(void *), "memory_block start_section_nr",
 		FAULT_ON_ERROR);
-	readmem(memory_block + OFFSET(memory_block_end_section_nr), KVADDR,
-		&end_sec, sizeof(void *), "memory_block end_section_nr",
-		FAULT_ON_ERROR);
 
-	start_pfn = section_nr_to_pfn(start_sec);
-	end_pfn = section_nr_to_pfn(end_sec + 1);
+	start_addr = pfn_to_phys(section_nr_to_pfn(start_sec));
+
+	if (symbol_exists("memory_block_size_probed")) {
+		memblock_size = symbol_value("memory_block_size_probed");
+		readmem(memblock_size, KVADDR,
+			&mbs, sizeof(ulong), "memory_block_size_probed",
+			FAULT_ON_ERROR);
+		end_addr = start_addr + mbs - 1;
+	} else if (MEMBER_EXISTS("memory_block", "end_section_nr")) {
+	        readmem(memory_block + OFFSET(memory_block_end_section_nr), KVADDR,
+			&end_sec, sizeof(void *), "memory_block end_section_nr",
+			FAULT_ON_ERROR);
+		end_addr = pfn_to_phys(section_nr_to_pfn(end_sec + 1)) - 1;
+	}
+
 	fill_memory_block_state(memory_block, statebuf);
 	fill_memory_block_name(memory_block, name);
-	fill_memory_block_srange(start_sec, end_sec, srangebuf);
+	fill_memory_block_parange(start_addr, end_addr, parangebuf);
+	fill_memory_block_srange(start_sec, srangebuf);
 
 	if (MEMBER_EXISTS("memory_block", "nid")) {
 		readmem(memory_block + OFFSET(memory_block_nid), KVADDR, &nid,
 			sizeof(void *), "memory_block nid", FAULT_ON_ERROR);
-		fprintf(fp, " %s %s %s - %s %s %s %s\n",
+		fprintf(fp, " %s %s %s %s  %s %s\n",
 			mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX,
 			MKSTR(memory_block)),
 			mkstring(buf2, 12, CENTER, name),
-			mkstring(buf3, PADDR_PRLEN, RJUST|LONG_HEX,
-			MKSTR(pfn_to_phys(start_pfn))),
-			mkstring(buf4, PADDR_PRLEN, LJUST|LONG_HEX,
-			MKSTR(pfn_to_phys(end_pfn) - 1)),
+			parangebuf,
 			mkstring(buf5, strlen("NODE"), CENTER|LONG_DEC,
 			MKSTR(nid)),
-			mkstring(buf6, strlen("CANCEL_OFFLINE"), LJUST,
+			mkstring(buf6, strlen("OFFLINE"), LJUST,
 			statebuf),
 			mkstring(buf7, 12, LJUST, srangebuf));
 	} else
-		fprintf(fp, " %s %s %s - %s %s %s\n",
+		fprintf(fp, " %s %s %s  %s %s\n",
 			mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX,
 			MKSTR(memory_block)),
 			mkstring(buf2, 10, CENTER, name),
-			mkstring(buf3, PADDR_PRLEN, RJUST|LONG_HEX,
-			MKSTR(pfn_to_phys(start_pfn))),
-			mkstring(buf4, PADDR_PRLEN, LJUST|LONG_HEX,
-			MKSTR(pfn_to_phys(end_pfn) - 1)),
-			mkstring(buf5, strlen("CANCEL_OFFLINE"), LJUST,
+			parangebuf,
+			mkstring(buf5, strlen("OFFLINE"), LJUST,
 			statebuf),
 			mkstring(buf6, 12, LJUST, srangebuf));
 }
@@ -17479,6 +17548,7 @@ dump_memory_blocks(int initialize)
 	int klistcnt, i;
 	struct list_data list_data;
 	char mb_hdr[BUFSIZE];
+	char paddr_hdr[BUFSIZE];
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -17495,21 +17565,27 @@ dump_memory_blocks(int initialize)
 
 	init_memory_block(&list_data, &klistcnt, &klistbuf);
 
-	if (MEMBER_EXISTS("memory_block", "nid"))
-		sprintf(mb_hdr, "\n%s %s %s     %s %s %s\n",
-			mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "MEM_BLOCK"),
-			mkstring(buf2, 10, CENTER, "NAME"),
-			mkstring(buf3, PADDR_PRLEN*2 + 2, CENTER, "PHYSICAL RANGE"),
-			mkstring(buf4, strlen("NODE"), CENTER, "NODE"),
-			mkstring(buf5, strlen("CANCEL_OFFLINE"), LJUST, "STATE"),
-			mkstring(buf6, 12, LJUST, "SECTIONS"));
+	if ((symbol_exists("memory_block_size_probed")) ||
+	    (MEMBER_EXISTS("memory_block", "end_section_nr")))
+		sprintf(paddr_hdr, "%s", "PHYSICAL RANGE");
 	else
-		sprintf(mb_hdr, "\n%s %s %s     %s %s\n",
+		sprintf(paddr_hdr, "%s", "PHYSICAL START");
+
+	if (MEMBER_EXISTS("memory_block", "nid"))
+		sprintf(mb_hdr, "\n%s %s   %s   %s  %s %s\n",
 			mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "MEM_BLOCK"),
 			mkstring(buf2, 10, CENTER, "NAME"),
-			mkstring(buf3, PADDR_PRLEN*2, CENTER, "PHYSICAL RANGE"),
-			mkstring(buf4, strlen("CANCEL_OFFLINE"), LJUST, "STATE"),
-			mkstring(buf5, 12, LJUST, "SECTIONS"));
+			mkstring(buf3, PADDR_PRLEN*2 + 2, CENTER, paddr_hdr),
+			mkstring(buf4, strlen("NODE"), CENTER, "NODE"),
+			mkstring(buf5, strlen("OFFLINE"), LJUST, "STATE"),
+			mkstring(buf6, 12, LJUST, "START_SECTION_NO"));
+	else
+		sprintf(mb_hdr, "\n%s %s   %s    %s %s\n",
+			mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "MEM_BLOCK"),
+			mkstring(buf2, 10, CENTER, "NAME"),
+			mkstring(buf3, PADDR_PRLEN*2, CENTER, paddr_hdr),
+			mkstring(buf4, strlen("OFFLINE"), LJUST, "STATE"),
+			mkstring(buf5, 12, LJUST, "START_SECTION_NO"));
 	fprintf(fp, "%s", mb_hdr);
 
 	for (i = 0; i < klistcnt; i++) {
