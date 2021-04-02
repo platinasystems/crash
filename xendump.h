@@ -1,8 +1,8 @@
 /* 
  * xendump.h
  *
- * Copyright (C) 2006 David Anderson
- * Copyright (C) 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2006, 2007 David Anderson
+ * Copyright (C) 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.
@@ -15,6 +15,7 @@
 
 #define XC_SAVE_SIGNATURE  "LinuxGuestRecord"
 #define XC_CORE_MAGIC      0xF00FEBED
+#define XC_CORE_MAGIC_HVM  0xF00FEBEE
 
 /*
  *  From xenctrl.h, but probably not on most host machines.
@@ -34,7 +35,7 @@ struct pfn_offset_cache {
 	ulong cnt;
 };
 
-#define PFN_TO_OFFSET_CACHE_ENTRIES  (1024)
+#define PFN_TO_OFFSET_CACHE_ENTRIES  (5000)
 
 struct xendump_data {
         ulong flags;       /* XENDUMP_LOCAL, plus anything else... */
@@ -67,15 +68,20 @@ struct xendump_data {
 		off_t *batch_offsets;
 		ulong batch_count;
 		ulong *region_pfn_type;
+		ulong ia64_version;
+		ulong *ia64_page_offsets;
 	} xc_save;
 
 	ulong panic_pc;
 	ulong panic_sp;
 };
 
-#define XC_SAVE           (XENDUMP_LOCAL << 1)
-#define XC_CORE           (XENDUMP_LOCAL << 2)
-#define XC_CORE_P2M_INIT  (XENDUMP_LOCAL << 3)
+#define XC_SAVE            (XENDUMP_LOCAL << 1)
+#define XC_CORE            (XENDUMP_LOCAL << 2)
+#define XC_CORE_P2M_INIT   (XENDUMP_LOCAL << 3)
+#define XC_CORE_NO_P2MM    (XENDUMP_LOCAL << 4)
+#define XC_SAVE_IA64       (XENDUMP_LOCAL << 5)
+#define XC_CORE_64BIT_HOST (XENDUMP_LOCAL << 6)
 
 #define MACHINE_BYTE_ORDER()  \
         (machine_type("X86") || \
@@ -95,3 +101,18 @@ swab32(uint32_t x)
 
 #define MFN_NOT_FOUND (-1)
 #define PFN_NOT_FOUND (-1)
+
+#define INVALID_MFN (~0UL)
+
+/*
+ *  ia64 "xm save" format is completely different than the others.
+ */
+typedef struct xen_domctl_arch_setup {
+    uint64_t flags;      /* XEN_DOMAINSETUP_* */
+/* #ifdef __ia64__ */
+    uint64_t bp;            /* mpaddr of boot param area */
+    uint64_t maxmem;        /* Highest memory address for MDT.  */
+    uint64_t xsi_va;        /* Xen shared_info area virtual address.  */
+    uint32_t hypercall_imm; /* Break imm for Xen hypercalls.  */
+/* #endif */
+} xen_domctl_arch_setup_t;

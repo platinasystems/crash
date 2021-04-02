@@ -16,6 +16,7 @@
  */ 
 #ifdef IA64 
 #include "defs.h"
+#include <sys/prctl.h>
 
 static int ia64_verify_symbol(const char *, ulong, char);
 static int ia64_eframe_search(struct bt_info *);
@@ -49,6 +50,7 @@ static ulong check_mem_limit(void);
 static int ia64_verify_paddr(uint64_t);
 static int ia64_available_memory(struct efi_memory_desc_t *);
 static void ia64_post_init(void);
+static ulong ia64_in_per_cpu_mca_stack(void);
 static struct line_number_hook ia64_line_number_hooks[];
 static ulong ia64_get_stackbase(ulong);
 static ulong ia64_get_stacktop(ulong);
@@ -87,6 +89,15 @@ ia64_init(int when)
 
         switch (when)
         {
+	case SETUP_ENV:
+#if defined(PR_SET_FPEMU) && defined(PR_FPEMU_NOPRINT)
+		prctl(PR_SET_FPEMU, PR_FPEMU_NOPRINT, 0, 0, 0);
+#endif
+#if defined(PR_SET_UNALIGN) && defined(PR_UNALIGN_NOPRINT)
+		prctl(PR_SET_UNALIGN, PR_UNALIGN_NOPRINT, 0, 0, 0);
+#endif
+		break;
+
         case PRE_SYMTAB:
                 machdep->verify_symbol = ia64_verify_symbol;
 		machdep->machspec = &ia64_machine_specific;
@@ -373,6 +384,58 @@ ia64_in_init_stack(ulong addr)
 	return TRUE;
 }
 
+
+static ulong
+ia64_in_per_cpu_mca_stack(void)
+{
+	int plen, i;
+	ulong flag;
+	ulong vaddr, paddr, stackbase, stacktop;
+	ulong *__per_cpu_mca;
+	struct task_context *tc;
+
+	tc = CURRENT_CONTEXT();
+
+	if (STRNEQ(CURRENT_COMM(), "INIT"))
+		flag = INIT;
+	else if (STRNEQ(CURRENT_COMM(), "MCA"))
+		flag = MCA;
+	else
+		return 0;
+
+	if (!symbol_exists("__per_cpu_mca") ||
+	    !(plen = get_array_length("__per_cpu_mca", NULL, 0)) ||
+	    (plen < kt->cpus))
+		return 0;
+
+	vaddr = SWITCH_STACK_ADDR(CURRENT_TASK());
+	if (VADDR_REGION(vaddr) != KERNEL_CACHED_REGION)
+		return 0;
+	paddr = ia64_VTOP(vaddr);
+
+	__per_cpu_mca = (ulong *)GETBUF(sizeof(ulong) * kt->cpus);
+
+	if (!readmem(symbol_value("__per_cpu_mca"), KVADDR, __per_cpu_mca,
+	    sizeof(ulong) * kt->cpus, "__per_cpu_mca", RETURN_ON_ERROR|QUIET))
+		return 0;
+
+	if (CRASHDEBUG(1)) {
+		for (i = 0; i < kt->cpus; i++) {
+			fprintf(fp, "__per_cpu_mca[%d]: %lx\n", 
+		 		i, __per_cpu_mca[i]);
+		}
+	}
+
+	stackbase = __per_cpu_mca[tc->processor];
+	stacktop = stackbase + (STACKSIZE() * 2);
+	FREEBUF(__per_cpu_mca);
+
+	if ((paddr >= stackbase) && (paddr < stacktop))
+		return flag;
+	else
+		return 0;
+}
+
 void
 ia64_dump_machdep_table(ulong arg)
 {
@@ -464,6 +527,8 @@ ia64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sDEVMEMRD", others++ ? "|" : "");
 	if (machdep->flags & INIT)
 		fprintf(fp, "%sINIT", others++ ? "|" : "");
+	if (machdep->flags & MCA)
+		fprintf(fp, "%sMCA", others++ ? "|" : "");
 	if (machdep->flags & VM_4_LEVEL)
 		fprintf(fp, "%sVM_4_LEVEL", others++ ? "|" : "");
         fprintf(fp, ")\n");
@@ -1702,6 +1767,12 @@ ia64_exception_frame(ulong addr, struct bt_info *bt)
 
 	fprintf(fp, "  EFRAME: %lx\n", addr);
 
+	if (bt->flags & BT_INCOMPLETE_USER_EFRAME) {
+		fprintf(fp, 
+    "  [exception frame incomplete -- check salinfo for complete context]\n");
+		bt->flags &= ~BT_INCOMPLETE_USER_EFRAME;
+	}
+
 	fprintf(fp, "      B0: %016lx      CR_IIP: %016lx\n", 
 		eframe[P_b0], eframe[P_cr_iip]);
 /**
@@ -2502,9 +2573,10 @@ ia64_create_memmap(void)
             !readmem(ia64_boot_param+
 	    MEMBER_OFFSET("ia64_boot_param", "efi_memmap"),
             KVADDR, &efi_memmap, sizeof(uint64_t), "efi_memmap", 
-	    RETURN_ON_ERROR)) {
-		error(WARNING, "cannot read ia64_boot_param: " 
-			"memory verification will not be performed\n\n");
+	    QUIET|RETURN_ON_ERROR)) {
+		if (!XEN() || CRASHDEBUG(1))
+			error(WARNING, "cannot read ia64_boot_param: " 
+			    "memory verification will not be performed\n\n");
 		return;
 	}
 
@@ -2738,6 +2810,7 @@ ia64_post_init(void)
 {
 	struct machine_specific *ms;
 	struct gnu_request req;
+	ulong flag;
 
 	ms = &ia64_machine_specific;
 
@@ -2817,6 +2890,9 @@ ia64_post_init(void)
 
 	if (DUMPFILE() && ia64_in_init_stack(SWITCH_STACK_ADDR(CURRENT_TASK())))
 		machdep->flags |= INIT;
+
+	if (DUMPFILE() && (flag = ia64_in_per_cpu_mca_stack()))
+		machdep->flags |= flag;
 }
 
 /*
@@ -3799,6 +3875,11 @@ ia64_xen_kdump_page_mfn(ulong kvaddr)
 static int
 ia64_xendump_p2m_create(struct xendump_data *xd)
 {
+	if (!symbol_exists("phys_to_machine_mapping")) {
+		xd->flags |= XC_CORE_NO_P2MM;
+		return TRUE;
+	}
+
 	error(FATAL, "ia64_xendump_p2m_create: TBD\n");
 
 	/* dummy calls for clean "make [wW]arn" */
@@ -3854,7 +3935,8 @@ ia64_xendump_page_index(ulong kvaddr, struct xendump_data *xd)
 static ulong
 ia64_xendump_panic_task(struct xendump_data *xd)
 {
-	error(INFO, "ia64_xendump_panic_task: TBD\n");
+	if (CRASHDEBUG(1))
+		error(INFO, "ia64_xendump_panic_task: TBD\n");
 
 	return NO_TASK;
 }
@@ -3862,6 +3944,12 @@ ia64_xendump_panic_task(struct xendump_data *xd)
 static void
 ia64_get_xendump_regs(struct xendump_data *xd, struct bt_info *bt, ulong *rip, ulong *rsp)
 {
-	error(FATAL, "ia64_get_xendump_regs: TBD\n");
+        machdep->get_stack_frame(bt, rip, rsp);
+
+	if (is_task_active(bt->task) &&
+            !(bt->flags & (BT_TEXT_SYMBOLS_ALL|BT_TEXT_SYMBOLS)) &&
+	    STREQ(closest_symbol(*rip), "schedule"))
+		error(INFO, 
+		    "xendump: switch_stack possibly not saved -- try \"bt -t\"\n");
 }
 #endif

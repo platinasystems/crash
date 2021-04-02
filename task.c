@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1695,6 +1695,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
 		do_verify = 1;
 	else if (tt->refresh_task_table == refresh_pid_hash_task_table)
 		do_verify = 2;
+	else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
+		do_verify = 2;
 	else
 		do_verify = 0;
 
@@ -1850,6 +1852,9 @@ sort_context_array_by_last_run(void)
 char *
 fill_task_struct(ulong task)
 {
+	if (XEN_HYPER_MODE())
+		return NULL;
+
 	if (!IS_LAST_TASK_READ(task)) { 
         	if (!readmem(task, KVADDR, tt->task_struct, 
 	     		SIZE(task_struct), "fill_task_struct", 
@@ -3308,15 +3313,15 @@ str_to_context(char *string, ulong *value, struct task_context **tcp)
 int
 comm_exists(char *s)
 {
-        int i;
+        int i, cnt;
         struct task_context *tc;
 
         tc = FIRST_CONTEXT();
-        for (i = 0; i < RUNNING_TASKS(); i++, tc++) 
+        for (i = cnt = 0; i < RUNNING_TASKS(); i++, tc++) 
                 if (STREQ(tc->comm, s))
-                        return TRUE;
+                        cnt++;
         
-        return FALSE;
+        return cnt;
 }
 
 /*
@@ -3412,7 +3417,11 @@ show_context(struct task_context *tc)
 	fprintf(fp, "COMMAND: \"%s\"\n", tc->comm);
 	INDENT(indent);
 	fprintf(fp, "   TASK: %lx  ", tc->task);
-	if ((cnt = TASKS_PER_PID(tc->pid)) > 1)
+	if ((machdep->flags & (INIT|MCA)) && (tc->pid == 0))
+		cnt = comm_exists(tc->comm);
+	else
+		cnt = TASKS_PER_PID(tc->pid);
+	if (cnt > 1)
 		fprintf(fp, "(1 of %d)  ", cnt);
 	if (tt->flags & THREAD_INFO)
 		fprintf(fp, "[THREAD_INFO: %lx]", tc->thread_info);
@@ -3429,6 +3438,8 @@ show_context(struct task_context *tc)
 			fprintf(fp, "(SYSRQ)");
 		else if (machdep->flags & INIT)
 			fprintf(fp, "(INIT)");
+		else if ((machdep->flags & MCA) && (tc->task == tt->panic_task))
+			fprintf(fp, "(MCA)");
 		else if ((tc->processor >= 0) && 
 		        (tc->processor < NR_CPUS) && 
 			(kt->cpu_flags[tc->processor] & NMI))
@@ -4016,6 +4027,11 @@ get_panicmsg(char *buf)
 			get_symbol_data("sysrq_pressed", sizeof(int), 
 				&msg_found);
         }
+	rewind(pc->tmpfile);
+	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "Kernel panic - ")) 
+			msg_found = TRUE;
+	}
 
         close_tmpfile();
 
@@ -4779,7 +4795,7 @@ panic_search(void)
 	if (dietask == (NO_TASK+1))
 		error(WARNING, "multiple active tasks have called die\n\n");
 
-	if (CRASHDEBUG(1))
+	if (CRASHDEBUG(1) && found)
 		error(INFO, "panic_search: %lx (via foreach bt)\n", 
 			lasttask);
 
@@ -5026,7 +5042,7 @@ dump_task_table(int verbose)
 	wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
 	flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
 
-	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : nr_cpus;
+	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
 
         for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
@@ -5130,6 +5146,9 @@ is_kernel_thread(ulong task)
 
 	if ((tc->pid == 0) && !STREQ(tc->comm, pc->program_name))
 		return TRUE;
+
+        if (_ZOMBIE_ == TASK_STATE_UNINITIALIZED)
+                initialize_task_state();
 
 	if (IS_ZOMBIE(task) || IS_EXITING(task))
                 return FALSE;
@@ -5408,6 +5427,14 @@ clear_active_set(void)
 	}							\
                                                       		\
         if (panic_task && die_task) {                 		\
+		if ((panic_task > (NO_TASK+1)) &&               \
+		    (panic_task == die_task)) {                 \
+		        if (CRASHDEBUG(1))			\
+				fprintf(fp, 			\
+		    "get_active_set_panic_task: %lx (panic)\n", \
+					panic_task);		\
+			return panic_task;			\
+		}                                               \
                 error(WARNING,                        		\
      "multiple active tasks have called die and/or panic\n\n"); \
 		goto no_panic_task_found;			\
@@ -5454,11 +5481,18 @@ clear_active_set(void)
                     strstr(buf, " .crash_kexec+")) {    \
 			crash_kexec_task = task;	\
                 }                                       \
+                if (strstr(buf, " machine_kexec+") ||     \
+                    strstr(buf, " .machine_kexec+")) {    \
+			crash_kexec_task = task;	\
+                }                                       \
                 if (strstr(buf, " xen_panic_event+") || \
                     strstr(buf, " .xen_panic_event+")){ \
 			xen_panic_task = task;	        \
 			xendump_panic_hook(buf);	\
 		}					\
+                if (machine_type("IA64") && XENDUMP_DUMPFILE() && !xen_panic_task && \
+                    strstr(buf, " sysrq_handle_crashdump+")) \
+			xen_sysrq_task = task;	        \
 	}
 
 /*
@@ -5472,10 +5506,12 @@ get_active_set_panic_task()
 	char buf[BUFSIZE];
 	ulong panic_task, die_task, crash_kexec_task;
 	ulong xen_panic_task;
+	ulong xen_sysrq_task;
 	char *tp;
 	struct task_context *tc;
 
 	panic_task = die_task = crash_kexec_task = xen_panic_task = NO_TASK;
+	xen_sysrq_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]))
@@ -5488,8 +5524,9 @@ get_active_set_panic_task()
                 	if ((tp = fill_task_struct(task))) {
                         	if ((tc = store_context(NULL, task, tp))) 
                                 	tt->running_tasks++;
+				else
+					continue;
                 	}
-			continue;
 		}
 
         	open_tmpfile();
@@ -5565,6 +5602,14 @@ get_active_set_panic_task()
 		    "get_active_set_panic_task: %lx (crash_kexec)\n", 
 				crash_kexec_task);
 		return crash_kexec_task;
+	}
+
+	if (xen_sysrq_task) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+		    "get_active_set_panic_task: %lx (sysrq_handle_crashdump)\n", 
+				xen_sysrq_task);
+		return xen_sysrq_task;
 	}
 
 no_panic_task_found:

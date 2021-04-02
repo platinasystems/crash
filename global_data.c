@@ -68,7 +68,7 @@ int argerrs;            /* argument error counter */
  *  To add a new command, declare it in defs.h and enter it in this table.
  */
 
-struct command_table_entry base_command_table[] = {
+struct command_table_entry linux_command_table[] = {
 	{"*", 	    cmd_pointer, help_pointer, 0},
 	{"alias",   cmd_alias,   help_alias,   0},
         {"ascii",   cmd_ascii,   help_ascii,   0},

@@ -19,3 +19,56 @@
  
  int ppc_trace[nr_trace_options];
  
+--- gdb-6.1.orig/gdb/remote.c
++++ gdb-6.1/gdb/remote.c
+@@ -3445,7 +3445,7 @@ remote_store_registers (int regnum)
+   {
+     int i;
+     regs = alloca (rs->sizeof_g_packet);
+-    memset (regs, rs->sizeof_g_packet, 0);
++    memset (regs, 0, rs->sizeof_g_packet);
+     for (i = 0; i < NUM_REGS + NUM_PSEUDO_REGS; i++)
+       {
+ 	struct packet_reg *r = &rs->regs[i];
+--- gdb-6.1.orig/gdb/std-regs.c
++++ gdb-6.1/gdb/std-regs.c
+@@ -61,7 +61,7 @@ value_of_builtin_frame_reg (struct frame
+   val = allocate_value (builtin_type_frame_reg);
+   VALUE_LVAL (val) = not_lval;
+   buf = VALUE_CONTENTS_RAW (val);
+-  memset (buf, TYPE_LENGTH (VALUE_TYPE (val)), 0);
++  memset (buf, 0, TYPE_LENGTH (VALUE_TYPE (val)));
+   /* frame.base.  */
+   if (frame != NULL)
+     ADDRESS_TO_POINTER (builtin_type_void_data_ptr, buf,
+@@ -87,7 +87,7 @@ value_of_builtin_frame_fp_reg (struct fr
+       struct value *val = allocate_value (builtin_type_void_data_ptr);
+       char *buf = VALUE_CONTENTS_RAW (val);
+       if (frame == NULL)
+-	memset (buf, TYPE_LENGTH (VALUE_TYPE (val)), 0);
++	memset (buf, 0, TYPE_LENGTH (VALUE_TYPE (val)));
+       else
+ 	ADDRESS_TO_POINTER (builtin_type_void_data_ptr, buf,
+ 			    get_frame_base_address (frame));
+@@ -105,7 +105,7 @@ value_of_builtin_frame_pc_reg (struct fr
+       struct value *val = allocate_value (builtin_type_void_data_ptr);
+       char *buf = VALUE_CONTENTS_RAW (val);
+       if (frame == NULL)
+-	memset (buf, TYPE_LENGTH (VALUE_TYPE (val)), 0);
++	memset (buf, 0, TYPE_LENGTH (VALUE_TYPE (val)));
+       else
+ 	ADDRESS_TO_POINTER (builtin_type_void_data_ptr, buf,
+ 			    get_frame_pc (frame));
+--- gdb-6.1.orig/gdb/dwarf2-frame.c
++++ gdb-6.1/gdb/dwarf2-frame.c
+@@ -1353,7 +1353,9 @@ decode_frame_entry_1 (struct comp_unit *
+ 	  else if (*augmentation == 'P')
+ 	    {
+ 	      /* Skip.  */
+-	      buf += size_of_encoded_value (*buf++);
++//	      buf += size_of_encoded_value (*buf++);
++              buf += size_of_encoded_value(*buf);
++              buf++;
+ 	      augmentation++;
+ 	    }
+ 

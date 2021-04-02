@@ -40,6 +40,7 @@ struct pt_load_segment {
 	off_t file_offset;
 	physaddr_t phys_start;
 	physaddr_t phys_end;
+	physaddr_t zero_fill;
 };
 
 struct vmcore_data {
@@ -68,7 +69,32 @@ struct vmcore_data {
 };
 
 /*
- *  Proposed ELF note for Xen (writable pagetable) per-vcpu CR3.
+ *  ELF note types for Xen dom0/hypervisor kdumps.
+ *  The comments below are from xen/include/public/elfnote.h.
+ */
+
+/*
+ * System information exported through crash notes.
+ *
+ * The kexec / kdump code will create one XEN_ELFNOTE_CRASH_INFO
+ * note in case of a system crash. This note will contain various
+ * information about the system, see xen/include/xen/elfcore.h.
+ */
+#define XEN_ELFNOTE_CRASH_INFO 0x1000001
+
+/*
+ * System registers exported through crash notes.
+ *
+ * The kexec / kdump code will create one XEN_ELFNOTE_CRASH_REGS
+ * note per cpu in case of a system crash. This note is architecture
+ * specific and will contain registers not saved in the "CORE" note.
+ * See xen/include/xen/elfcore.h for more information.
+ */
+#define XEN_ELFNOTE_CRASH_REGS 0x1000002
+
+
+/* 
+ * For (temporary) backwards compatibility.
  */
 #define NT_XEN_KDUMP_CR3 0x10000001
 

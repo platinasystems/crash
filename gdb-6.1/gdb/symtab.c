@@ -4,7 +4,7 @@
    1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004
    Free Software Foundation, Inc.
    Portions Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
-   Copyright (c) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+   Copyright (c) 2002, 2003, 2004, 2005, 2007 Red Hat, Inc. All rights reserved.
 
    This file is part of GDB.
 
@@ -4523,14 +4523,54 @@ gdb_add_symbol_file(struct gnu_request *req)
 	struct symbol *sym;
 	struct expression *expr;
 	struct cleanup *old_chain;
-
+	int i;
+        int allsect = 0;
+        char *secname;
+        char buf[80];
+    
 	gdb_current_load_module = lm = (struct load_module *)req->addr;
 
 	req->name = lm->mod_namelist;
 	gdb_delete_symbol_file(req);
 
-        sprintf(req->buf, "add-symbol-file %s 0x%lx", lm->mod_namelist, 
-		lm->mod_text_start);
+        for (i = 0 ; i < lm->mod_sections; i++) {
+            if (STREQ(lm->mod_section_data[i].name, ".text") &&
+                (lm->mod_section_data[i].flags & SEC_FOUND))
+                    allsect = 1;
+        }
+
+        if (!allsect) {
+            sprintf(req->buf, "add-symbol-file %s 0x%lx", lm->mod_namelist,
+                    lm->mod_text_start ? lm->mod_text_start : lm->mod_base);
+	    if (lm->mod_data_start) {
+                    sprintf(buf, " -s .data 0x%lx", lm->mod_data_start);
+                    strcat(req->buf, buf);
+	    }
+	    if (lm->mod_bss_start) {
+                    sprintf(buf, " -s .bss 0x%lx", lm->mod_bss_start);
+                    strcat(req->buf, buf);
+	    }
+	    if (lm->mod_rodata_start) {
+                    sprintf(buf, " -s .rodata 0x%lx", lm->mod_rodata_start);
+                    strcat(req->buf, buf);
+	    }
+        } else {
+            sprintf(req->buf, "add-symbol-file %s 0x%lx", lm->mod_namelist,
+                    lm->mod_text_start);
+            for (i = 0; i < lm->mod_sections; i++) {
+                    secname = lm->mod_section_data[i].name;
+                    if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
+                        !STREQ(secname, ".text")) {
+                            sprintf(buf, " -s %s 0x%lx", secname,
+                                lm->mod_section_data[i].offset + lm->mod_base);
+                            strcat(req->buf, buf);
+                    }
+            }
+        }
+
+	if (gdb_CRASHDEBUG(1)) {
+            fprintf_filtered(gdb_stdout, "gdb_add_symbol_file: %s\n", req->buf);
+	}
 
        	execute_command(req->buf, FALSE);
 

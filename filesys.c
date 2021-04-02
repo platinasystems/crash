@@ -43,6 +43,7 @@ static int get_memory_driver_dev(dev_t *);
 static int memory_driver_init(void);
 static int create_memory_device(dev_t);
 static void *radix_tree_lookup(ulong, ulong, int);
+static int match_file_string(char *, char *, char *);
 
 #define DENTRY_CACHE (20)
 #define INODE_CACHE  (20)
@@ -99,6 +100,10 @@ fd_init(void)
 		}
 
 		if (pc->namelist) {
+			if (XEN_HYPER_MODE() && !pc->dumpfile)
+				error(FATAL, 
+				    "Xen hypervisor mode requires a dumpfile\n");
+
 			if (!pc->dumpfile && !get_proc_version())
 	                	error(INFO, "/proc/version: %s\n", 
 					strerror(errno));
@@ -225,10 +230,7 @@ memory_source_init(void)
 static void
 match_proc_version(void)
 {
-	char command[BUFSIZE];
 	char buffer[BUFSIZE];
-	FILE *pipe;
-	int found;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
@@ -236,26 +238,7 @@ match_proc_version(void)
 	if (!strlen(kt->proc_version)) 
 		return;
 
-        sprintf(command, "/usr/bin/strings %s", pc->namelist);
-        if ((pipe = popen(command, "r")) == NULL) {
-                error(INFO, "%s: %s\n", pc->namelist, strerror(errno));
-                return;
-        }
-
-	found = FALSE;
-        while (fgets(buffer, BUFSIZE-1, pipe)) {
-		char* ptr;
-		ptr = strstr(buffer, "Linux version 2.");
-		if (!ptr)
-			continue;
-
-                if (STREQ(ptr, kt->proc_version)) 
-                	found = TRUE;
-		break;
-        }
-        pclose(pipe);
-
-	if (found) {
+	if (match_file_string(pc->namelist, kt->proc_version, buffer)) {
                 if (CRASHDEBUG(1)) {
 			fprintf(fp, "/proc/version:\n%s", kt->proc_version);
 			fprintf(fp, "%s:\n%s", pc->namelist, buffer);
@@ -505,13 +488,11 @@ static int
 find_booted_kernel(void)
 {
 	char kernel[BUFSIZE];
-	char command[BUFSIZE];
 	char buffer[BUFSIZE];
 	char **searchdirs;
 	int i, preferred, wrapped;
         DIR *dirp;
         struct dirent *dp;
-	FILE *pipe;
 	int found;
 
 	pc->flags |= FINDKERNEL;
@@ -560,24 +541,11 @@ find_booted_kernel(void)
                             !is_elf_file(kernel))
 				continue;
 
-			sprintf(command, "/usr/bin/strings %s", kernel);
-	        	if ((pipe = popen(command, "r")) == NULL) {
-	        		error(INFO, "%s: %s\n", 
-					kernel, strerror(errno));
-				continue;
-			}
-
 			if (CRASHDEBUG(1)) 
 				fprintf(fp, "find_booted_kernel: check: %s\n", 
 					kernel);
 
-			while (fgets(buffer, BUFSIZE-1, pipe)) {
-				if (STREQ(buffer, kt->proc_version)) {
-					found = TRUE;
-					break;
-				}
-			}
-			pclose(pipe);
+			found = match_file_string(kernel, kt->proc_version, buffer);
 	
 			if (found)
 				break;
@@ -819,30 +787,14 @@ find_booted_system_map(void)
 static int
 verify_utsname(char *system_map)
 {
-	char command[BUFSIZE];
 	char buffer[BUFSIZE];
-	FILE *pipe;
-	int found;
 	ulong value;
 	struct new_utsname new_utsname;
 
-	sprintf(command, "/usr/bin/strings %s", system_map);
-       	if ((pipe = popen(command, "r")) == NULL) 
-		return FALSE;
-	
 	if (CRASHDEBUG(1)) 
 		fprintf(fp, "verify_utsname: check: %s\n", system_map);
 
-	found = FALSE;
-	while (fgets(buffer, BUFSIZE-1, pipe)) {
-		if (strstr(buffer, "D system_utsname")) {
-			found = TRUE;
-			break;
-		}
-	}
-	pclose(pipe);
-
-	if (!found)
+	if (!match_file_string(system_map, "D system_utsname", buffer))
 		return FALSE;
 	
 	if (extract_hex(buffer, &value, NULLCHAR, TRUE) &&
@@ -3673,4 +3625,30 @@ is_readable(char *filename)
 		close(fd);
 
 	return TRUE;
+}
+
+static int
+match_file_string(char *filename, char *string, char *buffer)
+{
+	int found;
+	char command[BUFSIZE];
+	FILE *pipe;
+
+
+	sprintf(command, "/usr/bin/strings %s", filename);
+        if ((pipe = popen(command, "r")) == NULL) {
+                error(INFO, "%s: %s\n", filename, strerror(errno));
+                return FALSE;
+        }
+
+        found = FALSE;
+        while (fgets(buffer, BUFSIZE-1, pipe)) {
+                if (strstr(buffer, string)) {
+                        found = TRUE;
+                        break;
+                }
+        }
+        pclose(pipe);
+
+	return found;
 }

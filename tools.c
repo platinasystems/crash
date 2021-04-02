@@ -1,8 +1,8 @@
 /* tools.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -64,6 +64,8 @@ __error(int type, char *fmt, ...)
 
 	if ((new_line = (buf[0] == '\n')))
 		shift_string_left(buf, 1);
+	else if (pc->flags & PLEASE_WAIT)
+		new_line = TRUE;
 
 	if (pc->stdpipe) {
 		fprintf(pc->stdpipe, "%s%s: %s%s", 
@@ -1771,6 +1773,42 @@ cmd_set(void)
                                 	pc->flags & HASH ? "on" : "off");
 			return;
 
+                } else if (STREQ(args[optind], "unwind")) {
+                        if (args[optind+1]) {
+                                optind++;
+                                if (STREQ(args[optind], "on")) {
+				    	if ((kt->flags & DWARF_UNWIND_CAPABLE) ||
+					    !runtime) {
+                                        	kt->flags |= DWARF_UNWIND;
+						kt->flags &= ~NO_DWARF_UNWIND;
+					}
+                                } else if (STREQ(args[optind], "off")) {
+                                        kt->flags &= ~DWARF_UNWIND;
+					if (!runtime)
+						kt->flags |= NO_DWARF_UNWIND;
+				} else if (IS_A_NUMBER(args[optind])) {
+					value = stol(args[optind],
+                                    		FAULT_ON_ERROR, NULL);
+					if (value) {
+				    		if ((kt->flags & DWARF_UNWIND_CAPABLE) ||
+						    !runtime) {
+							kt->flags |= DWARF_UNWIND;
+							kt->flags &= ~NO_DWARF_UNWIND;
+						}
+					} else {
+						kt->flags &= ~DWARF_UNWIND;
+						if (!runtime)
+							kt->flags |= NO_DWARF_UNWIND;
+					}
+				} else
+					goto invalid_set_command;
+                        }
+
+			if (runtime)
+                        	fprintf(fp, "unwind: %s\n",
+                                	kt->flags & DWARF_UNWIND ? "on" : "off");
+			return;
+
                } else if (STREQ(args[optind], "refresh")) {
                         if (args[optind+1]) {
                                 optind++;
@@ -2126,6 +2164,7 @@ show_options(void)
 	fprintf(fp, "          edit: %s\n", pc->editing_mode);
 	fprintf(fp, "      namelist: %s\n", pc->namelist);
 	fprintf(fp, "      dumpfile: %s\n", pc->dumpfile);
+	fprintf(fp, "        unwind: %s\n", kt->flags & DWARF_UNWIND ? "on" : "off");
 }
 
 
@@ -2341,6 +2380,7 @@ eval_common(char *s, int flags, int *errptr, struct number_option *np)
 	char *element2;
 	struct syment *sp;
 
+	opcode = 0;
 	value1 = value2 = 0;
 	ll_value1 = ll_value2 = 0;
 
@@ -3635,7 +3675,6 @@ hq_entry_exists(ulong value)
 	struct hash_table *ht;
 	struct hq_entry *list_entry;
 	long hqi;
-	long index;
 
 	if (!(pc->flags & HASH))
 		return FALSE;
@@ -3669,8 +3708,6 @@ hq_entry_exists(ulong value)
 
 		list_entry = ht->memptr + list_entry->next;
 	}
-
-	list_entry->next = index;
 
 	return FALSE;
 }
@@ -4442,6 +4479,8 @@ please_wait(char *s)
 	    !DUMPFILE() || (pc->flags & RUNTIME))
 		return;
 
+	pc->flags |= PLEASE_WAIT;
+
         fprintf(fp, "\rplease wait... (%s)", s);
         fflush(fp);
 }
@@ -4452,6 +4491,8 @@ please_wait_done(void)
 	if ((pc->flags & SILENT) || !(pc->flags & TTY) || 
 	    !DUMPFILE() || (pc->flags & RUNTIME))
 		return;
+
+	pc->flags &= ~PLEASE_WAIT;
 
 	fprintf(fp, "\r                                                \r");
 	fflush(fp);

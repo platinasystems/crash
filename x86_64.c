@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006 David Anderson
- * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 #include "defs.h"
+#include "xen_hyper_defs.h"
 
 #ifdef X86_64
 
@@ -41,6 +42,7 @@ static void x86_64_back_trace_cmd(struct bt_info *);
 static ulong x86_64_in_exception_stack(struct bt_info *);
 static ulong x86_64_in_irqstack(struct bt_info *);
 static void x86_64_low_budget_back_trace_cmd(struct bt_info *);
+static void x86_64_dwarf_back_trace_cmd(struct bt_info *);
 static void x86_64_get_dumpfile_stack_frame(struct bt_info *, ulong *, ulong *);
 static struct syment *x86_64_function_called_by(ulong);
 static int is_direct_call_target(struct bt_info *);
@@ -72,6 +74,7 @@ static void x86_64_ist_init(void);
 static void x86_64_post_init(void);
 static void parse_cmdline_arg(void);
 static void x86_64_clear_machdep_cache(void);
+static void x86_64_irq_eframe_link_init(void);
 static int x86_64_xendump_p2m_create(struct xendump_data *);
 static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
 static int x86_64_xendump_page_index(ulong, struct xendump_data *);
@@ -81,6 +84,9 @@ static ulong x86_64_xen_kdump_page_mfn(ulong);
 static void x86_64_debug_dump_page(FILE *, char *, char *);
 static void x86_64_get_xendump_regs(struct xendump_data *, struct bt_info *, ulong *, ulong *);
 static ulong x86_64_xendump_panic_task(struct xendump_data *);
+static void x86_64_init_hyper(int);
+static ulong x86_64_get_stackbase_hyper(ulong);
+static ulong x86_64_get_stacktop_hyper(ulong);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -91,6 +97,11 @@ struct machine_specific x86_64_machine_specific = { 0 };
 void
 x86_64_init(int when)
 {
+        if (XEN_HYPER_MODE()) {
+                x86_64_init_hyper(when);
+                return;
+        }
+
 	switch (when)
 	{
 	case PRE_SYMTAB:
@@ -122,6 +133,8 @@ x86_64_init(int when)
 		machdep->verify_paddr = generic_verify_paddr;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		machdep->flags |= MACHDEP_BT_TEXT;
+		machdep->flags |= FRAMESIZE_DEBUG;
+		machdep->machspec->irq_eframe_link = UNINITIALIZED;
                 if (machdep->cmdline_arg)
                         parse_cmdline_arg();
 		break;
@@ -282,6 +295,11 @@ x86_64_init(int when)
 			ASSIGN_OFFSET(cpu_user_regs_rip) = 
 				MEMBER_OFFSET("cpu_user_regs", "cs") - sizeof(ulong);
                 }
+		x86_64_irq_eframe_link_init();
+		break;
+
+	case POST_VM:
+                init_unwind_table();
 		break;
 
 	case POST_INIT:
@@ -321,6 +339,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sSCHED_TEXT", others++ ? "|" : "");
 	if (machdep->flags & PHYS_BASE)
 		fprintf(fp, "%sPHYS_BASE", others++ ? "|" : "");
+	if (machdep->flags & FRAMESIZE_DEBUG)
+		fprintf(fp, "%sFRAMESIZE_DEBUG", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -341,7 +361,14 @@ x86_64_dump_machdep_table(ulong arg)
         	fprintf(fp, "         back_trace: x86_64_back_trace_cmd()\n");
 	else if (machdep->back_trace == x86_64_low_budget_back_trace_cmd)
         	fprintf(fp, 
-		   "         back_trace: x86_64_low_budget_back_trace_cmd()\n");
+		   "         back_trace: x86_64_low_budget_back_trace_cmd() %s\n",
+			kt->flags & DWARF_UNWIND ?
+			"-> x86_64_dwarf_back_trace_cmd()" : "");
+	else if (machdep->back_trace == x86_64_dwarf_back_trace_cmd)
+        	fprintf(fp, 
+		   "         back_trace: x86_64_dwarf_back_trace_cmd() %s\n",
+			kt->flags & DWARF_UNWIND ? 
+			"" : "->x86_64_low_budget_back_trace_cmd()");
 	else
 		fprintf(fp, "         back_trace: %lx\n",
 			(ulong)machdep->back_trace);
@@ -413,6 +440,7 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "           last_upml_read: (unused)\n");
 	}
 	fprintf(fp, "                 irqstack: %lx\n", (ulong)ms->irqstack);
+	fprintf(fp, "          irq_eframe_link: %ld\n", ms->irq_eframe_link);
 	fprintf(fp, "                      pto: %s",
 		machdep->flags & PT_REGS_INIT ? "\n" : "(uninitialized)\n");
 	if (machdep->flags & PT_REGS_INIT) {
@@ -563,8 +591,9 @@ x86_64_cpu_pda_init(void)
 	 *  the address of &boot_cpu_stack[0].
 	 */
 	sp = value_search(machdep->machspec->stkinfo.ibase[0], &offset);
-	if (!sp || offset || !STREQ(sp->name, "boot_cpu_stack")) {
-		if (symbol_value("boot_cpu_stack")) {
+	nsp = symbol_search("boot_cpu_stack");
+	if (!sp || offset || !nsp || (sp->value != nsp->value)) {
+		if (symbol_exists("boot_cpu_stack")) {
 			error(WARNING, 
 		       "cpu 0 IRQ stack: %lx\n         boot_cpu_stack: %lx\n\n",
 				machdep->machspec->stkinfo.ibase[0], 
@@ -1317,28 +1346,41 @@ x86_64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbo
         if (!IS_KVADDR(kvaddr))
                 return FALSE;
 
-        if (!vt->vmalloc_start) {
-                *paddr = x86_64_VTOP(kvaddr);
-                return TRUE;
-        }
+	if (XEN_HYPER_MODE()) {
+		if (DIRECTMAP_VIRT_ADDR(kvaddr)) {
+			*paddr = kvaddr - DIRECTMAP_VIRT_START;
+			return TRUE;
+		}
+		FILL_PML4_HYPER();
+		pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);  
+        	if (verbose) {
+			fprintf(fp, "PML4 DIRECTORY: %lx\n", vt->kernel_pgd[0]);
+               		fprintf(fp, "PAGE DIRECTORY: %lx\n", *pml4);
+		}
+	} else {
+        	if (!vt->vmalloc_start) {
+                	*paddr = x86_64_VTOP(kvaddr);
+                	return TRUE;
+        	}
 
-        if (!IS_VMALLOC_ADDR(kvaddr)) {
-                *paddr = x86_64_VTOP(kvaddr);
-                if (!verbose)
-                        return TRUE;
-        }
+        	if (!IS_VMALLOC_ADDR(kvaddr)) {
+                	*paddr = x86_64_VTOP(kvaddr);
+                	if (!verbose)
+                        	return TRUE;
+        	}
 
-	if (XEN() && (kt->xen_flags & WRITABLE_PAGE_TABLES))
-		return (x86_64_kvtop_xen_wpt(tc, kvaddr, paddr, verbose));
+		if (XEN() && (kt->xen_flags & WRITABLE_PAGE_TABLES))
+			return (x86_64_kvtop_xen_wpt(tc, kvaddr, paddr, verbose));
 
- 	/*	
-	 *  pgd = pgd_offset_k(addr);
-	 */
-	FILL_PML4();
-	pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);  
-        if (verbose) {
-		fprintf(fp, "PML4 DIRECTORY: %lx\n", vt->kernel_pgd[0]);
-                fprintf(fp, "PAGE DIRECTORY: %lx\n", *pml4);
+ 		/*	
+		 *  pgd = pgd_offset_k(addr);
+		 */
+		FILL_PML4();
+		pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);  
+        	if (verbose) {
+			fprintf(fp, "PML4 DIRECTORY: %lx\n", vt->kernel_pgd[0]);
+               		fprintf(fp, "PAGE DIRECTORY: %lx\n", *pml4);
+		}
 	}
 	if (!(*pml4) & _PAGE_PRESENT)
 		goto no_kpage;
@@ -2094,8 +2136,22 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	ulong last_process_stack_eframe;
 	ulong user_mode_eframe;
 
+        /*
+         *  User may have made a run-time switch.
+         */
+	if (kt->flags & DWARF_UNWIND) {
+		machdep->back_trace = x86_64_dwarf_back_trace_cmd;
+		x86_64_dwarf_back_trace_cmd(bt_in);
+		return;
+	}
+
 	bt = &bt_local;
 	BCOPY(bt_in, bt, sizeof(struct bt_info));
+
+	if (bt->flags & BT_FRAMESIZE_DEBUG) {
+		dwarf_debug(bt);
+		return;
+	}
 
 	level = 0;
 	done = FALSE;
@@ -2286,9 +2342,15 @@ in_exception_stack:
                  */
                 up = (ulong *)(&bt->stackbuf[stacktop - bt->stackbase]);
                 up -= 1;
-                irq_eframe = rsp = bt->stkptr = *up;
+                irq_eframe = rsp = bt->stkptr = (*up) - ms->irq_eframe_link;
 		up -= 1;
                 bt->instptr = *up;
+		/*
+		 *  No exception frame when coming from call_softirq.
+		 */
+		if ((sp = value_search(bt->instptr, &offset)) && 
+		    STREQ(sp->name, "call_softirq"))
+			irq_eframe = 0;
                 bt->frameptr = 0;
                 done = FALSE;
         } else
@@ -2469,6 +2531,298 @@ in_exception_stack:
 }
 
 /*
+ *  Use dwarf CFI encodings to correctly follow the call chain.
+ */
+static void
+x86_64_dwarf_back_trace_cmd(struct bt_info *bt_in)
+{
+	int i, level, done;
+	ulong rsp, offset, stacktop;
+	ulong *up;
+	long cs;
+	struct syment *sp;
+	FILE *ofp;
+	ulong estack, irqstack;
+	ulong irq_eframe;
+	struct bt_info bt_local, *bt;
+	struct machine_specific *ms;
+	ulong last_process_stack_eframe;
+	ulong user_mode_eframe;
+
+	/*
+	 *  User may have made a run-time switch.
+	 */
+        if (!(kt->flags & DWARF_UNWIND)) {
+                machdep->back_trace = x86_64_low_budget_back_trace_cmd;
+                x86_64_low_budget_back_trace_cmd(bt_in);
+                return;
+        }
+
+	bt = &bt_local;
+	BCOPY(bt_in, bt, sizeof(struct bt_info));
+
+        if (bt->flags & BT_FRAMESIZE_DEBUG) {
+		dwarf_debug(bt);
+		return;
+	}
+
+	level = 0;
+	done = FALSE;
+	irq_eframe = 0;
+	last_process_stack_eframe = 0;
+	bt->call_target = NULL;
+	bt->bptr = 0;
+	rsp = bt->stkptr;
+	if (!rsp) {
+		error(INFO, "cannot determine starting stack pointer\n");
+		return;
+	}
+	ms = machdep->machspec;
+	if (BT_REFERENCE_CHECK(bt))
+		ofp = pc->nullfp;
+	else
+		ofp = fp;
+
+        if (bt->flags & BT_TEXT_SYMBOLS) {
+		if (!(bt->flags & BT_TEXT_SYMBOLS_ALL))
+                	fprintf(ofp, "%sSTART: %s%s at %lx\n",
+                	    space(VADDR_PRLEN > 8 ? 14 : 6),
+                	    closest_symbol(bt->instptr), 
+			    STREQ(closest_symbol(bt->instptr), "thread_return") ?
+			    " (schedule)" : "",
+			    bt->instptr);
+        } else if (bt->flags & BT_START) {
+                x86_64_print_stack_entry(bt, ofp, level,
+                        0, bt->instptr);
+		bt->flags &= ~BT_START;
+		level++;
+	}
+
+
+        if ((estack = x86_64_in_exception_stack(bt))) {
+in_exception_stack:
+		bt->flags |= BT_EXCEPTION_STACK;
+		/*
+	 	 *  The stack buffer will have been loaded with the process
+		 *  stack, so switch to the indicated exception stack.
+		 */
+                bt->stackbase = estack;
+                bt->stacktop = estack + ms->stkinfo.esize;
+                bt->stackbuf = ms->irqstack;
+
+                if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+                    bt->stacktop - bt->stackbase,
+		    bt->hp && (bt->hp->esp == bt->stkptr) ? 
+	 	    "irqstack contents via hook" : "irqstack contents", 
+		    RETURN_ON_ERROR))
+                    	error(FATAL, "read of exception stack at %lx failed\n",
+                        	bt->stackbase);
+
+		/*
+	 	 *  If irq_eframe is set, we've jumped back here from the
+		 *  IRQ stack dump below.  Do basically the same thing as if
+		 *  had come from the processor stack, but presume that we
+		 *  must have been in kernel mode, i.e., took an exception
+	 	 *  while operating on an IRQ stack.  (untested)
+		 */
+                if (irq_eframe) {
+                        bt->flags |= BT_EXCEPTION_FRAME;
+                        i = (irq_eframe - bt->stackbase)/sizeof(ulong);
+                        x86_64_print_stack_entry(bt, ofp, level, i, 
+				bt->instptr);
+                        bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
+                        cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0,
+                        	bt->stackbuf + (irq_eframe - bt->stackbase), 
+				bt, ofp);
+                        rsp += SIZE(pt_regs);  /* guaranteed kernel mode */
+                        level++;
+                        irq_eframe = 0;
+                }
+
+		stacktop = bt->stacktop - SIZE(pt_regs);
+		
+		if (!done) {
+			level = dwarf_backtrace(bt, level, stacktop);
+			done = TRUE;
+		}
+
+                cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
+			bt->stackbuf + (bt->stacktop - bt->stackbase) - 
+			SIZE(pt_regs), bt, ofp);
+
+		if (!BT_REFERENCE_CHECK(bt))
+			fprintf(fp, "--- <exception stack> ---\n");
+
+                /* 
+		 *  stack = (unsigned long *) estack_end[-2]; 
+		 */
+		up = (ulong *)(&bt->stackbuf[bt->stacktop - bt->stackbase]);
+		up -= 2;
+		rsp = bt->stkptr = *up;
+		up -= 3;
+		bt->instptr = *up;  
+		if (cs & 3)
+			done = TRUE;   /* user-mode exception */
+		else
+			done = FALSE;  /* kernel-mode exception */
+		bt->frameptr = 0;
+
+		/*
+		 *  Print the return values from the estack end.
+		 */
+		if (!done) {
+                	bt->flags |= BT_START;
+                	x86_64_print_stack_entry(bt, ofp, level,
+                        	0, bt->instptr);
+                	bt->flags &= ~BT_START;
+			level++;
+		}
+	}
+
+	/*
+	 *  IRQ stack entry always comes in via the process stack, regardless
+	 *  whether it happened while running in user or kernel space.
+	 */
+        if (!done && (irqstack = x86_64_in_irqstack(bt))) {
+		bt->flags |= BT_IRQSTACK;
+		/*
+		 *  Until coded otherwise, the stackbase will be pointing to
+		 *  either the exception stack or, more likely, the process
+		 *  stack base.  Switch it to the IRQ stack.
+		 */
+                bt->stackbase = irqstack;
+                bt->stacktop = irqstack + ms->stkinfo.isize;
+                bt->stackbuf = ms->irqstack;
+
+                if (!readmem(bt->stackbase, KVADDR, 
+	  	    bt->stackbuf, bt->stacktop - bt->stackbase,
+                    bt->hp && (bt->hp->esp == bt_in->stkptr) ?
+		    "irqstack contents via hook" : "irqstack contents", 
+		    RETURN_ON_ERROR))
+                    	error(FATAL, "read of IRQ stack at %lx failed\n",
+				bt->stackbase);
+
+		stacktop = bt->stacktop - 64; /* from kernel code */
+
+		if (!done) {
+			level = dwarf_backtrace(bt, level, stacktop);
+			done = TRUE;
+		}
+
+		if (!BT_REFERENCE_CHECK(bt))
+                	fprintf(fp, "--- <IRQ stack> ---\n");
+
+                /*
+		 *  stack = (unsigned long *) (irqstack_end[-1]);
+		 *  (where irqstack_end is 64 bytes below page end)
+                 */
+                up = (ulong *)(&bt->stackbuf[stacktop - bt->stackbase]);
+                up -= 1;
+                irq_eframe = rsp = bt->stkptr = (*up) - ms->irq_eframe_link;
+		up -= 1;
+                bt->instptr = *up;
+                /*
+                 *  No exception frame when coming from call_softirq.
+                 */
+                if ((sp = value_search(bt->instptr, &offset)) &&
+                    STREQ(sp->name, "call_softirq"))
+                        irq_eframe = 0;
+                bt->frameptr = 0;
+                done = FALSE;
+        } else
+		irq_eframe = 0;
+
+        if (!done && (estack = x86_64_in_exception_stack(bt))) 
+		goto in_exception_stack;
+
+	if (!done && (bt->flags & (BT_EXCEPTION_STACK|BT_IRQSTACK))) {
+		/*
+		 *  Verify that the rsp pointer taken from either the
+		 *  exception or IRQ stack points into the process stack.
+		 */
+		bt->stackbase = GET_STACKBASE(bt->tc->task);
+		bt->stacktop = GET_STACKTOP(bt->tc->task);
+
+		if (!INSTACK(rsp, bt)) {
+			switch (bt->flags & (BT_EXCEPTION_STACK|BT_IRQSTACK))
+			{
+			case (BT_EXCEPTION_STACK|BT_IRQSTACK):
+				error(FATAL, STACK_TRANSITION_ERRMSG_E_I_P,
+					bt_in->stkptr, bt->stkptr, rsp,
+					bt->stackbase);
+
+			case BT_EXCEPTION_STACK:
+				error(FATAL, STACK_TRANSITION_ERRMSG_E_P,
+					bt_in->stkptr, rsp, bt->stackbase);
+
+			case BT_IRQSTACK:
+				error(FATAL, STACK_TRANSITION_ERRMSG_I_P,
+					bt_in->stkptr, rsp, bt->stackbase);
+			}
+		}
+
+		/*
+	 	 *  Now fill the local stack buffer from the process stack.
+	  	 */
+               	if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+                    bt->stacktop - bt->stackbase, 
+		    "irqstack contents", RETURN_ON_ERROR))
+                	error(FATAL, "read of process stack at %lx failed\n",
+				bt->stackbase);
+	}
+
+	/*
+	 *  Dump the IRQ exception frame from the process stack.
+	 *  If the CS register indicates a user exception frame,
+	 *  then set done to TRUE to avoid the process stack walk-through.
+	 *  Otherwise, bump up the rsp past the kernel-mode eframe.
+	 */
+        if (irq_eframe) {
+                bt->flags |= BT_EXCEPTION_FRAME;
+		level = dwarf_print_stack_entry(bt, level);
+                bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
+                cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
+			bt->stackbuf + (irq_eframe - bt->stackbase), bt, ofp);
+		if (cs & 3)
+			done = TRUE;   /* IRQ from user-mode */
+		else {
+			if (x86_64_print_eframe_location(rsp, level, ofp))
+				level++;
+			rsp += SIZE(pt_regs);
+			irq_eframe = 0;
+		}
+		level++;
+        }
+
+	/*
+	 *  Walk the process stack.  
+	 */
+	if (!done) {
+		level = dwarf_backtrace(bt, level, bt->stacktop);
+		done = TRUE;
+	}
+
+        if (!irq_eframe && !is_kernel_thread(bt->tc->task) &&
+            (GET_STACKBASE(bt->tc->task) == bt->stackbase)) {
+		user_mode_eframe = bt->stacktop - SIZE(pt_regs);
+		if (last_process_stack_eframe < user_mode_eframe)
+                	x86_64_exception_frame(EFRAME_PRINT, 0, bt->stackbuf +
+                        	(bt->stacktop - bt->stackbase) - SIZE(pt_regs),
+                        	bt, ofp);
+	}
+
+        if (bt->flags & BT_TEXT_SYMBOLS) {
+        	if (BT_REFERENCE_FOUND(bt)) {
+                	print_task_header(fp, task_to_context(bt->task), 0);
+			BCOPY(bt_in, bt, sizeof(struct bt_info));
+                	bt->ref = NULL;
+                	machdep->back_trace(bt);
+                	fprintf(fp, "\n");
+        	}
+	}
+}
+
+/*
  *  Functions that won't be called indirectly.
  *  Add more to this as they are discovered.
  */
@@ -2484,6 +2838,10 @@ is_direct_call_target(struct bt_info *bt)
 	int i;
 
 	if (!bt->call_target || (bt->flags & BT_NO_CHECK_CALLER))
+		return FALSE;
+
+	if (strstr(bt->call_target, "schedule") &&
+	    is_task_active(bt->task))
 		return FALSE;
 
 	for (i = 0; direct_call_targets[i]; i++) {
@@ -2704,7 +3062,7 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 		fprintf(ofp, "    ORIG_RAX: %016lx  CS: %04lx  SS: %04lx\n", 
 			orig_rax, cs, ss);
 
-		if (!verified)
+		if (!verified && CRASHDEBUG((pc->flags & RUNTIME) ? 0 : 1))
 			error(WARNING, "possibly bogus exception frame\n");
 	}
 
@@ -2731,6 +3089,13 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
                 x86_64_do_bt_reference_check(bt, r14, NULL);
                 x86_64_do_bt_reference_check(bt, r15, NULL);
         }
+
+	/* Remember the rip and rsp for unwinding the process stack */
+	if (kt->flags & DWARF_UNWIND){
+		bt->instptr = rip;
+		bt->stkptr = rsp;
+		bt->bptr = rbp;
+	}
 
 	if (kvaddr)
 		FREEBUF(pt_regs_buf);
@@ -2810,6 +3175,12 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
                         return TRUE;
 	}
 
+	if ((cs == 0x10) && kvaddr) {
+                if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
+		    x86_64_in_exception_stack(bt))
+			return TRUE;
+	}
+
         if ((cs == 0x33) && (ss == 0x2b)) {
                 if (IS_UVADDR(rip, bt->tc) && IS_UVADDR(rsp, bt->tc))
                         return TRUE;
@@ -2867,13 +3238,14 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	struct bt_info bt_local, *bt;
         struct machine_specific *ms;
 	char *user_regs;
-	ulong ur_rip;
-	ulong ur_rsp;
+	ulong ur_rip, ur_rsp;
+	ulong halt_rip, halt_rsp;
 
         bt = &bt_local;
         BCOPY(bt_in, bt, sizeof(struct bt_info));
         ms = machdep->machspec;
 	ur_rip = ur_rsp = 0;
+	halt_rip = halt_rsp = 0;
 	stage = 0;
 	estack = -1;
 
@@ -2911,15 +3283,21 @@ next_stack:
 	     i < (bt->stacktop - bt->stackbase)/sizeof(ulong); i++, up++) {
                 sym = closest_symbol(*up);
 
-                if (STREQ(sym, "netconsole_netdump") || 
+		if (XEN_CORE_DUMPFILE()) {
+			if (STREQ(sym, "xen_machine_kexec")) {
+                       		*rip = *up;
+                       		*rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+				return;
+			}
+		} else if (STREQ(sym, "netconsole_netdump") || 
 		    STREQ(sym, "netpoll_start_netdump") ||
 		    STREQ(sym, "start_disk_dump") ||
 		    STREQ(sym, "disk_dump") ||
 		    STREQ(sym, "crash_kexec") ||
 		    STREQ(sym, "try_crashdump")) {
-                        *rip = *up;
-                        *rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
-                        return;
+                       	*rip = *up;
+                       	*rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+                       	return;
                 }
 
                 if ((estack >= 0) && 
@@ -2979,6 +3357,24 @@ next_sysrq:
                         *rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
                         return;
                 }
+
+		if (XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) &&
+		    (stage == 0) && STREQ(sym, "safe_halt")) {
+			halt_rip = *up;
+			halt_rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+		}
+
+		if (XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) &&
+		    !halt_rip && (stage == 0) && STREQ(sym, "xen_idle")) {
+			halt_rip = *up;
+			halt_rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+		}
+
+		if (!XEN_CORE_DUMPFILE() && !panic_task && (bt->tc->pid == 0) && 
+		    !halt_rip && (stage == 0) && STREQ(sym, "cpu_idle")) { 
+			halt_rip = *up;
+			halt_rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+		}
 	}
 
 	if (panic) 
@@ -3027,9 +3423,19 @@ skip_stage:
 	if (ur_rip && ur_rsp) {
         	*rip = ur_rip;
 		*rsp = ur_rsp;
+		return;
 	}
 
-        console("x86_64_get_dumpfile_stack_frame: cannot find anything useful\n");
+	if (halt_rip && halt_rsp) {
+        	*rip = halt_rip;
+		*rsp = halt_rsp;
+		return;
+	}
+
+	if (CRASHDEBUG(1)) 
+        	error(INFO, 
+		    "x86_64_get_dumpfile_stack_frame: cannot find anything useful (task: %lx)\n",
+			bt->task);
 
 	bt->flags &= ~(ulonglong)BT_DUMPFILE_SEARCH;
 
@@ -3536,6 +3942,10 @@ x86_64_compiler_warning_stub(void)
  *  Force the phys_base address via:
  *
  *   --machdep phys_base=<address>
+ *
+ *  Force the IRQ stack back-link via:
+ *
+ *   --machdep irq_eframe_link=<offset>
  */
 
 void
@@ -3612,7 +4022,16 @@ parse_cmdline_arg(void)
                                         continue;
                                 }
                         }
-                }
+                } else if (STRNEQ(arglist[i], "irq_eframe_link=")) {
+                        p = arglist[i] + strlen("irq_eframe_link=");
+			if (strlen(p)) {
+				value = stol(p, RETURN_ON_ERROR|QUIET, &errflag);
+				if (!errflag) {
+					machdep->machspec->irq_eframe_link = value;
+					continue;
+				}
+			}
+		}
 
 		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
 		lines++;
@@ -3662,6 +4081,62 @@ x86_64_clear_machdep_cache(void)
 	machdep->machspec->last_upml_read = 0;
 }
 
+static void 
+x86_64_irq_eframe_link_init(void)
+{
+	int c;
+	struct syment *sp, *spn;
+	char buf[BUFSIZE];
+	char link_register[BUFSIZE];
+        char *arglist[MAXARGS];
+	ulong max_instructions;
+
+	if (machdep->machspec->irq_eframe_link == UNINITIALIZED)
+		machdep->machspec->irq_eframe_link = 0;
+	else
+		return; 
+
+	if (THIS_KERNEL_VERSION < LINUX(2,6,9)) 
+		return;
+
+	if (!(sp = symbol_search("common_interrupt")) ||
+	    !(spn = next_symbol(NULL, sp))) {
+		return;
+	}
+
+	max_instructions = spn->value - sp->value;
+
+	open_tmpfile();
+
+        sprintf(buf, "x/%ldi 0x%lx",
+		max_instructions, sp->value);
+
+        if (!gdb_pass_through(buf, pc->tmpfile, GNU_RETURN_ON_ERROR))
+		return;
+
+	link_register[0] = NULLCHAR;
+
+	rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (!strstr(buf, sp->name))
+			break;
+		if ((c = parse_line(buf, arglist)) < 4)
+			continue;
+		if (strstr(arglist[2], "push"))
+			strcpy(link_register, arglist[3]);
+	}
+	close_tmpfile();
+
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "IRQ stack link register: %s\n", 
+		    strlen(link_register) ? 
+			link_register : "undetermined");
+
+	if (STREQ(link_register, "%rbp"))
+		machdep->machspec->irq_eframe_link = 40;
+	
+}
+
 #include "netdump.h"
 
 /*
@@ -3684,7 +4159,7 @@ x86_64_calc_phys_base(void)
 
 	machdep->machspec->phys_base = 0;   /* default/traditional */
 
-	if (!symbol_exists("phys_base"))
+	if (!kernel_symbol_exists("phys_base"))
 		return;
 
 	if (!symbol_exists("_text"))
@@ -3804,7 +4279,7 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	    "xen kdump p2m mfn page", RETURN_ON_ERROR))
 		error(FATAL, "cannot read xen kdump p2m mfn page\n");
 
-	if (CRASHDEBUG(1))
+	if (CRASHDEBUG(2))
 		x86_64_debug_dump_page(fp, xkd->page, "pfn_to_mfn_frame_list");
 
 	for (i = 0, up = (ulong *)xkd->page; i < MAX_X86_64_FRAMES; i++, up++)
@@ -3845,8 +4320,14 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 		frames -= mfns[i];
 	}
 
+	if (CRASHDEBUG(2)) {
+		for (i = 0; i < xkd->p2m_frames; i++)
+		    	fprintf(fp, "%lx ", xkd->p2m_mfn_frame_list[i]);
+		fprintf(fp, "\n");
+	}
+
         pc->readmem = read_kdump;
-	return FALSE;
+	return TRUE;
 
 use_cr3:
 
@@ -4033,6 +4514,11 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
 	ulong *up;
 	off_t offset; 
+
+        if (!symbol_exists("phys_to_machine_mapping")) {
+                xd->flags |= XC_CORE_NO_P2MM;
+                return TRUE;
+        }
 
 	if ((ctrlreg_offset = MEMBER_OFFSET("vcpu_guest_context", "ctrlreg")) ==
 	     INVALID_OFFSET)
@@ -4368,6 +4854,267 @@ generic:
                         if (xrsp <= machdep->machspec->stkinfo.ibase[cpu])
                                 break;
                 }
+	}
+}
+
+/* for XEN Hypervisor analysis */
+
+static int 
+x86_64_is_kvaddr_hyper(ulong addr)
+{
+        return (addr >= HYPERVISOR_VIRT_START && addr < HYPERVISOR_VIRT_END); 
+}
+
+static ulong
+x86_64_get_stackbase_hyper(ulong task)
+{
+	ulong init_tss, rsp0, base;
+	char *buf;
+
+	/* task means pcpu here */
+	if (!xen_hyper_test_pcpu_id(task)) {
+		error(FATAL, "invalid pcpu number\n");
+	}
+        init_tss = symbol_value("init_tss");
+        buf = GETBUF(XEN_HYPER_SIZE(tss_struct));
+	init_tss += XEN_HYPER_SIZE(tss_struct) * task;
+	if (!readmem(init_tss, KVADDR, buf,
+		     XEN_HYPER_SIZE(tss_struct), "init_tss", RETURN_ON_ERROR)) {
+		error(FATAL, "cannot read init_tss.\n");
+	}
+	rsp0 = ULONG(buf + XEN_HYPER_OFFSET(tss_struct_rsp0));
+        FREEBUF(buf);
+
+	base = rsp0 & (~(STACKSIZE() - 1));
+	return base;
+}
+
+static ulong
+x86_64_get_stacktop_hyper(ulong task)
+{
+	return x86_64_get_stackbase_hyper(task) + STACKSIZE();
+}
+
+static void
+x86_64_get_stack_frame_hyper(struct bt_info *bt, ulong *pcp, ulong *spp)
+{
+        int pcpu;
+        ulong *regs;
+	ulong rsp, rip;
+
+	/* task means pcpu here */
+        pcpu = bt->task;
+	if (!xen_hyper_test_pcpu_id(pcpu)) {
+		error(FATAL, "invalid pcpu number\n");
+	}
+
+	if (bt->flags & BT_TEXT_SYMBOLS_ALL) {
+		if (spp)
+			*spp = x86_64_get_stackbase_hyper(pcpu);
+		if (pcp)
+			*pcp = 0;
+		bt->flags &= ~BT_TEXT_SYMBOLS_ALL;
+		return;
+	}
+
+	regs = (ulong *)xen_hyper_id_to_dumpinfo_context(pcpu)->pr_reg_ptr;
+	rsp = XEN_HYPER_X86_64_NOTE_RSP(regs);
+	rip = XEN_HYPER_X86_64_NOTE_RIP(regs);
+
+	if (spp) {
+		if (rsp < x86_64_get_stackbase_hyper(pcpu) ||
+			rsp >= x86_64_get_stacktop_hyper(pcpu))
+			*spp = x86_64_get_stackbase_hyper(pcpu);
+		else
+			*spp = rsp;
+	}
+	if (pcp) {
+		if (is_kernel_text(rip))
+			*pcp = rip;
+		else
+			*pcp = 0;
+	}
+}
+
+static int
+x86_64_print_stack_entry_hyper(struct bt_info *bt, FILE *ofp, int level, 
+	int stkindex, ulong text)
+{
+	ulong rsp, offset;
+	struct syment *sp;
+	char *name;
+	int result; 
+	char buf[BUFSIZE];
+
+	offset = 0;
+	sp = value_search(text, &offset);
+	if (!sp)
+		return BACKTRACE_ENTRY_IGNORED;
+
+	name = sp->name;
+
+	if (STREQ(name, "syscall_enter"))
+		result = BACKTRACE_COMPLETE;
+	else
+		result = BACKTRACE_ENTRY_DISPLAYED;
+
+	rsp = bt->stackbase + (stkindex * sizeof(long));
+
+	if ((bt->flags & BT_FULL)) {
+		if (bt->frameptr) 
+			x86_64_display_full_frame(bt, rsp, ofp);
+		bt->frameptr = rsp + sizeof(ulong);
+	}
+
+        fprintf(ofp, "%s#%d [%8lx] %s at %lx\n", level < 10 ? " " : "", level,
+		rsp, name, text);
+
+        if (bt->flags & BT_LINE_NUMBERS) {
+                get_line_number(text, buf, FALSE);
+                if (strlen(buf))
+                        fprintf(ofp, "    %s\n", buf);
+	}
+
+	if (BT_REFERENCE_CHECK(bt))
+		x86_64_do_bt_reference_check(bt, text, name);
+
+	return result;
+}
+
+/*
+ *  simple back tracer for xen hypervisor
+ *  irq stack and exception stack does not exist. so relative easy.
+ */
+static void
+x86_64_simple_back_trace_cmd_hyper(struct bt_info *bt_in)
+{
+	int i, level, done;
+	ulong rsp;
+	ulong *up;
+	FILE *ofp;
+	struct bt_info bt_local, *bt;
+
+	bt = &bt_local;
+	BCOPY(bt_in, bt, sizeof(struct bt_info));
+
+	if (bt->flags & BT_FRAMESIZE_DEBUG) {
+		error(INFO, "-F not support\n");
+		return;
+	}
+
+	level = 0;
+	done = FALSE;
+	bt->call_target = NULL;
+	rsp = bt->stkptr;
+	if (!rsp) {
+		error(INFO, "cannot determine starting stack pointer\n");
+		return;
+	}
+	if (BT_REFERENCE_CHECK(bt))
+		ofp = pc->nullfp;
+	else
+		ofp = fp;
+
+        for (i = (rsp - bt->stackbase)/sizeof(ulong);
+	     !done && (rsp < bt->stacktop); i++, rsp += sizeof(ulong)) {
+
+		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+
+		if (!is_kernel_text(*up))
+			continue;
+
+		switch (x86_64_print_stack_entry_hyper(bt, ofp, level, i,*up))
+		{
+		case BACKTRACE_ENTRY_DISPLAYED:
+			level++;
+			break;
+		case BACKTRACE_ENTRY_IGNORED:	
+			break;
+		case BACKTRACE_COMPLETE:
+			done = TRUE;
+			break;
+		}
+        }
+}
+
+static void
+x86_64_init_hyper(int when)
+{
+	switch (when)
+	{
+	case PRE_SYMTAB:
+		machdep->verify_symbol = x86_64_verify_symbol;
+                machdep->machspec = &x86_64_machine_specific;
+                if (pc->flags & KERNEL_DEBUG_QUERY)
+                        return;
+                machdep->pagesize = memory_page_size();
+                machdep->pageshift = ffs(machdep->pagesize) - 1;
+                machdep->pageoffset = machdep->pagesize - 1;
+                machdep->pagemask = ~((ulonglong)machdep->pageoffset);
+		machdep->stacksize = machdep->pagesize * 2;
+                if ((machdep->machspec->upml = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc upml space.");
+                if ((machdep->pgd = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc pgd space.");
+                if ((machdep->pmd = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc pmd space.");
+                if ((machdep->ptbl = (char *)malloc(PAGESIZE())) == NULL)
+                        error(FATAL, "cannot malloc ptbl space.");
+		if ((machdep->machspec->pml4 = 
+			(char *)malloc(PAGESIZE()*2)) == NULL)
+                        error(FATAL, "cannot malloc pml4 space.");
+                machdep->machspec->last_upml_read = 0;
+                machdep->machspec->last_pml4_read = 0;
+                machdep->last_pgd_read = 0;
+                machdep->last_pmd_read = 0;
+                machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = generic_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
+                if (machdep->cmdline_arg)
+                        parse_cmdline_arg();
+		break;
+
+	case PRE_GDB:
+                machdep->machspec->page_offset = PAGE_OFFSET_XEN_HYPER;
+	        machdep->kvbase = (ulong)HYPERVISOR_VIRT_START;
+		machdep->identity_map_base = (ulong)PAGE_OFFSET_XEN_HYPER;
+                machdep->is_kvaddr = x86_64_is_kvaddr_hyper;
+                machdep->is_uvaddr = x86_64_is_uvaddr;
+	        machdep->eframe_search = x86_64_eframe_search;
+	        machdep->back_trace = x86_64_simple_back_trace_cmd_hyper;
+	        machdep->processor_speed = x86_64_processor_speed;
+	        machdep->kvtop = x86_64_kvtop;
+	        machdep->get_task_pgd = x86_64_get_task_pgd;
+		machdep->get_stack_frame = x86_64_get_stack_frame_hyper;
+		machdep->get_stackbase = x86_64_get_stackbase_hyper;
+		machdep->get_stacktop = x86_64_get_stacktop_hyper;
+		machdep->translate_pte = x86_64_translate_pte;
+		machdep->memory_size = x86_memory_size_hyper;	/* KAK add */
+		machdep->is_task_addr = x86_64_is_task_addr;
+		machdep->dis_filter = x86_64_dis_filter;
+		machdep->cmd_mach = x86_64_cmd_mach;
+		machdep->get_smp_cpus = x86_get_smp_cpus_hyper;	/* KAK add */
+		machdep->line_number_hooks = x86_64_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+		machdep->init_kernel_pgd = x86_64_init_kernel_pgd;
+		machdep->clear_machdep_cache = x86_64_clear_machdep_cache;
+
+		/* machdep table for Xen Hypervisor */
+		xhmachdep->pcpu_init = x86_xen_hyper_pcpu_init;
+		break;
+
+	case POST_GDB:
+		XEN_HYPER_STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
+		XEN_HYPER_STRUCT_SIZE_INIT(tss_struct, "tss_struct");
+		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_rsp0, "tss_struct", "rsp0");
+/* KAK Can this be calculated? */
+		if (!machdep->hz) {
+			machdep->hz = XEN_HYPER_HZ;
+		}
+		break;
+
+	case POST_INIT:
+		break;
 	}
 }
 #endif  /* X86_64 */ 

@@ -3,8 +3,8 @@
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
  * Copyright (C) 2002 Silicon Graphics, Inc. 
  * Copyright (C) 2002 Free Software Foundation, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -626,6 +626,10 @@ lkcd_speedo(void)
 {
         static int i = 0;
 
+        if (pc->flags & SILENT) {
+                return;
+        }
+
         switch (++i%4) {
         case 0:
                 lkcd_print("|\b");
@@ -787,7 +791,7 @@ get_offset(uint64_t paddr)
 int
 lkcd_lseek(physaddr_t paddr)
 {
-        long i;
+        long i = 0;
 	int err;
         int eof;
         void *dp;
@@ -832,7 +836,7 @@ lkcd_lseek(physaddr_t paddr)
     lseek(lkcd->fd, lkcd->page_offset_max, SEEK_SET);
     eof = FALSE;
     while (!eof) {
-	if( (i%2048) == 0) {
+	if( (i++%2048) == 0) {
 	    lkcd_speedo();
 	}
 
