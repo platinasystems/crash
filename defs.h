@@ -474,6 +474,7 @@ struct new_utsname {
 #define RELOC_FORCE          (0x4000000)
 #define ARCH_OPENVZ          (0x8000000)
 #define ARCH_PVOPS          (0x10000000)
+#define IN_KERNEL_INIT      (0x20000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 

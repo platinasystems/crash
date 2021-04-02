@@ -67,6 +67,8 @@ kernel_init()
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
 
+	kt->flags |= IN_KERNEL_INIT;
+
         if (!(kt->cpu_flags = (ulong *)calloc(NR_CPUS, sizeof(ulong))))
                 error(FATAL, "cannot malloc cpu_flags array");
 
@@ -526,6 +528,8 @@ kernel_init()
 	}
 
 	BUG_bytes_init();
+	
+	kt->flags &= ~IN_KERNEL_INIT;
 }
 
 /*
@@ -2017,7 +2021,7 @@ back_trace(struct bt_info *bt)
 	if (bt->hp) {
 		if (bt->hp->esp && !INSTACK(bt->hp->esp, bt))
 			error(INFO, 
-			    "invalid stack address for this task: %lx\n    (valid range: %lx - %lx)\n",
+			    "non-process stack address for this task: %lx\n    (valid range: %lx - %lx)\n",
 				bt->hp->esp, bt->stackbase, bt->stacktop);
 		eip = bt->hp->eip;
 		esp = bt->hp->esp;
@@ -3365,7 +3369,7 @@ void
 dump_log(int msg_level)
 {
 	int i;
-	ulong log_buf, logged_chars;
+	ulong log_buf, log_end;
 	char *buf;
 	char last;
 	ulong index;
@@ -3392,18 +3396,16 @@ dump_log(int msg_level)
 
 	buf = GETBUF(log_buf_len);
 	log_wrap = FALSE;
-	get_symbol_data("logged_chars", sizeof(ulong), &logged_chars);
+	get_symbol_data("log_end", sizeof(ulong), &log_end);
         readmem(log_buf, KVADDR, buf,
         	log_buf_len, "log_buf contents", FAULT_ON_ERROR);
 
-	if (logged_chars < log_buf_len) {
+	if (log_end < log_buf_len)
 		index = 0;
-	} else {
-		get_symbol_data("log_end", sizeof(ulong), &index);
-		index &= log_buf_len-1;
-	} 
+	else
+		index = log_end & (log_buf_len - 1);
 
-	if ((logged_chars < log_buf_len) && (index == 0) && (buf[index] == '<'))
+	if ((log_end < log_buf_len) && (index == 0) && (buf[index] == '<'))
 		loglevel = TRUE;
 	else
 		loglevel = FALSE;
@@ -4000,6 +4002,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sRELOC_SET", others++ ? "|" : "");
 	if (kt->flags & RELOC_FORCE)
 		fprintf(fp, "%sRELOC_FORCE", others++ ? "|" : "");
+	if (kt->flags & IN_KERNEL_INIT)
+		fprintf(fp, "%sIN_KERNEL_INIT", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);

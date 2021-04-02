@@ -2316,7 +2316,7 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	last_process_stack_eframe = 0;
 	bt->call_target = NULL;
 	rsp = bt->stkptr;
-	if (!rsp) {
+	if (!rsp || !accessible(rsp)) {
 		error(INFO, "cannot determine starting stack pointer\n");
 		return;
 	}

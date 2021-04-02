@@ -18,6 +18,8 @@
 #include "defs.h"
 #include <dlfcn.h>
 
+static int in_extensions_library(char *, char *);
+
 #define DUMP_EXTENSIONS   (0)
 #define LOAD_EXTENSION    (1)
 #define UNLOAD_EXTENSION  (2)
@@ -186,18 +188,19 @@ dump_extension_table(int verbose)
 void 
 load_extension(char *lib)
 {
-	struct extension_table *ext;
+	struct extension_table *ext, *curext;
 	char buf[BUFSIZE];
 	size_t size;
+	char *env;
+	int env_len;
 
-	for (ext = extension_table; ext; ext = ext->next) {
-		if (same_file(ext->filename, lib)) {
-			fprintf(fp, "%s: shared object already loaded\n", lib);
-			return;
-		}
-	}
+	if ((env = getenv("CRASH_EXTENSIONS")))
+		env_len = strlen(env)+1;
+	else
+		env_len = 0;	
 
-	size = sizeof(struct extension_table) + strlen(lib) + strlen("./") + 1;
+	size = sizeof(struct extension_table) + strlen(lib) + 
+		MAX(env_len, strlen("/usr/lib64/crash/extensions/")) + 1;
 
 	if ((ext = (struct extension_table *)malloc(size)) == NULL) 
 		error(FATAL, "cannot malloc extension_table space.");
@@ -208,12 +211,38 @@ load_extension(char *lib)
 	
        /*
 	*  If the library is not specified by an absolute pathname, dlopen() 
-        *  does not look in the current directory.
+        *  does not look in the current directory, so modify the filename.
+	*  If it's not in the current directory, check the extensions library
+	*  directory.
         */
-	if ((*lib != '.') && (*lib != '/') && is_elf_file(lib)) 
-		sprintf(ext->filename, "./%s", lib);
-	else
+	if ((*lib != '.') && (*lib != '/')) {
+		if (file_exists(lib, NULL))
+			sprintf(ext->filename, "./%s", lib);
+		else if (in_extensions_library(lib, buf))
+			strcpy(ext->filename, buf);
+		else {
+			error(INFO, "%s: %s\n", lib, strerror(ENXIO));
+			free(ext);
+			return;
+		}
+	} else 
 		strcpy(ext->filename, lib);
+
+	if (!is_elf_file(ext->filename)) {
+		error(INFO, "%s: not an ELF format object file\n",
+			ext->filename);
+		free(ext);
+		return;
+	}
+
+	for (curext = extension_table; curext; curext = curext->next) {
+		if (same_file(curext->filename, ext->filename)) {
+			fprintf(fp, "%s: shared object already loaded\n", 
+				ext->filename);
+			free(ext);
+			return;
+		}
+	}
 
        /*
         *  register_extension() will be called by the shared object's
@@ -262,12 +291,43 @@ load_extension(char *lib)
 }
 
 /*
+ *  Check the extensions library directories.
+ */
+static int
+in_extensions_library(char *lib, char *buf)
+{
+	char *env;
+
+	if ((env = getenv("CRASH_EXTENSIONS"))) {
+		sprintf(buf, "%s%s%s", env,
+			LASTCHAR(env) == '/' ? "" : "/",
+			lib);
+		if (file_exists(buf, NULL))
+			return TRUE;
+	}
+
+	if (BITS64()) {
+		sprintf(buf, "/usr/lib64/crash/extensions/%s", lib);
+		if (file_exists(buf, NULL))
+			return TRUE;
+	}
+
+       	sprintf(buf, "/usr/lib/crash/extensions/%s", lib);
+	if (file_exists(buf, NULL))
+		return TRUE;
+ 
+	return FALSE;
+}
+
+/*
  *  Unload all, or as specified, extension libraries.
  */
 void 
 unload_extension(char *lib)
 {
         struct extension_table *ext;
+	int found;
+	char buf[BUFSIZE];
 
 	if (!lib) {
 		while (extension_table) {
@@ -288,8 +348,20 @@ unload_extension(char *lib)
 		return;
 	}
 
-        for (ext = extension_table; ext; ext = ext->next) {
+	if ((*lib != '.') && (*lib != '/')) {
+		if (!file_exists(lib, NULL) &&
+		    in_extensions_library(lib, buf))
+			lib = buf;
+	} 
+
+	if (!file_exists(lib, NULL)) {
+		error(INFO, "%s: %s\n", lib, strerror(ENXIO));
+		return;
+	}
+
+        for (ext = extension_table, found = FALSE; ext; ext = ext->next) {
                 if (same_file(lib, ext->filename)) {
+			found = TRUE;
 			if (dlclose(ext->handle))
 				error(INFO, 
 				    "dlclose: %s: shared object not open\n", 
@@ -313,7 +385,15 @@ unload_extension(char *lib)
 				help_init();
 			}
 		}
+		if (STREQ(basename(lib), basename(ext->filename))) {
+			error(INFO, "%s and %s are different object files\n",
+				lib, ext->filename);
+			found = TRUE;
+		}
         }
+
+	if (!found)
+		error(INFO, "%s: not loaded\n", lib);
 }
 
 /*

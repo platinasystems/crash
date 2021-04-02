@@ -185,6 +185,7 @@ static ulong get_freepointer(struct meminfo *, void *);
 static int count_free_objects(struct meminfo *, ulong);
 char *is_slab_page(struct meminfo *, char *);
 static void do_node_lists_slub(struct meminfo *, ulong, int);
+static void check_devmem_is_allowed(void);
 
 /*
  *  Memory display modes specific to this file.
@@ -1766,6 +1767,10 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                 if (cnt > size)
                         cnt = size;
 
+		if (CRASHDEBUG(8))
+			fprintf(fp, "    addr: %llx  paddr: %llx  cnt: %ld\n", 
+				addr, (unsigned long long)paddr, cnt);
+
 		switch (READMEM(fd, bufptr, cnt, 
 		    (memtype == PHYSADDR) || (memtype == XENMACHADDR) ? 0 : addr, paddr))
 		{
@@ -1800,6 +1805,8 @@ readmem_error:
         switch (error_handle)
         {
         case (FAULT_ON_ERROR):
+		if (ACTIVE() && (kt->flags & IN_KERNEL_INIT))
+			check_devmem_is_allowed();
         case (QUIET|FAULT_ON_ERROR):
                 if (pc->flags & IN_FOREACH)
                         RESUME_FOREACH();
@@ -1914,6 +1921,42 @@ write_dev_mem(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 		return WRITE_ERROR;
 
 	return cnt;
+}
+
+/*
+ *  The first required reads of memory are done in kernel_init(),
+ *  so if there's a fatal read error of /dev/mem, display a warning
+ *  message if it appears that CONFIG_STRICT_DEVMEM is in effect, 
+ *  which only allows the first 256 pages of physical memory to 
+ *  be accessed:
+ *
+ *    int devmem_is_allowed(unsigned long pagenr)
+ *    {
+ *            if (pagenr <= 256)
+ *                    return 1;
+ *            if (!page_is_ram(pagenr))
+ *                    return 1;
+ *            return 0;
+ *    }
+ */
+static void
+check_devmem_is_allowed(void)
+{
+	long tmp;
+
+	if (STREQ(pc->live_memsrc, "/dev/mem") &&
+	    kernel_symbol_exists("devmem_is_allowed") &&
+	    readmem(256*PAGESIZE(), PHYSADDR, &tmp,
+	    sizeof(long), "devmem_is_allowed - pfn 256",
+	    QUIET|RETURN_ON_ERROR) &&
+	    !(readmem(257*PAGESIZE(), PHYSADDR, &tmp,
+            sizeof(long), "devmem_is_allowed - pfn 257",
+            QUIET|RETURN_ON_ERROR))) {
+		error(INFO, 
+ 	      	    "\nThis kernel may be configured with CONFIG_STRICT_DEVMEM,"
+                    " which\n       renders /dev/mem unusable as a live memory "
+                    "source.\n\n");
+	}
 }
 
 /*
@@ -3369,15 +3412,12 @@ clear_vma_cache(void)
 void
 get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 {
-	int rdflags;
 	struct task_context *tc;
 
 	BZERO(tm, sizeof(struct task_mem_usage));
 
 	if (IS_ZOMBIE(task) || IS_EXITING(task)) 
 		return;
-
-	rdflags = ACTIVE() ? (QUIET|RETURN_ON_ERROR) : RETURN_ON_ERROR;
 
 	tc = task_to_context(task);
 
