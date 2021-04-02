@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2015 David Anderson
- * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -71,7 +71,7 @@
 
 #if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
     !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
-    !defined(ARM) && !defined(ARM64) && !defined(MIPS)
+    !defined(ARM) && !defined(ARM64) && !defined(MIPS) && !defined(SPARC64)
 #ifdef __alpha__
 #define ALPHA
 #endif
@@ -105,6 +105,9 @@
 #endif
 #ifdef __mipsel__
 #define MIPS
+#endif
+#ifdef __sparc_v9__
+#define SPARC64
 #endif
 #endif
 
@@ -140,6 +143,14 @@
 #endif
 #ifdef MIPS
 #define NR_CPUS  (32)
+#endif
+#ifdef SPARC64
+#define NR_CPUS  (4096)
+#endif
+
+/* Some architectures require memory accesses to be aligned.  */
+#if defined(SPARC64)
+#define NEED_ALIGNED_MEM_ACCESS
 #endif
 
 #define BUFSIZE  (1500)
@@ -844,6 +855,7 @@ struct task_table {                      /* kernel/local task table data */
 #define TIMESPEC          (0x1000)
 #define NO_TIMESPEC       (0x2000)
 #define ACTIVE_ONLY       (0x4000)
+#define START_TIME_NSECS  (0x8000)
 
 #define TASK_SLUSH (20)
 
@@ -1949,6 +1961,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long pt_regs_cp0_badvaddr;
 	long address_space_page_tree;
 	long page_compound_head;
+	long irq_desc_irq_data;
+	long kmem_cache_node_total_objects;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2090,6 +2104,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long hrtimer_base;
 	long tnt;
 	long trace_print_flags;
+	long task_struct_flags;
 };
 
 struct array_table {
@@ -2183,6 +2198,45 @@ struct builtin_debug_table {
  *  Facilitators for pulling correctly-sized data out of a buffer at a
  *  known address. 
  */
+
+#ifdef NEED_ALIGNED_MEM_ACCESS
+
+#define DEF_LOADER(TYPE)			\
+static inline TYPE				\
+load_##TYPE (char *addr)			\
+{						\
+	TYPE ret;				\
+	size_t i = sizeof(TYPE);		\
+	while (i--)				\
+		((char *)&ret)[i] = addr[i];	\
+	return ret;				\
+}
+
+DEF_LOADER(int);
+DEF_LOADER(uint);
+DEF_LOADER(long);
+DEF_LOADER(ulong);
+DEF_LOADER(ulonglong);
+DEF_LOADER(ushort);
+DEF_LOADER(short);
+typedef void *pointer_t;
+DEF_LOADER(pointer_t);
+
+#define LOADER(TYPE) load_##TYPE
+
+#define INT(ADDR)       LOADER(int) ((char *)(ADDR))
+#define UINT(ADDR)      LOADER(uint) ((char *)(ADDR))
+#define LONG(ADDR)      LOADER(long) ((char *)(ADDR))
+#define ULONG(ADDR)     LOADER(ulong) ((char *)(ADDR))
+#define ULONGLONG(ADDR) LOADER(ulonglong) ((char *)(ADDR))
+#define ULONG_PTR(ADDR) ((ulong *) (LOADER(pointer_t) ((char *)(ADDR))))
+#define USHORT(ADDR)    LOADER(ushort) ((char *)(ADDR))
+#define SHORT(ADDR)     LOADER(short) ((char *)(ADDR))
+#define UCHAR(ADDR)     *((unsigned char *)((char *)(ADDR)))
+#define VOID_PTR(ADDR)  ((void *) (LOADER(pointer_t) ((char *)(ADDR))))
+
+#else
+
 #define INT(ADDR)       *((int *)((char *)(ADDR)))
 #define UINT(ADDR)      *((uint *)((char *)(ADDR)))
 #define LONG(ADDR)      *((long *)((char *)(ADDR)))
@@ -2193,6 +2247,8 @@ struct builtin_debug_table {
 #define SHORT(ADDR)     *((short *)((char *)(ADDR)))
 #define UCHAR(ADDR)     *((unsigned char *)((char *)(ADDR)))
 #define VOID_PTR(ADDR)  *((void **)((char *)(ADDR)))
+
+#endif /* NEED_ALIGNED_MEM_ACCESS */
 
 struct node_table {
 	int node_id;
@@ -2812,7 +2868,7 @@ typedef u64 pte_t;
 
 typedef signed int s32;
 
-/* 
+/*
  * 3-levels / 4K pages
  */
 #define PTRS_PER_PGD_L3_4K   (512)
@@ -2820,10 +2876,23 @@ typedef signed int s32;
 #define PTRS_PER_PTE_L3_4K   (512)
 #define PGDIR_SHIFT_L3_4K    (30)
 #define PGDIR_SIZE_L3_4K     ((1UL) << PGDIR_SHIFT_L3_4K)
-#define PGDIR_MASK_L3 4K     (~(PGDIR_SIZE_L3_4K-1))
+#define PGDIR_MASK_L3_4K     (~(PGDIR_SIZE_L3_4K-1))
 #define PMD_SHIFT_L3_4K      (21)
-#define PMD_SIZE_L3_4K       (1UL << PMD_SHIFT_4K)
-#define PMD_MASK_L3 4K       (~(PMD_SIZE_4K-1))
+#define PMD_SIZE_L3_4K       (1UL << PMD_SHIFT_L3_4K)
+#define PMD_MASK_L3_4K       (~(PMD_SIZE_L3_4K-1))
+
+/*
+ * 3-levels / 64K pages
+ */
+#define PTRS_PER_PGD_L3_64K  (64)
+#define PTRS_PER_PMD_L3_64K  (8192)
+#define PTRS_PER_PTE_L3_64K  (8192)
+#define PGDIR_SHIFT_L3_64K   (42)
+#define PGDIR_SIZE_L3_64K    ((1UL) << PGDIR_SHIFT_L3_64K)
+#define PGDIR_MASK_L3_64K    (~(PGDIR_SIZE_L3_64K-1))
+#define PMD_SHIFT_L3_64K     (29)
+#define PMD_SIZE_L3_64K      (1UL << PMD_SHIFT_L3_64K)
+#define PMD_MASK_L3_64K      (~(PMD_SIZE_L3_64K-1))
 
 /*
  * 2-levels / 64K pages
@@ -2865,8 +2934,10 @@ typedef signed int s32;
 #define KSYMS_START   (0x1)
 #define PHYS_OFFSET   (0x2)
 #define VM_L2_64K     (0x4)
-#define VM_L3_4K      (0x8)
-#define KDUMP_ENABLED (0x10)
+#define VM_L3_64K     (0x8)
+#define VM_L3_4K      (0x10)
+#define KDUMP_ENABLED (0x20)
+#define IRQ_STACKS    (0x40)
 
 /* 
  * sources: Documentation/arm64/memory.txt 
@@ -2894,6 +2965,7 @@ typedef signed int s32;
 
 #define _SECTION_SIZE_BITS      30
 #define _MAX_PHYSMEM_BITS       40
+#define _MAX_PHYSMEM_BITS_3_17  48
 
 typedef unsigned long long __u64;
 typedef unsigned long long u64;
@@ -2954,6 +3026,8 @@ struct machine_specific {
 	ulong crash_save_cpu_start;
 	ulong crash_save_cpu_end;
 	ulong kernel_flags;
+	ulong irq_stack_size;
+	ulong *irq_stacks;
 };
 
 struct arm64_stackframe {
@@ -3129,6 +3203,9 @@ struct arm64_stackframe {
 #define VMEMMAP_END_2_6_31         0xffffeaffffffffff
 #define MODULES_VADDR_2_6_31       0xffffffffa0000000
 #define MODULES_END_2_6_31         0xffffffffff000000
+
+#define VSYSCALL_START             0xffffffffff600000
+#define VSYSCALL_END               0xffffffffffe00000
 
 #define PTOV(X)               ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)               x86_64_VTOP((ulong)(X))
@@ -3792,6 +3869,110 @@ struct efi_memory_desc_t {
 
 #endif  /* S390X */
 
+#ifdef SPARC64
+#define _64BIT_
+#define MACHINE_TYPE       "SPARC64"
+
+#define PTOV(X) \
+	((unsigned long)(X) + machdep->machspec->page_offset)
+#define VTOP(X) \
+	((unsigned long)(X) - machdep->machspec->page_offset)
+
+#define PAGE_OFFSET     (machdep->machspec->page_offset)
+
+extern int sparc64_IS_VMALLOC_ADDR(ulong vaddr);
+#define IS_VMALLOC_ADDR(X)    sparc64_IS_VMALLOC_ADDR((ulong)(X))
+#define PAGE_SHIFT	(13)
+#define PAGE_SIZE	(1UL << PAGE_SHIFT)
+#define PAGE_MASK	(~(PAGE_SIZE - 1))
+#define PAGEBASE(X)     (((ulong)(X)) & (ulong)machdep->pagemask)
+#define THREAD_SIZE	(2 * PAGE_SIZE)
+
+/* S3 Core
+ *	Core 48-bit physical address supported.
+ *	Bit 47 distinguishes memory or I/O. When set to "1" it is I/O.
+ */
+#define PHYS_MASK_SHIFT   (47)
+#define PHYS_MASK         (((1UL) << PHYS_MASK_SHIFT) - 1)
+
+typedef signed int s32;
+
+/*
+ * This next two defines are convenience defines for normal page table.
+ */
+#define PTES_PER_PAGE		(1UL << (PAGE_SHIFT - 3))
+#define PTES_PER_PAGE_MASK	(PTES_PER_PAGE - 1)
+
+/* 4-level page table */
+#define PMD_SHIFT	(PAGE_SHIFT + (PAGE_SHIFT-3))
+#define PMD_SIZE	(1UL << PMD_SHIFT)
+#define PMD_MASK	(~(PMD_SIZE - 1))
+#define PMD_BITS	(PAGE_SHIFT - 3)
+
+#define PUD_SHIFT	(PMD_SHIFT + PMD_BITS)
+#define PUD_SIZE	(1UL << PUD_SHIFT)
+#define PUD_MASK	(~(PUD_SIZE - 1))
+#define PUD_BITS	(PAGE_SHIFT - 3)
+
+#define PGDIR_SHIFT	(PUD_SHIFT + PUD_BITS)
+#define PGDIR_SIZE	(1UL << PGDIR_SHIFT)
+#define PGDIR_MASK	(~(PGDIR_SIZE - 1))
+#define PGDIR_BITS	(PAGE_SHIFT - 3)
+
+#define PTRS_PER_PTE	(1UL << (PAGE_SHIFT - 3))
+#define PTRS_PER_PMD	(1UL << PMD_BITS)
+#define PTRS_PER_PUD	(1UL << PUD_BITS)
+#define PTRS_PER_PGD	(1UL << PGDIR_BITS)
+
+#define HPAGE_SHIFT		(23)
+/* Down one huge page */
+#define SPARC64_USERSPACE_TOP  (-(1UL << HPAGE_SHIFT))
+#define PAGE_PMD_HUGE		 (0x0100000000000000UL)
+
+/* These are for SUN4V.  */
+#define _PAGE_VALID		(0x8000000000000000UL)
+#define _PAGE_NFO_4V		(0x4000000000000000UL)
+#define	_PAGE_MODIFIED_4V	(0x2000000000000000UL)
+#define	_PAGE_ACCESSED_4V	(0x1000000000000000UL)
+#define	_PAGE_READ_4V		(0x0800000000000000UL)
+#define	_PAGE_WRITE_4V		(0x0400000000000000UL)
+#define	_PAGE_PADDR_4V		(0x00FFFFFFFFFFE000UL)
+#define _PAGE_PFN_MASK		(_PAGE_PADDR_4V)
+#define	_PAGE_P_4V		(0x0000000000000100UL)
+#define	_PAGE_EXEC_4V		(0x0000000000000080UL)
+#define	_PAGE_W_4V		(0x0000000000000040UL)
+#define _PAGE_PRESENT_4V	(0x0000000000000010UL)
+#define	_PAGE_SZALL_4V		(0x0000000000000007UL)
+/* There are other page sizes. Some supported. */
+#define	_PAGE_SZ4MB_4V		(0x0000000000000003UL)
+#define	_PAGE_SZ512K_4V		(0x0000000000000002UL)
+#define	_PAGE_SZ64K_4V		(0x0000000000000001UL)
+#define _PAGE_SZ8K_4V		(0x0000000000000000UL)
+
+#define SPARC64_MODULES_VADDR	(0x0000000010000000UL)
+#define SPARC64_MODULES_END	(0x00000000f0000000UL)
+#define SPARC64_VMALLOC_START	(0x0000000100000000UL)
+
+#define SPARC64_STACK_SIZE	0x4000
+
+/* sparsemem */
+#define _SECTION_SIZE_BITS	30
+#define _MAX_PHYSMEM_BITS	53
+
+#define STACK_BIAS	2047
+
+struct machine_specific {
+	ulong page_offset;
+	ulong vmalloc_end;
+};
+
+#define TIF_SIGPENDING	(2)
+#define SWP_OFFSET(E)	((E) >> (PAGE_SHIFT + 8UL))
+#define SWP_TYPE(E)	(((E) >> PAGE_SHIFT) & 0xffUL)
+#define __swp_type(E)	SWP_TYPE(E)
+#define	__swp_offset(E)	SWP_OFFSET(E)
+#endif /* SPARC64 */
+
 #ifdef PLATFORM
 
 #define SWP_TYPE(entry)   (error("PLATFORM_SWP_TYPE: TBD\n"))
@@ -3855,6 +4036,10 @@ struct efi_memory_desc_t {
 #ifdef MIPS
 #define MAX_HEXADDR_STRLEN (8)
 #define UVADDR_PRLEN       (8)
+#endif
+#ifdef SPARC64
+#define MAX_HEXADDR_STRLEN (16)
+#define UVADDR_PRLEN      (16)
 #endif
 
 #define BADADDR  ((ulong)(-1))
@@ -4111,30 +4296,39 @@ struct gnu_request {
 	ulong task;
 	ulong debug;
 	struct stack_hook *hookp;
+	struct global_iterator {
+    		int finished; 
+		int block_index;
+    		struct symtab *symtab;
+    		struct symbol *sym;
+    		struct objfile *obj;
+  	} global_iterator;
 };
 
 /*
  *  GNU commands
  */
-#define GNU_DATATYPE_INIT        (1)
-#define GNU_DISASSEMBLE          (2)
-#define GNU_GET_LINE_NUMBER      (3)
-#define GNU_PASS_THROUGH         (4)
-#define GNU_GET_DATATYPE         (5)
-#define GNU_COMMAND_EXISTS       (6)
-#define GNU_STACK_TRACE          (7)
-#define GNU_ALPHA_FRAME_OFFSET   (8)
-#define GNU_FUNCTION_NUMARGS     (9)
-#define GNU_RESOLVE_TEXT_ADDR    (10)
-#define GNU_ADD_SYMBOL_FILE      (11)
-#define GNU_DELETE_SYMBOL_FILE   (12)
-#define GNU_VERSION              (13)
-#define GNU_PATCH_SYMBOL_VALUES  (14)
-#define GNU_GET_SYMBOL_TYPE      (15)
-#define GNU_USER_PRINT_OPTION 	 (16)
-#define GNU_SET_CRASH_BLOCK      (17)
-#define GNU_GET_FUNCTION_RANGE   (18)
-#define GNU_DEBUG_COMMAND       (100)
+#define GNU_DATATYPE_INIT           (1)
+#define GNU_DISASSEMBLE             (2)
+#define GNU_GET_LINE_NUMBER         (3)
+#define GNU_PASS_THROUGH            (4)
+#define GNU_GET_DATATYPE            (5)
+#define GNU_COMMAND_EXISTS          (6)
+#define GNU_STACK_TRACE             (7)
+#define GNU_ALPHA_FRAME_OFFSET      (8)
+#define GNU_FUNCTION_NUMARGS        (9)
+#define GNU_RESOLVE_TEXT_ADDR       (10)
+#define GNU_ADD_SYMBOL_FILE         (11)
+#define GNU_DELETE_SYMBOL_FILE      (12)
+#define GNU_VERSION                 (13)
+#define GNU_PATCH_SYMBOL_VALUES     (14)
+#define GNU_GET_SYMBOL_TYPE         (15)
+#define GNU_USER_PRINT_OPTION       (16)
+#define GNU_SET_CRASH_BLOCK         (17)
+#define GNU_GET_FUNCTION_RANGE      (18)
+#define GNU_GET_NEXT_DATATYPE       (19)
+#define GNU_LOOKUP_STRUCT_CONTENTS  (20)
+#define GNU_DEBUG_COMMAND           (100)
 /*
  *  GNU flags
  */
@@ -4396,6 +4590,9 @@ void dump_build_data(void);
 #endif
 #ifdef MIPS
 #define machdep_init(X) mips_init(X)
+#endif
+#ifdef SPARC64
+#define machdep_init(X) sparc64_init(X)
 #endif
 int clean_exit(int);
 int untrusted_file(FILE *, char *);
@@ -4830,6 +5027,9 @@ void display_help_screen(char *);
 #endif
 #ifdef MIPS
 #define dump_machdep_table(X) mips_dump_machdep_table(X)
+#endif
+#ifdef SPARC64
+#define dump_machdep_table(X) sparc64_dump_machdep_table(X)
 #endif
 extern char *help_pointer[];
 extern char *help_alias[];
@@ -5681,6 +5881,17 @@ struct machine_specific {
 #define _PFN_SHIFT      (machdep->machspec->_pfn_shift)
 };
 #endif /* MIPS */
+
+/*
+ * sparc64.c
+ */
+#ifdef SPARC64
+void sparc64_init(int);
+void sparc64_dump_machdep_table(ulong);
+int sparc64_vmalloc_addr(ulong);
+#define display_idt_table() \
+	error(FATAL, "The -d option is not applicable to sparc64.\n")
+#endif
 
 /*
  *  netdump.c 

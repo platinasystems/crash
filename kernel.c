@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2015 David Anderson
- * Copyright (C) 2002-2015 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #include "defs.h"
 #include "xen_hyper_defs.h"
+#include "xen_dom0.h"
 #include <elf.h>
 #include <libgen.h>
 #include <ctype.h>
@@ -61,6 +62,7 @@ static int restore_stack(struct bt_info *);
 static ulong __xen_m2p(ulonglong, ulong);
 static ulong __xen_pvops_m2p_l2(ulonglong, ulong);
 static ulong __xen_pvops_m2p_l3(ulonglong, ulong);
+static ulong __xen_pvops_m2p_hyper(ulonglong, ulong);
 static int search_mapping_page(ulong, ulong *, ulong *, ulong *);
 static void read_in_kernel_config_err(int, char *);
 static void BUG_bytes_init(void);
@@ -175,6 +177,9 @@ kernel_init()
 						&kt->pvops_xen.p2m_mid_missing);
 			get_symbol_data("p2m_missing", sizeof(ulong),
 						&kt->pvops_xen.p2m_missing);
+		} else if (symbol_exists("xen_p2m_addr")) {
+			if (!XEN_CORE_DUMPFILE())
+				error(FATAL, "p2m array in new format is unreadable.");
 		} else {
 			kt->pvops_xen.p2m_top_entries = get_array_length("p2m_top", NULL, 0);
 			kt->pvops_xen.p2m_top = symbol_value("p2m_top");
@@ -518,6 +523,7 @@ kernel_init()
 	if (VALID_STRUCT(irq_data)) {
 		MEMBER_OFFSET_INIT(irq_data_chip, "irq_data", "chip");
 		MEMBER_OFFSET_INIT(irq_data_affinity, "irq_data", "affinity");
+		MEMBER_OFFSET_INIT(irq_desc_irq_data, "irq_desc", "irq_data");
 	}
 
         STRUCT_SIZE_INIT(irq_cpustat_t, "irq_cpustat_t");
@@ -674,6 +680,22 @@ kernel_init()
 			kt->flags |= KALLSYMS_V2;
 	}
 
+	if (INVALID_MEMBER(module_num_symtab) && 
+	    MEMBER_EXISTS("module", "core_kallsyms")) {
+		ASSIGN_OFFSET(module_num_symtab) =
+			MEMBER_OFFSET("module", "core_kallsyms") +
+			MEMBER_OFFSET("mod_kallsyms", "num_symtab");
+		ASSIGN_OFFSET(module_symtab) =
+			MEMBER_OFFSET("module", "core_kallsyms") +
+			MEMBER_OFFSET("mod_kallsyms", "symtab");
+		ASSIGN_OFFSET(module_strtab) =
+			MEMBER_OFFSET("module", "core_kallsyms") +
+			MEMBER_OFFSET("mod_kallsyms", "strtab");
+
+		if (!(kt->flags & NO_KALLSYMS))
+			kt->flags |= KALLSYMS_V2;
+	}
+
 	if (!(kt->flags & DWARF_UNWIND))
 		kt->flags |= NO_DWARF_UNWIND; 
 
@@ -777,6 +799,10 @@ cpu_map_addr(const char *type)
         	return addr;
 	}
 
+	sprintf(map_symbol, "__cpu_%s_mask", type);
+        if (kernel_symbol_exists(map_symbol))
+		return symbol_value(map_symbol);
+
 	return 0;
 }
 
@@ -790,6 +816,14 @@ cpu_map_type(char *name)
 		return "map";
 
         sprintf(map_symbol, "cpu_%s_mask", name);
+        if (kernel_symbol_exists(map_symbol))
+		return "mask";
+
+	sprintf(map_symbol, "__cpu_%s_map", name);
+	if (kernel_symbol_exists(map_symbol))
+		return "map";
+
+        sprintf(map_symbol, "__cpu_%s_mask", name);
         if (kernel_symbol_exists(map_symbol))
 		return "mask";
 
@@ -3291,16 +3325,45 @@ module_init(void)
         	MEMBER_OFFSET_INIT(module_gpl_syms, "module", "gpl_syms");
         	MEMBER_OFFSET_INIT(module_num_gpl_syms, "module", 
 			"num_gpl_syms");
-        	MEMBER_OFFSET_INIT(module_module_core, "module", 
-			"module_core");
-        	MEMBER_OFFSET_INIT(module_core_size, "module", 
-			"core_size");
-        	MEMBER_OFFSET_INIT(module_core_text_size, "module", 
-			"core_text_size");
-		MEMBER_OFFSET_INIT(module_module_init, "module", "module_init");
-		MEMBER_OFFSET_INIT(module_init_size, "module", "init_size");
-		MEMBER_OFFSET_INIT(module_init_text_size, "module", 
-			"init_text_size");
+
+		if (MEMBER_EXISTS("module", "module_core")) {
+			MEMBER_OFFSET_INIT(module_core_size, "module",
+					   "core_size");
+			MEMBER_OFFSET_INIT(module_init_size, "module",
+					   "init_size");
+
+			MEMBER_OFFSET_INIT(module_core_text_size, "module",
+					   "core_text_size");
+			MEMBER_OFFSET_INIT(module_init_text_size, "module",
+					   "init_text_size");
+
+			MEMBER_OFFSET_INIT(module_module_core, "module",
+					   "module_core");
+			MEMBER_OFFSET_INIT(module_module_init, "module",
+					   "module_init");
+		} else {
+			ASSIGN_OFFSET(module_core_size) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "size");
+			ASSIGN_OFFSET(module_init_size) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "size");
+
+			ASSIGN_OFFSET(module_core_text_size) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "text_size");
+			ASSIGN_OFFSET(module_init_text_size) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "text_size");
+
+			ASSIGN_OFFSET(module_module_core) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "base");
+			ASSIGN_OFFSET(module_module_init) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "base");
+		}
+
 		MEMBER_OFFSET_INIT(module_percpu, "module", "percpu");
 
 		/*
@@ -5821,12 +5884,14 @@ no_cpu_flags:
 	else
 		fprintf(fp, "\n");
 
-	fprintf(fp, "              pvops_xen:\n");
-	fprintf(fp, "                    p2m_top: %lx\n", kt->pvops_xen.p2m_top);
-	fprintf(fp, "            p2m_top_entries: %d\n", kt->pvops_xen.p2m_top_entries);
-	if (symbol_exists("p2m_mid_missing"))
-		fprintf(fp, "            p2m_mid_missing: %lx\n", kt->pvops_xen.p2m_mid_missing);
-	fprintf(fp, "                p2m_missing: %lx\n", kt->pvops_xen.p2m_missing);
+	if (!symbol_exists("xen_p2m_addr")) {
+		fprintf(fp, "              pvops_xen:\n");
+		fprintf(fp, "                    p2m_top: %lx\n", kt->pvops_xen.p2m_top);
+		fprintf(fp, "            p2m_top_entries: %d\n", kt->pvops_xen.p2m_top_entries);
+		if (symbol_exists("p2m_mid_missing"))
+			fprintf(fp, "            p2m_mid_missing: %lx\n", kt->pvops_xen.p2m_mid_missing);
+		fprintf(fp, "                p2m_missing: %lx\n", kt->pvops_xen.p2m_missing);
+	}
 }
 
 /*
@@ -6777,10 +6842,13 @@ generic_show_interrupts(int irq, ulong *cpus)
 		readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
 		        &handler, sizeof(long), "irq_desc chip",
 		        FAULT_ON_ERROR);
-	else if (VALID_MEMBER(irq_data_chip))
-		readmem(irq_desc_addr + OFFSET(irq_data_chip), KVADDR,
-		        &handler, sizeof(long), "irq_data chip",
-		        FAULT_ON_ERROR);
+	else if (VALID_MEMBER(irq_data_chip)) {
+		tmp = irq_desc_addr + OFFSET(irq_data_chip);
+		if (VALID_MEMBER(irq_desc_irq_data))
+			tmp += OFFSET(irq_desc_irq_data);
+		readmem(tmp, KVADDR, &handler, sizeof(long), "irq_data chip",
+			FAULT_ON_ERROR);
+	}
 
 	fprintf(fp, "%3d: ", irq);
 
@@ -8139,7 +8207,7 @@ do_timer_list(ulong vec_kvaddr,
 	int timer_cnt;
         struct list_data list_data, *ld;
 	long sz;
-	ulong offset;
+	ulong offset = 0;
 
 	tdx = 0;
 	td = option ? (struct timer_data *)option : NULL;
@@ -8168,7 +8236,7 @@ do_timer_list(ulong vec_kvaddr,
 		goto new_timer_list_format;
 	}
 
-	if (VALID_MEMBER(timer_list_next) >= 0)
+	if (VALID_MEMBER(timer_list_next))
 		offset = OFFSET(timer_list_next);
 	else
 		error(FATAL, "no timer_list next, list, or entry members?\n");
@@ -8844,6 +8912,12 @@ __xen_m2p(ulonglong machine, ulong mfn)
 	ulong c, i, kmfn, mapping, p, pfn;
 	ulong start, end;
 	ulong *mp = (ulong *)kt->m2p_page;
+	int memtype;
+
+	if (XEN_CORE_DUMPFILE() && symbol_exists("xen_p2m_addr"))
+		memtype = PHYSADDR;
+	else
+		memtype = KVADDR;
 
 	/*
 	 *  Check the FIFO cache first.
@@ -8854,13 +8928,19 @@ __xen_m2p(ulonglong machine, ulong mfn)
 		     (mfn <= kt->p2m_mapping_cache[c].end))) { 
 
 			if (kt->p2m_mapping_cache[c].mapping != kt->last_mapping_read) {
-                        	if (!readmem(kt->p2m_mapping_cache[c].mapping, KVADDR, 
+				if (memtype == PHYSADDR)
+					pc->curcmd_flags |= XEN_MACHINE_ADDR;
+
+				if (!readmem(kt->p2m_mapping_cache[c].mapping, memtype,
 			       	    mp, PAGESIZE(), "phys_to_machine_mapping page (cached)", 
 			    	    RETURN_ON_ERROR))
                                 	error(FATAL, "cannot access "
                                     	    "phys_to_machine_mapping page\n");
 				else
 					kt->last_mapping_read = kt->p2m_mapping_cache[c].mapping;
+
+				if (memtype == PHYSADDR)
+					pc->curcmd_flags &= ~XEN_MACHINE_ADDR;
 			} else
 				kt->p2m_page_cache_hits++;
 
@@ -8890,11 +8970,13 @@ __xen_m2p(ulonglong machine, ulong mfn)
 	if (PVOPS_XEN()) {
 		/*
 		 *  The machine address was not cached, so search from the
-		 *  beginning of the p2m_top array, caching the contiguous
+		 *  beginning of the p2m tree/array, caching the contiguous
 		 *  range containing the found machine address.
 		 */
 		if (symbol_exists("p2m_mid_missing"))
 			pfn = __xen_pvops_m2p_l3(machine, mfn);
+		else if (symbol_exists("xen_p2m_addr"))
+			pfn = __xen_pvops_m2p_hyper(machine, mfn);
 		else
 			pfn = __xen_pvops_m2p_l2(machine, mfn);
 
@@ -9051,6 +9133,50 @@ __xen_pvops_m2p_l3(ulonglong machine, ulong mfn)
 			kt->p2m_mapping_cache[c].mapping = mapping;
 			kt->p2m_mapping_cache[c].pfn = p;
 			kt->p2m_cache_index = (c + 1) % P2M_MAPPING_CACHE;
+
+			return pfn;
+		}
+	}
+
+	return XEN_MFN_NOT_FOUND;
+}
+
+static ulong
+__xen_pvops_m2p_hyper(ulonglong machine, ulong mfn)
+{
+	ulong c, end, i, mapping, p, pfn, start;
+
+	for (p = 0;
+	     p < xkd->p2m_frames;
+	     ++p) {
+
+		mapping = PTOB(xkd->p2m_mfn_frame_list[p]);
+
+		if (mapping != kt->last_mapping_read) {
+			pc->curcmd_flags |= XEN_MACHINE_ADDR;
+			if (!readmem(mapping, PHYSADDR, (void *)kt->m2p_page,
+					PAGESIZE(), "p2m_mfn_frame_list page", RETURN_ON_ERROR))
+				error(FATAL, "cannot access p2m_mfn_frame_list[] page\n");
+
+			pc->curcmd_flags &= ~XEN_MACHINE_ADDR;
+			kt->last_mapping_read = mapping;
+		}
+
+		kt->p2m_pages_searched++;
+
+		if (search_mapping_page(mfn, &i, &start, &end)) {
+			pfn = p * XEN_PFNS_PER_PAGE + i;
+			if (CRASHDEBUG(1))
+			    console("pages: %d mfn: %lx (%llx) p: %ld"
+				" i: %ld pfn: %lx (%llx)\n", p + 1, mfn, machine,
+				p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+
+			c = kt->p2m_cache_index;
+			kt->p2m_mapping_cache[c].start = start;
+			kt->p2m_mapping_cache[c].end = end;
+			kt->p2m_mapping_cache[c].mapping = mapping;
+			kt->p2m_mapping_cache[c].pfn = p * XEN_PFNS_PER_PAGE;
+			kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
 
 			return pfn;
 		}
