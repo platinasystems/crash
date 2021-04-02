@@ -66,7 +66,8 @@ GENERIC_HFILES=defs.h xen_hyper_defs.h
 MCORE_HFILES=va_server.h vas_crash.h
 REDHAT_HFILES=netdump.h diskdump.h xendump.h
 LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
-        lkcd_dump_v7.h lkcd_dump_v8.h lkcd_fix_mem.h
+        lkcd_dump_v7.h lkcd_dump_v8.h
+LKCD_OBSOLETE_HFILES=lkcd_fix_mem.h
 LKCD_TRACE_HFILES=lkcd_x86_trace.h
 IBM_HFILES=ibm_common.h
 UNWIND_HFILES=unwind.h unwind_i.h rse.h unwind_x86.h unwind_x86_64.h
@@ -84,7 +85,8 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
 	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
-	${LKCD_DUMP_HFILES} ${LKCD_TRACE_HFILES} ${IBM_HFILES} 
+	${LKCD_DUMP_HFILES} ${LKCD_TRACE_HFILES} ${LKCD_OBSOLETE_HFILES}\
+	${IBM_HFILES} 
 
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
@@ -437,7 +439,7 @@ unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
 	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V3 unwind.c -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
-	cc -c ${CFLAGS} lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+	cc -c ${CFLAGS} -DMCLX lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 xen_hyper.o: ${GENERIC_HFILES} xen_hyper.c
 	cc -c ${CFLAGS} xen_hyper.c ${WARNING_OPTIONS} ${WARNING_ERROR}
@@ -501,7 +503,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-4.7
+RELEASE=4.0-4.8
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

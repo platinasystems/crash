@@ -2315,7 +2315,7 @@ ia64_display_machine_stats(void)
                 fprintf(fp, "(unknown)\n");
         fprintf(fp, "                        HZ: %d\n", machdep->hz);
         fprintf(fp, "                 PAGE SIZE: %d\n", PAGESIZE());
-        fprintf(fp, "             L1 CACHE SIZE: %d\n", l1_cache_size());
+//      fprintf(fp, "             L1 CACHE SIZE: %d\n", l1_cache_size());
         fprintf(fp, "         KERNEL STACK SIZE: %ld\n", STACKSIZE());
         fprintf(fp, "      KERNEL CACHED REGION: %lx\n",
 		(ulong)KERNEL_CACHED_REGION << REGION_SHIFT);

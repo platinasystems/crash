@@ -731,6 +731,97 @@ va_list ap;
 	sial_exit(1);
 }
 
+/******************************************************************
+   Debug messaging support.
+******************************************************************/
+static unsigned int dbglvl=0, clist=DBG_ALL;
+static char *dbg_name=0;
+unsigned int sial_getdbg(void)
+{
+    return(dbglvl);
+}
+
+void sial_setdbg(unsigned int lvl)
+{
+    if(lvl > 9)
+        sial_msg("Invalid debug level value.\n");
+    else
+        dbglvl=lvl;
+}
+char *sial_getname(void)
+{
+    return dbg_name;
+}
+
+void sial_setname(char *name)
+{
+    if(dbg_name) sial_free(dbg_name);
+    dbg_name=sial_strdup(name);
+}
+
+#define MAXCLASSES 10
+static struct {
+    char *name;
+    int class;
+} classes [MAXCLASSES] = {
+    { "type", DBG_TYPE },
+    { "struct", DBG_STRUCT },
+    { 0 },
+};
+
+char **sial_getclass(void)
+{
+int i,j;
+static char *ptrs[MAXCLASSES+1];
+
+    for(i=j=0;classes[i].name;i++) {
+        if(clist&classes[i].class) ptrs[j++]=classes[i].name;
+    }
+    ptrs[i]=0;
+    return ptrs;
+}
+
+void sial_setclass(char *cl)
+{
+int i,j;
+    
+    for(i=0;classes[i].name;i++) {
+        if(!strcmp(classes[i].name,cl)) {
+            clist |= classes[i].class;
+            return;
+        }
+    }
+    sial_msg("Invalid class '%s' specified.\n", cl);
+}
+
+static void
+sial_dbg_all(int class, char *name, int lvl, char *fmt, va_list ap)
+{
+    if(lvl<=dbglvl && (clist & class) && (!dbg_name || !strcmp(name, dbg_name))) {
+        fprintf(ofile, "dbg(%d) : ", lvl);
+        vfprintf(ofile, fmt, ap);
+    }
+}
+
+void
+sial_dbg(int class, int lvl, char *fmt, ...)
+{
+va_list ap;
+    va_start(ap, fmt);
+    sial_dbg_all(class, 0, lvl, fmt, ap);
+    va_end(ap);
+}
+
+void
+sial_dbg_named(int class, char *name, int lvl, char *fmt, ...)
+{
+va_list ap;
+    va_start(ap, fmt);
+    sial_dbg_all(class, name, lvl, fmt, ap);
+    va_end(ap);
+}
+/******************************************************************/
+
 void
 sial_rerror(srcpos_t *p, char *fmt, ...)
 {

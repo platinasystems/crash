@@ -232,7 +232,12 @@ typedef void     (*setfct_t)(value_t*, value_t*);
 #define NODE_NAME(n) ((n)->name?((n)->name((n)->data)):0)
 #define NODE_FREE(n) (sial_freenode(n))
 
-#if 0
+#ifdef __GNUC__
+#define __return_address (void*)(__builtin_return_address(0))
+#else
+// must be the SGI Mips compiler.
+#endif
+#if 1
 #define TAG(p) sial_caller(p, __return_address)
 #else
 #define TAG(p) ;
@@ -351,6 +356,7 @@ void  sial_arch_swapvals(void* vp, void *sp);
 void  sial_fillst(stinfo_t *st);
 void  sial_exememlocal(value_t *vp, stmember_t* stm, value_t *v);
 void  sial_do_deref(int n, value_t *v, value_t *ref);
+void  sial_addneg(char *name);
 
 stmember_t*sial_member(char *mname, type_t*tp);
 
@@ -425,6 +431,7 @@ int   sial_ismemdebug(void);
 int   sial_isenum(int atr);
 int   sial_funcexists(char *name);
 int   sial_isnew(void* p);
+int   sial_isneg(char *name);
 
 char  *sial_vartofunc(node_t *name);
 char  *sial_gettdefname(ull idx);
@@ -446,6 +453,7 @@ type_t  *sial_addstorage(type_t *t1, type_t *t2);
 type_t  *sial_getvoidstruct(int ctype);
 
 extern int lineno, needvar, instruct, nomacs;
+node_t *lastv;
 
 #define NULLNODE ((node_t*)0)
 

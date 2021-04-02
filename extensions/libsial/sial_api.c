@@ -22,7 +22,7 @@ static stinfo_t slist={"root"};
 
 /* running key to new structures */
 static ull nextidx=0, abitype=ABI_MIPS;
-#define LOCALTYPESBASE 0x80000000
+#define LOCALTYPESBASE 0x8000000000000000ll
 static ull sial_nextidx(void) { return LOCALTYPESBASE+nextidx++; }
 
 /* this set of function is used to cleanup tdefs after their use.
@@ -132,12 +132,11 @@ typedef struct neg_s {
 
 static neg_t *nlist=0;
 
-static void
-sial_addneg(int ctype, char *name)
+void
+sial_addneg(char *name)
 {
 neg_t *neg;
 
-    if(ctype != V_TYPEDEF) return;
     neg=sial_alloc(sizeof *neg);
     neg->name=sial_strdup(name);
     neg->next=nlist;
@@ -389,6 +388,7 @@ ull idx=st->ctype.idx, lidx=0;
 stmember_t *stm=sial_calloc(sizeof(stmember_t)), **last=&st->stm;
 char *pname;
 
+        sial_dbg_named(DBG_STRUCT, st->name, 2, "Fill St started [local=%d].\n", (idx & LOCALTYPESBASE) ? 1 : 0);
 	/* bail out if this is local type */
 	if(idx & LOCALTYPESBASE) return;
 
@@ -396,6 +396,7 @@ char *pname;
 
 	while((pname=API_MEMBER(mname, idx,  &stm->type, &stm->m, &lidx))) {
 
+                sial_dbg_named(DBG_STRUCT, st->name, 2, "member '%s'\n", pname);
 		sial_memstinfo(stm, pname);
 		stm->next=0;
 		*last=stm;
@@ -415,19 +416,20 @@ stinfo_t *st;
 type_t *t=sial_newtype();
 
 	sial_chkinit();
+        sial_dbg_named(DBG_TYPE, name, 2, "getctype [%d] [%s] [s=%d]\n", ctype, name, silent);
 	if(!(st=sial_getst(name, ctype))) {
 
+                sial_dbg_named(DBG_TYPE, name, 2, "getctype [%s] not found in cache\n", name);
                 if(silent && sial_isneg(name)) return 0;
-
-//sial_msg("Sial_getctype '%s' type %d\n", name, ctype);
 
 		st=sial_calloc(sizeof(stinfo_t));
 		if(!API_GETCTYPE(ctype, name,  &st->ctype)) {
 
+                        sial_dbg_named(DBG_TYPE, name, 2, "[%s] not found in image\n", name);
 			sial_free(st);
 			sial_freetype(t);
                         // add any tdef to the neg list
-                        sial_addneg(ctype, name);
+                        if(ctype == V_TYPEDEF) sial_addneg(name);
 			if(silent) return 0;
 			/* we fill a partial structure for this one
 			   assuming it will be defined later. This is to permit cross
@@ -435,9 +437,11 @@ type_t *t=sial_newtype();
 			   undefined structure (opaque structures) irix: see types.c : 
 			   __pasid_opaque  
 			*/
+                        sial_dbg_named(DBG_TYPE, name, 2, "[%s] creating partial type\n", name);
 			sial_partialctype(ctype, name);
 			return sial_getctype(ctype, name, silent);
 		}
+                sial_dbg_named(DBG_TYPE, name, 2, "getctype [%s] found in image\n", name);
 		st->name=sial_alloc(strlen(name)+1);
 		strcpy(st->name, name);
 		st->stm=0;
@@ -512,6 +516,8 @@ type_t *t=sial_newtype();
 			sial_fillst(st);
 		}
 	}
+        else sial_dbg_named(DBG_TYPE, name, 2, "getctype [%s] found in cache\n", name);
+
 	if(ctype == V_ENUM || (ctype == V_TYPEDEF && st->rtype.type == V_ENUM)) {
 	    st->enums=API_GETENUM(name);
 	    sial_pushenums(st->enums);

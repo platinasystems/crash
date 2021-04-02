@@ -13,6 +13,8 @@
  * Author: David Anderson
  */
 
+#define _LARGEFILE64_SOURCE 1  /* stat64() */
+
 #include "defs.h"
 #include "netdump.h"
 
@@ -28,6 +30,7 @@ static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 static physaddr_t xen_kdump_p2m(physaddr_t);
+static void check_dumpfile_size(char *);
 
 #define ELFSTORE 1
 #define ELFREAD  0
@@ -319,6 +322,40 @@ file_elf_version(char *file)
 	return -1;
 }
 
+/* 
+ *  Check whether any PT_LOAD segment goes beyond the file size.
+ */
+static void
+check_dumpfile_size(char *file)
+{
+	int i;
+	struct stat64 stat;
+	struct pt_load_segment *pls;
+	uint64_t segment_end;
+
+	if (stat64(file, &stat) < 0)
+		return;
+
+	for (i = 0; i < nd->num_pt_load_segments; i++) {
+		pls = &nd->pt_load_segments[i];
+
+		segment_end = pls->file_offset + 
+			(pls->phys_end - pls->phys_start);
+
+		if (segment_end > stat.st_size) {
+			error(WARNING, "%s: may be truncated or incomplete\n"
+				"         PT_LOAD p_offset: %lld\n"
+				"                 p_filesz: %lld\n"
+				"           bytes required: %lld\n"
+				"            dumpfile size: %lld\n\n",
+				file, pls->file_offset, 
+				pls->phys_end - pls->phys_start,  
+				segment_end, stat.st_size);
+			return;
+		}
+	}
+}
+
 /*
  *  Perform any post-dumpfile determination stuff here.
  */
@@ -329,6 +366,9 @@ netdump_init(char *unused, FILE *fptr)
 		return FALSE;
 
 	nd->ofp = fptr;
+
+	check_dumpfile_size(pc->dumpfile);
+
         return TRUE;
 }
 
@@ -1757,7 +1797,6 @@ struct x86_64_user_regs_struct {
         unsigned long fs_base, gs_base;
         unsigned long ds,es,fs,gs;
 };
-#define offsetof(TYPE, MEMBER) ((ulong)&((TYPE *)0)->MEMBER)
 
 void 
 get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)

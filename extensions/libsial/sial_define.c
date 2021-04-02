@@ -421,6 +421,7 @@ mac_t *m;
 	}
 	mname[i]='\0';
 	if((m=sial_getmac(mname, 1))) sial_freemac(m);
+        else sial_addneg(mname);
 }
 
 /*

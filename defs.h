@@ -54,6 +54,10 @@
 
 #define TRUE  (1)
 #define FALSE (0)
+#define STR(x)	#x
+#ifndef offsetof
+#  define offsetof(TYPE, MEMBER) ((ulong)&((TYPE *)0)->MEMBER)
+#endif
 
 #ifdef X86
 #define NR_CPUS  (256)
@@ -68,7 +72,7 @@
 #define NR_CPUS  (32)
 #endif
 #ifdef IA64
-#define NR_CPUS  (1024)
+#define NR_CPUS  (4096)
 #endif
 #ifdef PPC64
 #define NR_CPUS  (128)
@@ -1395,6 +1399,28 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_struct_se;
 	long sched_entity_run_node;
 	long rt_rq_active;
+	long kmem_cache_size;
+	long kmem_cache_objsize;
+	long kmem_cache_offset;
+	long kmem_cache_order;
+	long kmem_cache_local_node;
+	long kmem_cache_objects;
+	long kmem_cache_inuse;
+	long kmem_cache_align;
+	long kmem_cache_name;
+	long kmem_cache_list;
+	long kmem_cache_node;
+	long kmem_cache_cpu_slab;
+	long page_inuse;
+/*	long page_offset;  use "old" page->offset */
+	long page_lockless_freelist;
+	long page_slab;
+	long page_first_page;
+	long page_freelist;
+	long kmem_cache_node_nr_partial;
+	long kmem_cache_node_nr_slabs;
+	long kmem_cache_node_partial;
+	long kmem_cache_node_full;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1493,6 +1519,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long pid_link;
 	long unwind_table;
 	long rlimit;
+	long kmem_cache;
+	long kmem_cache_node;
 };
 
 struct array_table {
@@ -1520,6 +1548,8 @@ struct array_table {
 	int prio_array_queue;
 	int height_to_maxindex;
 	int pid_hash;
+	int kmem_cache_node;
+	int kmem_cache_cpu_slab;
 };
 
 /*
@@ -1536,6 +1566,9 @@ struct array_table {
 #define MEMBER_EXISTS(X,Y)  (datatype_info((X), (Y), NULL) >= 0)
 #define MEMBER_SIZE_REQUEST ((struct datatype_member *)(-1))
 #define MEMBER_SIZE(X,Y)    datatype_info((X), (Y), MEMBER_SIZE_REQUEST)
+
+#define ANON_MEMBER_OFFSET_REQUEST ((struct datatype_member *)(-2))
+#define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
 
 /*
  *  The following set of macros can only be used with pre-intialized fields
@@ -1560,6 +1593,7 @@ struct array_table {
 #define ARRAY_LENGTH_INIT(A, B, C, D, E) ((A) = get_array_length(C, D, E))
 #define ARRAY_LENGTH_INIT_ALT(A, B, C, D, E) ((A) = get_array_length_alt(B, C, D, E))
 #define MEMBER_SIZE_INIT(X, Y, Z) (ASSIGN_SIZE(X) = MEMBER_SIZE(Y, Z))
+#define ANON_MEMBER_OFFSET_INIT(X, Y, Z) (ASSIGN_OFFSET(X) = ANON_MEMBER_OFFSET(Y, Z))
 
 /*
  *  For use with non-debug kernels.
@@ -1619,6 +1653,7 @@ struct vm_table {                /* kernel VM-related data */
 	ulong kmem_cache_len_nodes;
 	ulong PG_reserved;
 	ulong PG_slab;
+	ulong PG_head_tail_mask;
 	int kmem_cache_namelen;
 	ulong page_hash_table;
 	int page_hash_table_len;
@@ -1639,6 +1674,7 @@ struct vm_table {                /* kernel VM-related data */
         int vma_cache_index;
         ulong vma_cache_fills;
 	void *mem_sec;
+	char *mem_section;
 	int ZONE_HIGHMEM;
 	ulong *node_online_map;
 	int node_online_map_len;
@@ -1663,6 +1699,7 @@ struct vm_table {                /* kernel VM-related data */
 #define NODES_ONLINE             (0x4000)
 #define VM_STAT                  (0x8000)
 #define KMALLOC_SLUB            (0x10000)
+#define CONFIG_NUMA             (0x20000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -3830,9 +3867,18 @@ void ppc_dump_machdep_table(ulong);
  *  lkcd_fix_mem.c
  */
 
+struct _dump_header_asm_s;
+struct _dump_header_s;
 ulong get_lkcd_switch_stack(ulong);
-int fix_addr_v8(int);
+int fix_addr_v8(struct _dump_header_asm_s *);
+int lkcd_dump_init_v8_arch(struct _dump_header_s *dh);
 int fix_addr_v7(int);
+int get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp);
+
+/*
+ * lkcd_v8.c
+ */
+int get_lkcd_regs_for_cpu_v8(struct bt_info *bt, ulong *eip, ulong *esp);
 
 /*
  *  ia64.c
@@ -4098,6 +4144,7 @@ int lkcd_load_dump_page_header(void *, ulong);
 void lkcd_dumpfile_complaint(uint32_t, uint32_t, int);
 int set_mb_benchmark(ulong);
 ulonglong fix_lkcd_address(ulonglong);
+int get_lkcd_regs_for_cpu(struct bt_info *bt, ulong *eip, ulong *esp);
 
 /*
  * lkcd_v1.c

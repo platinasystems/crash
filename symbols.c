@@ -119,6 +119,7 @@ static void print_union(char *, ulong);
 static void dump_datatype_member(FILE *, struct datatype_member *);
 static void dump_datatype_flags(ulong, FILE *);
 static void dump_enumerator_list(char *);
+static long anon_member_offset(char *, char *);
 static int gdb_whatis(char *);
 static void do_datatype_declaration(struct datatype_member *, ulong);
 
@@ -3794,6 +3795,7 @@ datatype_init(void)
  *   #define STRUCT_EXISTS(X)    (datatype_info((X), NULL, NULL) >= 0)
  *   #define MEMBER_EXISTS(X,Y)  (datatype_info((X), (Y), NULL) >= 0)
  *   #define MEMBER_SIZE(X,Y)    datatype_info((X), (Y), MEMBER_SIZE_REQUEST)
+ *   #define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
  *
  *  to determine structure or union sizes, or member offsets.
  */
@@ -3805,6 +3807,9 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 	int member_typecode;
         ulong type_found;
 	char buf[BUFSIZE];
+
+        if (dm == ANON_MEMBER_OFFSET_REQUEST)
+		return anon_member_offset(name, member);
 
 	strcpy(buf, name);
 
@@ -3953,6 +3958,33 @@ datatype_info(char *name, char *member, struct datatype_member *dm)
 		return offset;
 	else
                 return size;
+}
+
+/*
+ *  Determine the offset of a member in an anonymous union
+ *  in a structure.
+ */
+static long
+anon_member_offset(char *name, char *member)
+{
+	int c;
+	char buf[BUFSIZE];
+	char *arglist[MAXARGS];
+	ulong value;
+
+	value = -1;
+	sprintf(buf, "print &((struct %s *)0x0)->%s", name, member);
+
+	open_tmpfile();
+	if (gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+		rewind(pc->tmpfile);
+		if (fgets(buf, BUFSIZE, pc->tmpfile) &&
+	    	    (c = parse_line(strip_linefeeds(buf), arglist)))
+			value = stol(arglist[c-1], RETURN_ON_ERROR|QUIET, NULL);
+	}
+	close_tmpfile();
+
+	return value;
 }
 
 /*
@@ -5655,7 +5687,10 @@ builtin_array_length(char *s, int len, int *two_dim)
                 lenptr = &array_table.free_area;
 		if (two_dim)
 			dimptr = &array_table.free_area_DIMENSION;
-	} 
+	} else if (STREQ(s, "kmem_cache.node"))
+		lenptr = &array_table.kmem_cache_node;
+	else if (STREQ(s, "kmem_cache.cpu_slab"))
+		lenptr = &array_table.kmem_cache_cpu_slab;
 
 	if (!lenptr)                /* not stored */
 		return(len);        
@@ -6093,6 +6128,17 @@ dump_offset_table(char *spec, ulong makestruct)
         fprintf(fp, "                      page_pte: %ld\n",
                 OFFSET(page_pte));
 
+        fprintf(fp, "                    page_inuse: %ld\n",
+                OFFSET(page_inuse));
+        fprintf(fp, "        page_lockless_freelist: %ld\n",
+                OFFSET(page_lockless_freelist));
+        fprintf(fp, "                     page_slab: %ld\n",
+                OFFSET(page_slab));
+        fprintf(fp, "               page_first_page: %ld\n",
+                OFFSET(page_first_page));
+        fprintf(fp, "                 page_freelist: %ld\n",
+                OFFSET(page_freelist));
+
         fprintf(fp, "    swap_info_struct_swap_file: %ld\n",
 		OFFSET(swap_info_struct_swap_file));
         fprintf(fp, "  swap_info_struct_swap_vfsmnt: %ld\n",
@@ -6421,6 +6467,40 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(slab_inuse));
         fprintf(fp, "                     slab_free: %ld\n",
                 OFFSET(slab_free));
+
+        fprintf(fp, "               kmem_cache_size: %ld\n",
+                OFFSET(kmem_cache_size));
+        fprintf(fp, "            kmem_cache_objsize: %ld\n",
+                OFFSET(kmem_cache_objsize));
+        fprintf(fp, "             kmem_cache_offset: %ld\n",
+                OFFSET(kmem_cache_offset));
+        fprintf(fp, "              kmem_cache_order: %ld\n",
+                OFFSET(kmem_cache_order));
+        fprintf(fp, "         kmem_cache_local_node: %ld\n",
+                OFFSET(kmem_cache_local_node));
+        fprintf(fp, "            kmem_cache_objects: %ld\n",
+                OFFSET(kmem_cache_objects));
+        fprintf(fp, "              kmem_cache_inuse: %ld\n",
+                OFFSET(kmem_cache_inuse));
+        fprintf(fp, "              kmem_cache_align: %ld\n",
+                OFFSET(kmem_cache_align));
+        fprintf(fp, "               kmem_cache_name: %ld\n",
+                OFFSET(kmem_cache_name));
+        fprintf(fp, "               kmem_cache_list: %ld\n",
+                OFFSET(kmem_cache_list));
+        fprintf(fp, "               kmem_cache_node: %ld\n",
+                OFFSET(kmem_cache_node));
+        fprintf(fp, "           kmem_cache_cpu_slab: %ld\n",
+                OFFSET(kmem_cache_cpu_slab));
+
+        fprintf(fp, "    kmem_cache_node_nr_partial: %ld\n",
+                OFFSET(kmem_cache_node_nr_partial));
+        fprintf(fp, "      kmem_cache_node_nr_slabs: %ld\n",
+                OFFSET(kmem_cache_node_nr_slabs));
+        fprintf(fp, "       kmem_cache_node_partial: %ld\n",
+                OFFSET(kmem_cache_node_partial));
+        fprintf(fp, "          kmem_cache_node_full: %ld\n",
+                OFFSET(kmem_cache_node_full));
 
 	fprintf(fp, "               net_device_next: %ld\n",
         	OFFSET(net_device_next));
@@ -6804,6 +6884,9 @@ dump_offset_table(char *spec, ulong makestruct)
         fprintf(fp, "                   array_cache: %ld\n", SIZE(array_cache));
         fprintf(fp, "                 kmem_bufctl_t: %ld\n", 
 		SIZE(kmem_bufctl_t));
+        fprintf(fp, "                    kmem_cache: %ld\n", SIZE(kmem_cache));
+        fprintf(fp, "               kmem_cache_node: %ld\n", SIZE(kmem_cache_node));
+
         fprintf(fp, "              swap_info_struct: %ld\n", 
 		SIZE(swap_info_struct));
         fprintf(fp, "                vm_area_struct: %ld\n", 
@@ -6989,6 +7072,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		ARRAY_LENGTH(height_to_maxindex));
 	fprintf(fp, "                      pid_hash: %d\n",
 		ARRAY_LENGTH(pid_hash));
+	fprintf(fp, "               kmem_cache_node: %d\n",
+		ARRAY_LENGTH(kmem_cache_node));
+	fprintf(fp, "           kmem_cache_cpu_slab: %d\n",
+		ARRAY_LENGTH(kmem_cache_cpu_slab));
 
 	if (spec) {
 		int in_size_table, in_array_table, arrays, offsets, sizes;

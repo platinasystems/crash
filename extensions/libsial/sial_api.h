@@ -13,6 +13,9 @@
 #define ABI_MIPS	1
 #define ABI_INTEL_X86	2
 #define ABI_INTEL_IA	3
+#define ABI_S390        4
+#define ABI_S390X       5
+#define ABI_PPC64	6
 
 /* types of variables */
 #define V_BASE          1
@@ -225,6 +228,12 @@ void sial_pushref(TYPE_S*t, int ref);
 void sial_duptype(TYPE_S*to, TYPE_S*from);
 int sial_defbsize(void);
 TYPE_S*sial_newbtype(int token);
+void sial_setdbg(unsigned int lvl);
+unsigned int sial_getdbg(void);
+void sial_setname(char *name);
+char *sial_getname(void);
+void sial_setclass(char *class);
+char **sial_getclass(void);
 
 /* struct member functions */
 void sial_member_soffset(MEMBER_S*m, int offset);
@@ -246,6 +255,13 @@ void sial_error(char *, ...);
 void sial_warning(char *, ...);
 /* display a message and continue */
 void sial_msg(char *, ...);
+/* display a debug message */
+#define DBG_TYPE            0x00000001
+#define DBG_STRUCT          0x00000002
+#define DBG_NAME            0x10000000  // 
+#define DBG_ALL             0x0fffffff
+void sial_dbg(int class, int level, char *, ...);
+void sial_dbg_named(int class, char *name, int level, char *, ...);
 
 /* parsers debug flags */
 extern int sialdebug, sialppdebug;
