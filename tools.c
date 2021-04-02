@@ -142,7 +142,7 @@ __error(int type, char *fmt, ...)
 int
 parse_line(char *str, char *argv[])
 {
-	int i, j;
+	int i, j, k;
     	int string;
 	int expression;
 
@@ -154,9 +154,34 @@ parse_line(char *str, char *argv[])
         if (str == NULL || strlen(str) == 0)
                 return(0);
 
-        i = j = 0;
+        i = j = k = 0;
         string = expression = FALSE;
-        argv[j++] = str;
+
+	/*
+	 * Special handling for when the first character is a '"'.
+	 */
+	if (str[0] == '"') {
+next:
+		do {
+			i++;
+		} while ((str[i] != NULLCHAR) && (str[i] != '"'));
+
+		switch (str[i])
+		{
+		case NULLCHAR:
+			argv[j] = &str[k];
+			return j+1;
+		case '"':
+			argv[j++] = &str[k+1];
+			str[i++] = NULLCHAR;
+			if (str[i] == '"') {
+				k = i;
+				goto next;	
+			}
+			break;
+		}
+	} else
+		argv[j++] = str;
 
     	while (TRUE) {
 		if (j == MAXARGS)

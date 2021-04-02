@@ -407,10 +407,11 @@ struct program_context {
 #define BAD_INSTRUCTION    (0x80)
 #define UD2A_INSTRUCTION  (0x100)
 #define IRQ_IN_USE        (0x200)
-/*      (available)       (0x400) */
+#define NO_MODIFY         (0x400)
 #define IGNORE_ERRORS     (0x800)
 #define FROM_RCFILE      (0x1000)
 #define MEMTYPE_KVADDR   (0x2000)
+#define MOD_SECTIONS     (0x4000)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -446,6 +447,7 @@ struct program_context {
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
+	FILE *args_ifile;		/* per-command args input file */
 };
 
 #define READMEM  pc->readmem
@@ -457,6 +459,16 @@ struct command_table_entry {               /* one for each command in menu */
 	cmd_func_t func;
 	char **help_data;
 	ulong flags;
+};
+
+struct args_input_file {
+	int index;
+	int args_used;
+	int is_gdb_cmd;
+	int in_expression;
+	int start;
+	int resume;
+	char *fileptr;
 };
 
 #define REFRESH_TASK_TABLE (0x1)           /* command_table_entry flags */
@@ -1617,6 +1629,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long user_regs_struct_r15;
 	long sched_entity_cfs_rq;
 	long sched_entity_my_q;
+	long sched_entity_on_rq;
+	long task_struct_on_rq;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1737,6 +1751,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long irq_data;
 	long s390_stack_frame;
 	long percpu_data;
+	long sched_entity;
 };
 
 struct array_table {
@@ -2954,7 +2969,8 @@ struct efi_memory_desc_t {
 #define TIF_SIGPENDING (2)
 
 #define _SECTION_SIZE_BITS	28
-#define _MAX_PHYSMEM_BITS	42
+#define _MAX_PHYSMEM_BITS_OLD	42
+#define _MAX_PHYSMEM_BITS_NEW	46
 
 #endif  /* S390X */
 
@@ -3550,6 +3566,8 @@ void debug_redirect(char *);
 int CRASHPAGER_valid(void);
 char *setup_scroll_command(void);
 int minimal_functions(char *);
+int is_args_input_file(struct command_table_entry *, struct args_input_file *);
+void exec_args_input_file(struct command_table_entry *, struct args_input_file *);
 
 /*
  *  tools.c

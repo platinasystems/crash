@@ -13601,7 +13601,7 @@ verify_pfn(ulong pfn)
 	for (i = machdep->max_physmem_bits; i < machdep->bits; i++)
 		mask |= ((physaddr_t)1 << i);
 		
-	if (mask & BTOP(pfn))
+	if (mask & PTOB(pfn))
 		return FALSE;
 
 	return TRUE;
@@ -14203,7 +14203,6 @@ sparse_mem_init(void)
 
 	MEMBER_OFFSET_INIT(mem_section_section_mem_map, "mem_section",
 		"section_mem_map");
-	STRUCT_SIZE_INIT(mem_section, "mem_section");
 
 	if (!MAX_PHYSMEM_BITS())
 		error(FATAL, 

@@ -712,6 +712,13 @@ void
 exec_command(void)
 {
 	struct command_table_entry *ct;
+	struct args_input_file args_ifile;
+
+        if (args[0] && (args[0][0] == '\\') && args[0][1]) {
+		shift_string_left(args[0], 1);
+                shift_string_left(pc->orig_line, 1);
+		pc->curcmd_flags |= NO_MODIFY;
+	}
 
 reattempt:
 	if (!args[0])
@@ -737,7 +744,12 @@ reattempt:
                         pc->lastcmd = pc->curcmd;
                 pc->curcmd = ct->name;
 		pc->cmdgencur++;
-                (*ct->func)();
+
+		if (is_args_input_file(ct, &args_ifile))
+			exec_args_input_file(ct, &args_ifile);
+		else
+			(*ct->func)();
+
                 pc->lastcmd = pc->curcmd;
                 pc->curcmd = pc->program_name;
                 return;
@@ -1317,6 +1329,7 @@ dump_program_context(void)
 	fprintf(fp, "            ofile: %lx\n", (ulong)pc->ofile);
 	fprintf(fp, "       ifile_pipe: %lx\n", (ulong)pc->ifile_pipe);
 	fprintf(fp, "      ifile_ofile: %lx\n", (ulong)pc->ifile_ofile);
+	fprintf(fp, "       args_ifile: %lx\n", (ulong)pc->args_ifile);
 	fprintf(fp, "       input_file: %s\n", pc->input_file);
 	fprintf(fp, "ifile_in_progress: %lx (", pc->ifile_in_progress);
 	others = 0;
@@ -1457,6 +1470,10 @@ dump_program_context(void)
 		fprintf(fp, "%sFROM_RCFILE", others ? "|" : "");
         if (pc->curcmd_flags & MEMTYPE_KVADDR)
 		fprintf(fp, "%sMEMTYPE_KVADDR", others ? "|" : "");
+        if (pc->curcmd_flags & NO_MODIFY)
+		fprintf(fp, "%sNO_MODIFY", others ? "|" : "");
+        if (pc->curcmd_flags & MOD_SECTIONS)
+		fprintf(fp, "%sMOD_SECTIONS", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

@@ -3031,6 +3031,18 @@ in_exception_stack:
 				0, bt->instptr);
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
+
+			/*
+			 *  Protect against exception stack recursion.
+			 */
+			if (x86_64_in_exception_stack(bt, NULL) == estack) {
+				fprintf(ofp, 
+     				    "    [ %s exception stack recursion: "
+				    "prior stack location overwritten ]\n",
+					x86_64_exception_stacks[estack_index]);
+				return;
+			}
+
 			level++;
 			if ((framesize = x86_64_get_framesize(bt, bt->instptr, rsp)) >= 0)
 				rsp += framesize;

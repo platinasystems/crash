@@ -730,20 +730,10 @@ is_restricted_command(char *cmd, ulong flags)
 void
 cmd_gdb(void)
 {
-        int c;
 	char *p1, *p2;
 	char buf[BUFSIZE];
 
-        while ((c = getopt(argcnt, args, "")) != EOF) {
-                switch(c)
-                {
-                default:
-                        argerrs++;
-                        break;
-                }
-        }
-
-        if (argerrs || !args[optind])
+        if (!args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
 	/*

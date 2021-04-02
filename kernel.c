@@ -579,6 +579,8 @@ kernel_init()
 		kt->flags |= ARCH_OPENVZ;
 	}
 
+	STRUCT_SIZE_INIT(mem_section, "mem_section");
+
 	BUG_bytes_init();
 	
 	kt->flags &= ~PRE_KERNEL_INIT;
@@ -3062,7 +3064,7 @@ void
 cmd_mod(void)
 {
 	int c;
-	char *objfile, *modref, *tree, *symlink;
+	char *p, *objfile, *modref, *tree, *symlink;
 	ulong flag, address;
 	char buf[BUFSIZE];
 
@@ -3078,6 +3080,23 @@ cmd_mod(void)
 	if (!kt->mods_installed) {
 		fprintf(fp, "no modules installed\n");
 		return;
+	}
+
+	for (c = 1, p = NULL; c < argcnt; c++) {
+		if (args[c][0] != '-')
+			continue;
+
+		if (STREQ(args[c], "-g")) {
+			pc->curcmd_flags |= MOD_SECTIONS;
+			while (c < argcnt) {
+				args[c] = args[c+1];
+				c++;
+			}
+			argcnt--;
+		} else if ((p = strstr(args[c], "g"))) {
+			pc->curcmd_flags |= MOD_SECTIONS;
+			shift_string_left(p, 1);
+		}
 	}
 
 	modref = objfile = tree = symlink = NULL;
