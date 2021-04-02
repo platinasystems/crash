@@ -8,6 +8,16 @@
  *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
  *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
  *  Adapted as noted from the following LKCD files:
  *
  *    lkcdutils-4.1/lcrash/arch/i386/lib/dis.c
@@ -753,6 +763,7 @@ get_framesize(kaddr_t pc)
 	instr_rec_t irp;
         syment_t *sp;
 #ifdef REDHAT
+	int check_IRQ_stack_switch = 0;
 	syment_t *jmpsp, *trampsp;
 	ulong offset;
 	int frmsize_restore = 0;
@@ -768,6 +779,9 @@ get_framesize(kaddr_t pc)
 		return(-1);
 	}
 #ifdef REDHAT
+	if (STREQ(sp->name, "do_IRQ") && (tt->flags & IRQSTACKS)) 
+		check_IRQ_stack_switch++;
+
         if (STREQ(sp->name, "stext_lock") || STRNEQ(sp->name, ".text.lock.")) {
 		jmpsp = x86_text_lock_jmp(pc, &offset);
 		if (jmpsp) {
@@ -801,6 +815,12 @@ get_framesize(kaddr_t pc)
 			fprintf(stderr, "SIZE DOES NOT MATCH!!\n");
 		}
 #ifdef REDHAT
+		/*
+	 	 * Account for do_IRQ() stack switch.
+		 */
+		if (check_IRQ_stack_switch && (irp.opcode == 0xff02) && 
+		    (irp.operand[0].op_reg == 0x7))
+			break;
 		/*
 		 *  Account for embedded "ret" instructions screwing up
 		 *  the frame size calculation.

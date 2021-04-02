@@ -568,6 +568,32 @@ irqstacks_init(void)
 
 }
 
+int
+in_irq_ctx(ulonglong type, int cpu, ulong addr)
+{
+	if (!(tt->flags & IRQSTACKS))
+		return FALSE;
+
+	switch (type)
+	{
+	case BT_SOFTIRQ:
+		if (tt->softirq_ctx[cpu] &&
+		    (addr >= tt->softirq_ctx[cpu]) &&
+		    (addr < (tt->softirq_ctx[cpu] + STACKSIZE())))
+			return TRUE;
+		break;
+
+	case BT_HARDIRQ:
+		if (tt->hardirq_ctx[cpu] &&
+		    (addr >= tt->hardirq_ctx[cpu]) &&
+		    (addr < (tt->hardirq_ctx[cpu] + STACKSIZE())))
+			return TRUE;
+		break;
+	}
+
+	return FALSE;
+}
+
 /*
  *  Allocate or re-allocated space for the task_context array and task list.
  */

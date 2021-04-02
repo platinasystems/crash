@@ -43,6 +43,7 @@ static int x86_64_print_eframe_location(ulong, int, FILE *);
 static void x86_64_back_trace_cmd(struct bt_info *);
 static ulong x86_64_in_exception_stack(struct bt_info *, int *);
 static ulong x86_64_in_irqstack(struct bt_info *);
+static int x86_64_in_alternate_stack(int, ulong);
 static void x86_64_low_budget_back_trace_cmd(struct bt_info *);
 static void x86_64_dwarf_back_trace_cmd(struct bt_info *);
 static void x86_64_get_dumpfile_stack_frame(struct bt_info *, ulong *, ulong *);
@@ -315,11 +316,15 @@ x86_64_init(int when)
 		MEMBER_OFFSET_INIT(user_regs_struct_ss,
 			"user_regs_struct", "ss");
 		STRUCT_SIZE_INIT(user_regs_struct, "user_regs_struct");
+		machdep->vmalloc_start = x86_64_vmalloc_start;
+		vt->vmalloc_start = machdep->vmalloc_start();
+		machdep->init_kernel_pgd();
 		if (STRUCT_EXISTS("x8664_pda"))
 			x86_64_cpu_pda_init();
 		else
 			x86_64_per_cpu_init();
 		x86_64_ist_init();
+		machdep->in_alternate_stack = x86_64_in_alternate_stack;
                 if ((machdep->machspec->irqstack = (char *)
 		    malloc(machdep->machspec->stkinfo.isize)) == NULL)
                         error(FATAL, "cannot malloc irqstack space.");
@@ -335,7 +340,6 @@ x86_64_init(int when)
 				&machdep->nr_irqs);
 		else
 			machdep->nr_irqs = 224; /* NR_IRQS (at least) */
-		machdep->vmalloc_start = x86_64_vmalloc_start;
 		machdep->dump_irq = x86_64_dump_irq;
 		if (!machdep->hz) {
 			machdep->hz = HZ;
@@ -502,6 +506,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
         fprintf(fp, "  line_number_hooks: x86_64_line_number_hooks\n");
         fprintf(fp, "    value_to_symbol: x86_64_value_to_symbol()\n");
+        fprintf(fp, " in_alternate_stack: x86_64_in_alternate_stack()\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
@@ -825,7 +830,7 @@ x86_64_per_cpu_init(void)
 	if (cpus > 1)
 		kt->flags |= SMP;
 
-	if ((i = get_cpus_online()) && (i < cpus))
+	if ((i = get_cpus_online()) && (!cpus || (i < cpus)))
 		kt->cpus = get_highest_cpu_online() + 1;
 	else
 		kt->cpus = cpus;
@@ -2501,6 +2506,29 @@ x86_64_in_irqstack(struct bt_info *bt)
         }
 
         return irqstack;
+}
+
+static int 
+x86_64_in_alternate_stack(int cpu, ulong rsp)
+{
+	int i;
+	struct machine_specific *ms;
+
+	ms = machdep->machspec;
+
+	if (ms->stkinfo.ibase[cpu] &&
+	    (rsp >= ms->stkinfo.ibase[cpu]) &&
+	    (rsp < (ms->stkinfo.ibase[cpu] + ms->stkinfo.isize)))
+		return TRUE;
+
+	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
+		if (ms->stkinfo.ebase[cpu][i] &&
+		    (rsp >= ms->stkinfo.ebase[cpu][i]) &&
+		    (rsp < (ms->stkinfo.ebase[cpu][i] + ms->stkinfo.esize[i])))
+			return TRUE;
+	}
+
+	return FALSE;
 }
 
 #define STACK_TRANSITION_ERRMSG_E_I_P \
@@ -4254,7 +4282,7 @@ x86_64_get_smp_cpus(void)
 			cpus++;
 		}
 
-		if ((i = get_cpus_online()) && (i < cpus))
+		if ((i = get_cpus_online()) && (!cpus || (i < cpus)))
 			cpus = get_highest_cpu_online() + 1;
 
 		return cpus;

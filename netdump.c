@@ -3,12 +3,15 @@
  * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
  * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  *
- * This software may be freely redistributed under the terms of the
- * GNU General Public License.
- * 
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Author: David Anderson
  */
@@ -694,6 +697,9 @@ get_netdump_panic_task(void)
                 else
                         note32 = (Elf32_Nhdr *)nd->nt_prstatus;
 
+		if (!note32)
+			goto panic_task_undetermined;
+
 	        len = sizeof(Elf32_Nhdr);
 	        len = roundup(len + note32->n_namesz, 4);
 	        len = roundup(len + note32->n_descsz, 4);
@@ -737,6 +743,9 @@ check_ebp_esp:
                                 nd->nt_prstatus_percpu[crashing_cpu];
                 else
                         note64 = (Elf64_Nhdr *)nd->nt_prstatus;
+
+		if (!note64)
+			goto panic_task_undetermined;
 
 	        len = sizeof(Elf64_Nhdr);
 	        len = roundup(len + note64->n_namesz, 4);
@@ -1302,6 +1311,11 @@ dump_Elf32_Phdr(Elf32_Phdr *prog, int store_pt_load_data)
 	int others;
 	struct pt_load_segment *pls;
 
+        if ((char *)prog > (nd->elf_header + nd->header_size))
+		error(FATAL,
+		    "Elf32_Phdr pointer: %lx  ELF header end: %lx\n\n",
+			(char *)prog, nd->elf_header + nd->header_size);
+
 	if (store_pt_load_data) 
 		pls = &nd->pt_load_segments[store_pt_load_data-1];
 	else
@@ -1390,6 +1404,11 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 		pls = &nd->pt_load_segments[store_pt_load_data-1];
 	else
 		pls = NULL;
+
+        if ((char *)prog > (nd->elf_header + nd->header_size))
+		error(FATAL,
+		    "Elf64_Phdr pointer: %lx  ELF header end: %lx\n\n",
+			(char *)prog, nd->elf_header + nd->header_size);
 
 	netdump_print("Elf64_Phdr:\n");
 	netdump_print("                 p_type: %lx ", prog->p_type);
@@ -1577,11 +1596,10 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
         ptr = (char *)note + sizeof(Elf32_Nhdr);
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
-		if (CRASHDEBUG(1))
-			error(WARNING, 
-		    	    "Elf32_Nhdr pointer: %lx ELF header end: %lx\n",
-				(char *)note, nd->elf_header + nd->header_size);
-		remaining = 0;
+		error(WARNING, 
+	    	    "Elf32_Nhdr pointer: %lx ELF header end: %lx\n",
+			(char *)note, nd->elf_header + nd->header_size);
+		return 0;
 	} else
 		remaining = (uint64_t)((nd->elf_header + nd->header_size) - ptr);
 
@@ -1796,11 +1814,10 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 	xen_core = vmcoreinfo = FALSE;
 
 	if (ptr > (nd->elf_header + nd->header_size)) {
-		if (CRASHDEBUG(1))
-			error(WARNING, 
-		    	    "Elf64_Nhdr pointer: %lx  ELF header end: %lx\n\n",
-				(char *)note, nd->elf_header + nd->header_size);
-		remaining = 0;
+		error(WARNING, 
+	    	    "Elf64_Nhdr pointer: %lx  ELF header end: %lx\n\n",
+			(char *)note, nd->elf_header + nd->header_size);
+		return 0;
 	} else
 		remaining = (uint64_t)((nd->elf_header + nd->header_size) - ptr);
 

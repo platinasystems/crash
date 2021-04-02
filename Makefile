@@ -207,7 +207,7 @@ GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
           ${GDB}/gdb/ppc-linux-tdep.o
 
 GDB_7.0_FILES=
-GDB_7.0_OFILES=
+GDB_7.0_OFILES=${GDB}/gdb/symtab.o
 
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
@@ -515,7 +515,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=4.1.1
+VERSION=4.1.2
 RELEASE=0
 
 release: make_configure

@@ -30,7 +30,7 @@ static struct command_table_entry command_table[] = {
 	{ NULL }                               
 };
 
-static size_t generate_elf_header(int, int, char *);
+static char *generate_elf_header(int, int, char *);
 static int verify_paddr(physaddr_t);
 static void init_ram_segments(void);
 static int print_progress(const char *, ulong);
@@ -68,6 +68,9 @@ cmd_snap(void)
 	char *filename;
 	struct node_table *nt;
 	int type;
+	char *elf_header;
+	Elf64_Phdr *load;
+	int load_index;
 
 	if (!supported)
 		error(FATAL, "command not supported on the %s architecture\n",
@@ -113,12 +116,17 @@ cmd_snap(void)
 
 	init_ram_segments();
 
-	if (!(offset = generate_elf_header(type, fd, filename)))
+	if (!(elf_header = generate_elf_header(type, fd, filename)))
 		error(FATAL, "cannot generate ELF header\n");
+
+	load = (Elf64_Phdr *)(elf_header + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr));
+	load_index = machine_type("X86_64") || machine_type("IA64") ? 1 : 0;
 
 	for (n = 0; n < vt->numnodes; n++) {
 		nt = &vt->node_table[n];
 		paddr = nt->start_paddr;
+		offset = load[load_index + n].p_offset;
+
 		for (c = 0; c < nt->size; c++, paddr += PAGESIZE()) {
 			if (!verify_paddr(paddr))
 				continue;
@@ -126,7 +134,7 @@ cmd_snap(void)
 			    "memory page", QUIET|RETURN_ON_ERROR))
 				continue;
 
-			lseek(fd, (off_t)(paddr + offset), SEEK_SET);
+			lseek(fd, (off_t)(paddr + offset - nt->start_paddr), SEEK_SET);
 			if (write(fd, &buf[0], PAGESIZE()) != PAGESIZE())
 				error(FATAL, "write to dumpfile failed\n");
 
@@ -140,6 +148,7 @@ cmd_snap(void)
 	sprintf(buf, "/bin/ls -l %s\n", filename);
 	system(buf);
 
+	FREEBUF(elf_header);
 	FREEBUF(buf);
 }
 
@@ -375,7 +384,7 @@ dump_elf_note(char *buf, Elf64_Word type, char *name, char *desc, int d_len)
 	return len;
 }
 
-static size_t
+char *
 generate_elf_header(int type, int fd, char *filename)
 {
 	int i, n;
@@ -581,15 +590,14 @@ generate_elf_header(int type, int fd, char *filename)
 		len = write(fd, buffer + (data_offset - offset), offset);
 		if (len < 0) {
 			perror(filename);
-			data_offset = 0;
-			break;
+			FREEBUF(buffer);
+			return NULL;
 		}
 
 		offset -= len;
 	}
-	FREEBUF(buffer);
 
-	return data_offset;
+	return buffer;
 }
 
 struct ram_segments {

@@ -1,3 +1,18 @@
+#
+# Copyright (C) 2009 David Anderson
+# Copyright (C) 2009 Red Hat, Inc. All rights reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+
 ifeq ($(shell arch), i686)
   TARGET=X86
   TARGET_CFLAGS=-D_FILE_OFFSET_BITS=64
