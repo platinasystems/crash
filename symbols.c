@@ -690,10 +690,11 @@ relocate(ulong symval, char *symname, int first_symbol)
 static int
 relocate_force(ulong symval, char *symname)
 {
+	int count, found;
         FILE *kp;
 	char buf[BUFSIZE];
         char *kallsyms[MAXARGS];
-	ulong first;
+	ulong kallsym;
 
 	if (!ACTIVE() || !file_exists("/proc/kallsyms", NULL)) {
 		if (CRASHDEBUG(1))
@@ -711,40 +712,52 @@ relocate_force(ulong symval, char *symname)
                 return FALSE;
         }
 
-	if (!fgets(buf, BUFSIZE, kp) ||
-	    (parse_line(buf, kallsyms) != 3) ||
-	    !hexadecimal(kallsyms[0], 0)) {
-		fclose(kp);
-		if (CRASHDEBUG(1))
-			fprintf(fp, 
-			    "malformed /proc/kallsyms: cannot determine relocation value\n");
-		return FALSE;
-	}
-	fclose(kp);
-
-	first = htol(kallsyms[0], RETURN_ON_ERROR, NULL);
 
 	if (CRASHDEBUG(1))
 		fprintf(fp, 
-		    "RELOCATE: %s @ %lx %s\n"
-		    "          %s @ %lx /proc/kallsyms\n",
-			symname, symval, pc->namelist,
-			kallsyms[2], first);
+		    "relocate from: %s\n"
+		    "  %s @ %lx\n"
+		    "relocate to: /proc/kallsyms\n",
+			pc->namelist, symname, symval);
+
+	found = FALSE;
+	count = kallsym = 0;
+
+	while (!found && fgets(buf, BUFSIZE, kp) &&
+	    (parse_line(buf, kallsyms) == 3) && 
+	    hexadecimal(kallsyms[0], 0)) {
+
+		if (STREQ(kallsyms[2], symname)) {
+			kallsym = htol(kallsyms[0], RETURN_ON_ERROR, NULL);
+			found = TRUE;
+		}
+
+		count++;
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "  %s @ %s %s\n",
+				kallsyms[2], kallsyms[0],
+				STREQ(kallsyms[2], symname) ? 
+				"(match!)" : "");
+	}
+	fclose(kp);
 
 	/*
 	 *  If the symbols match and have different values,
 	 *  force the relocation.
 	 */
-	if (STREQ(symname, kallsyms[2])) {
-		if (symval > first) {
-			kt->relocate = symval - first;
+	if (found) {
+		if (symval > kallsym) {
+			kt->relocate = symval - kallsym;
 			return TRUE;
 		}
 	}
 
 	if (CRASHDEBUG(1))
 		fprintf(fp, 
-		    "cannot determine relocation value from first symbol\n");
+		    "cannot determine relocation value from"
+		    " %d symbols in /proc/kallsyms\n", count);
 
 	return FALSE;
 }
@@ -4704,6 +4717,15 @@ kernel_symbol_exists(char *symbol)
 }
 
 /*
+ *  Similar to above, but return the syment of the kernel symbol.
+ */
+struct syment *
+kernel_symbol_search(char *symbol)
+{
+	return symname_hash_search(symbol);
+}
+
+/*
  *  Return the number of instances of a symbol name along with pointers to
  *  their syment structures.
  */
@@ -5899,9 +5921,10 @@ cmd_p(void)
 			    !STRNEQ(p1, "{\n")) { 
 				*p1 = NULLCHAR;
 				fprintf(pc->saved_fp, buf1);
-				fprintf(pc->saved_fp, "\n {%s", p1+1);
-			} else 
-				fprintf(pc->saved_fp, do_load_module_filter ?
+				fprintf(pc->saved_fp, "\n {");
+				print_verbatim(pc->saved_fp, p1+1);
+			} else
+				print_verbatim(pc->saved_fp, do_load_module_filter ?
 				    load_module_filter(buf1, LM_P_FILTER) : 
 				    buf1);
 

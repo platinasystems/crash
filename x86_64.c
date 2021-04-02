@@ -44,6 +44,7 @@ static void x86_64_back_trace_cmd(struct bt_info *);
 static ulong x86_64_in_exception_stack(struct bt_info *, int *);
 static ulong x86_64_in_irqstack(struct bt_info *);
 static int x86_64_in_alternate_stack(int, ulong);
+static ulong __schedule_frame_adjust(ulong, struct bt_info *);
 static void x86_64_low_budget_back_trace_cmd(struct bt_info *);
 static void x86_64_dwarf_back_trace_cmd(struct bt_info *);
 static void x86_64_get_dumpfile_stack_frame(struct bt_info *, ulong *, ulong *);
@@ -80,6 +81,7 @@ static void x86_64_post_init(void);
 static void parse_cmdline_args(void);
 static void x86_64_clear_machdep_cache(void);
 static void x86_64_irq_eframe_link_init(void);
+static ulong search_for_switch_to(ulong, ulong);
 static void x86_64_thread_return_init(void);
 static void x86_64_framepointer_init(void);
 static int x86_64_virt_phys_base(void);
@@ -3026,20 +3028,34 @@ in_exception_stack:
 	}
 
 	/*
-	 *  For a normally blocked task, hand-create the first level.
+	 *  For a normally blocked task, hand-create the first level(s).
+	 *  associated with __schedule() and/or schedule().
 	 */
         if (!done && 
 	    !(bt->flags & (BT_TEXT_SYMBOLS|BT_EXCEPTION_STACK|BT_IRQSTACK)) &&
             (rip_symbol = closest_symbol(bt->instptr)) &&
 	    (STREQ(rip_symbol, "thread_return") || 
-	     STREQ(rip_symbol, "schedule"))) {
-		bt->flags |= BT_SCHEDULE;
-		i = (rsp - bt->stackbase)/sizeof(ulong);
-		x86_64_print_stack_entry(bt, ofp, level, 
-			i, bt->instptr);
-		bt->flags &= ~(ulonglong)BT_SCHEDULE;
-		rsp += sizeof(ulong);
-		level++;
+	     STREQ(rip_symbol, "schedule") || 
+	     STREQ(rip_symbol, "__schedule"))) {
+		if (STREQ(rip_symbol, "__schedule")) {
+			i = (rsp - bt->stackbase)/sizeof(ulong);
+			x86_64_print_stack_entry(bt, ofp, level, 
+				i, bt->instptr);
+			level++;
+			rsp = __schedule_frame_adjust(rsp, bt);
+			if (STREQ(closest_symbol(bt->instptr), "schedule"))
+				bt->flags |= BT_SCHEDULE;
+		} else
+			bt->flags |= BT_SCHEDULE;
+
+		if (bt->flags & BT_SCHEDULE) {
+			i = (rsp - bt->stackbase)/sizeof(ulong);
+			x86_64_print_stack_entry(bt, ofp, level, 
+				i, bt->instptr);
+			bt->flags &= ~(ulonglong)BT_SCHEDULE;
+			rsp += sizeof(ulong);
+			level++;
+		}
 	}
 
 	/*
@@ -5020,50 +5036,65 @@ x86_64_framepointer_init(void)
 		machdep->flags |= FRAMEPOINTER;
 }
 
-static void
-x86_64_thread_return_init(void)
+static ulong
+search_for_switch_to(ulong start, ulong end)
 {
-	int found;
-	struct syment *sp, *spn;
 	ulong max_instructions, address;
 	char buf[BUFSIZE];
+	int found;
 
-	if ((sp = symbol_search("thread_return"))) {
-		machdep->machspec->thread_return = sp->value;
-		return;
-	}
-
-	if (!(sp = symbol_search("schedule")) ||
-	    !(spn = next_symbol(NULL, sp))) {
-		error(WARNING, "schedule: symbol does not exist\n");
-		return;
-	}
-	max_instructions = spn->value - sp->value;
+	max_instructions = end - start;
 	found = FALSE;
+	sprintf(buf, "x/%ldi 0x%lx", max_instructions, start);
 
 	open_tmpfile();
 
-        sprintf(buf, "x/%ldi 0x%lx",
-		max_instructions, sp->value);
-
-        if (!gdb_pass_through(buf, pc->tmpfile, GNU_RETURN_ON_ERROR))
-		return;
+	if (!gdb_pass_through(buf, pc->tmpfile, GNU_RETURN_ON_ERROR))
+		return FALSE;
 
 	rewind(pc->tmpfile);
-        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+	while (fgets(buf, BUFSIZE, pc->tmpfile)) {
 		if (found)
 			break;
-		if (strstr(buf, "__switch_to"))
+		if (strstr(buf, "<__switch_to>"))
 			found = TRUE;
 	}
 	close_tmpfile();
 
 	if (found && extract_hex(buf, &address, NULLCHAR, TRUE))
-		machdep->machspec->thread_return = address;
-	else {
-		machdep->machspec->thread_return = symbol_value("schedule");
-		error(INFO, "cannot determing thread return address\n");
+		return address;
+
+	return 0;
+}
+
+static void
+x86_64_thread_return_init(void)
+{
+	struct syment *sp, *spn;
+	ulong address;
+
+	if ((sp = kernel_symbol_search("thread_return"))) {
+		machdep->machspec->thread_return = sp->value;
+		return;
 	}
+
+	if ((sp = kernel_symbol_search("schedule")) &&
+	    (spn = next_symbol(NULL, sp)) &&
+	    (address = search_for_switch_to(sp->value, spn->value))) {
+		machdep->machspec->thread_return = address;
+		return;
+	}
+
+	if ((sp = kernel_symbol_search("__schedule")) &&
+	    (spn = next_symbol(NULL, sp)) &&
+	    (address = search_for_switch_to(sp->value, spn->value))) {
+		machdep->machspec->thread_return = address;
+		return;
+	}
+
+	error(INFO, "cannot determine thread return address\n");
+	machdep->machspec->thread_return = 
+		(sp = kernel_symbol_search("schedule")) ?  sp->value : 0;
 }
 
 static void 
@@ -6871,6 +6902,62 @@ x86_64_framesize_debug(struct bt_info *bt)
 			error(INFO, "x86_64_framesize_debug: ignoring command\n");
 		break;
 	}
+}
+
+/*
+ *  The __schedule() framesize should only have to be calculated
+ *  one time, but always verify that the previously-determined 
+ *  framesize applies to this task, and if it doesn't, recalculate.
+ *  Update the bt->instptr here, and return the new stack pointer.
+ */
+static ulong 
+__schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
+{
+	int i, found;
+	ulong rsp, *up;
+	struct syment *sp;
+	int framesize;
+
+	if (x86_64_framesize_cache_func(FRAMESIZE_QUERY, 
+	    machdep->machspec->thread_return, &framesize, 0)) {
+		rsp = rsp_in + framesize;
+		i = (rsp - bt->stackbase)/sizeof(ulong);
+		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+
+		if (is_kernel_text_offset(*up) &&
+		    (sp = x86_64_function_called_by((*up)-5)) &&
+		    STREQ(sp->name, "__schedule")) {
+			bt->instptr = *up;
+			return (rsp);
+		}
+	}
+
+	rsp = rsp_in;
+
+	for (found = FALSE, i = (rsp - bt->stackbase)/sizeof(ulong);
+	     rsp < bt->stacktop; i++, rsp += sizeof(ulong)) {
+		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+
+		if (!is_kernel_text_offset(*up))
+			continue;
+
+		if ((sp = x86_64_function_called_by((*up)-5)) &&
+		    (STREQ(sp->name, "__schedule"))) {
+			framesize = (int)(rsp - rsp_in);
+			bt->instptr = *up;
+			x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
+			    machdep->machspec->thread_return,
+			    &framesize, 0);
+			bt->instptr = *up;
+			found = TRUE;
+			break;
+		}
+	}
+
+	if (CRASHDEBUG(1) && !found)
+		error(INFO, "cannot determine __schedule() caller\n");
+
+	return (found ? rsp : rsp_in);
 }
 
 static void

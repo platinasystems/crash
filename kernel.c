@@ -25,7 +25,7 @@ static char *module_objfile_search(char *, char *, char *);
 static char *get_loadavg(char *);
 static void get_lkcd_regs(struct bt_info *, ulong *, ulong *);
 static void dump_sys_call_table(char *, int);
-static int get_NR_syscalls(void);
+static int get_NR_syscalls(int *);
 static ulong get_irq_desc_addr(int);
 static void display_bh_1(void);
 static void display_bh_2(void);
@@ -1089,6 +1089,11 @@ verify_namelist()
 		return;
 	}
 
+	if (!(pc->flags & SYSMAP_ARG)) 
+		error(WARNING, 
+		    "kernel version inconsistency between vmlinux and %s\n\n",
+			ACTIVE() ? "live memory" : "dumpfile");
+		 
         if (CRASHDEBUG(1)) {
 		error(WARNING, 
 		    "\ncannot find matching kernel version in %s file:\n\n",
@@ -4150,7 +4155,7 @@ is_system_call(char *name, ulong value)
         long size;
 	int NR_syscalls;
 
-	NR_syscalls = get_NR_syscalls();
+	NR_syscalls = get_NR_syscalls(NULL);
         size = sizeof(void *) * NR_syscalls;
         sys_call_table = (ulong *)GETBUF(size);
 
@@ -4175,7 +4180,7 @@ char *sys_call_hdr = "NUM  SYSTEM CALL                FILE AND LINE NUMBER\n";
 static void
 dump_sys_call_table(char *spec, int cnt)
 {
-        int i;
+        int i, confirmed;
         char buf1[BUFSIZE], *scp;
         char buf2[BUFSIZE], *p;
 	char buf3[BUFSIZE];
@@ -4192,9 +4197,10 @@ dump_sys_call_table(char *spec, int cnt)
 	if (GDB_PATCHED())
 		error(INFO, "line numbers are not available\n"); 
 
-	NR_syscalls = get_NR_syscalls();
+	NR_syscalls = get_NR_syscalls(&confirmed);
 	if (CRASHDEBUG(1))
-		fprintf(fp, "NR_syscalls: %d\n", NR_syscalls);
+		fprintf(fp, "NR_syscalls: %d (%sconfirmed)\n", 
+			NR_syscalls, confirmed ? "" : "not ");
         size = sizeof(addr) * NR_syscalls;
 #ifdef S390X
         sys_call_table = (unsigned int *)GETBUF(size);
@@ -4214,13 +4220,16 @@ dump_sys_call_table(char *spec, int cnt)
 
         for (i = 0, sct = sys_call_table; i < NR_syscalls; i++, sct++) {
                 if (!(scp = value_symbol(*sct))) {
-			if (CRASHDEBUG(1)) {
+			if (confirmed || CRASHDEBUG(1)) {
 				fprintf(fp, (*gdb_output_radix == 16) ? 
 					"%3x  " : "%3d  ", i);
 				fprintf(fp, 
-			    	    "invalid sys_call_table entry: %lx (%s)\n", 
-					(unsigned long)*sct,
-					value_to_symstr(*sct, buf1, 0));
+			    	    "invalid sys_call_table entry: %lx ", 
+					(unsigned long)*sct);
+				if (strlen(value_to_symstr(*sct, buf1, 0)))
+					fprintf(fp, "(%s)\n", buf1);
+				else
+					fprintf(fp, "\n");
 			}
 			continue;
 		}
@@ -4293,15 +4302,25 @@ dump_sys_call_table(char *spec, int cnt)
 }
 
 /*
- *  Get the number of system calls in the sys_call_table based upon the
- *  next symbol after it. 
+ *  Get the number of system calls in the sys_call_table, confirming
+ *  the number only if the debuginfo data shows sys_call_table as an
+ *  array.  Otherwise base it upon next symbol after it. 
  */
 static int
-get_NR_syscalls(void)
+get_NR_syscalls(int *confirmed)
 {
        	ulong sys_call_table;
 	struct syment *sp;
-	int cnt;
+	int type, cnt;
+
+	type = get_symbol_type("sys_call_table", NULL, NULL); 
+	if ((type == TYPE_CODE_ARRAY) &&
+	    (cnt = get_array_length("sys_call_table", NULL, 0))) {
+		*confirmed = TRUE;
+		return cnt;
+	}
+
+	*confirmed = FALSE;
 
 	sys_call_table = symbol_value("sys_call_table");
 	if (!(sp = next_symbol("sys_call_table", NULL)))

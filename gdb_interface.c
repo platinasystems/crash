@@ -1,8 +1,8 @@
 /* gdb_interface.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -772,7 +772,12 @@ cmd_gdb(void)
 	 *  If the command is not restricted, pass it on.
 	 */
 	if (!is_restricted_command(args[1], FAULT_ON_ERROR)) {
-		concat_args(buf, 1, 0);
+		if (STREQ(pc->command_line, "gdb"))
+			strcpy(buf, &pc->orig_line[3]);
+		else
+			strcpy(buf, pc->orig_line);
+		strip_beginning_whitespace(buf);
+
 		if (!gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR))
 			error(INFO, "gdb request failed: %s\n", buf);
 	}
