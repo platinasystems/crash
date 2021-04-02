@@ -150,10 +150,11 @@ GDB_6.1_FILES=${GDB}/gdb/Makefile.in ${GDB}/Makefile.in \
           ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
           ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
           ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c ${GDB}/gdb/dwarf2read.c \
-	  ${GDB}/include/obstack.h
+          ${GDB}/include/obstack.h ${GDB}/gdb/ppc-linux-tdep.c
 GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
           ${GDB}/gdb/target.o ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
-          ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o
+          ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o \
+          ${GDB}/gdb/ppc-linux-tdep.o
 
 # 
 # GDB_FLAGS is passed up from the gdb Makefile.
@@ -421,7 +422,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=3.10-13.10
+RELEASE=4.0-2.2
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \

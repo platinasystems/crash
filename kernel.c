@@ -2964,7 +2964,8 @@ get_uptime(char *buf)
 	    (THIS_KERNEL_VERSION >= LINUX(2,6,0))) 
 		jiffies -= ((unsigned long)(unsigned int)(-300*machdep->hz));
 	else if (symbol_exists("jiffies_64") && BITS64() && 
-		((jiffies & 0xffffffff00000000) == 0x100000000))
+		(((ulonglong)jiffies & 0xffffffff00000000ULL) == 
+		0x100000000ULL))
 		jiffies &= 0xffffffff;
 
 	convert_time((ulonglong)jiffies, buf);
@@ -4474,9 +4475,16 @@ new_timer_list_format:
                 ld->start = vec[i];
                 ld->list_head_offset = offset;
 		ld->end = vec_kvaddr;
+		ld->flags = RETURN_ON_LIST_ERROR;
 
                 hq_open();
-                timer_cnt = do_list(ld);
+		if ((timer_cnt = do_list(ld)) == -1) {
+			/* Ignore chains with errors */
+			error(INFO, 
+	      	      "ignoring faulty timer list at index %d of timer array\n",
+				i/2);
+			continue; 
+		}
                 if (!timer_cnt)
                 	continue;
                 timer_list = (ulong *)GETBUF(timer_cnt * sizeof(ulong));

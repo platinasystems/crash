@@ -5209,7 +5209,7 @@ display_README(void)
                 		fprintf(fp, "    %s\n", version_info[j]);
                 } else if (STREQ(README[i], README_ENTER_DIRECTORY)) {
                         fprintf(fp, 
- "  To build this utility, simply uncompress the tar file, enter the crash%s\n",
+ "  To build this utility, simply uncompress the tar file, enter the crash-%s\n",
                                 pc->program_version);
 		} else 
 			fprintf(fp, "%s\n", README[i]);
@@ -5291,7 +5291,9 @@ char *README[] = {
 "",
 README_ENTER_DIRECTORY,
 "  subdirectory, and type \"make\".  The initial build will take several minutes ",
-"  because the gdb module must be configured and and built.  ",
+"  because the gdb module must be configured and and built.  Alternatively, the",
+"  crash source RPM file may be installed and built, and the resultant crash",
+"  binary RPM file installed.",
 "",
 "  If the tool is run against a crash dumpfile, two arguments are required, the",
 "  uncompressed kernel name and the core dumpfile name.  ",

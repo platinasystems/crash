@@ -539,6 +539,8 @@ vm_init(void)
 			if (INVALID_MEMBER(zone_struct_size))
 	                	MEMBER_OFFSET_INIT(zone_struct_memsize, 
 					"zone_struct", "memsize");
+			MEMBER_OFFSET_INIT(zone_struct_zone_start_pfn,
+				"zone_struct", "zone_start_pfn");
 	                MEMBER_OFFSET_INIT(zone_struct_zone_start_paddr,  
 	                        "zone_struct", "zone_start_paddr");
 	                MEMBER_OFFSET_INIT(zone_struct_zone_start_mapnr, 
@@ -6177,6 +6179,7 @@ kmem_cache_init(void)
 
                 if (!readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
                         "kmem_cache_s buffer", RETURN_ON_ERROR)) {
+			FREEBUF(cache_buf);
 			vt->flags |= KMEM_CACHE_UNAVAIL;
 			error(INFO, 
 		          "unable to initialize kmem slab cache subsystem\n\n");
@@ -6190,6 +6193,13 @@ kmem_cache_init(void)
 
 		if ((tmp = max_cpudata_limit(cache, &tmp2)) > max_limit)
 			max_limit = tmp;
+		/*
+		 *  Recognize and bail out on any max_cpudata_limit() failures.
+		 */
+		if (vt->flags & KMEM_CACHE_UNAVAIL) {
+			FREEBUF(cache_buf);
+			return;
+		}
 
 		if (tmp2 > max_cpus)
 			max_cpus = tmp2;
@@ -6255,20 +6265,22 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 		goto kmem_cache_s_array;
 
         if (INVALID_MEMBER(kmem_cache_s_cpudata)) {
-                *cpus = 0;
-                return 0;
-        }
+		*cpus = 0;
+		return 0;
+	}
 
-	readmem(cache+OFFSET(kmem_cache_s_cpudata),
-        	KVADDR, &cpudata[0], 
-		sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_cpudata),
-                "cpudata array", FAULT_ON_ERROR);
+	if (!readmem(cache+OFFSET(kmem_cache_s_cpudata),
+            KVADDR, &cpudata[0], 
+	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_cpudata),
+            "cpudata array", RETURN_ON_ERROR))
+		goto bail_out;
 
 	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_cpudata)) && 
 	     cpudata[i]; i++) {
-		readmem(cpudata[i]+OFFSET(cpucache_s_limit),
-        		KVADDR, &limit, sizeof(int),
-                	"cpucache limit", FAULT_ON_ERROR);
+		if (!readmem(cpudata[i]+OFFSET(cpucache_s_limit),
+        	    KVADDR, &limit, sizeof(int),
+                    "cpucache limit", RETURN_ON_ERROR))
+			goto bail_out;
 		if (limit > max_limit)
 			max_limit = limit;
 	}
@@ -6279,22 +6291,30 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 
 kmem_cache_s_array:
 
-	readmem(cache+OFFSET(kmem_cache_s_array),
-        	KVADDR, &cpudata[0], 
-		sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
-                "array cache array", FAULT_ON_ERROR);
+	if (!readmem(cache+OFFSET(kmem_cache_s_array),
+            KVADDR, &cpudata[0], 
+	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
+            "array cache array", RETURN_ON_ERROR))
+		goto bail_out;
 
 	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
 	     cpudata[i]; i++) {
-                readmem(cpudata[i]+OFFSET(array_cache_limit),
-                        KVADDR, &limit, sizeof(int),
-                        "array cache limit", FAULT_ON_ERROR);
+                if (!readmem(cpudata[i]+OFFSET(array_cache_limit),
+                    KVADDR, &limit, sizeof(int),
+                    "array cache limit", RETURN_ON_ERROR))
+			goto bail_out;
                 if (limit > max_limit)
                         max_limit = limit;
         }
 
 	*cpus = i;
 	return max_limit;
+
+bail_out:
+	vt->flags |= KMEM_CACHE_UNAVAIL;
+	error(INFO, "unable to initialize kmem slab cache subsystem\n\n");
+	*cpus = 0;
+	return 0;
 }
 
 /*
@@ -9926,12 +9946,24 @@ dump_memory_nodes(int initialize)
                 	if (!read_string(value, buf1, BUFSIZE-1))
                         	sprintf(buf1, "(unknown) ");
 			if (VALID_STRUCT(zone_struct)) {
-                        	readmem(node_zones+
-					OFFSET(zone_struct_zone_start_paddr),
-                                	KVADDR, &zone_start_paddr, 
-					sizeof(ulong), 
-					"node_zones zone_start_paddr", 
-					FAULT_ON_ERROR);
+				if (VALID_MEMBER(zone_struct_zone_start_paddr))
+				{
+                        		readmem(node_zones+OFFSET
+					    (zone_struct_zone_start_paddr),
+                                	    KVADDR, &zone_start_paddr, 
+					    sizeof(ulong), 
+					    "node_zones zone_start_paddr", 
+					    FAULT_ON_ERROR);
+				} else {
+					readmem(node_zones+
+					    OFFSET(zone_struct_zone_start_pfn),
+					    KVADDR, &zone_start_pfn,
+					    sizeof(ulong),
+					    "node_zones zone_start_pfn",
+					    FAULT_ON_ERROR);
+					    zone_start_paddr = 
+						PTOB(zone_start_pfn);
+				}
                         	readmem(node_zones+
 					OFFSET(zone_struct_zone_start_mapnr),
                                 	KVADDR, &zone_start_mapnr, 

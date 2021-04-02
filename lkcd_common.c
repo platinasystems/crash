@@ -96,6 +96,7 @@ lkcd_dump_init(FILE *fp, int fd, char *dumpfile)
 		return(lkcd_dump_init_v7(fp, fd, dumpfile));
 
         case LKCD_DUMP_V8:
+        case LKCD_DUMP_V9:
 		return(lkcd_dump_init_v8(fp, fd, dumpfile));
 
 	default:
@@ -206,6 +207,7 @@ is_lkcd_compressed_dump(char *s)
 		return TRUE;
 
 	case LKCD_DUMP_V8:
+	case LKCD_DUMP_V9:
 		lkcd->version = LKCD_DUMP_V8;
 		return TRUE;
 
@@ -243,6 +245,7 @@ dump_dump_page(char *s, void *dp)
 		break;
 
         case LKCD_DUMP_V8:
+        case LKCD_DUMP_V9:
                 dump_dump_page_v8(s, dp);
 		break;
         }
@@ -302,6 +305,7 @@ dump_header_only:
 		break;
 
         case LKCD_DUMP_V8:
+        case LKCD_DUMP_V9:
                 dump_lkcd_environment_v8(LKCD_DUMP_HEADER_ONLY);
 		break;
         }

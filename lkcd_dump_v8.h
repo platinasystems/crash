@@ -193,6 +193,9 @@ typedef struct _dump_header_s {
 	/* any additional flags */
 	uint32_t             dh_dump_device;
 
+	/* size of dump buffer -- only in v9 dumps so we don't declare it here */
+	/* uint64_t          dh_dump_buffer_size; */
+
 } __attribute__((packed)) dump_header_t;
 
 /*

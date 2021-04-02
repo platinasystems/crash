@@ -320,6 +320,7 @@ x86_64_cpu_pda_init(void)
 	MEMBER_OFFSET_INIT(x8664_pda_irqstackptr, "x8664_pda", "irqstackptr");
 	MEMBER_OFFSET_INIT(x8664_pda_level4_pgt, "x8664_pda", "level4_pgt");
 	MEMBER_OFFSET_INIT(x8664_pda_cpunumber, "x8664_pda", "cpunumber");
+	MEMBER_OFFSET_INIT(x8664_pda_me, "x8664_pda", "me");
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 

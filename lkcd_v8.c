@@ -43,6 +43,7 @@ lkcd_dump_init_v8(FILE *fp, int fd, char *dumpfile)
 	int dump_index_created = 0;
 	static char dumpfile_index_name[128];
 	int ifd;
+	uint64_t dh_dump_buffer_size;
 
 	lkcd->fd = fd;
 	lkcd->fp = fp;
@@ -55,7 +56,10 @@ lkcd_dump_init_v8(FILE *fp, int fd, char *dumpfile)
 	if (read(lkcd->fd, dh, sizeof(dump_header_t)) !=
 	    sizeof(dump_header_t))
 		return FALSE;
-
+	if ((dh->dh_version & LKCD_DUMP_VERSION_NUMBER_MASK) == LKCD_DUMP_V9)
+	    if (read(lkcd->fd, &dh_dump_buffer_size, sizeof(dh_dump_buffer_size)) !=
+		sizeof(dh_dump_buffer_size))
+		    return FALSE;
 	
         lkcd->dump_page = dp;
         lkcd->dump_header = dh;
@@ -318,6 +322,9 @@ dump_header_only:
         case LKCD_DUMP_V8:
                 lkcd_print("%sLKCD_DUMP_V8", others++ ? "|" : "");
 		break;
+        case LKCD_DUMP_V9:
+                lkcd_print("%sLKCD_DUMP_V9", others++ ? "|" : "");
+		break;
         }
         if (dh->dh_version & LKCD_DUMP_MCLX_V0)
                 lkcd_print("%sLKCD_DUMP_MCLX_V0", others++ ? "|" : "");
@@ -452,6 +459,7 @@ mclx_cache_page_headers_v8(void)
 	uint64_t physaddr1, physaddr2, page_headers[MCLX_PAGE_HEADERS];
 	dump_page_t dump_page, *dp;
 	ulong granularity;
+	size_t dh_size;
 
 	if (LKCD_DEBUG(2))  /* dump headers have all been read */
 		return;
@@ -459,7 +467,11 @@ mclx_cache_page_headers_v8(void)
 	if (lkcd->total_pages > MEGABYTES(1))/* greater than 4G not supported */
 		return;
 
-        if (lseek(lkcd->fd, sizeof(dump_header_t), SEEK_SET) == -1)
+	dh_size = sizeof(dump_header_t);
+	if ((((dump_header_t *)lkcd->dump_header)->dh_version &
+	     LKCD_DUMP_VERSION_NUMBER_MASK) == LKCD_DUMP_V9)
+		dh_size += sizeof(uint64_t);
+        if (lseek(lkcd->fd, dh_size, SEEK_SET) == -1)
 		return;
 
         if (read(lkcd->fd, page_headers, MCLX_V1_PAGE_HEADER_CACHE) !=

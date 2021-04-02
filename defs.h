@@ -47,7 +47,7 @@
 #include <sys/wait.h>
 #include <sys/time.h>
 
-#define BASELEVEL_REVISION  "3.10"
+#define BASELEVEL_REVISION  "4.0"
 
 #undef TRUE
 #undef FALSE
@@ -59,7 +59,7 @@
 #define NR_CPUS  (32)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (32)
+#define NR_CPUS  (128)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -1123,6 +1123,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
         long zone_struct_name;
         long zone_struct_size;
 	long zone_struct_memsize;
+	long zone_struct_zone_start_pfn;
         long zone_struct_zone_start_paddr;
         long zone_struct_zone_start_mapnr;
         long zone_struct_zone_mem_map;
@@ -1210,6 +1211,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long x8664_pda_irqstackptr;
 	long x8664_pda_level4_pgt;
 	long x8664_pda_cpunumber;
+	long x8664_pda_me;
 	long tss_struct_ist;
 };
 
@@ -3559,6 +3561,7 @@ uint64_t get_dp_address_v8(void);
 #define LKCD_DUMP_V6                  (0x6)  /* DUMP_VERSION_NUMBER */
 #define LKCD_DUMP_V7                  (0x7)  /* DUMP_VERSION_NUMBER */
 #define LKCD_DUMP_V8                  (0x8)  /* DUMP_VERSION_NUMBER */
+#define LKCD_DUMP_V9                  (0x9)  /* DUMP_VERSION_NUMBER */
 
 #define LKCD_DUMP_VERSION_NUMBER_MASK (0xf)
 #define LKCD_DUMP_RAW                 (0x1)   /* DUMP_[DH_]RAW */ 

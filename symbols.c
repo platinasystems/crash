@@ -6291,6 +6291,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(zone_struct_size));
 	fprintf(fp, "           zone_struct_memsize: %ld\n",
                 OFFSET(zone_struct_memsize));
+	fprintf(fp, "    zone_struct_zone_start_pfn: %ld\n",
+                OFFSET(zone_struct_zone_start_pfn));
 	fprintf(fp, "  zone_struct_zone_start_paddr: %ld\n",
                 OFFSET(zone_struct_zone_start_paddr));
 	fprintf(fp, "  zone_struct_zone_start_mapnr: %ld\n",
@@ -6471,6 +6473,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(x8664_pda_irqstackptr));
 	fprintf(fp, "          x8664_pda_level4_pgt: %ld\n",
 		OFFSET(x8664_pda_level4_pgt));
+	fprintf(fp, "                  x8664_pda_me: %ld\n",
+		OFFSET(x8664_pda_me));
 
 	fprintf(fp, "                tss_struct_ist: %ld\n", 
 		OFFSET(tss_struct_ist));
