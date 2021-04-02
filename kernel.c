@@ -1377,7 +1377,7 @@ cmd_dis(void)
 			break;
 
 		case 'l':
-			if (GDB_PATCHED())
+			if (NO_LINE_NUMBERS())
 				error(INFO, "line numbers are not available\n");
 			else
 				req->flags |= GNU_PRINT_LINE_NUMBERS;
@@ -2040,7 +2040,7 @@ cmd_bt(void)
 			break;
 			
 		case 'l':
-			if (GDB_PATCHED())
+			if (NO_LINE_NUMBERS())
 				error(INFO, "line numbers are not available\n");
 			else
 				bt->flags |= BT_LINE_NUMBERS;
@@ -4912,7 +4912,7 @@ dump_sys_call_table(char *spec, int cnt)
 #else
 	ulong *sys_call_table, *sct, sys_ni_syscall, addr;
 #endif
-	if (GDB_PATCHED())
+	if (NO_LINE_NUMBERS())
 		error(INFO, "line numbers are not available\n"); 
 
 	NR_syscalls = get_NR_syscalls(&confirmed);
@@ -5139,6 +5139,16 @@ dump_kernel_table(int verbose)
 	if (kt->flags & IRQ_DESC_TREE)
 		fprintf(fp, "%sIRQ_DESC_TREE", others++ ? "|" : "");
 	fprintf(fp, ")\n");
+
+        others = 0;
+        fprintf(fp, "        flags2: %llx %s", kt->flags2,
+		kt->flags2 ? " \n  (" : " (unused");
+	if (kt->flags2 & RELOC_AUTO)
+		fprintf(fp, "%sRELOC_AUTO", others++ ? "|" : "");
+	if (kt->flags2 & KASLR)
+		fprintf(fp, "%sKASLR", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
         fprintf(fp, "    stext_init: %lx\n", kt->stext_init);
@@ -5196,8 +5206,12 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "   gcc_version: %d.%d.%d\n", kt->gcc_version[0], 
 		kt->gcc_version[1], kt->gcc_version[2]);
 	fprintf(fp, "     BUG_bytes: %d\n", kt->BUG_bytes);
-	fprintf(fp, "      relocate: %lx\n", kt->relocate);
-	fprintf(fp, " runq_siblings: %d\n", kt->runq_siblings);
+	fprintf(fp, "      relocate: %lx", kt->relocate);
+	if (kt->flags2 & KASLR)
+		fprintf(fp, "  (KASLR offset: %lx / %ldMB)", 
+			kt->relocate * -1,
+			(kt->relocate * -1) >> 20);
+	fprintf(fp, "\n runq_siblings: %d\n", kt->runq_siblings);
 	fprintf(fp, "  __rq_idx[NR_CPUS]: ");
 	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
 	for (i = 0; i < nr_cpus; i++) {
@@ -8980,11 +8994,23 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 			fprintf(fp, "OFFSET(log.ts_nsec): %ld\n", 
 				vmc->log_ts_nsec_OFFSET);
 		free(string);
+	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.ts_nsec)"))) {
+		vmc->log_ts_nsec_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(printk_log.ts_nsec): %ld\n", 
+				vmc->log_ts_nsec_OFFSET);
+		free(string);
 	}
 	if ((string = vmcoreinfo_read_string("OFFSET(log.len)"))) {
 		vmc->log_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(log.len): %ld\n", 
+				vmc->log_len_OFFSET);
+		free(string);
+	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.len)"))) {
+		vmc->log_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(printk_log.len): %ld\n", 
 				vmc->log_len_OFFSET);
 		free(string);
 	}
@@ -8994,6 +9020,12 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 			fprintf(fp, "OFFSET(log.text_len): %ld\n", 
 				vmc->log_text_len_OFFSET);
 		free(string);
+	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.text_len)"))) {
+		vmc->log_text_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(printk_log.text_len): %ld\n", 
+				vmc->log_text_len_OFFSET);
+		free(string);
 	}
 	if ((string = vmcoreinfo_read_string("OFFSET(log.dict_len)"))) {
 		vmc->log_dict_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
@@ -9001,11 +9033,22 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 			fprintf(fp, "OFFSET(log.dict_len): %ld\n", 
 				vmc->log_dict_len_OFFSET);
 		free(string);
+	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.dict_len)"))) {
+		vmc->log_dict_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "OFFSET(printk_log.dict_len): %ld\n", 
+				vmc->log_dict_len_OFFSET);
+		free(string);
 	}
 	if ((string = vmcoreinfo_read_string("SIZE(log)"))) {
 		vmc->log_SIZE = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SIZE(log): %ld\n", vmc->log_SIZE);
+		free(string);
+	} else if ((string = vmcoreinfo_read_string("SIZE(printk_log)"))) {
+		vmc->log_SIZE = dtol(string, RETURN_ON_ERROR, NULL);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "SIZE(printk_log): %ld\n", vmc->log_SIZE);
 		free(string);
 	}
 

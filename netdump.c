@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -118,6 +118,7 @@ is_netdump(char *file, ulong source_query)
         Elf64_Off offset64;
 	ulong tmp_flags;
 	char *tmp_elf_header;
+	char *tmpstring;
 
 	if ((fd = open(file, O_RDWR)) < 0) {
         	if ((fd = open(file, O_RDONLY)) < 0) {
@@ -409,6 +410,18 @@ is_netdump(char *file, ulong source_query)
 		nd->flags |= KDUMP_LOCAL;
 		pc->flags |= KDUMP;
 		get_log_from_vmcoreinfo(file, vmcoreinfo_read_string);
+	}
+
+	/*
+	 * We may need the _stext_SYMBOL from the vmcore_info to adjust for
+	 * kaslr and we may not have gotten it elsewhere.
+	 */
+	if (source_query == KDUMP_LOCAL) {
+		if ((tmpstring = vmcoreinfo_read_string("SYMBOL(_stext)"))) {
+			kt->vmcoreinfo._stext_SYMBOL =
+				htol(tmpstring, RETURN_ON_ERROR, NULL);
+			free(tmpstring);
+		}
 	}
 
 	return nd->header_size;
@@ -3470,7 +3483,10 @@ read_proc_kcore(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	 *  and for lowmem access for 32-bit architectures.
 	 */
 	offset = UNINITIALIZED;
-	kvaddr = (ulong)paddr | machdep->kvbase;
+	if (machine_type("ARM64"))
+		kvaddr =  PTOV((ulong)paddr);
+	else
+		kvaddr = (ulong)paddr | machdep->kvbase;
 	readcnt = cnt;
 
 	switch (pkd->flags & (KCORE_ELF32|KCORE_ELF64)) 
