@@ -874,6 +874,8 @@ netdump_memory_dump(FILE *fp)
 			    nd->xen_kdump_data->cache_hits * 100 / nd->xen_kdump_data->accesses);
 		netdump_print("\n               p2m_frames: %d\n", 
 			nd->xen_kdump_data->p2m_frames);
+		netdump_print("           xen_phys_start: %lx\n", 
+			nd->xen_kdump_data->xen_phys_start);
 		netdump_print("       p2m_mfn_frame_list: %lx\n", 
 			nd->xen_kdump_data->p2m_mfn_frame_list);
 		for (i = 0; i < nd->xen_kdump_data->p2m_frames; i++)
@@ -1521,6 +1523,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 				 */
 				if (!nd->xen_kdump_data->p2m_mfn)
 					nd->xen_kdump_data->p2m_mfn = *(uptr+(words-1));
+				if (words > 9 && !nd->xen_kdump_data->xen_phys_start)
+					nd->xen_kdump_data->xen_phys_start = *(uptr+(words-2));
 			}
 		}
 		break;
@@ -1724,6 +1728,8 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 				 */
 	                        if (!nd->xen_kdump_data->p2m_mfn)
 	                        	nd->xen_kdump_data->p2m_mfn = *(up+(words-1));
+				if (words > 9 && !nd->xen_kdump_data->xen_phys_start)
+					nd->xen_kdump_data->xen_phys_start = *(up+(words-2));
 			}
 		}
                 break;
@@ -2090,10 +2096,16 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 		 * panic task. Whereas in kdump, regs are captured for all 
 		 * CPUs if they responded to an IPI.
 		 */
-                if (nd->num_prstatus_notes > 1)
+                if (nd->num_prstatus_notes > 1) {
+			if (bt->tc->processor >= nd->num_prstatus_notes)
+				error(FATAL, 
+		          	    "cannot determine NT_PRSTATUS ELF note "
+				    "for %s task: %lx\n", 
+					(bt->task == tt->panic_task) ?
+					"panic" : "active", bt->task);	
                         note = (Elf64_Nhdr *)
                                 nd->nt_prstatus_percpu[bt->tc->processor];
-		else
+		} else
 			note = (Elf64_Nhdr *)nd->nt_prstatus;
 
 		len = sizeof(Elf64_Nhdr);
@@ -2311,4 +2323,23 @@ is_sadump_xen(void)
 	}
 
 	return FALSE;
+}
+
+void
+set_xen_phys_start(char *arg)
+{
+	ulong value;
+	int errflag = 0;
+
+	value = htol(arg, RETURN_ON_ERROR|QUIET, &errflag);
+	if (!errflag)
+		xen_kdump_data.xen_phys_start = value;
+	else 
+		error(WARNING, "invalid xen_phys_start argument: %s\n", arg);
+}
+
+ulong
+xen_phys_start(void)
+{
+	return nd->xen_kdump_data->xen_phys_start;
 }

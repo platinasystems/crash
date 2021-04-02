@@ -208,6 +208,9 @@ task_init(void)
         MEMBER_OFFSET_INIT(task_struct_processor, "task_struct", "processor");
         MEMBER_OFFSET_INIT(task_struct_p_pptr, "task_struct", "p_pptr");
         MEMBER_OFFSET_INIT(task_struct_parent, "task_struct", "parent");
+	if (INVALID_MEMBER(task_struct_parent))
+		MEMBER_OFFSET_INIT(task_struct_parent, "task_struct", 
+			"real_parent");
         MEMBER_OFFSET_INIT(task_struct_has_cpu, "task_struct", "has_cpu");
         MEMBER_OFFSET_INIT(task_struct_cpus_runnable,  
 		"task_struct", "cpus_runnable");

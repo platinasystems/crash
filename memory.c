@@ -133,7 +133,9 @@ static void display_memory(ulonglong, long, ulong, int);
 static void search(ulong, ulong, ulong, int, ulong *, int);
 static int next_upage(struct task_context *, ulong, ulong *);
 static int next_kpage(ulong, ulong *);
-static ulong next_vmlist_vaddr(struct meminfo *, ulong);
+static ulong last_vmalloc_address(void);
+static ulong next_vmlist_vaddr(ulong);
+static int next_identity_mapping(ulong, ulong *);
 static int vm_area_page_dump(ulong, ulong, ulong, ulong, void *, 
 	struct reference *);
 static int dump_swap_info(ulong, ulong *, ulong *);
@@ -11029,6 +11031,8 @@ cmd_search(void)
 				meminfo.flags = (ADDRESS_SPECIFIED|GET_HIGHEST);
 				dump_vmlist(&meminfo);
 				end = meminfo.retval;
+				if (end < start)
+					end = (ulong)(-1);
 			}
 			break;
 		}
@@ -11196,10 +11200,12 @@ next_upage(struct task_context *tc, ulong vaddr, ulong *nextvaddr)
  *  that is equal to or comes after the passed-in address.
  */
 static ulong
-next_vmlist_vaddr(struct meminfo *mi, ulong vaddr)
+next_vmlist_vaddr(ulong vaddr)
 {
 	ulong i, count;
+	struct meminfo meminfo, *mi;
 
+	mi = &meminfo;
 	BZERO(mi, sizeof(struct meminfo));
 
         mi->flags = GET_VMLIST_COUNT;
@@ -11230,17 +11236,12 @@ next_vmlist_vaddr(struct meminfo *mi, ulong vaddr)
 
 /*
  *  Return the next kernel virtual address page that comes after
- *  the passed-in address.
+ *  the passed-in, untranslatable, address.
  */
 static int
 next_kpage(ulong vaddr, ulong *nextvaddr)
 {
-        int n;
-        ulong paddr, vaddr_orig, node_size;
-        struct node_table *nt;
-        ulonglong pstart, pend;
-	ulong vmalloc_limit;
-	struct meminfo meminfo;
+        ulong vaddr_orig;
 
 	vaddr_orig = vaddr;
 	vaddr = VIRTPAGEBASE(vaddr) + PAGESIZE();  /* first possible page */
@@ -11248,16 +11249,11 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
         if (vaddr < vaddr_orig)  /* wrapped back to zero? */
                 return FALSE;
 
-        meminfo.memtype = KVADDR;
-        meminfo.spec_addr = 0;
-        meminfo.flags = (ADDRESS_SPECIFIED|GET_HIGHEST);
-        dump_vmlist(&meminfo);
-        vmalloc_limit = meminfo.retval;
-
 	if (IS_VMALLOC_ADDR(vaddr_orig)) {
-		if (IS_VMALLOC_ADDR(vaddr) && (vaddr < vmalloc_limit)) {
+		if (IS_VMALLOC_ADDR(vaddr) && 
+		    (vaddr < last_vmalloc_address())) {
 			if (machine_type("X86_64")) 
-				vaddr = next_vmlist_vaddr(&meminfo, vaddr);
+				vaddr = next_vmlist_vaddr(vaddr);
 			*nextvaddr = vaddr;
 			return TRUE;
 		}
@@ -11270,26 +11266,8 @@ next_kpage(ulong vaddr, ulong *nextvaddr)
 		return FALSE;	
 	}
 
-	paddr = VTOP(vaddr);
-
-        for (n = 0; n < vt->numnodes; n++) {
-                nt = &vt->node_table[n];
-                if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
-                        node_size = vt->max_mapnr;
-                else
-	                node_size = nt->size;
-
-                pstart = nt->start_paddr;
-                pend = pstart + ((ulonglong)node_size * PAGESIZE());
-
-                if ((paddr < pstart) || (paddr >= pend))
-                        continue;
-                /*
-                 *  We're in the physical range.
-                 */
-		*nextvaddr = vaddr;
+	if (next_identity_mapping(vaddr, nextvaddr))
                 return TRUE;
-        }
 
 	if (vt->vmalloc_start > vaddr) {
 		*nextvaddr = vt->vmalloc_start;
@@ -12383,6 +12361,77 @@ first_vmalloc_address(void)
 
         return addr;
 }
+
+/*
+ *  Return the current vmalloc address limit, storing it 
+ *  if it's a dumpfile.
+ */
+
+static ulong
+last_vmalloc_address(void)
+{
+	struct meminfo meminfo;
+	static ulong vmalloc_limit = 0;
+
+	if (!vmalloc_limit) {
+		BZERO(&meminfo, sizeof(struct meminfo));
+		meminfo.memtype = KVADDR;
+		meminfo.spec_addr = 0;
+		meminfo.flags = (ADDRESS_SPECIFIED|GET_HIGHEST);
+		dump_vmlist(&meminfo);
+		vmalloc_limit = meminfo.retval;
+	}
+
+	return vmalloc_limit;
+}
+
+/*
+ *  Determine whether an identity-mapped virtual address
+ *  refers to an existant physical page, and if not bump
+ *  it up to the next node.
+ */
+static int
+next_identity_mapping(ulong vaddr, ulong *nextvaddr)
+{
+	int n;
+        struct node_table *nt;
+        ulonglong paddr, pstart, pend;
+	ulong node_size;
+
+	paddr = VTOP(vaddr);
+
+        for (n = 0; n < vt->numnodes; n++) {
+                nt = &vt->node_table[n];
+                if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
+                        node_size = vt->max_mapnr;
+                else
+	                node_size = nt->size;
+
+                pstart = nt->start_paddr;
+                pend = pstart + ((ulonglong)node_size * PAGESIZE());
+
+		/*
+		 *  Check the next node.
+		 */
+                if (paddr >= pend)
+			continue;
+		/*
+		 *  Bump up to the next node.
+		 */
+                if (paddr < pstart) {
+			*nextvaddr = PTOV(paddr);
+                        continue;
+		}
+                /*
+                 *  We're in the physical range.
+                 */
+		*nextvaddr = vaddr;
+                return TRUE;
+        }
+
+	return FALSE;
+}
+
 
 /*
  *  Return the L1 cache size in bytes, which can be found stored in the

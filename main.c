@@ -48,6 +48,7 @@ static struct option long_options[] = {
         {"no_ikconfig", 0, 0, 0},
         {"hyper", 0, 0, 0},
 	{"p2m_mfn", required_argument, 0, 0},
+	{"xen_phys_start", required_argument, 0, 0},
 	{"zero_excluded", 0, 0, 0},
 	{"no_panic", 0, 0, 0},
         {"more", 0, 0, 0},
@@ -154,6 +155,9 @@ main(int argc, char **argv)
 
 		        else if (STREQ(long_options[option_index].name, "p2m_mfn")) 
 				xen_kdump_p2m_mfn(optarg);
+
+		        else if (STREQ(long_options[option_index].name, "xen_phys_start")) 
+				set_xen_phys_start(optarg);
 
 		        else if (STREQ(long_options[option_index].name, "zero_excluded")) 
 				*diskdump_flags |= ZERO_EXCLUDED;

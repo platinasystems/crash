@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006 David Anderson
- * Copyright (C) 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -2367,17 +2367,21 @@ parse_cmdline_arg(void)
 static void
 ppc64_paca_init(void)
 {
-#define BITS_FOR_LONG sizeof(ulong)*8
 	int i, cpus, nr_paca;
 	char *cpu_paca_buf;
 	ulong data_offset;
-	ulong cpu_online_map[NR_CPUS/BITS_FOR_LONG];
+	int map;
 
 	if (!symbol_exists("paca"))
 		error(FATAL, "PPC64: Could not find 'paca' symbol\n");
 
-	if (!symbol_exists("cpu_online_map"))
-		error(FATAL, "PPC64: Could not find 'cpu_online_map' symbol\n");
+	if (symbol_exists("cpu_present_map"))
+		map = PRESENT;
+	else if (symbol_exists("cpu_online_map"))
+		map = ONLINE;
+	else
+		error(FATAL, 
+		    "PPC64: cannot find 'cpu_present_map' or 'cpu_online_map' symbols\n");
 
 	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
 		return;
@@ -2397,15 +2401,11 @@ ppc64_paca_init(void)
 		error(FATAL, "Recompile crash with larger NR_CPUS\n");
 	}
 	
-	readmem(symbol_value("cpu_online_map"), KVADDR, &cpu_online_map[0],
-		nr_paca/8, "cpu_online_map", FAULT_ON_ERROR);
-
 	for (i = cpus = 0; i < nr_paca; i++) {
-		div_t val = div(i, BITS_FOR_LONG);
 		/*
-		 * CPU online?
+		 * CPU present (or online)?
 		 */
-		if (!(cpu_online_map[val.quot] & (0x1UL << val.rem)))
+		if (!in_cpu_map(map, i))
 			continue;
 
         	readmem(symbol_value("paca") + (i * SIZE(ppc64_paca)),

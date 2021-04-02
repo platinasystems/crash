@@ -2540,6 +2540,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_S390:
+			if (machine_type_mismatch(file, "S390", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -2570,6 +2575,11 @@ is_kernel(char *file)
 
 		case EM_386:
 			if (machine_type_mismatch(file, "X86", NULL, 0))
+				goto bailout;
+			break;
+
+		case EM_S390:
+			if (machine_type_mismatch(file, "S390X", NULL, 0))
 				goto bailout;
 			break;
 

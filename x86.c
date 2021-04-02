@@ -2846,7 +2846,10 @@ x86_kvtop_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verb
 			*paddr = kvaddr - DIRECTMAP_VIRT_START;
 			return TRUE;
 		}
-		pgd = (ulonglong *)symbol_value("idle_pg_table_l3");
+		if (symbol_exists("idle_pg_table_l3"))
+			pgd = (ulonglong *)symbol_value("idle_pg_table_l3");
+		else
+			pgd = (ulonglong *)symbol_value("idle_pg_table");
 	} else {
 		if (!vt->vmalloc_start) {
 			*paddr = VTOP(kvaddr);
@@ -4965,7 +4968,8 @@ x86_init_hyper(int when)
 		break;
 
 	case PRE_GDB:
-		if (symbol_exists("idle_pg_table_l3")) {
+		if (symbol_exists("create_pae_xen_mappings") ||
+		    symbol_exists("idle_pg_table_l3")) {
                 	machdep->flags |= PAE;
 			PGDIR_SHIFT = PGDIR_SHIFT_3LEVEL;
 			PTRS_PER_PTE = PTRS_PER_PTE_3LEVEL;
