@@ -1,6 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +22,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.19 $ $Date: 2002/01/15 21:24:30 $
+ * CVS: $Revision: 1.13 $ $Date: 2004/04/12 18:57:22 $
  */
 
 #include "defs.h"
@@ -56,6 +58,8 @@ struct net_table *net = &net_table;
 #define NETDEV_INIT       (0x1)
 #define STRUCT_DEVICE     (0x2)
 #define STRUCT_NET_DEVICE (0x4)
+#define SOCK_V1           (0x8)
+#define SOCK_V2           (0x10)
 
 #define	DEV_NAME_MAX	100
 struct devinfo {
@@ -101,26 +105,41 @@ net_init(void)
 	 * renamed to net_device in 2.3, but there may be another struct
 	 * called 'device' so we check for the new one first.
 	 */
-	if (STRUCT_EXISTS("net_device")) {
+	STRUCT_SIZE_INIT(net_device, "net_device");
+
+	if (VALID_STRUCT(net_device)) {
 		net->netdevice = "net_device";
-		net->dev_next = MEMBER_OFFSET("net_device", "next");
-		net->dev_name = MEMBER_OFFSET("net_device", "name");
-		net->dev_type = MEMBER_OFFSET("net_device", "type");
-                net->dev_addr_len = MEMBER_OFFSET("net_device", "addr_len");
-		net->dev_ip_ptr = MEMBER_OFFSET("net_device", "ip_ptr");
-		net->net_device_name_index =
-			get_array_length("net_device.name", NULL);
+		net->dev_next = MEMBER_OFFSET_INIT(net_device_next,
+			"net_device", "next");
+		net->dev_name = MEMBER_OFFSET_INIT(net_device_name, 
+			"net_device", "name");
+		net->dev_type = MEMBER_OFFSET_INIT(net_device_type,
+			"net_device", "type");
+                net->dev_addr_len = MEMBER_OFFSET_INIT(net_device_addr_len,
+			"net_device", "addr_len");
+		net->dev_ip_ptr = MEMBER_OFFSET_INIT(net_device_ip_ptr,
+			"net_device", "ip_ptr");
+		ARRAY_LENGTH_INIT(net->net_device_name_index,
+			net_device_name, "net_device.name", NULL, sizeof(char));
 		net->flags |= (NETDEV_INIT|STRUCT_NET_DEVICE);
-	} else if (STRUCT_EXISTS("device")) {
-		net->netdevice = "device";
-		net->dev_next = MEMBER_OFFSET("device", "next");
-		net->dev_name = MEMBER_OFFSET("device", "name");
-                net->dev_type = MEMBER_OFFSET("device", "type");
-		net->dev_ip_ptr = MEMBER_OFFSET("device", "ip_ptr");
-                net->dev_addr_len = MEMBER_OFFSET("device", "addr_len");
-		net->flags |= (NETDEV_INIT|STRUCT_DEVICE);
 	} else {
-		error(WARNING, "net_init: unknown device type for net device");
+		STRUCT_SIZE_INIT(device, "device");
+		if (VALID_STRUCT(device)) {
+			net->netdevice = "device";
+			net->dev_next = MEMBER_OFFSET_INIT(device_next, 
+				"device", "next");
+			net->dev_name = MEMBER_OFFSET_INIT(device_name, 
+				"device", "name");
+	                net->dev_type = MEMBER_OFFSET_INIT(device_type, 
+				"device", "type");
+			net->dev_ip_ptr = MEMBER_OFFSET_INIT(device_ip_ptr, 
+				"device", "ip_ptr");
+	                net->dev_addr_len = MEMBER_OFFSET_INIT(device_addr_len, 
+				"device", "addr_len");
+			net->flags |= (NETDEV_INIT|STRUCT_DEVICE);
+		} else 
+			error(WARNING, 
+				"net_init: unknown device type for net device");
 	}
 
 	if (net->flags & NETDEV_INIT) {
@@ -128,33 +147,73 @@ net_init(void)
 		MK_TYPE_T(net->dev_type_t, net->netdevice, "type");
 		MK_TYPE_T(net->dev_addr_t, net->netdevice, "addr_len");
 
-		OFFSET(socket_sk) = MEMBER_OFFSET("socket", "sk");
-		OFFSET(neighbour_next) = MEMBER_OFFSET("neighbour", "next");
-        	OFFSET(neighbour_primary_key) = 
-			MEMBER_OFFSET("neighbour", "primary_key");
-        	OFFSET(neighbour_ha) = MEMBER_OFFSET("neighbour", "ha");
-        	OFFSET(neighbour_dev) = MEMBER_OFFSET("neighbour", "dev");
-        	OFFSET(neighbour_nud_state) = 
-			MEMBER_OFFSET("neighbour", "nud_state");
-		OFFSET(neigh_table_hash_buckets) =
-			MEMBER_OFFSET("neigh_table", "hash_buckets");
-		OFFSET(neigh_table_key_len) =
-			MEMBER_OFFSET("neigh_table", "key_len");
+		MEMBER_OFFSET_INIT(socket_sk, "socket", "sk");
+		MEMBER_OFFSET_INIT(neighbour_next, "neighbour", "next");
+        	MEMBER_OFFSET_INIT(neighbour_primary_key,  
+			"neighbour", "primary_key");
+        	MEMBER_OFFSET_INIT(neighbour_ha, "neighbour", "ha");
+        	MEMBER_OFFSET_INIT(neighbour_dev, "neighbour", "dev");
+        	MEMBER_OFFSET_INIT(neighbour_nud_state,  
+			"neighbour", "nud_state");
+		MEMBER_OFFSET_INIT(neigh_table_hash_buckets, 
+			"neigh_table", "hash_buckets");
+		MEMBER_OFFSET_INIT(neigh_table_key_len, 
+			"neigh_table", "key_len");
 
-        	OFFSET(in_device_ifa_list) = 
-			MEMBER_OFFSET("in_device", "ifa_list");
-        	OFFSET(in_ifaddr_ifa_next) = 
-			MEMBER_OFFSET("in_ifaddr", "ifa_next");
-        	OFFSET(in_ifaddr_ifa_address) =
-			MEMBER_OFFSET("in_ifaddr", "ifa_address");
+        	MEMBER_OFFSET_INIT(in_device_ifa_list,  
+			"in_device", "ifa_list");
+        	MEMBER_OFFSET_INIT(in_ifaddr_ifa_next,  
+			"in_ifaddr", "ifa_next");
+        	MEMBER_OFFSET_INIT(in_ifaddr_ifa_address, 
+			"in_ifaddr", "ifa_address");
 
-		SIZE(sock) = STRUCT_SIZE("sock");
-		OFFSET(sock_daddr) = MEMBER_OFFSET("sock", "daddr");
-		OFFSET(sock_rcv_saddr) = MEMBER_OFFSET("sock", "rcv_saddr");
-		OFFSET(sock_dport) = MEMBER_OFFSET("sock", "dport");
-		OFFSET(sock_num) = MEMBER_OFFSET("sock", "num");
-		OFFSET(sock_family) = MEMBER_OFFSET("sock", "family");
-		OFFSET(sock_type) = MEMBER_OFFSET("sock", "type");
+		STRUCT_SIZE_INIT(sock, "sock");
+		MEMBER_OFFSET_INIT(sock_daddr, "sock", "daddr");
+		MEMBER_OFFSET_INIT(sock_rcv_saddr, "sock", "rcv_saddr");
+		MEMBER_OFFSET_INIT(sock_dport, "sock", "dport");
+		MEMBER_OFFSET_INIT(sock_sport, "sock", "sport");
+		MEMBER_OFFSET_INIT(sock_num, "sock", "num");
+		MEMBER_OFFSET_INIT(sock_family, "sock", "family");
+		MEMBER_OFFSET_INIT(sock_type, "sock", "type");
+
+                MEMBER_OFFSET_INIT(sock_family, "sock", "family");
+		if (VALID_MEMBER(sock_family)) {
+                	MEMBER_OFFSET_INIT(sock_daddr, "sock", "daddr");
+                	MEMBER_OFFSET_INIT(sock_rcv_saddr, "sock", "rcv_saddr");
+                	MEMBER_OFFSET_INIT(sock_dport, "sock", "dport");
+                	MEMBER_OFFSET_INIT(sock_sport, "sock", "sport");
+                	MEMBER_OFFSET_INIT(sock_num, "sock", "num");
+                	MEMBER_OFFSET_INIT(sock_type, "sock", "type");
+			net->flags |= SOCK_V1;
+
+		} else {
+			/*
+			 * struct sock {
+        		 *	struct sock_common      __sk_common;
+			 * #define sk_family __sk_common.skc_family
+			 *      ...
+			 */
+			MEMBER_OFFSET_INIT(sock_common_skc_family,
+				"sock_common", "skc_family");
+			MEMBER_OFFSET_INIT(sock_sk_type, "sock", "sk_type");
+			/*
+			 *  struct inet_sock {
+        		 *	struct sock       sk;
+        		 *	struct ipv6_pinfo *pinet6;
+        		 *	struct inet_opt   inet;
+			 *  };
+			 */
+			STRUCT_SIZE_INIT(inet_sock, "inet_sock");
+			STRUCT_SIZE_INIT(socket, "socket");
+			MEMBER_OFFSET_INIT(inet_sock_inet, "inet_sock", "inet");
+			MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_opt", "daddr");
+			MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_opt", 
+				"rcv_saddr");
+			MEMBER_OFFSET_INIT(inet_opt_dport, "inet_opt", "dport");
+			MEMBER_OFFSET_INIT(inet_opt_sport, "inet_opt", "sport");
+			MEMBER_OFFSET_INIT(inet_opt_num, "inet_opt", "num");
+			net->flags |= SOCK_V2;
+		}
 	}	
 }
 
@@ -271,7 +330,7 @@ show_net_devices(void)
 
 	do {
                 fprintf(fp, "%s  ", 
-                    mkstring(buf, flen, CENTER|LJUST|LONG_HEX, MKSTR(next)));
+                    mkstring(buf, flen, CENTER|RJUST|LONG_HEX, MKSTR(next)));
 
 		get_device_name(next, buf);
 		fprintf(fp, "%-6s ", buf);
@@ -307,14 +366,16 @@ dump_arp(void)
 
 	arp_tbl = symbol_value("arp_tbl");
 
-	nhash_buckets = get_array_length("neigh_table.hash_buckets", NULL);
+	nhash_buckets = (i = ARRAY_LENGTH(neigh_table_hash_buckets)) ?
+		i : get_array_length("neigh_table.hash_buckets", 
+			NULL, sizeof(void *));
 	hash_bytes = nhash_buckets * sizeof(*hash_buckets);
 
 	hash_buckets = (ulong *)GETBUF(hash_bytes);
 
-	key_len = readmem(arp_tbl + OFFSET(neigh_table_key_len),
-			  KVADDR, &key_len, sizeof(key_len),
-			  "neigh_table key_len", FAULT_ON_ERROR);
+	readmem(arp_tbl + OFFSET(neigh_table_key_len),
+		KVADDR, &key_len, sizeof(key_len),
+		"neigh_table key_len", FAULT_ON_ERROR);
 
 	readmem(arp_tbl + OFFSET(neigh_table_hash_buckets), 
 		KVADDR, hash_buckets, hash_bytes,
@@ -342,6 +403,7 @@ dump_arp(void)
 static void
 print_neighbour_q(ulong addr, int key_len)
 {
+	int i;
 	ulong	dev;			/* dev address of this struct */
 	unsigned char *ha_buf;		/* buffer for hardware address */
 	uint	ha_size;		/* size of HW address */
@@ -349,7 +411,8 @@ print_neighbour_q(ulong addr, int key_len)
 	struct devinfo dinfo;
 	unsigned char state;		/* state of ARP entry */
 
-	ha_size = get_array_length("neighbour.ha", NULL);
+	ha_size = (i = ARRAY_LENGTH(neighbour_ha)) ?
+		i : get_array_length("neighbour.ha", NULL, sizeof(char));
 	ha_buf = (unsigned char *)GETBUF(ha_size);
 
 	while (addr) {
@@ -449,7 +512,7 @@ get_netdev_info(ulong devaddr, struct devinfo *dip)
 	get_device_name(devaddr, dip->dev_name);
 
 	readmem(devaddr + net->dev_type, KVADDR, 
-		&dev_type, sizeof(&dev_type), net->dev_type_t, FAULT_ON_ERROR);
+		&dev_type, sizeof(dev_type), net->dev_type_t, FAULT_ON_ERROR);
 
 	dip->dev_type = dev_type;
 
@@ -536,21 +599,46 @@ get_sock_info(ulong sock, char *buf)
 	uint32_t daddr, rcv_saddr;
 	uint16_t dport, sport;
 	ushort num, family, type;
-	char *sockbuf;
+	char *sockbuf, *inet_sockbuf;
 
 	BZERO(buf, BUFSIZE);
-	sockbuf = GETBUF(SIZE(sock));
+	sockbuf = inet_sockbuf = NULL;
 
-        readmem(sock, KVADDR, sockbuf, SIZE(sock), 
-		"sock buffer", FAULT_ON_ERROR);
+	switch (net->flags & (SOCK_V1|SOCK_V2))
+	{
+	case SOCK_V1:
+		sockbuf = GETBUF(SIZE(sock));
+	        readmem(sock, KVADDR, sockbuf, SIZE(sock), 
+			"sock buffer", FAULT_ON_ERROR);
+	
+		daddr = UINT(sockbuf + OFFSET(sock_daddr));
+		rcv_saddr = UINT(sockbuf + OFFSET(sock_rcv_saddr));
+		dport = USHORT(sockbuf + OFFSET(sock_dport));
+		sport = USHORT(sockbuf + OFFSET(sock_sport));
+		num = USHORT(sockbuf + OFFSET(sock_num));
+		family = USHORT(sockbuf + OFFSET(sock_family));
+		type = USHORT(sockbuf + OFFSET(sock_type));
+		break;
 
-	daddr = UINT(sockbuf + OFFSET(sock_daddr));
-	rcv_saddr = UINT(sockbuf + OFFSET(sock_rcv_saddr));
-	dport = USHORT(sockbuf + OFFSET(sock_dport));
-	sport = USHORT(sockbuf + MEMBER_OFFSET("sock", "sport"));
-	num = USHORT(sockbuf + OFFSET(sock_num));
-	family = USHORT(sockbuf + OFFSET(sock_family));
-	type = USHORT(sockbuf + OFFSET(sock_type));
+	case SOCK_V2:
+		inet_sockbuf = GETBUF(SIZE(inet_sock));
+	        readmem(sock, KVADDR, inet_sockbuf, SIZE(inet_sock), 
+			"inet_sock buffer", FAULT_ON_ERROR);
+
+		daddr = UINT(inet_sockbuf + OFFSET(inet_sock_inet) +
+			OFFSET(inet_opt_daddr));
+		rcv_saddr = UINT(inet_sockbuf + OFFSET(inet_sock_inet) +
+			OFFSET(inet_opt_rcv_saddr));
+		dport = USHORT(inet_sockbuf + OFFSET(inet_sock_inet) +
+			OFFSET(inet_opt_dport));
+		sport = USHORT(inet_sockbuf + OFFSET(inet_sock_inet) +
+			OFFSET(inet_opt_sport));
+		num = USHORT(inet_sockbuf + OFFSET(inet_sock_inet) +
+			OFFSET(inet_opt_num));
+		family = USHORT(inet_sockbuf + OFFSET(sock_common_skc_family));
+		type = USHORT(inet_sockbuf + OFFSET(sock_sk_type));
+		break;
+	}
 
 	switch (family)
 	{
@@ -652,7 +740,10 @@ get_sock_info(ulong sock, char *buf)
 		}
 	}
 
-	FREEBUF(sockbuf);
+	if (sockbuf)
+		FREEBUF(sockbuf);
+	if (inet_sockbuf)
+		FREEBUF(inet_sockbuf);
 }
 
 
@@ -799,6 +890,10 @@ dump_net_table(void)
 		fprintf(fp, "%sSTRUCT_DEVICE", others++ ? "|" : "");
 	if (net->flags & STRUCT_NET_DEVICE)
 		fprintf(fp, "%sSTRUCT_NET_DEVICE", others++ ? "|" : "");
+	if (net->flags & SOCK_V1)
+		fprintf(fp, "%sSOCK_V1", others++ ? "|" : "");
+	if (net->flags & SOCK_V2)
+		fprintf(fp, "%sSOCK_V2", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "            netdevice: \"%s\"\n", net->netdevice); 
@@ -1009,7 +1104,7 @@ sym_socket_dump(ulong file,
     	ulong dentry = 0, inode = 0,
         struct_socket = 0;
 	ulong sock = 0;
-	char *file_buf, *dentry_buf, *inode_buf;
+	char *file_buf, *dentry_buf, *inode_buf, *socket_buf;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char *socket_hdr = BITS32() ? socket_hdr_32 : socket_hdr_64;
@@ -1048,9 +1143,28 @@ sym_socket_dump(ulong file,
     	if (!S_ISSOCK(mode))
         	return FALSE;
 
-    	struct_socket = inode + OFFSET(inode_u);
+	/* 
+	 * 2.6 (SOCK_V2) -- socket is inode addr minus sizeof(struct socket) 
+	 */
+	switch (net->flags & (SOCK_V1|SOCK_V2))  
+	{
+	case SOCK_V1:
+    		struct_socket = inode + OFFSET(inode_u);
+		sock = ULONG(inode_buf + OFFSET(inode_u) + OFFSET(socket_sk));
+		break;
 
-	sock = ULONG(inode_buf + OFFSET(inode_u) + OFFSET(socket_sk));
+	case SOCK_V2:
+		if (!VALID_SIZE(inet_sock)) 
+			error(FATAL, 
+              	           "cannot determine what an inet_sock structure is\n");
+    		struct_socket = inode - SIZE(socket);
+		socket_buf = GETBUF(SIZE(socket));
+                readmem(struct_socket, KVADDR, socket_buf,
+                        SIZE(socket), "socket buffer", FAULT_ON_ERROR);
+		sock = ULONG(socket_buf + OFFSET(socket_sk));
+		FREEBUF(socket_buf);
+		break;
+	} 
 
 	if (NET_REFERENCE_CHECK(ref)) {
 		if ((ref->cmdflags & NET_REF_HEXNUM) &&
@@ -1086,18 +1200,36 @@ sym_socket_dump(ulong file,
 		fprintf(fp, "%sFD  %s  %s\n", sockets_found ? "\n" : "",
 			mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SOCKET"),
 			mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "SOCK"));
-		fprintf(fp, "%2d  %lx  %lx\n\n", fd, struct_socket, sock);
+		fprintf(fp, "%2d  %s  %s\n\n",
+			fd, 
+			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
+			MKSTR(struct_socket)),
+			mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX, 
+			MKSTR(sock)));
+
+    		dump_struct("socket", struct_socket, 0);
+		switch (net->flags & (SOCK_V1|SOCK_V2))  
+		{
+		case SOCK_V1:
+    			dump_struct("sock", sock, 0);
+			break;
+		case SOCK_V2:
+			dump_struct("inet_sock", sock, 0);
+			break;
+		}
 		break;
 
 	case s_FLAG:
 		if (!sockets_found) {
 			fprintf(fp, "%s\n", socket_hdr);
 		}
-		fprintf(fp, "%2d%s%lx%s%lx%s", 
+		fprintf(fp, "%2d%s%s%s%s%s",
 			fd, space(MINSPACE), 
-			struct_socket, 
+			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
+			MKSTR(struct_socket)),
 			space(MINSPACE),
-			sock,
+			mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX,
+                        MKSTR(sock)),
 		        space(MINSPACE)); 
 
 		buf1[0] = NULLCHAR;
@@ -1110,8 +1242,5 @@ sym_socket_dump(ulong file,
 		error(FATAL, "illegal flag: %lx\n", flag);
 	}
 
-    	dump_struct("socket", struct_socket, 0);
-    	dump_struct("sock", sock, 0);
-	
     	return TRUE;
 }

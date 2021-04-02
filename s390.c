@@ -1,6 +1,8 @@
 /* s390.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,23 +14,21 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.13 $ $Date: 2002/01/23 17:44:06 $
+ * CVS: $Revision: 1.22 $ $Date: 2004/05/06 19:41:58 $
  */
 #ifdef S390 
 #include "defs.h"
 
-static int s390_kvtop(struct task_context *, ulong, ulong *, int);
+static int s390_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong s390_lowcore(struct task_context *, ulong, int);
-static int s390_uvtop(struct task_context *, ulong, ulong *, int);
+static int s390_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong s390_vmalloc_start(void);
 static int s390_is_task_addr(ulong);
-static int s390_verify_symbol(const char *, ulong);
+static int s390_verify_symbol(const char *, ulong, char type);
 static ulong s390_get_task_pgd(ulong);
-static int s390_translate_pte(ulong, ulong *);
-static ulong s390_SWP_TYPE(ulong);
-static ulong s390_SWP_OFFSET(ulong);
+static int s390_translate_pte(ulong, void *, ulonglong);
 static ulong s390_processor_speed(void);
-static void s390_eframe_search(struct bt_info *);
+static int s390_eframe_search(struct bt_info *);
 static void s390_back_trace_cmd(struct bt_info *);
 static void s390_back_trace(struct gnu_request *, struct bt_info *);
 static void get_s390_frame(struct bt_info *, ulong *, ulong *);
@@ -36,7 +36,6 @@ static void s390_print_stack_entry(int,struct gnu_request *,
 	ulong, char *, struct bt_info *);
 static void s390_exception_frame(ulong, struct bt_info *, struct gnu_request *);
 static void s390_dump_irq(int);
-static int s390_nr_irqs(void);
 static ulong s390_get_pc(struct bt_info *);
 static ulong s390_get_sp(struct bt_info *);
 static void s390_get_stack_frame(struct bt_info *, ulong *, ulong *);
@@ -45,6 +44,7 @@ static void s390_cmd_mach(void);
 static int s390_get_smp_cpus(void);
 static void s390_display_machine_stats(void);
 static void s390_dump_line_number(ulong);
+static struct line_number_hook s390_line_number_hooks[];
 static int s390_is_kvaddr(ulong);
 static int s390_is_uvaddr(ulong, struct task_context *);
 void s390_compiler_warning_stub(void);
@@ -65,7 +65,7 @@ s390_init(int when)
                 machdep->pagesize = memory_page_size();
                 machdep->pageshift = ffs(machdep->pagesize) - 1;
                 machdep->pageoffset = machdep->pagesize - 1;
-                machdep->pagemask = ~(machdep->pageoffset);
+                machdep->pagemask = ~((ulonglong)machdep->pageoffset);
 		machdep->stacksize = machdep->pagesize * 2;
                 if ((machdep->pgd = (char *)malloc(SEGMENT_TABLE_SIZE)) == NULL)
                         error(FATAL, "cannot malloc pgd space.");
@@ -75,6 +75,8 @@ s390_init(int when)
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = generic_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		break;
 
 	case PRE_GDB:
@@ -88,21 +90,23 @@ s390_init(int when)
 	        machdep->uvtop = s390_uvtop;
 	        machdep->kvtop = s390_kvtop;
 	        machdep->get_task_pgd = s390_get_task_pgd;
-		machdep->nr_irqs = s390_nr_irqs;
 		machdep->get_stack_frame = s390_get_stack_frame;
 		machdep->get_stackbase = generic_get_stackbase;
 		machdep->get_stacktop = generic_get_stacktop;
 		machdep->translate_pte = s390_translate_pte;
 		machdep->memory_size = generic_memory_size;
-		machdep->SWP_TYPE = s390_SWP_TYPE;
-		machdep->SWP_OFFSET = s390_SWP_OFFSET;
 		machdep->is_task_addr = s390_is_task_addr;
 		machdep->dis_filter = s390_dis_filter;
 		machdep->cmd_mach = s390_cmd_mach;
 		machdep->get_smp_cpus = s390_get_smp_cpus;
+		machdep->line_number_hooks = s390_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+                machdep->init_kernel_pgd = NULL;
+        	vt->flags |= COMMON_VADDR;
 		break;
 
 	case POST_GDB:
+		machdep->nr_irqs = 0;  /* TBD */
 		machdep->vmalloc_start = s390_vmalloc_start;
 		machdep->dump_irq = s390_dump_irq;
 		machdep->hz = HZ;
@@ -114,7 +118,7 @@ s390_init(int when)
 }
 
 void
-s390_dump_machdep_table(void)
+s390_dump_machdep_table(ulong arg)
 {
         int others; 
  
@@ -130,7 +134,7 @@ s390_dump_machdep_table(void)
 	fprintf(fp, "  identity_map_base: %lx\n", machdep->kvbase);
         fprintf(fp, "           pagesize: %d\n", machdep->pagesize);
         fprintf(fp, "          pageshift: %d\n", machdep->pageshift);
-        fprintf(fp, "           pagemask: %lx\n", machdep->pagemask);
+        fprintf(fp, "           pagemask: %llx\n", machdep->pagemask);
         fprintf(fp, "         pageoffset: %lx\n", machdep->pageoffset);
 	fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
         fprintf(fp, "                 hz: %d\n", machdep->hz);
@@ -138,6 +142,7 @@ s390_dump_machdep_table(void)
         fprintf(fp, "            memsize: %lld (0x%llx)\n", 
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
+	fprintf(fp, "            nr_irqs: %d\n", machdep->nr_irqs);
         fprintf(fp, "      eframe_search: s390_eframe_search()\n");
         fprintf(fp, "         back_trace: s390_back_trace_cmd()\n");
         fprintf(fp, "    processor_speed: s390_processor_speed()\n");
@@ -145,15 +150,12 @@ s390_dump_machdep_table(void)
         fprintf(fp, "              kvtop: s390_kvtop()\n");
         fprintf(fp, "       get_task_pgd: s390_get_task_pgd()\n");
 	fprintf(fp, "           dump_irq: s390_dump_irq()\n");
-	fprintf(fp, "            nr_irqs: s390_nr_irqs()\n");
         fprintf(fp, "    get_stack_frame: s390_get_stack_frame()\n");
         fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
         fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
         fprintf(fp, "      translate_pte: s390_translate_pte()\n");
 	fprintf(fp, "        memory_size: generic_memory_size()\n");
 	fprintf(fp, "      vmalloc_start: s390_vmalloc_start()\n");
-	fprintf(fp, "           SWP_TYPE: s390_SWP_TYPE()\n");
-	fprintf(fp, "         SWP_OFFSET: s390_SWP_OFFSET()\n");
 	fprintf(fp, "       is_task_addr: s390_is_task_addr()\n");
 	fprintf(fp, "      verify_symbol: s390_verify_symbol()\n");
 	fprintf(fp, "         dis_filter: s390_dis_filter()\n");
@@ -161,12 +163,17 @@ s390_dump_machdep_table(void)
 	fprintf(fp, "       get_smp_cpus: s390_get_smp_cpus()\n");
         fprintf(fp, "          is_kvaddr: s390_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: s390_is_uvaddr()\n");
+        fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+        fprintf(fp, "    init_kernel_pgd: NULL\n");
+	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+        fprintf(fp, "  line_number_hooks: s390_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
         fprintf(fp, "                pgd: %lx\n", (ulong)machdep->pgd);
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
+	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
@@ -197,7 +204,7 @@ s390_is_uvaddr(ulong addr, struct task_context *tc)
  */
 
 static int
-s390_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
+s390_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 {
 	return (error(FATAL, "s390_uvtop: TBD\n"));
 }
@@ -224,7 +231,7 @@ s390_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
  *  The 2048 segments each map 1MB, allowing a maximum of 2GB kernel space.
  */
 static int
-s390_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
+s390_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 {
         ulong *pgd;
         ulong *page_dir;
@@ -250,7 +257,7 @@ s390_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
  *      }
  */
 
-        pgd = (ulong *)vt->kernel_pgd;
+        pgd = (ulong *)vt->kernel_pgd[0];
 
         if (verbose)
                 fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)pgd);
@@ -292,14 +299,14 @@ s390_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
        if (!(pte & _PAGE_PRESENT)) {
                 if (pte && verbose) {
                         fprintf(fp, "\n");
-                        s390_translate_pte(pte, 0);
+                        s390_translate_pte(pte, 0, 0);
                 }
                 goto no_kpage;
         }
 
         if (verbose) {
                 fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(pte));
-                s390_translate_pte(pte, 0);
+                s390_translate_pte(pte, 0, 0);
         }
 
         if (IS_LOWCORE(kvaddr))
@@ -323,7 +330,7 @@ s390_lowcore(struct task_context *tc, ulong kvaddr, int verbose)
 	struct syment *sp;
 	int cpu;
 	
-	if (SMP()) {
+	if (kt->flags & SMP) {
 		cpu = tc->processor == NO_PROC_ID ? 0 : tc->processor;
 
         	readmem(symbol_value("lowcore_ptr"), KVADDR,
@@ -356,7 +363,7 @@ s390_lowcore(struct task_context *tc, ulong kvaddr, int verbose)
 static ulong
 s390_vmalloc_start(void)
 {
-	return ((vt->high_memory + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
+	return (first_vmalloc_address());
 }
 
 /*
@@ -383,7 +390,7 @@ s390_processor_speed(void)
  *  Accept or reject a symbol from the kernel namelist.
  */
 static int
-s390_verify_symbol(const char *name, ulong value)
+s390_verify_symbol(const char *name, ulong value, char type)
 {
 	return (error(FATAL, "s390_verify_symbol: TBD\n"));
 }
@@ -404,38 +411,20 @@ s390_get_task_pgd(ulong task)
  *  If a physaddr pointer is passed in, don't print anything.
  */
 static int
-s390_translate_pte(ulong pte, ulong *physaddr)
+s390_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 {
 	return (error(FATAL, "s390_translate_pte: TBD\n"));
 }
 
-/*
- * Break out the swap type and offset from a pte.
- */
-
-#define SWP_TYPE(entry)   (error("s390_SWP_TYPE: TBD\n"))
-#define SWP_OFFSET(entry) (error("s390_SWP_OFFSET: TBD\n"))
-
-static ulong
-s390_SWP_TYPE(ulong pte)
-{
-	return (error(FATAL, "s390_SWP_TYPE: TBD\n"));
-}
-
-static ulong
-s390_SWP_OFFSET(ulong pte)
-{
-	return (error(FATAL, "s390_SWP_OFFSET: TBD\n"));
-}
 
 /*
  *  Look for likely exception frames in a stack.
  */
 
-static void 
+static int 
 s390_eframe_search(struct bt_info *bt)
 {
-	error(FATAL, "s390_eframe_search: TBD\n");
+	return (error(FATAL, "s390_eframe_search: TBD\n"));
 }
 
 /*
@@ -524,15 +513,6 @@ static void
 s390_dump_irq(int irq)
 {
 	error(FATAL, "s390_dump_irq: TBD\n");
-}
-
-/*
- *  Return the number of IRQs on this platform.
- */
-static int 
-s390_nr_irqs(void)
-{
-	return (error(FATAL, "s390_nr_irqs: TBD\n"));
 }
 
 /*
@@ -635,6 +615,20 @@ s390_display_machine_stats(void)
 	error(FATAL, "s390_display_machine_stats: TBD\n");
 }
 
+static const char *hook_files[] = {
+        "arch/s390/kernel/entry.S",
+        "arch/s390/kernel/head.S",
+        "arch/s390/kernel/semaphore.c"
+};
+
+#define ENTRY_S      ((char **)&hook_files[0])
+#define HEAD_S       ((char **)&hook_files[1])
+#define SEMAPHORE_C  ((char **)&hook_files[2])
+
+static struct line_number_hook s390_line_number_hooks[] = {
+
+       {NULL, NULL}    /* list must be NULL-terminated */
+};
 
 static void
 s390_dump_line_number(ulong callpc)
@@ -645,6 +639,11 @@ s390_dump_line_number(ulong callpc)
 void
 s390_compiler_warning_stub(void)
 {
+        struct line_number_hook *lhp;
+        char **p;
+
+        lhp = &s390_line_number_hooks[0]; lhp++;
+        p = ENTRY_S;
 	s390_back_trace(NULL, NULL);
 	get_s390_frame(NULL, NULL, NULL);
 	s390_print_stack_entry(0, NULL, 0, NULL, NULL);

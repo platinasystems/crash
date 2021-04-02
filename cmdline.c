@@ -1,6 +1,8 @@
 /* cmdline.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +27,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.47 $ $Date: 2002/01/17 16:11:12 $
+ * CVS: $Revision: 1.14 $ $Date: 2004/05/21 15:19:27 $
  */
 
 #include "defs.h"
@@ -40,7 +42,7 @@ static int allocate_alias(int);
 static int alias_exists(char *);
 static void resolve_aliases(void);
 static int setup_redirect(int);
-static int output_command_to_pid(void);
+static int output_command_to_pids(void);
 static void set_my_tty(void);
 static char *signame(int);
 static int setup_stdpipe(void);
@@ -112,7 +114,7 @@ get_command_line(void)
         } else {
                 fflush(fp);
         	if (fgets(pc->command_line, BUFSIZE-1, stdin) == NULL)
-			exit(1);
+			clean_exit(1);
 		strcpy(pc->orig_line, pc->command_line);
         }
 
@@ -397,7 +399,7 @@ setup_redirect(int origin)
 			pc->redirect |= REDIRECT_TO_PIPE;
 
 			if (!(pc->redirect & REDIRECT_SHELL_COMMAND)) {
-				if ((pc->pipe_pid = output_command_to_pid()))
+				if ((pc->pipe_pid = output_command_to_pids()))
 					pc->redirect |= REDIRECT_PID_KNOWN;
 				else 
 					error(FATAL_RESTART, 
@@ -590,39 +592,95 @@ output_open(void)
 
 
 /*
- *  Get the pid of the current output command.  This is typically used to 
- *  determine whether it's been killed prematurely.  There's probably a
- *  cleaner way to find out the pid of a popen'd child... 
- *  (like checking /proc/pid/stat files maybe?)
+ *  Determine the pids of the current popen'd shell and output command.
+ *  This is all done using /proc; the ps kludge at the bottom of this
+ *  routine is legacy, and should only get executed if /proc doesn't exist.
  */
 static int
-output_command_to_pid(void)
+output_command_to_pids(void)
 {
-	char buf[BUFSIZE];
+	DIR *dirp;
+        struct dirent *dp;
+	FILE *stp;
+        char buf1[BUFSIZE];
+        char buf2[BUFSIZE];
+        char lookfor[BUFSIZE];
+        char *pid, *name, *status, *p_pid, *pgrp;
 	char *arglist[MAXARGS];
 	int argc;
-	int scmd;
 	FILE *pipe;
+	int retries;
 
-	sprintf(buf, "ps -ef | grep -e '%s'", pc->pipe_command);
+	retries = 0;
+	pc->pipe_pid = pc->pipe_shell_pid = 0;
+        sprintf(lookfor, "(%s)", pc->pipe_command);
+	stall(1000);
+retry:
+        if (is_directory("/proc") && (dirp = opendir("/proc"))) {
+                for (dp = readdir(dirp); dp && !pc->pipe_pid; 
+		     dp = readdir(dirp)) {
+			if (!decimal(dp->d_name, 0))
+				continue;
+                        sprintf(buf1, "/proc/%s/stat", dp->d_name);
+                        if (file_exists(buf1, NULL) && 
+			    (stp = fopen(buf1, "r"))) {
+                                if (fgets(buf2, BUFSIZE, stp)) {
+                                        pid = strtok(buf2, " ");
+                                        name = strtok(NULL, " ");
+                                        status = strtok(NULL, " ");
+                                        p_pid = strtok(NULL, " ");
+                                        pgrp = strtok(NULL, " ");
+				        if (STREQ(name, "(sh)") &&
+					    (atoi(p_pid) == getpid())) 
+						pc->pipe_shell_pid = atoi(pid);
+                                        if (STREQ(name, lookfor) &&
+                                            ((atoi(p_pid) == getpid()) ||
+				             (atoi(p_pid) == pc->pipe_shell_pid)
+			                     || (atoi(pgrp) == getpid()))) {
+						pc->pipe_pid = atoi(pid);
+						console(
+                            "FOUND[%d] (%d->%d->%d) %s %s p_pid: %s pgrp: %s\n",
+						    retries, getpid(), 
+						    pc->pipe_shell_pid, 
+						    pc->pipe_pid,
+						    name, status, p_pid, pgrp);
+					}  
+                                }
+				fclose(stp);
+                        }
+                }
+		closedir(dirp);
+        }
 
-	if ((pipe = popen(buf, "r")) == NULL) {
-        	error(INFO, "cannot determine scroll pid\n");
+	if (!pc->pipe_pid && ((retries++ < 10) || pc->pipe_shell_pid)) {
+		stall(1000);
+		goto retry;
+	}
+		
+	if (pc->pipe_pid)	
+		return pc->pipe_pid;
+
+	sprintf(buf1, "ps -ft %s", pc->my_tty);
+	console("%s: ", buf1);
+
+	if ((pipe = popen(buf1, "r")) == NULL) {
+        	error(INFO, "cannot determine output pid\n");
 		return 0;
 	}
 
-	scmd = 0;
-	while (fgets(buf, BUFSIZE, pipe)) {
-		argc = parse_line(buf, arglist);
+	while (fgets(buf1, BUFSIZE, pipe)) {
+		argc = parse_line(buf1, arglist);
 		if ((argc >= 8) && 
 		    STREQ(arglist[7], pc->pipe_command) &&
 		    STRNEQ(pc->my_tty, arglist[5])) {
-			scmd = atoi(arglist[1]);
+			pc->pipe_pid = atoi(arglist[1]);
 			break;
 		}
 	}
 	pclose(pipe);
-	return scmd;
+	console("%d\n", pc->pipe_pid);
+
+	return pc->pipe_pid;
 }
 
 /*
@@ -718,7 +776,7 @@ restart(int sig)
 		if (++in_restart < MAX_RECURSIVE_SIGNALS) 
 			return;
 		fprintf(stderr, "bailing out...\n");
-               	exit(1);
+               	clean_exit(1);
         } else {
 		pc->flags |= IN_RESTART;
 		in_restart = 0;
@@ -809,10 +867,15 @@ restore_sanity(void)
 	if (pc->pipe) {
 		close(fileno(pc->pipe));
 	 	pc->pipe = NULL;
-		if (pc->pipe_pid && PID_ALIVE(pc->pipe_pid)) { 
-			while (!waitpid(pc->pipe_pid, &waitstatus, WNOHANG))
-				;
-		}
+		console("wait for redirect %d->%d to finish...\n",
+			pc->pipe_shell_pid, pc->pipe_pid);
+		if (pc->pipe_pid)
+			while (PID_ALIVE(pc->pipe_pid)) 
+				waitpid(pc->pipe_pid, &waitstatus, WNOHANG);
+                if (pc->pipe_shell_pid)
+		        while (PID_ALIVE(pc->pipe_shell_pid)) 
+                        	waitpid(pc->pipe_shell_pid, 
+					&waitstatus, WNOHANG);
 		pc->pipe_pid = 0;
 	}
 	if (pc->ifile_pipe) {
@@ -822,10 +885,14 @@ restore_sanity(void)
         	if (pc->pipe_pid &&
             	    ((pc->redirect & (PIPE_OPTIONS|REDIRECT_PID_KNOWN)) ==
                     (FROM_INPUT_FILE|REDIRECT_TO_PIPE|REDIRECT_PID_KNOWN))) {
-			console("wait for redirect %d to finish...\n",
-				pc->pipe_pid);
+			console("wait for redirect %d->%d to finish...\n",
+				pc->pipe_shell_pid, pc->pipe_pid);
                 	while (PID_ALIVE(pc->pipe_pid))
 				waitpid(pc->pipe_pid, &waitstatus, WNOHANG);
+                        if (pc->pipe_shell_pid) 
+                                while (PID_ALIVE(pc->pipe_shell_pid))
+                                        waitpid(pc->pipe_shell_pid,
+                                                &waitstatus, WNOHANG);
 			if (pc->redirect & (REDIRECT_MULTI_PIPE))
 				wait_for_children(ALL_CHILDREN);
 		}
@@ -871,6 +938,7 @@ restore_sanity(void)
 	pc->redirect = 0;
 	pc->pipe_command[0] = NULLCHAR;
 	pc->pipe_pid = 0;
+	pc->pipe_shell_pid = 0;
 	pc->sbrk = sbrk(0);
 
 	restore_gdb_sanity();
@@ -887,8 +955,9 @@ restore_sanity(void)
 	clear_dentry_cache();
 	clear_inode_cache();
 	clear_vma_cache();
+	clear_active_set();
 
-	if (MCLXDEBUG(2)) {
+	if (CRASHDEBUG(4)) {
                 dump_filesys_table(0);
 		dump_vma_cache(0);
 		dump_text_value_cache(0);
@@ -1091,7 +1160,7 @@ exec_input_file(void)
 	                goto done_input;
 	        }
 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			console(buf);
 
 		if (!(argcnt = parse_line(pc->command_line, args)))
@@ -1120,9 +1189,16 @@ done_input:
  *  Prime the alias list with a few built-in's.
  */
 void
-alias_init(void)
+alias_init(char *inbuf)
 {
 	char buf[BUFSIZE];
+
+	if (inbuf) {
+		strcpy(buf, inbuf);
+		argcnt = parse_line(buf, args);
+		allocate_alias(ALIAS_BUILTIN);
+		return;
+	}
 
 	strcpy(buf, "alias man help");
 	argcnt = parse_line(buf, args);
@@ -1222,12 +1298,19 @@ resolve_aliases(void)
 	p1 = pc->command_line;
 
 	for (i = 0; i < ad->argcnt; i++) {
-		sprintf(p1, "%s ", args[i]);
+		snprintf(p1, BUFSIZE - (p1-pc->command_line), "%s ", args[i]);
 		while (*p1)
 			p1++;
+                if ((p1 - pc->command_line) >= BUFSIZE) 
+                        break;
 	}
-	if (remainder) 
-		strcat(pc->command_line, remainder);
+        if (remainder) {
+                if ((strlen(remainder)+strlen(pc->command_line)) < BUFSIZE) 
+                        strcat(pc->command_line, remainder);
+                else 
+                        error(INFO, "command line overflow.\n");
+        } else if (strlen(pc->command_line) >= (BUFSIZE-1)) 
+                error(INFO, "command line overflow.\n");
 
 	clean_line(pc->command_line);
 }
@@ -1595,7 +1678,7 @@ cmd_repeat(void)
 		switch (args[1][1])
 		{
 		default:
-		case NULL:
+		case NULLCHAR:
 			cmd_usage(pc->curcmd, SYNOPSIS);
 
 		case '1':
@@ -1615,6 +1698,8 @@ cmd_repeat(void)
 	} else 
 		concat_args(buf, 1, FALSE);
 
+	check_special_handling(buf);
+
 #ifdef TODO
 	/* 
 	 * make aliases work... 
@@ -1631,12 +1716,18 @@ cmd_repeat(void)
 	if (!argcnt)
 		return;
 
+	if (STREQ(args[0], "<") && (pc->flags & TTY) &&
+            (pc->flags & SCROLL) && pc->scroll_command) 
+		error(FATAL, 
+		"scrolling must be turned off when repeating an input file\n");
+
 	while (TRUE) {
 		optind = 0;
+console("exec_command...\n");
 		exec_command();
 		free_all_bufs();
 
-		if (received_SIGINT())
+		if (received_SIGINT() || !output_open())
 			break;
 
 		if (delay)
@@ -1691,7 +1782,25 @@ set_my_tty(void)
 
         strcpy(pc->my_tty, "?");
 
+	if (file_exists("/usr/bin/tty", NULL)) {
+	        sprintf(buf, "/usr/bin/tty");
+	        if ((pipe = popen(buf, "r")) == NULL) 
+	                return;
+	
+	        while (fgets(buf, BUFSIZE, pipe)) {
+			if (STRNEQ(buf, "/dev/")) {
+				strcpy(pc->my_tty, strip_line_end(&buf[strlen("/dev/")]));
+				break;
+			}
+		}
+		pclose(pipe);
+		return;
+	}
+
         sprintf(buf, "ps -ef | grep ' %d '", getpid());
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "popen(%s)\n", buf);
 
         if ((pipe = popen(buf, "r")) == NULL) 
                 return;
@@ -1785,7 +1894,7 @@ setup_stdpipe(void)
                         break;
                 }
 
-		if (MCLXDEBUG(2))
+		if (CRASHDEBUG(2))
 			console("pipe: %lx\n", pc->stdpipe);
 		return TRUE;;
 
@@ -1794,10 +1903,10 @@ setup_stdpipe(void)
 
 		if (dup2(pc->pipefd[0], 0) != 0) {
 			perror("child dup2 failed");
-			exit(1);
+			clean_exit(1);
 		}
 
-		if (MCLXDEBUG(2))
+		if (CRASHDEBUG(2))
 			console("execv: %d\n", getpid());
 
                 switch (pc->scroll_command)
@@ -1814,7 +1923,7 @@ setup_stdpipe(void)
 		}
 
 		perror("child execv failed"); 
-		exit(1);
+		return(clean_exit(1));
 	}
 }
 
@@ -1827,20 +1936,21 @@ wait_for_children(ulong waitflag)
         	switch (pid = waitpid(-1, &status, WNOHANG))
         	{
         	case  0:
-			if (MCLXDEBUG(2))
+			if (CRASHDEBUG(2))
 			    console("wait_for_children: child running...\n");
 			if (waitflag == ZOMBIES_ONLY)
 				return;
 			break;
 
         	case -1:
-			if (MCLXDEBUG(2))
+			if (CRASHDEBUG(2))
 			    console("wait_for_children: no children alive\n");
                 	return;
 
         	default:
-			console("wait_for_children: reaped %d\n", pid);
-			if (MCLXDEBUG(2))
+			console("wait_for_children(%d): reaped %d\n", 
+				waitflag, pid);
+			if (CRASHDEBUG(2))
 			    fprintf(fp, "wait_for_children: reaped %d\n", pid);
                 	break;
         	}

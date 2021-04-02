@@ -1,6 +1,10 @@
 /* lkcd_common.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002 Silicon Graphics, Inc. 
+ * Copyright (C) 2002 Free Software Foundation, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,12 +22,13 @@
  * 02/29/00, 2.2    Bug fixes, new commands, options
  * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
  * 04/12/00  ---    Transition to BitKeeper version control
+ * 04/17/02  ---    Integration to LKCD and non-monotonically increasing dumps
  * 
  * BitKeeper ID: @(#)sgi_lkcd.c 1.3
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.3 $ $Date: 2002/01/30 19:28:36 $
+ * CVS: $Revision: 1.17 $ $Date: 2004/10/15 19:59:23 $
  */
 
 /*
@@ -59,16 +64,34 @@ static int hash_page(ulong);
 static int page_is_cached(void);
 static int page_is_hashed(long *);
 static int cache_page(void);
-static int get_closest_page(long *);
 
 struct lkcd_environment lkcd_environment = { 0 };
 struct lkcd_environment *lkcd = &lkcd_environment;
+
+ulonglong 
+fix_lkcd_address(ulonglong addr)
+{
+    int i; 
+    ulong offset;
+
+    for (i = 0; i < lkcd->fix_addr_num; i++) {
+	if ( (addr >=lkcd->fix_addr[i].task) && 
+		(addr <= lkcd->fix_addr[i].task + STACKSIZE())){
+
+	    offset = addr - lkcd->fix_addr[i].task;
+	    addr = lkcd->fix_addr[i].saddr + offset;
+	}
+    }
+
+    return addr;
+}
+
 
 /*
  *  Each version has its own dump initialization.
  */
 int
-lkcd_dump_init(FILE *fp, int fd)
+lkcd_dump_init(FILE *fp, int fd, char *dumpfile)
 {
 	switch (lkcd->version)
 	{
@@ -80,7 +103,14 @@ lkcd_dump_init(FILE *fp, int fd)
 		return(lkcd_dump_init_v2_v3(fp, fd));
 
         case LKCD_DUMP_V5:
+        case LKCD_DUMP_V6:
 		return(lkcd_dump_init_v5(fp, fd));
+
+        case LKCD_DUMP_V7:
+		return(lkcd_dump_init_v7(fp, fd, dumpfile));
+
+        case LKCD_DUMP_V8:
+		return(lkcd_dump_init_v8(fp, fd, dumpfile));
 
 	default:
 		return FALSE;
@@ -125,7 +155,7 @@ set_remote_lkcd_panic_data(ulong task, char *buf)
 		if (!(lkcd->panic_string = (char *)malloc(strlen(buf)+1))) {
 			fprintf(stderr, 
 			    "cannot malloc space for panic message!\n");
-			exit(1);
+			clean_exit(1);
 		}
 		strcpy(lkcd->panic_string, buf);
 	}
@@ -181,7 +211,16 @@ is_lkcd_compressed_dump(char *s)
 		return TRUE;
 
 	case LKCD_DUMP_V5:
+	case LKCD_DUMP_V6:
 		lkcd->version = LKCD_DUMP_V5;
+		return TRUE;
+
+	case LKCD_DUMP_V7:
+		lkcd->version = LKCD_DUMP_V7;
+		return TRUE;
+
+	case LKCD_DUMP_V8:
+		lkcd->version = LKCD_DUMP_V8;
 		return TRUE;
 
 	default:
@@ -212,6 +251,14 @@ dump_dump_page(char *s, void *dp)
         case LKCD_DUMP_V5:
                 dump_dump_page_v5(s, dp);
                 break;
+
+        case LKCD_DUMP_V7:
+                dump_dump_page_v7(s, dp);
+		break;
+
+        case LKCD_DUMP_V8:
+                dump_dump_page_v8(s, dp);
+		break;
         }
 }
 
@@ -263,6 +310,14 @@ dump_header_only:
         case LKCD_DUMP_V5:
                 dump_lkcd_environment_v5(LKCD_DUMP_HEADER_ONLY);
                 break;
+
+        case LKCD_DUMP_V7:
+                dump_lkcd_environment_v7(LKCD_DUMP_HEADER_ONLY);
+		break;
+
+        case LKCD_DUMP_V8:
+                dump_lkcd_environment_v8(LKCD_DUMP_HEADER_ONLY);
+		break;
         }
 
         if (arg == LKCD_DUMP_HEADER_ONLY)
@@ -283,6 +338,14 @@ dump_page_only:
         case LKCD_DUMP_V5:
                 dump_lkcd_environment_v5(LKCD_DUMP_PAGE_ONLY);
                 break;
+
+        case LKCD_DUMP_V7:
+                dump_lkcd_environment_v7(LKCD_DUMP_PAGE_ONLY);
+		break;
+
+        case LKCD_DUMP_V8:
+                dump_lkcd_environment_v8(LKCD_DUMP_PAGE_ONLY);
+		break;
         }
 	if (arg == LKCD_DUMP_PAGE_ONLY)
 		return;
@@ -480,10 +543,10 @@ lkcd_memory_dump(FILE *fp)
 	                lkcd_print("  [%2d]: ", i);
 	                wrap = 0;
 	                while (phe && LKCD_VALID_PAGE(phe->pg_flags)) {
-				sprintf(buf, BITS32() ? "%llx@" : "%lx@",
-					phe->pg_addr);
+				sprintf(buf, "%llx@", 
+					(ulonglong)phe->pg_addr);
 				sprintf(&buf[strlen(buf)],
-	                        	"%lx,", phe->pg_hdr_offset);
+	                        	"%llx,", (ulonglong)phe->pg_hdr_offset);
 				lkcd_print("%18s", buf);
 
 	                        phe = phe->next;
@@ -530,23 +593,63 @@ lkcd_memory_dump(FILE *fp)
 			    i, sp->pg_addr, sp->pg_bufptr, sp->pg_hit_count);
         }
 
-	lkcd_print("mb_hdr_offsets[%3ld]: \n", lkcd->benchmark_pages);
+	if (lkcd->mb_hdr_offsets) {
+		lkcd_print("mb_hdr_offsets[%3ld]: \n", lkcd->benchmark_pages);
 
-	for (i = 0; i < lkcd->benchmark_pages; i += 8) {
-		lkcd_print("  [%3d]", i);
-		c = 0;
-		while ((c < 8) && ((i+c) < lkcd->benchmark_pages)) {
-			lkcd_print(" %8lx", lkcd->mb_hdr_offsets[i+c]);
-			c++;
+		for (i = 0; i < lkcd->benchmark_pages; i += 8) {
+			lkcd_print("  [%3d]", i);
+			c = 0;
+			while ((c < 8) && ((i+c) < lkcd->benchmark_pages)) {
+				lkcd_print(" %8lx", lkcd->mb_hdr_offsets[i+c]);
+				c++;
+			}
+			lkcd_print("\n");
 		}
-		lkcd_print("\n");
+	} else {
+		lkcd_print("  mb_hdr_offsets: NA\n");
 	}
+
+	if (lkcd->zones) {
+		lkcd_print("       num_zones: %d / %d\n", lkcd->num_zones,
+				lkcd->max_zones);
+		lkcd_print("   zoned_offsets: %ld\n", lkcd->zoned_offsets);
+	}
+
+	lkcd_print("  dumpfile_index: %s\n", lkcd->dumpfile_index);
+	lkcd_print("             ifd: %d\n", lkcd->ifd);
+        lkcd_print("    memory_pages: %ld\n", lkcd->memory_pages);
+        lkcd_print(" page_offset_max: %ld\n", lkcd->page_offset_max);
+        lkcd_print("  page_index_max: %ld\n", lkcd->page_index_max);
+        lkcd_print("    page_offsets: %lx\n", lkcd->page_offsets);
 
 	lkcd->fp = fpsave;
 
         return pages;
 
 }
+
+static void
+lkcd_speedo(void)
+{
+        static int i = 0;
+
+        switch (++i%4) {
+        case 0:
+                lkcd_print("|\b");
+                break;
+        case 1:
+                lkcd_print("\\\b");
+                break;
+        case 2:
+                lkcd_print("-\b");
+                break;
+        case 3:
+                lkcd_print("/\b");
+                break;
+        }
+	fflush(stdout);
+}
+
 
 /*
  *  The lkcd_lseek() routine does the bulk of the work setting things up 
@@ -564,59 +667,187 @@ lkcd_memory_dump(FILE *fp)
  *
  *   (1) page_is_hashed() will check whether the page header offset is cached,
  *       and if so, will set up the page variable, and lseek to the header.
- *   (2) get_closest_page() will find the page header offset of the closest
- *       hashed or benchmarked page, set up the page variable, and lseek 
- *       to the page's header.
  *
  *  In either case above, the starting point for the page search is set up.
  *  Lastly, cache_page() stores the requested page's data.
  */
+
+static int
+save_offset(uint64_t paddr, off_t off)
+{
+	uint64_t zone, page;
+	int ii, ret;
+
+	zone = paddr & lkcd->zone_mask;
+
+	page = (paddr & ~lkcd->zone_mask) >> lkcd->page_shift;
+
+	if (lkcd->num_zones == 0) {
+		lkcd->zones = malloc(ZONE_ALLOC * sizeof(struct physmem_zone));
+		if (!lkcd->zones) {
+			return -1; /* This should be fatal */
+		}
+		BZERO(lkcd->zones, ZONE_ALLOC * sizeof(struct physmem_zone));
+
+		lkcd->max_zones = ZONE_ALLOC;
+
+		lkcd->zones[0].start = zone;
+		lkcd->zones[0].pages = malloc((ZONE_SIZE >> lkcd->page_shift) *
+					sizeof(struct page_desc));
+		if (!lkcd->zones[0].pages) {
+			return -1; /* this should be fatal */
+		}
+
+		BZERO(lkcd->zones[0].pages, (ZONE_SIZE >> lkcd->page_shift) *
+					sizeof(struct page_desc));
+		lkcd->num_zones++;
+	}
+
+	/* find the zone */
+	for (ii=0; ii < lkcd->num_zones; ii++) {
+		if (lkcd->zones[ii].start == zone) {
+			if (lkcd->zones[ii].pages[page].offset != 0) {
+			   if (lkcd->zones[ii].pages[page].offset != off) {
+				error(INFO, "conflicting page: zone %lld, "
+					"page %lld: %lld, %lld != %lld\n",
+					(unsigned long long)zone, 
+					(unsigned long long)page, 
+					(unsigned long long)paddr, 
+					(unsigned long long)off,
+					(unsigned long long)lkcd->zones[ii].pages[page].offset);
+			  	abort();
+			   }
+			   ret = 0;
+			} else {
+			   lkcd->zones[ii].pages[page].offset = off;
+			   ret = 1;
+			}
+			break;
+		}
+	}
+	if (ii == lkcd->num_zones) {
+		/* This is a new zone */
+		if (lkcd->num_zones < lkcd->max_zones) {
+			/* We have room for another one */
+			lkcd->zones[ii].start = zone;
+			lkcd->zones[ii].pages = malloc(
+					(ZONE_SIZE >> lkcd->page_shift) *
+					sizeof(struct page_desc));
+			if (!lkcd->zones[ii].pages) {
+				return -1; /* this should be fatal */
+			}
+
+			BZERO(lkcd->zones[ii].pages, 
+					(ZONE_SIZE >> lkcd->page_shift) *
+					sizeof(struct page_desc));
+			lkcd->zones[ii].pages[page].offset = off;
+			ret = 1;
+			lkcd->num_zones++;
+		} else {
+			lkcd_print("fixme, need to add more zones (ZONE_ALLOC)\n");
+			exit(1);
+		}
+	}
+
+	return ret;  /* 1 if the page is new */
+}
+		
+static off_t
+get_offset(uint64_t paddr)
+{
+	uint64_t zone, page;
+	int ii;
+
+	zone = paddr & lkcd->zone_mask;
+	page = (paddr % ZONE_SIZE) >> lkcd->page_shift;
+
+	if (lkcd->zones == 0) {
+		return 0;
+	}
+
+	/* find the zone */
+	for (ii=0; ii < lkcd->num_zones; ii++) {
+		if (lkcd->zones[ii].start == zone) {
+			return (lkcd->zones[ii].pages[page].offset);
+		}
+	}
+	return 0;
+}
+
+
+
 int
-lkcd_lseek(unsigned long paddr)
+lkcd_lseek(physaddr_t paddr)
 {
         long i;
+	int err;
         int eof;
         void *dp;
-        long page;
-	uint64_t physaddr;
+        long page = 0;
+	physaddr_t physaddr;
+	int seeked_to_page = 0;
+	off_t page_offset;
 
 	dp = lkcd->dump_page;
 
-	lkcd->curpos = paddr & (lkcd->page_size-1);
-	lkcd->curpaddr = paddr & ~(lkcd->page_size-1);
+	lkcd->curpos = paddr & ((physaddr_t)(lkcd->page_size-1));
+        lkcd->curpaddr = paddr & ~((physaddr_t)(lkcd->page_size-1));
 
 	if (page_is_cached()) 
 		return TRUE;
 
-	if (!page_is_hashed(&page) && !get_closest_page(&page))
-                return FALSE;
-
-        for (i = page, eof = FALSE; !eof; i++) {
-
-                switch (lkcd_load_dump_page_header(dp, i))
-                {
-                case LKCD_DUMPFILE_OK:
-			break;
-
-                case LKCD_DUMPFILE_END:
-                case LKCD_DUMPFILE_EOF:
-			eof = TRUE;
-                        continue;
-                }
-
-        	physaddr = lkcd->get_dp_flags() & 
-		    (LKCD_DUMP_MCLX_V0|LKCD_DUMP_MCLX_V1) ?
-                    (lkcd->get_dp_address() - lkcd->kvbase) << lkcd->page_shift:
-                    lkcd->get_dp_address() - lkcd->kvbase;
-
-		if (physaddr == lkcd->curpaddr) 
-			return(cache_page());
-
-		if (physaddr > lkcd->curpaddr)
-			break;
-
-        	lseek(lkcd->fd, lkcd->get_dp_size(), SEEK_CUR);
+	/* Faster than paging in lkcd->page_offsets[page] */
+	if(page_is_hashed(&page)) {
+		seeked_to_page = 1;
 	}
+
+	 /* Find the offset for this page, if known */
+    if ((page_offset = get_offset(paddr)) > 0) {
+	off_t seek_offset;
+	seek_offset = lseek(lkcd->fd, page_offset, SEEK_SET);
+
+	if (seek_offset == page_offset) {
+	    seeked_to_page = 1;
+	    page = 0; /* page doesn't make any sense */
+	}
+    }
+
+
+    if (seeked_to_page) {
+	err = lkcd_load_dump_page_header(dp, page);
+	if (err == LKCD_DUMPFILE_OK) {
+	    return(cache_page());
+	}
+    }	
+
+    /* We have to grind through some more of the dump file */
+    lseek(lkcd->fd, lkcd->page_offset_max, SEEK_SET);
+    eof = FALSE;
+    while (!eof) {
+	if( (i%2048) == 0) {
+	    lkcd_speedo();
+	}
+
+	switch (lkcd_load_dump_page_header(dp, page))
+	{
+	    case LKCD_DUMPFILE_OK:
+		break;
+
+	    case LKCD_DUMPFILE_EOF:
+		eof = TRUE;
+		continue;
+	}
+
+	physaddr = lkcd->get_dp_flags() & 
+	    (LKCD_DUMP_MCLX_V0|LKCD_DUMP_MCLX_V1) ?
+	    (lkcd->get_dp_address() - lkcd->kvbase) << lkcd->page_shift:
+	    lkcd->get_dp_address() - lkcd->kvbase;
+
+	if (physaddr == lkcd->curpaddr) {
+	    return(cache_page());
+	}
+	lseek(lkcd->fd, lkcd->get_dp_size(), SEEK_CUR);
+    }
 
 	return FALSE;
 }
@@ -749,61 +980,6 @@ page_is_hashed(long *pp)
 
 	return FALSE;
 
-}
-
-/*
- *  Given lkcd->curpaddr, first find the closest lower hashed page, if any,
- *  and then find its associated benchmark page.  Take whichever is closer,
- *  lseek to it, and return its page number.
- */
-static int
-get_closest_page(long *pp)
-{
-        int i;
-        struct page_hash_entry *phe, *phe_closest;
-        uint64_t curdiff;
-	long mb, page, mb_page, phe_page;
-
-        curdiff = lkcd->curpaddr;
-        phe_closest = NULL;
-
-        for (i = 0; i < LKCD_PAGE_HASH; i++) {
-                for (phe = &lkcd->page_hash[i]; LKCD_VALID_PAGE(phe->pg_flags);
-                     phe = phe->next) {
-                        if (phe->pg_addr < lkcd->curpaddr) {
-                                if ((lkcd->curpaddr - phe->pg_addr) < curdiff) {
-                                        curdiff = lkcd->curpaddr - phe->pg_addr;
-                                        phe_closest = phe;
-                                }
-                        }
-                        if (!phe->next)
-                                break;
-                }
-        }
-
-	page = (long)(lkcd->curpaddr >> lkcd->page_shift);
-
-	if ((mb = LKCD_PAGE_MEGABYTE(page)) >= lkcd->benchmark_pages)
-		mb = lkcd->benchmark_pages - 1;
-
-	for (/* mb setup above */; !lkcd->mb_hdr_offsets[mb]; mb--) {
-		if (mb < 0) 
-			return FALSE;
-        }
-
-	mb_page = mb * LKCD_PAGES_PER_MEGABYTE();
-	phe_page = phe_closest ? 
-		(long)(phe_closest->pg_addr >> lkcd->page_shift) : 0;
-
-	if (phe_page > mb_page) {
-		*pp = phe_page;
-                 lseek(lkcd->fd, phe_closest->pg_hdr_offset, SEEK_SET);
-	} else {
-		*pp = mb_page;
-        	lseek(lkcd->fd, lkcd->mb_hdr_offsets[mb], SEEK_SET);
-	}
-
-	return TRUE;
 }
 
 /*
@@ -1004,7 +1180,7 @@ static int
 lkcd_uncompress_gzip(unsigned char *dest, ulong destlen, 
 	unsigned char *source, ulong sourcelen)
 {
-	ulong retlen;
+        ulong retlen = destlen;
 
 	switch (uncompress(dest, &retlen, source, sourcelen)) 
 	{
@@ -1067,8 +1243,12 @@ lkcd_load_dump_page_header(void *dp, ulong page)
 {
 	uint32_t dp_flags;
 	uint64_t dp_address, physaddr;
+	off_t page_offset;
+	int ret;
 
-        lkcd->curhdroffs = lseek(lkcd->fd, 0, SEEK_CUR);
+
+	/* This is wasted effort */
+        page_offset = lkcd->curhdroffs = lseek(lkcd->fd, 0, SEEK_CUR);
 
         if (read(lkcd->fd, dp, lkcd->page_header_size) != 
 	    lkcd->page_header_size) {
@@ -1087,17 +1267,35 @@ lkcd_load_dump_page_header(void *dp, ulong page)
 	if ((lkcd->flags & LKCD_VALID) && (page > lkcd->total_pages)) 
 		lkcd->total_pages = page;
 
-        if (page == 0)
+#ifdef X86
+	/*
+	 *  Ugly leftover from very early x86 LKCD versions which used 
+	 *  the kernel unity-mapped virtual address as the dp_address.
+	 */
+        if ((page == 0) && !(lkcd->flags & LKCD_VALID) && 
+	    (lkcd->version == LKCD_DUMP_V1) && 
+	    (dp_address == 0xc0000000)) 
         	lkcd->kvbase = dp_address;
+#endif
 
 	physaddr = dp_flags & (LKCD_DUMP_MCLX_V0|LKCD_DUMP_MCLX_V1) ?
 		(dp_address - lkcd->kvbase) << lkcd->page_shift : 
         	dp_address - lkcd->kvbase;
 
-        if (MEGABYTE_ALIGNED(physaddr) && !LKCD_BENCHMARKS_DONE()) 
-                set_mb_benchmark((ulong)(physaddr >> lkcd->page_shift));
 
-        return LKCD_DUMPFILE_OK;
+	if ((ret = save_offset(physaddr, page_offset)) < 0) {
+	    return LKCD_DUMPFILE_EOF; /* really an error */
+	} 
+
+	lkcd->zoned_offsets += ret;  /* return = 0 if already known */
+
+	if (page_offset > lkcd->page_offset_max) {
+	    /* doesn't this mean I have to re-read this dp? */
+	    lkcd->page_offset_max = page_offset;
+	}
+
+
+	return LKCD_DUMPFILE_OK;
 }
 
 /*

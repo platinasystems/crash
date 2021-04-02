@@ -1,6 +1,8 @@
 /* remote.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,7 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.35 $
+ * CVS: $Revision: 1.16 $
  */
 
 #include "defs.h"
@@ -33,8 +35,7 @@
 #define MAXRECVBUFSIZE (131072) 
 #define READBUFSIZE    (MAXRECVBUFSIZE+DATA_HDRSIZE)
 
-#ifdef _DAEMON_
-
+#ifdef DAEMON
 /*
  *  The remote daemon.  
  */
@@ -54,6 +55,8 @@ static void daemon_socket_options(int);
 static char *no_debugging_symbols_found(char *);
 static ulong daemon_filesize(int);
 static int daemon_find_module(char *, char *, char *);
+static int daemon_search_directory_tree(char *, char *, char *);
+static int daemon_file_exists(char *, struct stat *);
 static int daemon_checksum(char *, long *);
 static void daemon_send(void *, int);
 static int daemon_proc_version(char *);
@@ -307,6 +310,34 @@ handle_connection(int sock)
 
                         continue;
 
+                } else if (STRNEQ(recvbuf, "READ_NETDUMP ")) {
+
+                        strcpy(savebuf, recvbuf);
+                        p1 = strtok(recvbuf, " ");   /* READ_NETDUMP */
+                        p2 = strtok(NULL, " ");      /* address */
+                        p3 = strtok(NULL, " ");      /* length */
+
+                        addr = daemon_htol(p2);
+                        len = atoi(p3);
+
+                        BZERO(readbuf, READBUFSIZE);
+                        errno = 0;
+
+                        if ((len = read_netdump(UNUSED,
+                            &readbuf[DATA_HDRSIZE], len, UNUSED, addr)) < 0)
+                                len = 0;
+
+                        if (len) {
+                                sprintf(readbuf, "%s%07ld", DONEMSG,(ulong)len);                                console("(%ld)\n", (ulong)len);
+                        } else {
+                                sprintf(readbuf, "%s%07ld", FAILMSG,
+                                        (ulong)errno);
+                                console("[%s]\n", readbuf);
+                        }
+
+                        daemon_send(readbuf, len+DATA_HDRSIZE);
+                        continue;
+
                 } else if (STRNEQ(recvbuf, "READ_MCLXCD ")) {
 
                         strcpy(savebuf, recvbuf);
@@ -414,6 +445,8 @@ handle_connection(int sock)
 				sprintf(sendbuf, "%s ELF", savebuf);
 			else if (STREQ(file, "/dev/mem"))
 				sprintf(sendbuf, "%s DEVMEM", savebuf);
+			else if (is_netdump(file, NETDUMP_REMOTE))
+				sprintf(sendbuf, "%s NETDUMP", savebuf);
 			else if (is_mclx_compressed_dump(file))
 				sprintf(sendbuf, "%s MCLXCD", savebuf);
 			else if (is_lkcd_compressed_dump(file))
@@ -540,6 +573,9 @@ handle_connection(int sock)
 			if (strstr(recvbuf, "LIVE")) 
                         	sprintf(sendbuf, "%s %d", recvbuf, 
 					(uint)getpagesize());
+                        else if (strstr(recvbuf, "NETDUMP"))
+                                sprintf(sendbuf, "%s %d", recvbuf,
+                                        (uint)netdump_page_size());
 			else if (strstr(recvbuf, "MCLXCD")) 
                         	sprintf(sendbuf, "%s %d", recvbuf, 
 					(uint)mclx_page_size());
@@ -615,27 +651,28 @@ handle_connection(int sock)
                         p3 = strtok(NULL, " ");      /* MCLXCD, LKCD, etc. */
 
 			if (STREQ(p2, "FREE")) {
-				if (STREQ(p3, "MCLXCD"))
+                                if (STREQ(p3, "NETDUMP")) 
+                                        retval = netdump_free_memory();
+				else if (STREQ(p3, "MCLXCD"))
 					retval = vas_free_memory(NULL);
-				if (STREQ(p3, "LKCD")) {
+				else if (STREQ(p3, "LKCD")) 
 					retval = lkcd_free_memory();
-				}
-                                if (STREQ(p3, "S390D")) {
+                                else if (STREQ(p3, "S390D")) 
                                         retval = s390_free_memory();
-                                }
-                                if (STREQ(p3, "S390XD")) {
+                                else if (STREQ(p3, "S390XD")) 
                                         retval = s390x_free_memory();
-                                }
 			}
 
 			if (STREQ(p2, "USED")) {
-				if (STREQ(p3, "MCLXCD"))
+				if (STREQ(p3, "NETDUMP"))
+					retval = netdump_memory_used();
+				else if (STREQ(p3, "MCLXCD"))
 					retval = vas_memory_used();
-				if (STREQ(p3, "LKCD"))
+				else if (STREQ(p3, "LKCD"))
 					retval = lkcd_memory_used();
-                                if (STREQ(p3, "S390D"))
+                                else if (STREQ(p3, "S390D"))
                                         retval = s390_memory_used();
-                                if (STREQ(p3, "S390XD"))
+                                else if (STREQ(p3, "S390XD"))
                                         retval = s390x_memory_used();
 			}
 
@@ -663,18 +700,19 @@ handle_connection(int sock)
                                 continue;
 			}
 
-			if (STREQ(p2, "MCLXCD"))
+			if (STREQ(p2, "NETDUMP")) 
+				retval = netdump_memory_dump(tmp);
+			else if (STREQ(p2, "MCLXCD"))
 				vas_memory_dump(tmp);
-			if (STREQ(p2, "LKCD")) 
+			else if (STREQ(p2, "LKCD")) 
 				lkcd_memory_dump(tmp);
-			if (STREQ(p2, "LKCD_VERBOSE")) {
+			else if (STREQ(p2, "LKCD_VERBOSE")) {
 				set_lkcd_fp(tmp);
 				dump_lkcd_environment(0);
 				set_lkcd_fp(NULL);
-			}
-                        if (STREQ(p2, "S390D"))
+			} else if (STREQ(p2, "S390D"))
                                 s390_memory_dump(tmp);
-                        if (STREQ(p2, "S390XD"))
+                        else if (STREQ(p2, "S390XD"))
                                 s390x_memory_dump(tmp);
 
 			rewind(tmp);
@@ -710,14 +748,44 @@ handle_connection(int sock)
 			fclose(tmp);
 			continue;
 
+               } else if (STRNEQ(recvbuf, "NETDUMP_INIT ")) {
+
+                        strcpy(savebuf, recvbuf);
+                        p1 = strtok(recvbuf, " ");   /* NETDUMP_INIT */
+                        p2 = strtok(NULL, " ");      /* fd */
+                        p3 = strtok(NULL, " ");      /* dumpfile */
+
+                        mfd = atoi(p2);
+                        for (i = 0; i < MAX_REMOTE_FDS; i++) {
+                                if (fds[i] == mfd) {
+                                        close(mfd);
+                                        fds[i] = -1;
+                                        break;
+                                }
+                        }
+
+                        sprintf(sendbuf, "%s %s", savebuf,
+                            netdump_init(p3, NULL) ? "OK" : "<FAIL>");
+
+                        if ((addr = get_netdump_panic_task())) {
+                                sprintf(readbuf, "\npanic_task: %lx\n", addr);
+                                strcat(sendbuf, readbuf);
+                        }
+
+                        console("[%s]\n", sendbuf);
+                        daemon_send(sendbuf, strlen(sendbuf));
+                        continue;
+
                 } else if (STRNEQ(recvbuf, "LKCD_DUMP_INIT ")) {
 
                         strcpy(savebuf, recvbuf);
                         p1 = strtok(recvbuf, " ");   /* LKCD_DUMP_INIT */
                         p2 = strtok(NULL, " ");      /* fd */
+                        p3 = strtok(NULL, " ");      /* dumpfile */
 
 			sprintf(sendbuf, "%s %s", savebuf,
-			    lkcd_dump_init(NULL, atoi(p2)) ? "OK" : "<FAIL>");
+			    lkcd_dump_init(NULL, atoi(p2), p3) ? 
+				"OK" : "<FAIL>");
 
 			if ((addr = get_lkcd_panic_task())) {
 				sprintf(readbuf, "\npanic_task: %lx\n", addr);
@@ -750,7 +818,7 @@ handle_connection(int sock)
                         BZERO(readbuf, READBUFSIZE);
 			errno = 0;
 
-                        if (!lkcd_lseek((ulong)addr))
+                        if (!lkcd_lseek(addr))
                                 len = 0;         
                         else if (lkcd_read((void *)
 				&readbuf[DATA_HDRSIZE], len) != len)
@@ -1605,7 +1673,7 @@ daemon_parse_line(char *str, char *argv[])
 	        case '\n':
 	            str[i] = NULLCHAR;
 	                        /* keep falling... */
-	        case NULL:
+	        case NULLCHAR:
 	            argv[j] = NULLCHAR;
 	            return(j);
 	        }
@@ -1673,30 +1741,72 @@ monitor_memory(long *a1, long *a2, long *a3, long *a4)
 static int
 daemon_find_module(char *release, char *filename, char *retbuf)
 {
-	int retval;
-	FILE *pipe;
-	char buf[BUFSIZE];
+	char dir[BUFSIZE];
+	int found;
+
+	found = FALSE;
+
+	sprintf(dir, "%s/%s", DEFAULT_REDHAT_DEBUG_LOCATION, release);
+	found = daemon_search_directory_tree(dir, filename, retbuf);
+
+	if (!found) {
+        	sprintf(dir, "/lib/modules/%s", release);
+		found = daemon_search_directory_tree(dir, filename, retbuf);
+	}
+
+	return found;
+}
+
+
+int
+daemon_search_directory_tree(char *directory, char *file, char *retbuf)
+{
 	char command[BUFSIZE];
+	char buf[BUFSIZE];
+	FILE *pipe;
+	int found;
 
-	retval = FALSE;
+	if (!daemon_file_exists("/usr/bin/find", NULL) || 
+	    !daemon_file_exists("/bin/echo", NULL) ||
+	    !daemon_is_directory(directory)) 
+		return FALSE;
 
-        sprintf(command, "/usr/bin/find /lib/modules/%s -name %s -print",
-                release, filename);
+	sprintf(command, 
+            "/usr/bin/find %s -name %s -print; /bin/echo search done",
+		directory, file);
 
         if ((pipe = popen(command, "r")) == NULL) 
-		return retval;
+                return FALSE;
 
-        while (fgets(buf, BUFSIZE-1, pipe)) {
-                if (STREQ((char *)basename(daemon_clean_line(buf)), filename)) {
-                        strcpy(retbuf, buf);
-			retval = TRUE;
+	found = FALSE;
+
+        while (fgets(buf, BUFSIZE-1, pipe) || !found) {
+                if (STREQ(buf, "search done\n")) 
                         break;
+                
+                if (!found &&
+                    STREQ((char *)basename(strip_linefeeds(buf)), file)) {
+                        strcpy(retbuf, buf);
+			found = TRUE;
                 }
         }
+
         pclose(pipe);
 
-	return retval;
+	return found;
 }
+
+static int
+daemon_file_exists(char *file, struct stat *sp)
+{
+        struct stat sbuf;
+
+        if (stat(file, sp ? sp : &sbuf) == 0)
+                return TRUE;
+
+        return FALSE;
+}
+
 
 static int 
 daemon_checksum(char *file, long *retsum)
@@ -1741,6 +1851,7 @@ static int remote_file_type(char *);
 static int remote_lkcd_dump_init(void);
 static int remote_s390_dump_init(void);
 static int remote_s390x_dump_init(void);
+static int remote_netdump_init(void);
 
 /*
  *  Parse, verify and establish a connection with the network daemon
@@ -1795,6 +1906,9 @@ is_remote_daemon(char *dp)
 		portp = strtok(NULL, ":");
 	}
 
+	if (portp == NULL) 
+		return FALSE;
+
         if (decimal(portp, 0))
                 pc->port = (ushort)atoi(portp);
         else
@@ -1808,7 +1922,7 @@ is_remote_daemon(char *dp)
 	if (!pc->server || !pc->port) 
 		return FALSE;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "server: [%s]\n", pc->server);
 		fprintf(fp, "  port: [%d]\n", pc->port);
 		fprintf(fp, " file1: [%s]\n", file1);
@@ -1820,7 +1934,7 @@ is_remote_daemon(char *dp)
                 error(FATAL, "gethostbyname [%s] failed\n", pc->server);
         }
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		struct in_addr *ip;
         	char **listptr;
 
@@ -1843,10 +1957,10 @@ is_remote_daemon(char *dp)
             sizeof(struct sockaddr_in)) < 0) {
                 herror(hp->h_name);
                 error(FATAL, "connect [%s:%d] failed\n", hp->h_name, pc->port);
-                exit(1);
+                clean_exit(1);
         }
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
         	printf("connect [%s:%d]: success\n", hp->h_name, pc->port);
 
 	remote_socket_options(pc->sockfd);
@@ -1862,7 +1976,7 @@ is_remote_daemon(char *dp)
         recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
         p1 = strtok(recvbuf, " ");  /* MACHINE */
         p1 = strtok(NULL, " ");     /* machine type */
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
         	printf("remote MACHINE: %s\n", p1);
 	if (!STREQ(pc->machine_type, p1))
 		error(FATAL, "machine type mismatch: local: %s remote: %s\n",
@@ -1876,6 +1990,10 @@ is_remote_daemon(char *dp)
 		case TYPE_ELF:
 			pc->server_namelist = file1; 
 			break;
+		case TYPE_NETDUMP:
+                        pc->server_memsrc = file1;
+                        pc->flags |= REM_NETDUMP;
+                        break;
 		case TYPE_MCLXCD:
 			pc->server_memsrc = file1;
 			pc->flags |= REM_MCLXCD;
@@ -1907,6 +2025,14 @@ is_remote_daemon(char *dp)
                                     "two remote namelists entered: %s and %s\n",
                                          file1, file2);
                         pc->server_namelist = file2;
+                        break;
+                case TYPE_NETDUMP:
+                        if (pc->server_memsrc)
+                                error(FATAL,
+                                    "neither %s or %s is an ELF file\n",
+                                         file1, file2);
+                        pc->server_memsrc = file2;
+                        pc->flags |= REM_NETDUMP;
                         break;
                 case TYPE_MCLXCD:
                         if (pc->server_memsrc)
@@ -1969,6 +2095,8 @@ remote_file_type(char *file)
                 error(FATAL, "invalid remote file name: %s\n", file);
         else if (strstr(recvbuf, " UNSUPPORTED"))
                 error(FATAL, "unsupported remote file type: %s\n", file);
+	else if (strstr(recvbuf, " NETDUMP"))
+		return TYPE_NETDUMP;
         else if (strstr(recvbuf, " ELF")) 
                 return TYPE_ELF;        
         else if (strstr(recvbuf, " MCLXCD")) 
@@ -2011,7 +2139,7 @@ remote_socket_options(int sockfd)
                 return;
         }
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
         	printf("socket SO_RCVBUF size: %d\n", rcvbuf); 
 
 	rcvbuf = 1;
@@ -2023,7 +2151,7 @@ remote_socket_options(int sockfd)
                  *  which is hardcoded to the desired count of 1 anyway.
 		 *  Set it to 0, and verify it as 1 in the getsockopt() call.
 		 */
-		if (MCLXDEBUG(1)) 
+		if (CRASHDEBUG(1)) 
                 	error(INFO, "SO_RCVLOWAT setsockopt error: %s\n",
 				strerror(errno));
 		rcvbuf = 0;
@@ -2036,7 +2164,7 @@ remote_socket_options(int sockfd)
                 return;
         }
 
-	if (MCLXDEBUG(1) || (rcvbuf != 1))
+	if (CRASHDEBUG(1) || (rcvbuf != 1))
         	error(INFO, "socket SO_RCVLOWAT value: %d\n", rcvbuf); 
 
 }
@@ -2057,7 +2185,7 @@ remote_file_open(struct remote_file *rfp)
         send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
         recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
 
-        if (MCLXDEBUG(1))
+        if (CRASHDEBUG(1))
                 fprintf(fp, "remote_file_open: [%s]\n", recvbuf);
 
         if (strstr(recvbuf, "O_RDWR") || strstr(recvbuf, "O_RDONLY")) {
@@ -2140,20 +2268,31 @@ remote_fd_init(void)
 
 	if (pc->namelist && pc->server_namelist) {
 		error(INFO, "too many namelists\n");
-		program_usage();
+		program_usage(SHORT_FORM);
+	}
+
+	if ((pc->namelist || pc->server_namelist) &&
+             pc->namelist_debug && pc->system_map) {
+                        error(INFO,
+              "too many namelist options:\n       %s\n       %s\n       %s\n",
+                                pc->namelist ? 
+				pc->namelist : pc->server_namelist, 
+				pc->namelist_debug,
+                                pc->system_map);
+		program_usage(SHORT_FORM);
 	}
 
 	/*
 	 *  Account for the remote possibility of a local dumpfile 
 	 *  being entered on the command line.
 	 */
-        if (pc->flags & (MCLXCD|LKCD|DEVMEM|S390D|S390XD)) {
+        if (pc->flags & MEMORY_SOURCES) {
 		if (pc->server_memsrc) {
                 	error(INFO, "too many dumpfile/memory arguments\n");
-			program_usage();
+			program_usage(SHORT_FORM);
 		}
 		pc->flags |= MEMSRC_LOCAL;
-		if (pc->flags & DEVMEM) {
+		if (pc->flags & (DEVMEM|MEMMOD)) {
 			if (!get_proc_version())
                         	error(INFO, "/proc/version: %s\n", 
 					strerror(errno));
@@ -2188,6 +2327,12 @@ remote_fd_init(void)
 	                               	pc->rkfd = rfp->fd;
 	               	}
 
+                        if ((pc->flags & REM_NETDUMP) &&
+                            !remote_netdump_init())
+                                error(FATAL,
+                                    "%s: remote initialization failed\n",
+                                        pc->server_memsrc);
+
 			if ((pc->flags & REM_LKCD) &&
 			    !remote_lkcd_dump_init())
                                	error(FATAL, 
@@ -2205,6 +2350,10 @@ remote_fd_init(void)
                                 error(FATAL,
                                     "%s: remote initialization failed\n",
                                         pc->server_memsrc);
+
+			if (REMOTE_DUMPFILE())
+				pc->writemem = write_daemon;
+
 	       	} else
 	               	error(FATAL, "cannot open remote memory source: %s\n",
 	                       	pc->server_memsrc);
@@ -2279,7 +2428,7 @@ copy_to_local_namelist(struct remote_file *rfp)
 		if (strstr(recvbuf, "NO_DEBUG")) {
 			sprintf(readbuf, "%s@%s", rfp->filename, pc->server);
 			pc->namelist = readbuf;
-			no_debugging_data();
+			no_debugging_data(FATAL);
 		}
 	}
 
@@ -2406,7 +2555,7 @@ identical_namelist(char *file, struct remote_file *rfp)
 	} else
 		return FALSE;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "remote version: [%s]\n", vers);
 		fprintf(fp, "local version: [%s]\n", readbuf);
 		fprintf(fp, "%s vs. %s => %s\n",
@@ -2533,13 +2682,13 @@ generic_file_save:
 	cnt = 0;
 	sprintf(local, "%s@%s", basename(rfp->filename), pc->server);
         while (file_exists(local, NULL)) {
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
                 	fprintf(fp, "%s already exists in this directory\n",
                         	local);
 		if (file_checksum(local, &csum) && (csum == rfp->csum)) {
-			if (MCLXDEBUG(1))
-				fprintf(fp, 
-			    	"NOTE: local %s checksum matches -- using it\n",
+			if (CRASHDEBUG(1))
+				error(NOTE, 
+			    	    "local %s checksum matches -- using it\n",
 					local);
 			strcpy(rfp->local, local);
 			return TRUE;
@@ -2641,7 +2790,7 @@ dumpfile_save:
 		return FALSE;
 	}
 
-	if (!(pc->flags & (REM_MCLXCD|REM_LKCD|REM_S390D|REM_S390XD))) {
+	if (!(REMOTE_DUMPFILE())) {
                 error(INFO, "%s is not a dumpfile\n", pc->server_memsrc);
 		return FALSE;
 	}
@@ -2720,7 +2869,7 @@ remote_lkcd_dump_init(void)
 
         BZERO(sendbuf, BUFSIZE);
         BZERO(recvbuf, BUFSIZE);
-        sprintf(sendbuf, "LKCD_DUMP_INIT %d", pc->rmfd);
+        sprintf(sendbuf, "LKCD_DUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
         send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
         recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
         if (strstr(recvbuf, "<FAIL>"))
@@ -2734,12 +2883,12 @@ remote_lkcd_dump_init(void)
 		p3 = strstr(p1, "\n");
 		*p3 = NULLCHAR;
 		tt->panic_task = htol(p1, FAULT_ON_ERROR, NULL);
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panic_task: %lx\n", tt->panic_task);
 	}
 	if (p2) {
 		p2 += strlen("panicmsg: ");
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panicmsg: %s", p2);
 	}
 
@@ -2772,12 +2921,12 @@ remote_s390_dump_init(void)
 		p3 = strstr(p1, "\n");
 		*p3 = NULLCHAR;
 		tt->panic_task = htol(p1, FAULT_ON_ERROR, NULL);
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panic_task: %lx\n", tt->panic_task);
 	}
 	if (p2) {
 		p2 += strlen("panicmsg: ");
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panicmsg: %s", p2);
 	}
 
@@ -2807,18 +2956,48 @@ remote_s390x_dump_init(void)
 		p3 = strstr(p1, "\n");
 		*p3 = NULLCHAR;
 		tt->panic_task = htol(p1, FAULT_ON_ERROR, NULL);
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panic_task: %lx\n", tt->panic_task);
 	}
 	if (p2) {
 		p2 += strlen("panicmsg: ");
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, "panicmsg: %s", p2);
 	}
 
         return TRUE;
 }
 
+static int
+remote_netdump_init(void)
+{
+        char sendbuf[BUFSIZE];
+        char recvbuf[BUFSIZE];
+        char *p1, *p2;
+	ulong panic_task;
+
+        BZERO(sendbuf, BUFSIZE);
+        BZERO(recvbuf, BUFSIZE);
+        sprintf(sendbuf, "NETDUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
+        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
+        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
+        if (strstr(recvbuf, "<FAIL>"))
+                return FALSE;
+
+        p1 = strstr(recvbuf, "panic_task: ");
+
+        if (p1) {
+                p1 += strlen("panic_task: ");
+                p2 = strstr(p1, "\n");
+                *p2 = NULLCHAR;
+                panic_task = htol(p1, FAULT_ON_ERROR, NULL);
+		tt->panic_task = panic_task;  /*  kludge */
+                if (CRASHDEBUG(1))
+                        fprintf(fp, "panic_task: %lx\n", tt->panic_task);
+        }
+
+        return TRUE;
+}
 
 uint
 remote_page_size(void)
@@ -2833,6 +3012,8 @@ remote_page_size(void)
 
 	if (REMOTE_ACTIVE())
         	sprintf(sendbuf, "PAGESIZE LIVE");
+	else if (pc->flags & REM_NETDUMP)
+        	sprintf(sendbuf, "PAGESIZE NETDUMP");
 	else if (pc->flags & REM_MCLXCD)
         	sprintf(sendbuf, "PAGESIZE MCLXCD");
 	else if (pc->flags & REM_LKCD)
@@ -3002,7 +3183,7 @@ copy_remote_gzip_file(struct remote_file *rfp, char *file, char *ttystr)
 				if (STRNEQ(bufptr, DONEMSG) ||
 				    STRNEQ(bufptr, DATAMSG)) {
 					strncpy(gziphdr, bufptr, DATA_HDRSIZE);
-					if (MCLXDEBUG(1))
+					if (CRASHDEBUG(1))
 						fprintf(fp, 
 				                "copy_remote_gzip_file: [%s]\n",
 							gziphdr);
@@ -3029,11 +3210,11 @@ copy_remote_gzip_file(struct remote_file *rfp, char *file, char *ttystr)
 		if (ttystr && (stat(pc->namelist, &sbuf) == 0)) {
 			pct = (sbuf.st_size * 100)/rfp->size;
 			fprintf(stderr, "\r%s%ld%%)%s", 
-				ttystr, pct, MCLXDEBUG(1) ? "\n" : "");
+				ttystr, pct, CRASHDEBUG(1) ? "\n" : "");
 		}
 	}
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "copy_remote_gzip_file: GZIP total: %ld\n", total);
 
 	pclose(pipe);
@@ -3134,7 +3315,9 @@ remote_free_memory(void)
         char recvbuf[BUFSIZE];
         char *type, *p1;
 
-	if (pc->flags & REM_MCLXCD)
+	if (pc->flags & REM_NETDUMP)
+		type = "NETDUMP";
+	else if (pc->flags & REM_MCLXCD)
 		type = "MCLXCD";
 	else if (pc->flags & REM_LKCD)
 		type = "LKCD";
@@ -3170,7 +3353,9 @@ remote_memory_used(void)
         char recvbuf[BUFSIZE];
         char *type, *p1;
 
-        if (pc->flags & REM_MCLXCD)
+        if (pc->flags & REM_NETDUMP)
+                type = "NETDUMP";
+        else if (pc->flags & REM_MCLXCD)
                 type = "MCLXCD";
         else if (pc->flags & REM_LKCD)
                 type = "LKCD";
@@ -3211,7 +3396,9 @@ remote_memory_dump(int verbose)
 	ulong ret, req, tot;
 	size_t dtot;
 
-        if (pc->flags & REM_MCLXCD)
+        if (pc->flags & REM_NETDUMP)
+                type = "NETDUMP";
+        else if (pc->flags & REM_MCLXCD)
                 type = "MCLXCD";
         else if (pc->flags & REM_LKCD)
                 type = "LKCD";
@@ -3249,7 +3436,7 @@ remote_memory_dump(int verbose)
 				if (STRNEQ(bufptr, DONEMSG) ||
 				    STRNEQ(bufptr, DATAMSG)) {
 					strncpy(datahdr, bufptr, DATA_HDRSIZE);
-					if (MCLXDEBUG(1))
+					if (CRASHDEBUG(1))
 						fprintf(fp, 
 					        "remote_memory_dump: [%s]\n",
 							datahdr);
@@ -3284,16 +3471,21 @@ remote_memory_dump(int verbose)
  *  a page in length.
  */
 int 
-remote_memory_read(int rfd, char *buffer, int cnt, ulong addr)
+remote_memory_read(int rfd, char *buffer, int cnt, physaddr_t address)
 {
         char sendbuf[BUFSIZE];
         char readbuf[READBUFSIZE];
 	char datahdr[DATA_HDRSIZE];
         char *bufptr, *p1;
 	int ret, req, tot;
+	ulong addr;
+
+	addr = (ulong)address;  /* may be virtual */
 
         BZERO(sendbuf, BUFSIZE);
-        if (pc->flags & REM_MCLXCD)
+        if (pc->flags & REM_NETDUMP) {
+                sprintf(sendbuf, "READ_NETDUMP %lx %d", addr, cnt);
+        } else if (pc->flags & REM_MCLXCD)
                 sprintf(sendbuf, "READ_MCLXCD %lx %d", addr, cnt);
         else if (pc->flags & REM_LKCD)
                 sprintf(sendbuf, "READ_LKCD %d %lx %d", rfd, addr, cnt);
@@ -3338,7 +3530,7 @@ remote_memory_read(int rfd, char *buffer, int cnt, ulong addr)
 	}
 
 	strncpy(datahdr, readbuf, DATA_HDRSIZE);
-	if (MCLXDEBUG(3))
+	if (CRASHDEBUG(3))
 		fprintf(fp, "remote_memory_read: [%s]\n", datahdr);
         p1 = strtok(datahdr, " ");  /* DONE */
         p1 = strtok(NULL, " ");     /* count */
@@ -3370,7 +3562,7 @@ remote_clear_pipeline(void)
 
 	if (FD_ISSET(pc->sockfd, &rfds)) {
         	ret = recv(pc->sockfd, recvbuf, pc->rcvbufsize, 0); 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			error(INFO, 
 	                    "remote_clear_pipeline(%d): %d bytes discarded\n", 
 				pc->sockfd, ret);
@@ -3400,7 +3592,7 @@ remote_execute(void)
 	if (QUOTED_STRING(command)) 
 		strip_ending_char(strip_beginning_char(command, '"'), '"');
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		error(INFO, "remote command: %s\n", command);
 
         BZERO(sendbuf, BUFSIZE);
@@ -3429,7 +3621,7 @@ remote_execute(void)
 				if (STRNEQ(bufptr, DONEMSG) ||
 				    STRNEQ(bufptr, DATAMSG)) {
 					strncpy(datahdr, bufptr, DATA_HDRSIZE);
-					if (MCLXDEBUG(1))
+					if (CRASHDEBUG(1))
 						fprintf(fp, 
 					        "remote_execute: [%s]\n",
 							datahdr);
@@ -3480,5 +3672,5 @@ remote_exit(void)
         recv(pc->sockfd, buf, BUFSIZE-1, 0);
 
 }
-#endif /* !_DAEMON_ */
+#endif /* !DAEMON */
 

@@ -1,6 +1,8 @@
 /* dev.c - core analysis suite 
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,13 +14,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.10 $
+ * CVS: $Revision: 1.9 $
  */
 
 #include "defs.h"
 
 static void dump_blkdevs(ulong);
 static void dump_chrdevs(ulong);
+static void dump_blkdevs_v2(ulong);
 static void do_pci(void); 
 static void do_io(void);
 static void do_resource_list(ulong, char *, int);
@@ -38,30 +41,38 @@ struct dev_table *dt = &dev_table;
 void
 dev_init(void)
 {
-        OFFSET(pci_dev_global_list) = MEMBER_OFFSET("pci_dev", "global_list");
-        OFFSET(pci_dev_next) = MEMBER_OFFSET("pci_dev", "next");
-        OFFSET(pci_dev_bus) = MEMBER_OFFSET("pci_dev", "bus");
-        OFFSET(pci_dev_devfn) = MEMBER_OFFSET("pci_dev", "devfn");
-        OFFSET(pci_dev_class) = MEMBER_OFFSET("pci_dev", "class");
-        OFFSET(pci_dev_device) = MEMBER_OFFSET("pci_dev", "device");
-        OFFSET(pci_dev_vendor) = MEMBER_OFFSET("pci_dev", "vendor");
-	OFFSET(pci_bus_number) = MEMBER_OFFSET("pci_bus", "number");
+        MEMBER_OFFSET_INIT(pci_dev_global_list, "pci_dev", "global_list");
+        MEMBER_OFFSET_INIT(pci_dev_next, "pci_dev", "next");
+        MEMBER_OFFSET_INIT(pci_dev_bus, "pci_dev", "bus");
+        MEMBER_OFFSET_INIT(pci_dev_devfn, "pci_dev", "devfn");
+        MEMBER_OFFSET_INIT(pci_dev_class, "pci_dev", "class");
+        MEMBER_OFFSET_INIT(pci_dev_device, "pci_dev", "device");
+        MEMBER_OFFSET_INIT(pci_dev_vendor, "pci_dev", "vendor");
+	MEMBER_OFFSET_INIT(pci_bus_number, "pci_bus", "number");
 
-	OFFSET(resource_entry_t_from) = 
-		MEMBER_OFFSET("resource_entry_t", "from");
-	OFFSET(resource_entry_t_num) = MEMBER_OFFSET("resource_entry_t", "num");
-	OFFSET(resource_entry_t_name) = 
-		MEMBER_OFFSET("resource_entry_t", "name");
-	OFFSET(resource_entry_t_next) = 
-		MEMBER_OFFSET("resource_entry_t", "next");
-	SIZE(resource_entry_t) = STRUCT_SIZE("resource_entry_t");
-
-	OFFSET(resource_name) = MEMBER_OFFSET("resource", "name");
-	OFFSET(resource_start) = MEMBER_OFFSET("resource", "start");
-	OFFSET(resource_end) = MEMBER_OFFSET("resource", "end");
-	OFFSET(resource_sibling) = MEMBER_OFFSET("resource", "sibling");
-	OFFSET(resource_child) = MEMBER_OFFSET("resource", "child");
-	SIZE(resource) = STRUCT_SIZE("resource");
+        STRUCT_SIZE_INIT(resource, "resource");
+	if ((VALID_STRUCT(resource) && symbol_exists("do_resource_list")) ||
+	    (VALID_STRUCT(resource) &&
+             symbol_exists("iomem_resource") &&
+             symbol_exists("ioport_resource"))) {
+        	MEMBER_OFFSET_INIT(resource_name, "resource", "name");
+        	MEMBER_OFFSET_INIT(resource_start, "resource", "start");
+        	MEMBER_OFFSET_INIT(resource_end, "resource", "end");
+        	MEMBER_OFFSET_INIT(resource_sibling, "resource", "sibling");
+        	MEMBER_OFFSET_INIT(resource_child, "resource", "child");
+	} else {
+		STRUCT_SIZE_INIT(resource_entry_t, "resource_entry_t");
+		if (VALID_SIZE(resource_entry_t)) {
+			MEMBER_OFFSET_INIT(resource_entry_t_from, 
+				"resource_entry_t", "from");
+			MEMBER_OFFSET_INIT(resource_entry_t_num, 
+				"resource_entry_t", "num");
+			MEMBER_OFFSET_INIT(resource_entry_t_name, 
+				"resource_entry_t", "name");
+			MEMBER_OFFSET_INIT(resource_entry_t_next, 
+				"resource_entry_t", "next");
+		}
+	}
 
 	dt->flags |= DEV_INIT;
 }
@@ -107,8 +118,8 @@ cmd_dev(void)
 
 #define MAX_DEV (255)
 
-char *chrdev_hdr = "CHRDEV  NAME        OPERATIONS\n";
-char *blkdev_hdr = "BLKDEV  NAME        OPERATIONS\n";
+char *chrdev_hdr = "CHRDEV    NAME         ";
+char *blkdev_hdr = "BLKDEV    NAME         ";
 
 /*
  *  Dump the character device data.
@@ -117,42 +128,155 @@ static void
 dump_chrdevs(ulong flags)
 {
 	int i;
-	ulong addr;
+	ulong addr, size;
 	char buf[BUFSIZE];
+	char buf2[BUFSIZE];
 	struct chrdevs {
 		ulong name;
 		ulong ops;
 	} chrdevs[MAX_DEV], *cp;
+	ulong *cdp;
+	char *char_device_struct_buf;
+	ulong next, savenext, name, fops; 
+	int major;
 
 	if (!symbol_exists("chrdevs"))
 		error(FATAL, "chrdevs: symbol does not exist\n");
 
 	addr = symbol_value("chrdevs");
-        readmem(addr, KVADDR, &chrdevs[0], sizeof(struct chrdevs) * MAX_DEV,
+	size = VALID_STRUCT(char_device_struct) ? 
+		sizeof(void *) : sizeof(struct chrdevs);
+
+        readmem(addr, KVADDR, &chrdevs[0], size * MAX_DEV,
         	"chrdevs array", FAULT_ON_ERROR);
 
-	fprintf(fp, chrdev_hdr);
+	fprintf(fp, "%s%s\n", chrdev_hdr, 
+		mkstring(buf, VADDR_PRLEN, CENTER, "OPERATIONS"));
+
+	if (VALID_STRUCT(char_device_struct))
+		goto char_device_struct;
+
 	for (i = 0, cp = &chrdevs[0]; i < MAX_DEV; i++, cp++) {
 		if (!cp->ops)
 			continue;
 
-		fprintf(fp, " %3d    ", i);
+		fprintf(fp, " %3d      ", i);
 		if (cp->name) {
                 	if (read_string(cp->name, buf, BUFSIZE-1))
-                        	fprintf(fp, "%-10s ", buf);
+                        	fprintf(fp, "%-11s ", buf);
                 	else
-                        	fprintf(fp, "%-10s ", "(unknown)");
+                        	fprintf(fp, "%-11s ", "(unknown)");
 			
 		} else
-                      	fprintf(fp, "%-10s ", "(unknown)");
+                      	fprintf(fp, "%-11s ", "(unknown)");
 
-		fprintf(fp, " %lx  ", cp->ops);
+		sprintf(buf, "%s%%%dlx  ", 
+			strlen("OPERATIONS") < VADDR_PRLEN ? " " : "  ",
+			VADDR_PRLEN);
+		fprintf(fp, buf, cp->ops);
 		value_to_symstr(cp->ops, buf, 0);
 		if (strlen(buf))
 			fprintf(fp, "<%s>", buf);
 
 		fprintf(fp, "\n");
 	}
+	return;
+
+char_device_struct:
+
+	char_device_struct_buf = GETBUF(SIZE(char_device_struct));
+	cdp = (ulong *)&chrdevs[0];
+
+	for (i = 0; i < MAX_DEV; i++, cdp++) {
+		if (!(*cdp))
+			continue;
+
+       		readmem(*cdp, KVADDR, char_device_struct_buf, 
+			SIZE(char_device_struct),
+                	"char_device_struct", FAULT_ON_ERROR);
+
+		next = ULONG(char_device_struct_buf + 
+			OFFSET(char_device_struct_next));
+		name = ULONG(char_device_struct_buf + 
+			OFFSET(char_device_struct_name));
+                if (name) {
+                	if (!read_string(name, buf, BUFSIZE-1))
+                                 sprintf(buf, "(unknown)");
+                } else
+                        sprintf(buf, "(unknown)");
+		fops = ULONG(char_device_struct_buf + 
+			OFFSET(char_device_struct_fops));
+		major = INT(char_device_struct_buf + 
+			OFFSET(char_device_struct_major));
+
+		fprintf(fp, " %3d      ", major);
+                fprintf(fp, "%-12s ", buf);
+		if (!fops) { 
+                	sprintf(buf2, "%s%%%ds  ",
+                        	strlen("OPERATIONS") < VADDR_PRLEN ? " " : "  ",
+                        	VADDR_PRLEN);
+                	fprintf(fp, buf2, "(none)");
+		} else {
+                	sprintf(buf2, "%s%%%dlx  ",
+                        	strlen("OPERATIONS") < VADDR_PRLEN ? " " : "  ",
+                        	VADDR_PRLEN);
+                	fprintf(fp, buf2, fops);
+                	value_to_symstr(fops, buf2, 0);
+                	if (strlen(buf2))
+                        	fprintf(fp, "<%s>", buf2);
+		}
+		fprintf(fp, "\n");
+
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+		    	    "%lx: major: %d name: %s next: %lx fops: %lx\n",
+				*cdp, major, buf, next, fops);
+
+		while (next) {
+       			readmem(savenext = next, KVADDR, char_device_struct_buf,
+				SIZE(char_device_struct),
+                		"char_device_struct", FAULT_ON_ERROR);
+
+	                next = ULONG(char_device_struct_buf +
+	                        OFFSET(char_device_struct_next));
+	                name = ULONG(char_device_struct_buf +
+	                        OFFSET(char_device_struct_name));
+	                if (name) {
+	                        if (!read_string(name, buf, BUFSIZE-1))
+	                                 sprintf(buf, "(unknown)");
+	                } else
+	                        sprintf(buf, "(unknown)");
+	                fops = ULONG(char_device_struct_buf +
+	                        OFFSET(char_device_struct_fops));
+	                major = INT(char_device_struct_buf +
+	                        OFFSET(char_device_struct_major));
+
+			fprintf(fp, " %3d      ", major);
+                	fprintf(fp, "%-12s ", buf);
+			if (!fops) {
+                		sprintf(buf2, "%s%%%ds  ",
+                        		strlen("OPERATIONS") < VADDR_PRLEN ? 
+					" " : "  ", VADDR_PRLEN);
+                		fprintf(fp, buf2, "(none)");
+			} else { 
+                		sprintf(buf2, "%s%%%dlx  ",
+                        		strlen("OPERATIONS") < VADDR_PRLEN ? 
+					" " : "  ", VADDR_PRLEN);
+                		fprintf(fp, buf2, fops);
+                		value_to_symstr(fops, buf2, 0);
+                		if (strlen(buf2))
+                        		fprintf(fp, "<%s>", buf2);
+			}
+                	fprintf(fp, "\n");
+	
+			if (CRASHDEBUG(1))
+	                	fprintf(fp,
+	                        "%lx: major: %d name: %s next: %lx fops: %lx\n",
+	                        	savenext, major, buf, next, fops);
+		}
+	}
+
+	FREEBUF(char_device_struct_buf);
 }
 
 
@@ -170,35 +294,213 @@ dump_blkdevs(ulong flags)
                 ulong ops;
         } blkdevs[MAX_DEV], *bp;
 
+        if (symbol_exists("all_bdevs")) {
+                dump_blkdevs_v2(flags);
+                return;
+        }
+
 	if (!symbol_exists("blkdevs"))
-		error(FATAL, "blkdevs: symbol does not exist\n");
+		error(FATAL, "blkdevs or all_bdevs: symbols do not exist\n");
 
 	addr = symbol_value("blkdevs");
         readmem(addr, KVADDR, &blkdevs[0], sizeof(struct blkdevs) * MAX_DEV,
                 "blkdevs array", FAULT_ON_ERROR);
 
-	fprintf(fp, blkdev_hdr);
+	fprintf(fp, "%s%s\n", blkdev_hdr, 
+		mkstring(buf, VADDR_PRLEN, CENTER, "OPERATIONS"));
+
 	for (i = 0, bp = &blkdevs[0]; i < MAX_DEV; i++, bp++) {
 		if (!bp->ops)
 			continue;
 
-		fprintf(fp, " %3d    ", i);
+		fprintf(fp, " %3d      ", i);
                 if (bp->name) {
                         if (read_string(bp->name, buf, BUFSIZE-1))
-                                fprintf(fp, "%-10s ", buf);
+                                fprintf(fp, "%-11s ", buf);
                         else
-                                fprintf(fp, "%-10s ", "(unknown)");
+                                fprintf(fp, "%-11s ", "(unknown)");
 
                 } else 
-                        fprintf(fp, "%-10s ", "(unknown)");
+                        fprintf(fp, "%-11s ", "(unknown)");
 
-                fprintf(fp, " %lx  ", bp->ops);
+		sprintf(buf, "%s%%%dlx  ", 
+			strlen("OPERATIONS") < VADDR_PRLEN ? " " : "  ",
+			VADDR_PRLEN);
+		fprintf(fp, buf, bp->ops);
+
 		value_to_symstr(bp->ops, buf, 0);
 		if (strlen(buf))
 			fprintf(fp, "<%s>", buf);
 
 		fprintf(fp, "\n");
 	}
+}
+
+/*
+ *  block device dump for 2.6 
+ */
+static void
+dump_blkdevs_v2(ulong flags)
+{
+        struct list_data list_data, *ld;
+	ulong *major_fops, *bdevlist, *gendisklist, *majorlist;
+	int i, j, bdevcnt, len;
+	char *block_device_buf, *gendisk_buf, *blk_major_name_buf;
+	ulong next, savenext, fops; 
+	int major, total;
+	char buf[BUFSIZE];
+
+	if (!symbol_exists("major_names")) 
+		error(FATAL, 
+			"major_names[] array doesn't exist in this kernel\n");
+
+	len = get_array_length("major_names", NULL, 0);
+
+	block_device_buf = GETBUF(SIZE(block_device));
+	gendisk_buf = GETBUF(SIZE(gendisk));
+
+        ld = &list_data;
+        BZERO(ld, sizeof(struct list_data));
+
+	get_symbol_data("all_bdevs", sizeof(void *), &ld->start);
+	ld->end = symbol_value("all_bdevs");
+        ld->list_head_offset = OFFSET(block_device_bd_list);
+
+        hq_open();
+        bdevcnt = do_list(ld);
+        bdevlist = (ulong *)GETBUF(bdevcnt * sizeof(ulong));
+        gendisklist = (ulong *)GETBUF(bdevcnt * sizeof(ulong));
+        bdevcnt = retrieve_list(bdevlist, bdevcnt);
+        hq_close();
+
+	total = MAX(len, bdevcnt);
+	major_fops = (ulong *)GETBUF(sizeof(void *) * total);
+
+	/*
+	 *  go through the block_device list, emulating:
+	 *
+	 *      ret += bdev->bd_inode->i_mapping->nrpages;
+	 */
+	for (i = 0; i < bdevcnt; i++) {
+                readmem(bdevlist[i], KVADDR, block_device_buf, 
+			SIZE(block_device), "block_device buffer", 
+			FAULT_ON_ERROR);
+		gendisklist[i] = ULONG(block_device_buf + 
+			OFFSET(block_device_bd_disk));
+		if (CRASHDEBUG(1))
+			fprintf(fp, "[%d] %lx -> %lx\n", 
+				i, bdevlist[i], gendisklist[i]);
+	}
+
+	for (i = 1; i < bdevcnt; i++) {
+		for (j = 0; j < i; j++) {
+			if (gendisklist[i] == gendisklist[j]) 
+				gendisklist[i] = 0;
+		}
+	}
+
+	for (i = 0; i < bdevcnt; i++) {
+		if (!gendisklist[i]) 
+			continue;
+                readmem(gendisklist[i], KVADDR, gendisk_buf, 
+			SIZE(gendisk), "gendisk buffer", 
+			FAULT_ON_ERROR);
+		fops = ULONG(gendisk_buf + OFFSET(gendisk_fops));
+		major = UINT(gendisk_buf + OFFSET(gendisk_major));
+		strncpy(buf, gendisk_buf + OFFSET(gendisk_disk_name), 32);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%lx: name: [%s] major: %d fops: %lx\n", 
+				gendisklist[i], buf, major, fops);	
+
+		if (fops && (major < total))
+			major_fops[major] = fops;
+	}
+
+	FREEBUF(bdevlist);
+	FREEBUF(gendisklist);
+	FREEBUF(block_device_buf);
+	FREEBUF(gendisk_buf);
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "major_names[%d]\n", len);
+	majorlist = (ulong *)GETBUF(len * sizeof(void *));
+	blk_major_name_buf = GETBUF(SIZE(blk_major_name));
+	readmem(symbol_value("major_names"), KVADDR, &majorlist[0], 
+		sizeof(void *) * len, "major_names array", FAULT_ON_ERROR);
+
+	fprintf(fp, "%s%s\n", blkdev_hdr, 
+		mkstring(buf, VADDR_PRLEN, CENTER, "OPERATIONS"));
+
+	for (i = 0; i < len; i++) {
+		if (!majorlist[i])
+			continue;
+
+                readmem(majorlist[i], KVADDR, blk_major_name_buf, 
+			SIZE(blk_major_name), "blk_major_name buffer", 
+			FAULT_ON_ERROR);
+		
+		major = UINT(blk_major_name_buf + 
+			OFFSET(blk_major_name_major));
+		buf[0] = NULLCHAR;
+		strncpy(buf, blk_major_name_buf + 
+			OFFSET(blk_major_name_name), 16);
+		next = ULONG(blk_major_name_buf +
+                        OFFSET(blk_major_name_next));
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+		    	    "[%d] %lx major: %d name: %s next: %lx fops: %lx\n",
+				i, majorlist[i], major, buf, next, 
+				major_fops[major]);
+
+                fprintf(fp, " %3d      ", major);
+                fprintf(fp, "%-12s ", strlen(buf) ? buf : "(unknown)");
+		if (major_fops[major]) {
+                	sprintf(buf, "%s%%%dlx  ",
+                        	strlen("OPERATIONS") < VADDR_PRLEN ? " " : "  ",
+                        	VADDR_PRLEN);
+                	fprintf(fp, buf, major_fops[major]);
+                	value_to_symstr(major_fops[major], buf, 0);
+                	if (strlen(buf))
+                        	fprintf(fp, "<%s>", buf);
+		} else 
+			fprintf(fp, " (unknown)");
+                fprintf(fp, "\n");
+
+		while (next) {
+                	readmem(savenext = next, KVADDR, blk_major_name_buf, 
+				SIZE(blk_major_name), "blk_major_name buffer", 
+				FAULT_ON_ERROR);
+                	major = UINT(blk_major_name_buf +
+                        	OFFSET(blk_major_name_major));
+                	strncpy(buf, blk_major_name_buf +
+                        	OFFSET(blk_major_name_name), 16);
+                	next = ULONG(blk_major_name_buf +
+                        	OFFSET(blk_major_name_next));
+			if (CRASHDEBUG(1))
+                		fprintf(fp, 
+			    "[%d] %lx major: %d name: %s next: %lx fops: %lx\n",
+                        		i, savenext, major, buf, next, 
+					major_fops[major]);
+
+                	fprintf(fp, " %3d      ", major);
+                	fprintf(fp, "%-12s ", strlen(buf) ? buf : "(unknown)");
+                	if (major_fops[major]) {
+                        	sprintf(buf, "%s%%%dlx  ",
+                                	strlen("OPERATIONS") < VADDR_PRLEN ? 
+						" " : "  ", VADDR_PRLEN);
+                        	fprintf(fp, buf, major_fops[major]);
+                        	value_to_symstr(major_fops[major], buf, 0);
+                        	if (strlen(buf))
+                                	fprintf(fp, "<%s>", buf);
+                	} else
+                        	fprintf(fp, " (unknown)");
+			fprintf(fp, "\n");
+		}
+	}
+	
+	FREEBUF(majorlist);
+	FREEBUF(major_fops);
+	FREEBUF(blk_major_name_buf);
 }
 
 void
@@ -233,6 +535,8 @@ do_io(void)
 	if (symbol_exists("get_ioport_list"))   /* linux 2.2 */
 		goto ioport_list;
 	if (symbol_exists("do_resource_list"))  /* linux 2.4 */
+		goto resource_list;
+	if (symbol_exists("iomem_resource") && symbol_exists("ioport_resource"))
 		goto resource_list;
 	return;
 
@@ -343,10 +647,10 @@ do_resource_list(ulong first_entry, char *resource_buf, int size)
 	switch (size)
 	{
 	case 4:
-		fmt = "%lx  %04lx-%04lx";
+		fmt = "%8lx  %04lx-%04lx";
 		break;
 	case 8:
-		fmt = "%lx  %08lx-%08lx";
+		fmt = "%8lx  %08lx-%08lx";
 		break;
 	}
 	wrap = VADDR_PRLEN + 2 + ((size*2)+1) + 2;
@@ -403,7 +707,7 @@ do_resource_list(ulong first_entry, char *resource_buf, int size)
 
 #ifdef USE_2_2_17_PCI_H
 /*
- *	$Id: dev.c,v 1.10 2002/01/17 16:11:14 anderson Exp $
+ *	$Id: dev.c,v 1.9 2004/04/07 20:13:52 anderson Exp $
  *
  *	PCI defines and function prototypes
  *	Copyright 1994, Drew Eckhardt
@@ -1661,7 +1965,7 @@ do_pci(void)
 
 	BZERO(&pcilist_data, sizeof(struct list_data));
 
-	if (VALID_OFFSET(pci_dev_global_list)) {
+	if (VALID_MEMBER(pci_dev_global_list)) {
                 get_symbol_data("pci_devices", sizeof(void *), &tmp);
                 readmem(tmp + OFFSET(list_head_next), KVADDR,
                         &pcilist_data.start, sizeof(void *), "pci devices",

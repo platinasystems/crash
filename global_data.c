@@ -1,6 +1,8 @@
 /* global_data.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +27,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.20 $ $Date: 2002/01/15 21:22:29 $
+ * CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:05:42 $
  */
 
 #include "defs.h"
@@ -137,8 +139,9 @@ struct extension_table *extension_table = NULL;
 
 /*
  *  The offset_table and size_table structure contents are referenced
- *  through several OFFSET- and SIZE-related macros.
+ *  through several OFFSET- and SIZE-related macros.  The array_table
+ *  is a shortcut used by get_array_length().
  */
 struct offset_table offset_table = { 0 };
 struct size_table size_table = { 0 };
-
+struct array_table array_table = { 0 };

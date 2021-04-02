@@ -1,6 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,14 +27,20 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.51 $ $Date: 2002/01/29 22:20:12 $
+ * CVS: $Revision: 1.36 $ $Date: 2004/11/10 21:02:28 $
  */
 
 #include "defs.h"
+#include <linux/major.h>
 
 static void show_mounts(ulong, int);
 static int find_booted_kernel(void);
-static char **build_searchdirs(int);
+static int find_booted_system_map(void);
+static int verify_utsname(char *);
+static char **build_searchdirs(int, int *);
+static int redhat_kernel_directory_v1(char *);
+static int redhat_kernel_directory_v2(char *);
+static int redhat_debug_directory(char *);
 static int file_dump(ulong, ulong, ulong, int, int);
 static ulong *create_dentry_array(ulong, int *);
 static void show_fuser(char *, char *);
@@ -42,6 +50,14 @@ static void memory_source_init(void);
 static int get_pathname_component(ulong, ulong, int, char *, char *);
 static ulong *get_mount_list(int *);
 char *inode_type(char *, char *);
+static void match_proc_version(void);
+static void get_live_memory_source(void);
+static int memory_driver_module_loaded(int *);
+static int insmod_memory_driver_module(void);
+static int get_memory_driver_dev(dev_t *);
+static int memory_driver_init(void);
+static int create_memory_device(dev_t);
+static void *radix_tree_lookup(ulong, ulong, int);
 
 #define DENTRY_CACHE (20)
 #define INODE_CACHE  (20)
@@ -89,22 +105,42 @@ fd_init(void)
 	if (REMOTE()) 
 		remote_fd_init();
 	else {
+		if (pc->namelist && pc->namelist_debug && pc->system_map) {
+			error(INFO, 
+                "too many namelist options:\n       %s\n       %s\n       %s\n",
+				pc->namelist, pc->namelist_debug, 
+				pc->system_map);
+			program_usage(SHORT_FORM);
+		}
+
 		if (pc->namelist) {
 			if (!pc->dumpfile && !get_proc_version())
 	                	error(INFO, "/proc/version: %s\n", 
 					strerror(errno));
+		} else {
+			if (pc->dumpfile) {
+				error(INFO, "namelist argument required\n");
+				program_usage(SHORT_FORM);
+			}
+			if (!find_booted_kernel())
+	                	program_usage(SHORT_FORM);
 		}
-		else if (!pc->namelist && !find_booted_kernel())
-	                program_usage();
 	
-		if (!pc->dumpfile) 
-			pc->flags |= LIVE_SYSTEM|DEVMEM;
+		if (!pc->dumpfile) {
+			pc->flags |= LIVE_SYSTEM;
+			get_live_memory_source();
+		}
 	
 		if ((pc->nfd = open(pc->namelist, O_RDONLY)) < 0) 
 			error(FATAL, "%s: %s\n", pc->namelist, strerror(errno));
 		else {
 			close(pc->nfd);
 			pc->nfd = -1;
+		}
+
+		if (ACTIVE() && !(pc->namelist_debug || pc->system_map)) {
+			memory_source_init();
+			match_proc_version();
 		}
 	
 	}
@@ -125,12 +161,33 @@ memory_source_init(void)
 		return;
 
         if (ACTIVE()) {
-                if ((pc->mfd = open("/dev/mem", O_RDWR)) < 0) {
-                        if ((pc->mfd = open("/dev/mem", O_RDONLY)) < 0)
-                                error(FATAL, "/dev/mem: %s\n",
-                                        strerror(errno));
-                } else
-                        pc->flags |= MFD_RDWR;
+		if (pc->mfd != -1)  /* already been here */
+			return;
+
+		if (!STREQ(pc->live_memsrc, "/dev/mem") &&
+		     STREQ(pc->live_memsrc, pc->memory_device)) {
+			if (memory_driver_init())
+				return;
+
+			error(INFO, "cannot initialize crash memory driver\n");
+			error(INFO, "using /dev/mem\n\n");
+			pc->flags &= ~MEMMOD;
+			pc->flags |= DEVMEM;
+			pc->readmem = read_dev_mem;
+			pc->writemem = write_dev_mem;
+			pc->live_memsrc = "/dev/mem";
+		} 
+
+		if (STREQ(pc->live_memsrc, "/dev/mem")) {
+	                if ((pc->mfd = open("/dev/mem", O_RDWR)) < 0) {
+	                        if ((pc->mfd = open("/dev/mem", O_RDONLY)) < 0)
+	                                error(FATAL, "/dev/mem: %s\n",
+	                                        strerror(errno));
+	                } else
+	                        pc->flags |= MFD_RDWR;
+		} else
+			error(FATAL, "unknown memory device: %s\n",
+				pc->live_memsrc);
 
 		return;
         } 
@@ -140,26 +197,30 @@ memory_source_init(void)
 	        	error(FATAL, "%s: %s\n", pc->dumpfile, 
 				strerror(ENOENT));
 	
-		if (!(pc->flags & (MCLXCD|LKCD|S390D|S390XD))) 
+		if (!(pc->flags & DUMPFILE_TYPES)) 
 			error(FATAL, "%s: dump format not supported!\n",
 				pc->dumpfile);
 	
-		if (pc->flags & LKCD) {
+                if (pc->flags & NETDUMP) {
+                        if (!netdump_init(pc->dumpfile, fp))
+                                error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
+		} else if (pc->flags & NETDUMP) {
+                        if (!diskdump_init(pc->dumpfile, fp))
+                                error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
+                } else if (pc->flags & LKCD) {
 	        	if ((pc->dfd = open(pc->dumpfile, O_RDONLY)) < 0)
 	                	error(FATAL, "%s: %s\n", pc->dumpfile, 
 					strerror(errno));
-			if (!lkcd_dump_init(fp, pc->dfd))
+			if (!lkcd_dump_init(fp, pc->dfd, pc->dumpfile))
 	                	error(FATAL, "%s: initialization failed\n", 
 					pc->dumpfile);
-		}
-
-		if (pc->flags & S390D) { 
+		} else if (pc->flags & S390D) { 
 			if (!s390_dump_init(pc->dumpfile))
 				error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
-		}
-
-		if (pc->flags & S390XD) {
+		} else if (pc->flags & S390XD) {
 			if (!s390x_dump_init(pc->dumpfile))
 				error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
@@ -167,16 +228,64 @@ memory_source_init(void)
 	}
 }
 
+/*
+ *  If only a namelist argument is entered for a live system, and the
+ *  version string doesn't match /proc/version, try to avert a failure
+ *  by assigning it to a matching System.map.
+ */
+static void
+match_proc_version(void)
+{
+	char command[BUFSIZE];
+	char buffer[BUFSIZE];
+	FILE *pipe;
+	int found;
+
+	if (pc->flags & KERNEL_DEBUG_QUERY)
+		return;
+
+	if (!strlen(kt->proc_version)) 
+		return;
+
+        sprintf(command, "/usr/bin/strings %s", pc->namelist);
+        if ((pipe = popen(command, "r")) == NULL) {
+                error(INFO, "%s: %s\n", pc->namelist, strerror(errno));
+                return;
+        }
+
+	found = FALSE;
+        while (fgets(buffer, BUFSIZE-1, pipe)) {
+		if (!strstr(buffer, "Linux version 2."))
+			continue;
+
+                if (STREQ(buffer, kt->proc_version)) 
+                	found = TRUE;
+		break;
+        }
+        pclose(pipe);
+
+	if (found) {
+                if (CRASHDEBUG(1)) {
+			fprintf(fp, "/proc/version:\n%s", kt->proc_version);
+			fprintf(fp, "%s:\n%s", pc->namelist, buffer);
+		}
+		return;
+	}
+
+	if (find_booted_system_map()) 
+                pc->flags |= SYSMAP;
+}
+
 
 #define CREATE  1
 #define DESTROY 0
-#define DEFAULT_SEARCHDIRS 4
+#define DEFAULT_SEARCHDIRS 5
 
 static char **
-build_searchdirs(int create)
+build_searchdirs(int create, int *preferred)
 {
 	int i;
-	int cnt;
+	int cnt, start;
 	DIR *dirp;
         struct dirent *dp;
 	char dirbuf[BUFSIZE];
@@ -184,11 +293,11 @@ build_searchdirs(int create)
 	static char *default_searchdirs[DEFAULT_SEARCHDIRS+1] = {
         	"/usr/src/linux/",
         	"/boot/",
-		"/boot/efi/",
+	        "/boot/efi/redhat",
+		"/boot/efi/EFI/redhat",
         	"/",
         	NULL
 	};
-
 
 	if (!create) {
 		if (searchdirs) {
@@ -199,7 +308,15 @@ build_searchdirs(int create)
 		return NULL;
 	}
 
-	cnt = DEFAULT_SEARCHDIRS;   
+	if (preferred)
+		*preferred = 0;
+
+	/*
+	 *  Allow, at a minimum, the defaults plus an extra three directories 
+	 *  for the two possible /usr/src/redhat/BUILD/kernel-xxx locations 
+	 *  plus the Red Hat debug directory.
+	 */  
+	cnt = DEFAULT_SEARCHDIRS + 3;  
 
         if ((dirp = opendir("/usr/src"))) {
                 for (dp = readdir(dirp); dp != NULL; dp = readdir(dirp)) 
@@ -212,6 +329,7 @@ build_searchdirs(int create)
 			closedir(dirp);
 			return default_searchdirs;
 		} 
+		BZERO(searchdirs, cnt * sizeof(char *));
 
 		for (i = 0; i < DEFAULT_SEARCHDIRS; i++) 
 			searchdirs[i] = default_searchdirs[i];
@@ -221,6 +339,7 @@ build_searchdirs(int create)
 
         	for (dp = readdir(dirp); dp != NULL; dp = readdir(dirp)) {
 			if (STREQ(dp->d_name, "linux") ||
+			    STREQ(dp->d_name, "redhat") ||
 			    STREQ(dp->d_name, ".") ||
 			    STREQ(dp->d_name, ".."))
 				continue;
@@ -241,17 +360,136 @@ build_searchdirs(int create)
 			sprintf(searchdirs[cnt], "%s/", dirbuf); 
 			cnt++;
 		}
-		searchdirs[cnt] = NULL;
+
 		closedir(dirp);
+
+		searchdirs[cnt] = NULL;
 	}
 
-	for (i = 0; searchdirs[i]; i++) {
-		if (MCLXDEBUG(1))
-			fprintf(fp, "searchdirs[%d]: %s\n", i, searchdirs[i]);
-		console("searchdirs[%d]: %s\n", i, searchdirs[i]);
+        if (redhat_kernel_directory_v1(dirbuf)) {
+                if ((searchdirs[cnt] = (char *) 
+		    malloc(strlen(dirbuf)+2)) == NULL) {
+                        error(INFO, 
+			    "/usr/src/redhat directory entry malloc: %s\n",
+                        	strerror(errno));
+                } else {
+                        sprintf(searchdirs[cnt], "%s/", dirbuf);
+                        cnt++;
+                }
+        }
+
+        if (redhat_kernel_directory_v2(dirbuf)) {
+                if ((searchdirs[cnt] = (char *)
+                    malloc(strlen(dirbuf)+2)) == NULL) {
+                        error(INFO,
+                            "/usr/src/redhat directory entry malloc: %s\n",
+                                strerror(errno));
+                } else {
+                        sprintf(searchdirs[cnt], "%s/", dirbuf);
+                        cnt++;
+                }
+        }
+
+        if (redhat_debug_directory(dirbuf)) {
+                if ((searchdirs[cnt] = (char *)
+                     malloc(strlen(dirbuf)+2)) == NULL) {
+                         error(INFO, "%s directory entry malloc: %s\n",
+                                 dirbuf, strerror(errno));
+                } else {
+                         sprintf(searchdirs[cnt], "%s/", dirbuf);
+			if (preferred)
+				*preferred = cnt;
+                         cnt++;
+                }
+        }
+
+	searchdirs[cnt] = NULL;
+ 
+	if (CRASHDEBUG(1)) {
+		i = start = preferred ? *preferred : 0;
+		do {
+			fprintf(fp, "searchdirs[%d]: %s\n", 
+				i, searchdirs[i]);
+			if (++i == cnt) {
+				if (start != 0)
+					i = 0;
+				else
+					break;
+			}
+		} while (i != start);
 	}
 
 	return searchdirs;
+}
+
+static int
+redhat_kernel_directory_v1(char *buf)
+{
+	char *p1, *p2;
+
+	if (!strstr(kt->proc_version, "Linux version "))
+		return FALSE;
+
+	BZERO(buf, BUFSIZE);
+	sprintf(buf, "/usr/src/redhat/BUILD/kernel-");
+
+	p1 = &kt->proc_version[strlen("Linux version ")];
+	p2 = &buf[strlen(buf)];
+
+	while (((*p1 >= '0') && (*p1 <= '9')) || (*p1 == '.'))
+		*p2++ = *p1++;	
+
+	strcat(buf, "/linux");
+	return TRUE;
+}
+
+static int
+redhat_kernel_directory_v2(char *buf)
+{
+        char *p1, *p2;
+
+        if (!strstr(kt->proc_version, "Linux version "))
+                return FALSE;
+
+        BZERO(buf, BUFSIZE);
+        sprintf(buf, "/usr/src/redhat/BUILD/kernel-");
+
+        p1 = &kt->proc_version[strlen("Linux version ")];
+        p2 = &buf[strlen(buf)];
+
+        while (((*p1 >= '0') && (*p1 <= '9')) || (*p1 == '.'))
+                *p2++ = *p1++;
+
+        strcat(buf, "/linux-");
+
+        p1 = &kt->proc_version[strlen("Linux version ")];
+        p2 = &buf[strlen(buf)];
+
+        while (((*p1 >= '0') && (*p1 <= '9')) || (*p1 == '.'))
+                *p2++ = *p1++;
+
+        return TRUE;
+}
+
+
+static int
+redhat_debug_directory(char *buf)
+{
+        char *p1, *p2;
+
+        if (!strstr(kt->proc_version, "Linux version "))
+                return FALSE;
+
+        BZERO(buf, BUFSIZE);
+        sprintf(buf, "%s/", pc->redhat_debug_loc);
+
+        p1 = &kt->proc_version[strlen("Linux version ")];
+        p2 = &buf[strlen(buf)];
+
+        while (*p1 != ' ')
+                *p2++ = *p1++;
+
+        return TRUE;
 }
 
 /*
@@ -266,13 +504,14 @@ find_booted_kernel(void)
 	char kernel[BUFSIZE];
 	char command[BUFSIZE];
 	char buffer[BUFSIZE];
-	char *version;
 	char **searchdirs;
-	int i;
+	int i, preferred, wrapped;
         DIR *dirp;
         struct dirent *dp;
 	FILE *pipe;
 	int found;
+
+	pc->flags |= FINDKERNEL;
 
 	fflush(fp);
 
@@ -288,18 +527,29 @@ find_booted_kernel(void)
                 return FALSE;
 	}
 
-	version = kt->proc_version;
+        if (CRASHDEBUG(1))
+                fprintf(fp, "\nfind_booted_kernel: search for [%s]\n", 
+			kt->proc_version);
 
-        if (MCLXDEBUG(1))
-                console("\nfind_booted_kernel: search for [%s]\n", version);
+        searchdirs = build_searchdirs(CREATE, &preferred);
 
-        searchdirs = build_searchdirs(CREATE);
-
-	for (i = 0, found = FALSE; !found && searchdirs[i]; i++) { 
+	for (i = preferred, wrapped = found = FALSE; !found; i++) { 
+		if (!searchdirs[i]) {
+			if (preferred && !wrapped) {
+				wrapped = TRUE;
+				i = 0;
+			} else
+				break;
+		} else if (wrapped && (preferred == i))
+			break;
+	
 	        dirp = opendir(searchdirs[i]);
 		if (!dirp)
 			continue;
 	        for (dp = readdir(dirp); dp != NULL; dp = readdir(dirp)) {
+			if (dp->d_name[0] == '.')
+				continue;
+
 			sprintf(kernel, "%s%s", searchdirs[i], dp->d_name);
 
 			if (mount_point(kernel) ||
@@ -314,19 +564,15 @@ find_booted_kernel(void)
 				continue;
 			}
 
-			if (MCLXDEBUG(1)) 
+			if (CRASHDEBUG(1)) 
 				fprintf(fp, "find_booted_kernel: check: %s\n", 
 					kernel);
-			console("find_booted_kernel: check: %s\n", kernel);
 
 			while (fgets(buffer, BUFSIZE-1, pipe)) {
-				if (STREQ(buffer, version)) {
+				if (STREQ(buffer, kt->proc_version)) {
 					found = TRUE;
 					break;
 				}
-				if (MCLXDEBUG(1) && 
-				    strstr(buffer, "Linux version"))
-					console(buffer);
 			}
 			pclose(pipe);
 	
@@ -337,7 +583,7 @@ find_booted_kernel(void)
 	}
 
 	mount_point(DESTROY);
-	build_searchdirs(DESTROY);
+	build_searchdirs(DESTROY, NULL);
 
 	if (found) {
                 if ((pc->namelist = (char *)malloc
@@ -346,11 +592,9 @@ find_booted_kernel(void)
 				strerror(errno));
                 else {
                         strcpy(pc->namelist, kernel);
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				fprintf(fp, "find_booted_kernel: found: %s\n", 
 					pc->namelist);
-			console("find_booted_kernel: found: %s\n", 
-				pc->namelist);
                         return TRUE;
                 }
 	}
@@ -374,9 +618,9 @@ mount_point(char *name)
 	static char **mount_points;
         char *arglist[MAXARGS];
 	char buf[BUFSIZE];
-	char cmd[BUFSIZE];
+	char mntfile[BUFSIZE];
 	int argc, found;
-        FILE *pipe;
+        FILE *mp;
 
 	/*
 	 *  The first time through, stash a list of mount points.
@@ -386,31 +630,31 @@ mount_point(char *name)
 		found = mount_points_gathered = 0; 
 
         	if (file_exists("/proc/mounts", NULL))
-			sprintf(cmd, "/bin/cat /proc/mounts");
+			sprintf(mntfile, "/proc/mounts");
 		else if (file_exists("/etc/mtab", NULL))
-			sprintf(cmd, "/bin/cat /etc/mtab");
+			sprintf(mntfile, "/etc/mtab");
 		else
                 	return FALSE;
 
-        	if ((pipe = popen(cmd, "r")) == NULL)
+        	if ((mp = fopen(mntfile, "r")) == NULL)
                 	return FALSE;
 
-		while (fgets(buf, BUFSIZE, pipe)) {
+		while (fgets(buf, BUFSIZE, mp)) {
         		argc = parse_line(buf, arglist);
 			if (argc < 2)
 				continue;
 			found++;
 		}
-		pclose(pipe);
+		pclose(mp);
 
 		if (!(mount_points = (char **)malloc(sizeof(char *) * found)))
 			return FALSE;
 
-                if ((pipe = popen(cmd, "r")) == NULL) 
+                if ((mp = fopen(mntfile, "r")) == NULL) 
                         return FALSE;
 
 		i = 0;
-                while (fgets(buf, BUFSIZE, pipe) && 
+                while (fgets(buf, BUFSIZE, mp) && 
 		       (mount_points_gathered < found)) {
                         argc = parse_line(buf, arglist);
                         if (argc < 2)
@@ -421,9 +665,9 @@ mount_point(char *name)
                         	mount_points_gathered++, i++;
 			}
                 }
-        	pclose(pipe);
+        	pclose(mp);
 
-		if (MCLXDEBUG(2))
+		if (CRASHDEBUG(2))
 			for (i = 0; i < mount_points_gathered; i++)
 				fprintf(fp, "mount_points[%d]: %s (%lx)\n", 
 					i, mount_points[i], 
@@ -459,21 +703,165 @@ mount_point(char *name)
 int
 get_proc_version(void)
 {
-        FILE *pipe;
+        FILE *version;
+
+	if (strlen(kt->proc_version))  /* been here, done that... */
+		return TRUE;
 
         if (!file_exists("/proc/version", NULL)) 
                 return FALSE;
 
-        if ((pipe = popen("/bin/cat /proc/version", "r")) == NULL) 
+        if ((version = fopen("/proc/version", "r")) == NULL) 
                 return FALSE;
 
         if (fread(&kt->proc_version, sizeof(char), 
-	    	BUFSIZE-1, pipe) <= 0) 
+	    	BUFSIZE-1, version) <= 0) 
                 return FALSE;
         
-        pclose(pipe);
+        fclose(version);
 
 	return TRUE;
+}
+
+
+/*
+ *  Given a non-matching kernel namelist, try to find a System.map file
+ *  that has a system_utsname whose contents match /proc/version.
+ */
+static int
+find_booted_system_map(void)
+{
+	char system_map[BUFSIZE];
+	char **searchdirs;
+	int i;
+        DIR *dirp;
+        struct dirent *dp;
+	int found;
+
+	fflush(fp);
+
+	if (!file_exists("/proc/version", NULL)) {
+		error(INFO, 
+		    "/proc/version: %s: cannot determine booted System.map\n",
+			strerror(ENOENT));
+		return FALSE;
+	}
+
+	if (!get_proc_version()) {
+                error(INFO, "/proc/version: %s\n", strerror(errno));
+                return FALSE;
+	}
+
+	found = FALSE;
+
+	/*
+	 *  To avoid a search, try the obvious first.
+	 */
+	sprintf(system_map, "/boot/System.map");
+	if (file_readable(system_map) && verify_utsname(system_map)) {
+		found = TRUE;
+	} else {
+	        searchdirs = build_searchdirs(CREATE, NULL);
+	
+		for (i = 0; !found && searchdirs[i]; i++) { 
+		        dirp = opendir(searchdirs[i]);
+			if (!dirp)
+				continue;
+		        for (dp = readdir(dirp); dp != NULL; 
+			     dp = readdir(dirp)) {
+				if (!strstr(dp->d_name, "System.map"))
+					continue;
+	
+				sprintf(system_map, "%s%s", searchdirs[i], 
+					dp->d_name);
+	
+				if (mount_point(system_map) ||
+				    !file_readable(system_map) || 
+	                            !is_system_map(system_map))
+					continue;
+	
+				if (verify_utsname(system_map)) {
+					found = TRUE;
+					break;
+				}
+		        }
+			closedir(dirp);
+		}
+
+		mount_point(DESTROY);
+		build_searchdirs(DESTROY, NULL);
+	}
+
+	if (found) {
+                if ((pc->system_map = (char *)malloc
+		    (strlen(system_map)+1)) == NULL) 
+			error(FATAL, "booted system map name malloc: %s\n",
+				strerror(errno));
+                strcpy(pc->system_map, system_map);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "find_booted_system_map: found: %s\n", 
+				pc->system_map);
+                return TRUE;
+	}
+
+	error(INFO, 
+ "cannot find booted system map -- please enter namelist or system map\n\n");
+	return FALSE;
+}
+
+/*
+ *  Read the system_utsname from /dev/mem, based upon the address found
+ *  in the passed-in System.map file, and compare it to /proc/version.
+ */
+static int
+verify_utsname(char *system_map)
+{
+	char command[BUFSIZE];
+	char buffer[BUFSIZE];
+	FILE *pipe;
+	int found;
+	ulong value;
+	struct new_utsname new_utsname;
+
+	sprintf(command, "/usr/bin/strings %s", system_map);
+       	if ((pipe = popen(command, "r")) == NULL) 
+		return FALSE;
+	
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "verify_utsname: check: %s\n", system_map);
+
+	found = FALSE;
+	while (fgets(buffer, BUFSIZE-1, pipe)) {
+		if (strstr(buffer, "D system_utsname")) {
+			found = TRUE;
+			break;
+		}
+	}
+	pclose(pipe);
+
+	if (!found)
+		return FALSE;
+	
+	if (extract_hex(buffer, &value, NULLCHAR, TRUE) &&
+	    (READMEM(pc->mfd, &new_utsname, 
+	     sizeof(struct new_utsname), value, 
+	     VTOP(value)) > 0) && 
+	    ascii_string(new_utsname.release) &&
+	    ascii_string(new_utsname.version) &&
+	    STRNEQ(new_utsname.release, "2.") &&
+	    (strlen(new_utsname.release) > 4) &&
+	    (strlen(new_utsname.version) > 27)) {
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "release: [%s]\n", new_utsname.release);
+			fprintf(fp, "version: [%s]\n", new_utsname.version);
+		}
+		if (strstr(kt->proc_version, new_utsname.release) &&
+		    strstr(kt->proc_version, new_utsname.version)) {
+			return TRUE;
+		}
+	}
+
+	return FALSE;
 }
 
 /*
@@ -560,6 +948,56 @@ is_directory(char *file)
 }
 
 
+/*
+ *  Search a directory tree for filename, and if found, return a temporarily
+ *  allocated buffer containing the full pathname.   The "done" business is
+ *  protection against fgets() prematurely returning NULL before the find
+ *  command completes.  (I thought this was impossible until I saw it happen...)
+ *  When time permits, rewrite this doing the search by hand.
+ */
+char *
+search_directory_tree(char *directory, char *file)
+{
+	char command[BUFSIZE];
+	char buf[BUFSIZE];
+	char *retbuf;
+	FILE *pipe;
+	int done;
+
+	if (!file_exists("/usr/bin/find", NULL) || 
+	    !file_exists("/bin/echo", NULL) ||
+	    !is_directory(directory) ||
+	    (*file == '(')) 
+		return NULL;
+
+	sprintf(command, 
+            "/usr/bin/find %s -name %s -print; /bin/echo search done",
+		directory, file);
+
+        if ((pipe = popen(command, "r")) == NULL) {
+                error(INFO, "%s: %s\n", command, strerror(errno));
+                return NULL;
+        }
+
+	done = FALSE;
+	retbuf = NULL;
+
+        while (fgets(buf, BUFSIZE-1, pipe) || !done) {
+                if (STREQ(buf, "search done\n")) {
+                        done = TRUE;
+                        break;
+                }
+                if (!retbuf &&
+                    STREQ((char *)basename(strip_linefeeds(buf)), file)) {
+                        retbuf = GETBUF(strlen(buf)+1);
+                        strcpy(retbuf, buf);
+                }
+        }
+
+        pclose(pipe);
+	return retbuf;
+}
+ 
 /*
  *  Determine whether a file exists, and if so, if it's a tty.
  */
@@ -847,7 +1285,7 @@ show_mounts(ulong one_vfsmount, int flags)
 			}
 		}
 
-        	sprintf(mount_hdr, "%s %s %s %s DIRNAME\n",
+        	snprintf(mount_hdr, sizeof(mount_hdr), "%s %s %s %s DIRNAME\n",
                 	mkstring(buf1, VADDR_PRLEN, CENTER, "VFSMOUNT"),
                 	mkstring(buf2, VADDR_PRLEN, CENTER, "SUPERBLK"),
                 	mkstring(buf3, strlen("devpts"), LJUST, "TYPE"),
@@ -855,10 +1293,10 @@ show_mounts(ulong one_vfsmount, int flags)
 	}
 
 	if (flags == 0)
-		fprintf(fp, mount_hdr);
+		fprintf(fp, "%s", mount_hdr);
 
 	if ((flags & MOUNT_PRINT_FILES) &&
-	    (sb_s_files = OFFSET(super_block_s_files)) == INVALID_MEMBER) {
+	    (sb_s_files = OFFSET(super_block_s_files)) == INVALID_OFFSET) {
 		/*
 		 * No open files list in super_block (2.2).  
 		 * Use inuse_filps list instead.
@@ -876,7 +1314,7 @@ show_mounts(ulong one_vfsmount, int flags)
 		
 		devp = ULONG(vfsmount_buf +  OFFSET(vfsmount_mnt_devname));
 
-		if (VALID_OFFSET(vfsmount_mnt_dirname)) {
+		if (VALID_MEMBER(vfsmount_mnt_dirname)) {
 			dirp = ULONG(vfsmount_buf +  
 				OFFSET(vfsmount_mnt_dirname)); 
 		} else {
@@ -890,7 +1328,11 @@ show_mounts(ulong one_vfsmount, int flags)
 
 		if (flags)
 			fprintf(fp, mount_hdr);
-                fprintf(fp, "%lx %lx ", *vfsmnt, sbp);
+                fprintf(fp, "%s %s ",
+			mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, 
+			MKSTR(*vfsmnt)),
+			mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX, 
+			MKSTR(sbp)));
 
                 readmem(sbp, KVADDR, super_block_buf, SIZE(super_block),
                         "super_block buffer", FAULT_ON_ERROR);
@@ -910,7 +1352,7 @@ show_mounts(ulong one_vfsmount, int flags)
 			fprintf(fp, "%s ", mkstring(buf2, devlen, LJUST, 
 				"(unknown)"));
 
-		if (VALID_OFFSET(vfsmount_mnt_dirname)) {
+		if (VALID_MEMBER(vfsmount_mnt_dirname)) {
                 	if (read_string(dirp, buf1, BUFSIZE-1))
                         	fprintf(fp, "%-10s\n", buf1);
                 	else
@@ -993,17 +1435,41 @@ get_mount_list(int *cntptr)
 {
 	struct list_data list_data, *ld;
 	int mount_cnt;
-	ulong *mntlist;
+	ulong *mntlist, namespace, root;
+	struct task_context *tc;
 	
         ld = &list_data;
         BZERO(ld, sizeof(struct list_data));
-        get_symbol_data("vfsmntlist", sizeof(void *), &ld->start);
-        if (VALID_OFFSET(vfsmount_mnt_list)) {
-                ld->end = symbol_value("vfsmntlist");
+
+	if (symbol_exists("vfsmntlist")) {
+        	get_symbol_data("vfsmntlist", sizeof(void *), &ld->start);
+               	ld->end = symbol_value("vfsmntlist");
+	} else if (VALID_MEMBER(namespace_root)) {
+		if (!(tc = pid_to_context(1)))
+	 		tc = CURRENT_CONTEXT();
+
+        	readmem(tc->task + OFFSET(task_struct_namespace), KVADDR, 
+			&namespace, sizeof(void *), "task namespace", 
+			FAULT_ON_ERROR);
+        	if (!readmem(namespace + OFFSET(namespace_root), KVADDR, 
+			&root, sizeof(void *), "namespace root", 
+			RETURN_ON_ERROR|QUIET))
+			error(FATAL, "cannot determine mount list location!\n");
+
+		if (CRASHDEBUG(1))
+			console("namespace: %lx => root: %lx\n", 
+				namespace, root);
+
+        	ld->start = root + OFFSET(vfsmount_mnt_list);
+        	ld->end = namespace + OFFSET(namespace_list);
+	} else
+		error(FATAL, "cannot determine mount list location!\n");
+	
+        if (VALID_MEMBER(vfsmount_mnt_list)) 
                 ld->list_head_offset = OFFSET(vfsmount_mnt_list);
-        } else {
+        else 
                 ld->member_offset = OFFSET(vfsmount_mnt_next);
-        }
+        
         hq_open();
         mount_cnt = do_list(ld);
         mntlist = (ulong *)GETBUF(mount_cnt * sizeof(ulong));
@@ -1013,6 +1479,7 @@ get_mount_list(int *cntptr)
 	*cntptr = mount_cnt;
 	return mntlist;
 }
+
 
 /*
  *  Given a dentry, display its address, inode, super_block, pathname.
@@ -1046,12 +1513,13 @@ display_dentry_info(ulong dentry)
         if (inode) {
                 inode_buf = fill_inode_cache(inode);
                 superblock = ULONG(inode_buf + OFFSET(inode_i_sb));
-	}
+	} else
+		superblock = 0;
 
 	if (!inode || !superblock)
 		goto nopath;
 
-        if (VALID_OFFSET(file_f_vfsmnt)) {
+        if (VALID_MEMBER(file_f_vfsmnt)) {
 		mntlist = get_mount_list(&mount_cnt);
         	vfsmount_buf = GETBUF(SIZE(vfsmount));
 
@@ -1060,7 +1528,7 @@ display_dentry_info(ulong dentry)
                 	readmem(*vfsmnt, KVADDR, vfsmount_buf, SIZE(vfsmount),
                         	"vfsmount buffer", FAULT_ON_ERROR);
                 	sb = ULONG(vfsmount_buf + OFFSET(vfsmount_mnt_sb));
-			if (sb == superblock) {
+			if (superblock && (sb == superblock)) {
                 		get_pathname(dentry, pathname, 
 					BUFSIZE, 1, *vfsmnt);
 				found = TRUE;
@@ -1072,7 +1540,7 @@ display_dentry_info(ulong dentry)
                         readmem(vfs, KVADDR, vfsmount_buf, SIZE(vfsmount),
                                 "vfsmount buffer", FAULT_ON_ERROR);
                         sb = ULONG(vfsmount_buf + OFFSET(vfsmount_mnt_sb));
-                        if (sb == superblock) {
+                        if (superblock && (sb == superblock)) {
                                 get_pathname(dentry, pathname, BUFSIZE, 1, vfs);
                                 found = TRUE;
                         }
@@ -1082,7 +1550,7 @@ display_dentry_info(ulong dentry)
                         readmem(vfs, KVADDR, vfsmount_buf, SIZE(vfsmount),
                                 "vfsmount buffer", FAULT_ON_ERROR);
                         sb = ULONG(vfsmount_buf + OFFSET(vfsmount_mnt_sb));
-                        if (sb == superblock) {
+                        if (superblock && (sb == superblock)) {
                                 get_pathname(dentry, pathname, BUFSIZE, 1, vfs);
                                 found = TRUE;
                         }
@@ -1098,10 +1566,12 @@ display_dentry_info(ulong dentry)
 	}
 
 nopath:
-	fprintf(fp, "%lx%s%lx%s%s%s%s%s%s\n", 
-		dentry, space(MINSPACE), 
-		inode, space(MINSPACE),
-		mkstring(buf1, VADDR_PRLEN, CENTER|LONG_HEX, MKSTR(superblock)),
+	fprintf(fp, "%s%s%s%s%s%s%s%s%s\n",
+		mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(dentry)),
+		space(MINSPACE), 
+		mkstring(buf2, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(inode)),
+		space(MINSPACE),
+		mkstring(buf3, VADDR_PRLEN, CENTER|LONG_HEX, MKSTR(superblock)),
 		space(MINSPACE), 
 		inode_type(inode_buf, pathname),
 		space(MINSPACE), pathname);
@@ -1160,7 +1630,7 @@ inode_type(char *inode_buf, char *pathname)
 		} else {
 			if (symbol_exists("rdwr_pipe_fops") && 
 			    (i_fop_off = OFFSET(inode_i_fop)) > 0) {
-				 inode_i_op = ULONG(inode_buf + i_fop_off);
+				 inode_i_fop = ULONG(inode_buf + i_fop_off);
 				 if (inode_i_fop == 
 				     symbol_value("rdwr_pipe_fops")) { 
 					type = "PIPE";
@@ -1252,64 +1722,67 @@ create_dentry_array(ulong list_addr, int *count)
 void
 vfs_init(void)
 { 
-	OFFSET(task_struct_files) = MEMBER_OFFSET("task_struct", "files");
-	OFFSET(task_struct_fs) = MEMBER_OFFSET("task_struct", "fs");
-	OFFSET(fs_struct_root) = MEMBER_OFFSET("fs_struct", "root");
-	OFFSET(fs_struct_pwd) = MEMBER_OFFSET("fs_struct", "pwd");
-	OFFSET(fs_struct_rootmnt) = MEMBER_OFFSET("fs_struct", "rootmnt");
-	OFFSET(fs_struct_pwdmnt) = MEMBER_OFFSET("fs_struct", "pwdmnt");
-	OFFSET(files_struct_max_fds) = MEMBER_OFFSET("files_struct", "max_fds");
-	OFFSET(files_struct_max_fdset) = 
-		MEMBER_OFFSET("files_struct", "max_fdset");
-	OFFSET(files_struct_open_fds) = 
-		MEMBER_OFFSET("files_struct", "open_fds");
-	OFFSET(files_struct_open_fds_init) = 
-		MEMBER_OFFSET("files_struct", "open_fds_init");
-	OFFSET(files_struct_fd) = MEMBER_OFFSET("files_struct", "fd");
-	OFFSET(file_f_dentry) = MEMBER_OFFSET("file", "f_dentry");
-	OFFSET(file_f_vfsmnt) = MEMBER_OFFSET("file", "f_vfsmnt");
-	OFFSET(file_f_count) = MEMBER_OFFSET("file", "f_count");
-	OFFSET(dentry_d_inode) = MEMBER_OFFSET("dentry", "d_inode");
-	OFFSET(dentry_d_parent) = MEMBER_OFFSET("dentry", "d_parent");
-	OFFSET(dentry_d_covers) = MEMBER_OFFSET("dentry", "d_covers");
-	OFFSET(dentry_d_name) = MEMBER_OFFSET("dentry", "d_name");
-	OFFSET(dentry_d_iname) = MEMBER_OFFSET("dentry", "d_iname");
-	OFFSET(inode_i_mode) = MEMBER_OFFSET("inode", "i_mode");
-	OFFSET(inode_i_op) = MEMBER_OFFSET("inode", "i_op");
-	OFFSET(inode_i_sb) = MEMBER_OFFSET("inode", "i_sb");
-	OFFSET(inode_u) = MEMBER_OFFSET("inode", "u");
-	OFFSET(qstr_name) = MEMBER_OFFSET("qstr", "name");
-	OFFSET(qstr_len) = MEMBER_OFFSET("qstr", "len");
+        MEMBER_OFFSET_INIT(nlm_file_f_file, "nlm_file", "f_file");
+	MEMBER_OFFSET_INIT(task_struct_files, "task_struct", "files");
+	MEMBER_OFFSET_INIT(task_struct_fs, "task_struct", "fs");
+	MEMBER_OFFSET_INIT(fs_struct_root, "fs_struct", "root");
+	MEMBER_OFFSET_INIT(fs_struct_pwd, "fs_struct", "pwd");
+	MEMBER_OFFSET_INIT(fs_struct_rootmnt, "fs_struct", "rootmnt");
+	MEMBER_OFFSET_INIT(fs_struct_pwdmnt, "fs_struct", "pwdmnt");
+	MEMBER_OFFSET_INIT(files_struct_max_fds, "files_struct", "max_fds");
+	MEMBER_OFFSET_INIT(files_struct_max_fdset, "files_struct", "max_fdset");
+	MEMBER_OFFSET_INIT(files_struct_open_fds, "files_struct", "open_fds");
+	MEMBER_OFFSET_INIT(files_struct_open_fds_init,  
+		"files_struct", "open_fds_init");
+	MEMBER_OFFSET_INIT(files_struct_fd, "files_struct", "fd");
+	MEMBER_OFFSET_INIT(file_f_dentry, "file", "f_dentry");
+	MEMBER_OFFSET_INIT(file_f_vfsmnt, "file", "f_vfsmnt");
+	MEMBER_OFFSET_INIT(file_f_count, "file", "f_count");
+	MEMBER_OFFSET_INIT(dentry_d_inode, "dentry", "d_inode");
+	MEMBER_OFFSET_INIT(dentry_d_parent, "dentry", "d_parent");
+	MEMBER_OFFSET_INIT(dentry_d_covers, "dentry", "d_covers");
+	MEMBER_OFFSET_INIT(dentry_d_name, "dentry", "d_name");
+	MEMBER_OFFSET_INIT(dentry_d_iname, "dentry", "d_iname");
+	MEMBER_OFFSET_INIT(inode_i_mode, "inode", "i_mode");
+	MEMBER_OFFSET_INIT(inode_i_op, "inode", "i_op");
+	MEMBER_OFFSET_INIT(inode_i_sb, "inode", "i_sb");
+	MEMBER_OFFSET_INIT(inode_u, "inode", "u");
+	MEMBER_OFFSET_INIT(qstr_name, "qstr", "name");
+	MEMBER_OFFSET_INIT(qstr_len, "qstr", "len");
 
-	OFFSET(vfsmount_mnt_next) = MEMBER_OFFSET("vfsmount", "mnt_next");
-        OFFSET(vfsmount_mnt_devname) = MEMBER_OFFSET("vfsmount", "mnt_devname");
-        OFFSET(vfsmount_mnt_dirname) = MEMBER_OFFSET("vfsmount", "mnt_dirname");
-        OFFSET(vfsmount_mnt_sb) = MEMBER_OFFSET("vfsmount", "mnt_sb");
-        OFFSET(vfsmount_mnt_list) = MEMBER_OFFSET("vfsmount", "mnt_list");
-        OFFSET(vfsmount_mnt_parent) = MEMBER_OFFSET("vfsmount", "mnt_parent");
-        OFFSET(vfsmount_mnt_mountpoint) = 
-		MEMBER_OFFSET("vfsmount", "mnt_mountpoint");
+	MEMBER_OFFSET_INIT(vfsmount_mnt_next, "vfsmount", "mnt_next");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_devname, "vfsmount", "mnt_devname");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_dirname, "vfsmount", "mnt_dirname");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_sb, "vfsmount", "mnt_sb");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_list, "vfsmount", "mnt_list");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_parent, "vfsmount", "mnt_parent");
+        MEMBER_OFFSET_INIT(vfsmount_mnt_mountpoint, 
+		"vfsmount", "mnt_mountpoint");
+	MEMBER_OFFSET_INIT(namespace_root, "namespace", "root");
+	if (VALID_MEMBER(namespace_root)) {
+		MEMBER_OFFSET_INIT(namespace_list, "namespace", "list");
+		MEMBER_OFFSET_INIT(task_struct_namespace, 
+			"task_struct", "namespace");
+	}
 
-        OFFSET(super_block_s_dirty) = MEMBER_OFFSET("super_block", "s_dirty");
-        OFFSET(super_block_s_type) = MEMBER_OFFSET("super_block", "s_type");
-        OFFSET(file_system_type_name) = 
-		MEMBER_OFFSET("file_system_type", "name");
-	OFFSET(super_block_s_files) = MEMBER_OFFSET("super_block", "s_files");
-        OFFSET(nlm_file_f_file) = MEMBER_OFFSET("nlm_file", "f_file");
-        OFFSET(inode_i_flock) = MEMBER_OFFSET("inode", "i_flock");
-        OFFSET(file_lock_fl_owner) = MEMBER_OFFSET("file_lock", "fl_owner");
-        OFFSET(nlm_host_h_exportent) = MEMBER_OFFSET("nlm_host", "h_exportent");
-        OFFSET(svc_client_cl_ident) = MEMBER_OFFSET("svc_client", "cl_ident");
-	OFFSET(inode_i_fop) = MEMBER_OFFSET("inode","i_fop");
+        MEMBER_OFFSET_INIT(super_block_s_dirty, "super_block", "s_dirty");
+        MEMBER_OFFSET_INIT(super_block_s_type, "super_block", "s_type");
+        MEMBER_OFFSET_INIT(file_system_type_name, "file_system_type", "name");
+	MEMBER_OFFSET_INIT(super_block_s_files, "super_block", "s_files");
+        MEMBER_OFFSET_INIT(inode_i_flock, "inode", "i_flock");
+        MEMBER_OFFSET_INIT(file_lock_fl_owner, "file_lock", "fl_owner");
+        MEMBER_OFFSET_INIT(nlm_host_h_exportent, "nlm_host", "h_exportent");
+        MEMBER_OFFSET_INIT(svc_client_cl_ident, "svc_client", "cl_ident");
+	MEMBER_OFFSET_INIT(inode_i_fop, "inode","i_fop");
 
-	SIZE(umode_t) = STRUCT_SIZE("umode_t");
-	SIZE(dentry) = STRUCT_SIZE("dentry");
-	SIZE(files_struct) = STRUCT_SIZE("files_struct");
-	SIZE(file) = STRUCT_SIZE("file");
-	SIZE(inode) = STRUCT_SIZE("inode");
-	SIZE(vfsmount) = STRUCT_SIZE("vfsmount");
-	SIZE(fs_struct) = STRUCT_SIZE("fs_struct");
-	SIZE(super_block) = STRUCT_SIZE("super_block");
+	STRUCT_SIZE_INIT(umode_t, "umode_t");
+	STRUCT_SIZE_INIT(dentry, "dentry");
+	STRUCT_SIZE_INIT(files_struct, "files_struct");
+	STRUCT_SIZE_INIT(file, "file");
+	STRUCT_SIZE_INIT(inode, "inode");
+	STRUCT_SIZE_INIT(vfsmount, "vfsmount");
+	STRUCT_SIZE_INIT(fs_struct, "fs_struct");
+	STRUCT_SIZE_INIT(super_block, "super_block");
 
 	if (!(ft->file_cache = (char *)malloc(SIZE(file)*FILE_CACHE)))
 		error(FATAL, "cannot malloc file cache\n");
@@ -1317,6 +1790,18 @@ vfs_init(void)
 		error(FATAL, "cannot malloc dentry cache\n");
 	if (!(ft->inode_cache = (char *)malloc(SIZE(inode)*INODE_CACHE)))
 		error(FATAL, "cannot malloc inode cache\n");
+
+	if (symbol_exists("height_to_maxindex")) {
+		int tmp;
+		ARRAY_LENGTH_INIT(tmp, height_to_maxindex,
+                        "height_to_maxindex", NULL, 0);
+		STRUCT_SIZE_INIT(radix_tree_root, "radix_tree_root");
+		STRUCT_SIZE_INIT(radix_tree_node, "radix_tree_node");
+		MEMBER_OFFSET_INIT(radix_tree_root_height, 
+			"radix_tree_root","height");
+		MEMBER_OFFSET_INIT(radix_tree_root_rnode, 
+			"radix_tree_root","rnode");
+	}
 }
 
 void
@@ -1585,7 +2070,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 		root_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_root));
 
 		if (root_dentry) {
-			if (VALID_OFFSET(fs_struct_rootmnt)) {
+			if (VALID_MEMBER(fs_struct_rootmnt)) {
                 		vfsmnt = ULONG(fs_struct_buf +
                         		OFFSET(fs_struct_rootmnt));
 				get_pathname(root_dentry, root_pathname, 
@@ -1599,7 +2084,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 		pwd_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_pwd));
 
 		if (pwd_dentry) {
-			if (VALID_OFFSET(fs_struct_pwdmnt)) {
+			if (VALID_MEMBER(fs_struct_pwdmnt)) {
                 		vfsmnt = ULONG(fs_struct_buf +
                         		OFFSET(fs_struct_pwdmnt));
 				get_pathname(pwd_dentry, pwd_pathname, 
@@ -1619,12 +2104,13 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 				root_inode, root_pathname, pwd_inode,
 				pwd_pathname);
 		} else if (ref) {
-			sprintf(root_pwd, "ROOT: %s    CWD: %s \n", 
+			snprintf(root_pwd, sizeof(root_pwd),
+			     	"ROOT: %s    CWD: %s \n", 
 				root_pathname, pwd_pathname);
 			if (FILENAME_COMPONENT(root_pathname, ref->str) ||
 			    FILENAME_COMPONENT(pwd_pathname, ref->str)) {
 				print_task_header(fp, tc, 0);
-				fprintf(fp, root_pwd); 
+				fprintf(fp, "%s", root_pwd); 
 				root_pwd_printed = TRUE;
 				ref->cmdflags |= FILES_REF_FOUND;
 			}
@@ -1680,7 +2166,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 		OFFSET(files_struct_open_fds));
 
 	if (open_fds_addr) {
-		if (VALID_OFFSET(files_struct_open_fds_init) && 
+		if (VALID_MEMBER(files_struct_open_fds_init) && 
 		    (open_fds_addr == (files_struct_addr + 
 		    OFFSET(files_struct_open_fds_init)))) 
 			BCOPY(files_struct_buf + 
@@ -1922,6 +2408,9 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 	char *dentry_buf, *file_buf, *inode_buf, *type;
 	char pathname[BUFSIZE];
 	char *printpath;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
 
 	if (!dentry && file) {
 		file_buf = fill_file_cache(file);		
@@ -1942,7 +2431,7 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 	inode_buf = fill_inode_cache(inode);
 
 	if (flags & DUMP_FULL_NAME) {
-		if (VALID_OFFSET(file_f_vfsmnt)) {
+		if (VALID_MEMBER(file_f_vfsmnt)) {
 			vfsmnt = ULONG(file_buf + OFFSET(file_f_vfsmnt));
 			get_pathname(dentry, pathname, BUFSIZE, 1, vfsmnt);
 		} else {
@@ -1959,39 +2448,65 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 		printpath = pathname+1;
 
 	if (flags & DUMP_INODE_ONLY) {
-		fprintf(fp, "%lx%s%s%s%s\n",
-			inode, 
+		fprintf(fp, "%s%s%s%s%s\n",
+			mkstring(buf1, VADDR_PRLEN, 
+			CENTER|RJUST|LONG_HEX, 
+			MKSTR(inode)),
 			space(MINSPACE),
 			type, 
 			space(MINSPACE),
 			printpath);
 	} else {
 		if (flags & DUMP_DENTRY_ONLY) {
-			fprintf(fp, "%lx%s%lx%s%s%s%s\n",
-				dentry, 
+			fprintf(fp, "%s%s%s%s%s%s%s\n",
+				mkstring(buf1, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(dentry)),
 				space(MINSPACE),
-				inode, 
+				mkstring(buf2, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(inode)),
 				space(MINSPACE),
 				type, 
 				space(MINSPACE),
 				pathname+1);
 		} else {
-			fprintf(fp, "%3d%s%lx%s%lx%s%lx%s%s%s%s\n",
-				fd, 
-				space(MINSPACE),
-				file, 
-				space(MINSPACE),
-				dentry, 
-				space(MINSPACE),
-				inode, 
-				space(MINSPACE),
-				type, 
-				space(MINSPACE),
-				pathname);
+                        fprintf(fp, "%3d%s%s%s%s%s%s%s%s%s%s\n",
+                                fd,
+                                space(MINSPACE),
+				mkstring(buf1, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(file)),
+                                space(MINSPACE),
+				mkstring(buf2, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(dentry)),
+                                space(MINSPACE),
+				mkstring(buf3, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(inode)),
+                                space(MINSPACE),
+                                type,
+                                space(MINSPACE),
+                                pathname);
 		}
 	}
 
 	return TRUE;
+}
+
+/*
+ *  Get the dentry associated with a file.
+ */
+ulong
+file_to_dentry(ulong file)
+{
+        char *file_buf;
+	ulong dentry;
+
+        file_buf = fill_file_cache(file);
+        dentry = ULONG(file_buf + OFFSET(file_f_dentry));
+        return dentry;
 }
 
 /*
@@ -2012,7 +2527,7 @@ get_pathname(ulong dentry, char *pathname, int length, int full, ulong vfsmnt)
 	BZERO(buf, BUFSIZE);
 	BZERO(tmpname, BUFSIZE);
 	BZERO(pathname, length);
-	vfsmnt_buf = VALID_OFFSET(vfsmount_mnt_mountpoint) ? 
+	vfsmnt_buf = VALID_MEMBER(vfsmount_mnt_mountpoint) ? 
 		GETBUF(SIZE(vfsmount)) : NULL;
 
 	parent = dentry;
@@ -2058,7 +2573,7 @@ get_pathname(ulong dentry, char *pathname, int length, int full, ulong vfsmnt)
 		parent = ULONG(dentry_buf + OFFSET(dentry_d_parent)); 
 			
 		if (tmp_dentry == parent && full) {
-			if (VALID_OFFSET(vfsmount_mnt_mountpoint)) {
+			if (VALID_MEMBER(vfsmount_mnt_mountpoint)) {
 				if (tmp_vfsmnt) {
 					if (strncmp(pathname, "//", 2) == 0)
 						shift_string_left(pathname, 1);
@@ -2442,11 +2957,14 @@ show_fuser(char *buf, char *uses)
 	pid[i] = NULLCHAR;
 
 	p = strstr(buf, "TASK: ") + strlen("TASK: ");
+	while (*p == ' ')
+		p++;
 	i = 0;
 	while (*p != ' ' && i < 20) {
 		task[i++] = *p++;
 	}
 	task[i] = NULLCHAR;
+	mkstring(task, VADDR_PRLEN, RJUST, task);
 
 	p = strstr(buf, "COMMAND: ") + strlen("COMMAND: ");
 	strncpy(command, p, 16);
@@ -2455,9 +2973,9 @@ show_fuser(char *buf, char *uses)
 		command[i++] = ' ';
 	}
 	command[16] = NULLCHAR;
-		
-	fprintf(pc->saved_fp, "%5s  %s  %s %s\n", 
-		pid, task, command, uses);
+
+        fprintf(pc->saved_fp, "%5s  %s  %s %s\n",
+                pid, task, command, uses);
 }
 
 
@@ -2553,3 +3071,523 @@ same_file(char *f1, char *f2)
 }
 
 
+/*
+ *  Determine which live memory source to use.
+ */
+
+#define MODPROBE_CMD "/sbin/modprobe -l --type drivers/char"
+
+static void 
+get_live_memory_source(void)
+{
+	FILE *pipe;
+	char buf[BUFSIZE];
+	char modname1[BUFSIZE];
+	char modname2[BUFSIZE];
+	char *name;
+	int use_module;
+	struct stat stat1, stat2;
+
+	pc->flags |= DEVMEM;
+	if (pc->live_memsrc)
+		goto live_report;
+
+	pc->live_memsrc = "/dev/mem";
+	use_module = FALSE;
+
+	if (file_exists("/dev/mem", &stat1) &&
+	    file_exists(pc->memory_device, &stat2) &&
+	    S_ISCHR(stat1.st_mode) && S_ISCHR(stat2.st_mode) &&
+	    (stat1.st_rdev == stat2.st_rdev)) { 
+		if (!STREQ(pc->memory_device, "/dev/mem"))
+			error(INFO, "%s: same device as /dev/mem\n%s", 
+				pc->memory_device, 
+				pc->memory_module ? "" : "\n");
+		if (pc->memory_module)
+			error(INFO, "ignoring --memory_module %s request\n\n", 
+				pc->memory_module);
+	} else if (pc->memory_module && memory_driver_module_loaded(NULL)) {
+		error(INFO, "using pre-loaded \"%s\" module\n\n", 
+			pc->memory_module);
+		pc->flags |= MODPRELOAD;
+		use_module = TRUE;
+	} else {
+		pc->memory_module = MEMORY_DRIVER_MODULE;
+
+        	if ((pipe = popen(MODPROBE_CMD, "r")) == NULL) {
+			error(INFO, "%s: %s\n", MODPROBE_CMD, strerror(errno));
+                	return;
+		}
+
+		sprintf(modname1, "%s.o", pc->memory_module);
+                sprintf(modname2, "%s.ko", pc->memory_module);
+	        while (fgets(buf, BUFSIZE, pipe)) {
+			name = basename(strip_linefeeds(buf));
+			if (STREQ(name, modname1) || STREQ(name, modname2)) {
+				use_module = TRUE;
+				break;
+			}
+		}
+
+		pclose(pipe);
+	}
+
+	if (use_module) {
+		pc->flags &= ~DEVMEM;
+		pc->flags |= MEMMOD;
+		pc->readmem = read_memory_device;
+		pc->writemem = write_memory_device;
+		pc->live_memsrc = pc->memory_device;
+	}
+
+live_report:
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "get_live_memory_source: %s\n", pc->live_memsrc);
+}
+
+/*
+ *  Read /proc/modules to determine whether the crash driver module
+ *  has been loaded.
+ */
+static int
+memory_driver_module_loaded(int *count)
+{
+        FILE *modules;
+        int argcnt, module_loaded;
+        char *arglist[MAXARGS];
+	char buf[BUFSIZE];
+
+        if ((modules = fopen("/proc/modules", "r")) == NULL) {
+                error(INFO, "/proc/modules: %s\n", strerror(errno));
+                return FALSE;
+        }
+
+        module_loaded = FALSE;
+        while (fgets(buf, BUFSIZE, modules)) {
+		console("%s", buf);
+                argcnt = parse_line(buf, arglist);
+                if (argcnt < 3) 
+                        continue;
+                if (STREQ(arglist[0], pc->memory_module)) {
+                        module_loaded = TRUE;
+                        if (CRASHDEBUG(1))
+                                fprintf(stderr, 
+				    "\"%s\" module loaded: [%s][%s][%s]\n", 
+					arglist[0], arglist[0],
+					arglist[1], arglist[2]);
+			if (count) 
+				*count = atoi(arglist[2]);
+                        break;
+                }
+        }
+
+        fclose(modules);
+	
+	return module_loaded;
+}
+
+/*
+ *  Insmod the memory driver module.
+ */
+static int
+insmod_memory_driver_module(void)
+{
+        FILE *pipe;
+	char buf[BUFSIZE];
+	char command[BUFSIZE];
+
+	sprintf(command, "/sbin/modprobe %s", pc->memory_module);
+	if (CRASHDEBUG(1))
+		fprintf(fp, "%s\n", command);
+
+        if ((pipe = popen(command, "r")) == NULL) {
+		error(INFO, "%s: %s", command, strerror(errno));
+		return FALSE;
+	}
+
+        while (fgets(buf, BUFSIZE, pipe))
+        	fprintf(fp, "%s\n", buf);
+        pclose(pipe);
+
+	if (!memory_driver_module_loaded(NULL)) {
+		error(INFO, "cannot insmod \"%s\" module\n", pc->memory_module);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ *  Return the dev_t for the memory device driver.  The major number will
+ *  be that of the kernel's misc driver; the minor is dynamically created
+ *  when the module at inmod time, and found in /proc/misc.
+ */
+static int
+get_memory_driver_dev(dev_t *devp)
+{
+	char buf[BUFSIZE];
+        char *arglist[MAXARGS];
+        int argcnt;
+	FILE *misc;
+	int minor;
+	dev_t dev;
+
+	dev = 0;
+
+        if ((misc = fopen("/proc/misc", "r")) == NULL) { 
+		error(INFO, "/proc/misc: %s", strerror(errno));
+        } else {
+        	while (fgets(buf, BUFSIZE, misc)) {
+                	argcnt = parse_line(buf, arglist);
+			if ((argcnt == 2) && 
+			    STREQ(arglist[1], pc->memory_module)) {
+				minor = atoi(arglist[0]);
+				dev = makedev(MISC_MAJOR, minor);
+				if (CRASHDEBUG(1))
+					fprintf(fp, 
+					    "/proc/misc: %s %s => %d/%d\n",
+						arglist[0], arglist[1], 
+						major(dev), minor(dev));
+				break;
+			}
+		}
+		fclose(misc);
+	}
+
+	if (!dev) {
+		error(INFO, "cannot determine minor number of %s driver\n",
+			pc->memory_module); 
+		return FALSE;
+	}
+
+	*devp = dev;
+	return TRUE;
+}
+
+/*
+ *  Deal with the creation or verification of the memory device file:
+ *
+ *   1. If the device exists, and has the correct major/minor device numbers,
+ *      nothing needs to be done.
+ *   2. If the filename exists, but it's not a device file, has the wrong
+ *      major/minor device numbers, or the wrong permissions, advise the
+ *      user to delete it.
+ *   3. Otherwise, create it.
+ */
+static int 
+create_memory_device(dev_t dev)
+{
+	struct stat stat;
+
+	if (file_exists(pc->live_memsrc, &stat)) {
+		/*
+		 *  It already exists -- just use it.
+		 */
+		if ((stat.st_mode == MEMORY_DRIVER_DEVICE_MODE) && 
+		    (stat.st_rdev == dev))
+			return TRUE;
+
+		/*
+		 *  Either it's not a device special file, or it's got
+		 *  the wrong major/minor numbers, or the wrong permissions.
+		 *  Unlink the file -- it shouldn't be there.
+		 */
+		if (!S_ISCHR(stat.st_mode)) 
+			error(FATAL, 
+			    "%s: not a character device -- please delete it!\n",
+				pc->live_memsrc);
+		else if (dev != stat.st_rdev) 
+			error(FATAL, 
+			    "%s: invalid device: %d/%d  -- please delete it!\n",
+				pc->live_memsrc, major(stat.st_rdev), 
+				minor(stat.st_rdev));
+		else 
+			unlink(pc->live_memsrc);
+	} 
+
+	/* 
+	 *  Either it doesn't exist or it was just unlinked.
+	 *  In either case, try to create it.
+	 */
+	if (mknod(pc->live_memsrc, MEMORY_DRIVER_DEVICE_MODE, dev)) {
+		error(INFO, "%s: mknod: %s\n", pc->live_memsrc,
+			strerror(errno));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ *  If we're here, the memory driver module is being requested:
+ *
+ *   1. If the module is not already loaded, insmod it.
+ *   2. Determine the misc driver minor device number that it was assigned.
+ *   3. Create (or verify) the device file.
+ *   4. Then just open it.
+ */ 
+
+static int 
+memory_driver_init(void)
+{
+	dev_t dev;
+
+	if (!memory_driver_module_loaded(NULL)) {
+	    	if (!insmod_memory_driver_module()) 
+			return FALSE;
+	}
+
+	if (!get_memory_driver_dev(&dev)) 
+		return FALSE;
+
+	if (!create_memory_device(dev)) 
+		return FALSE;
+
+	if ((pc->mfd = open(pc->memory_device, O_RDONLY)) < 0) { 
+		error(INFO, "%s: open: %s\n", pc->memory_device, 
+			strerror(errno));
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/*
+ *  Remove the memory driver module and associated file.
+ */
+int
+cleanup_memory_driver(void)
+{
+	int errors, count;
+        char command[BUFSIZE];
+
+	count = errors = 0;
+
+	close(pc->mfd);
+	if (file_exists(pc->memory_device, NULL) &&
+	    unlink(pc->memory_device)) {
+                error(INFO, "%s: %s\n", pc->memory_device, strerror(errno));
+		errors++;
+	}
+
+	if (!(pc->flags & MODPRELOAD) && 
+	    memory_driver_module_loaded(&count) && !count) {
+	        sprintf(command, "/sbin/rmmod %s", pc->memory_module);
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%s\n", command);
+		errors += system(command);
+	}
+
+	if (errors)
+		error(NOTE, "cleanup_memory_driver failed\n");
+
+	return errors ? FALSE : TRUE;
+}
+
+
+/*
+ *  Use the kernel's radix_tree_lookup() function as a template to dump
+ *  a radix tree's entries, which depends upon the likelihood that the
+ *  following items in the kernel's radix tree library will remain unchanged.
+ */
+
+#define RADIX_TREE_MAP_SHIFT  6
+#define RADIX_TREE_MAP_SIZE  (1UL << RADIX_TREE_MAP_SHIFT)
+#define RADIX_TREE_MAP_MASK  (RADIX_TREE_MAP_SIZE-1)
+
+struct radix_tree_node {
+        unsigned int    count;
+        void            *slots[RADIX_TREE_MAP_SIZE];
+};
+
+/*
+ *  do_radix_tree argument usage: 
+ *
+ *    root: Address of a radix_tree_root structure
+ *
+ *    flag: RADIX_TREE_COUNT - Return the number of entries in the tree.   
+ *          RADIX_TREE_SEARCH - Search for an entry at rtp->index; if found,
+ *            store the entry in rtp->value and return a count of 1; otherwise
+ *            return a count of 0. 
+ *          RADIX_TREE_DUMP - Dump all existing index/value pairs.    
+ *          RADIX_TREE_GATHER - Store all existing index/value pairs in the 
+ *            passed-in array of radix_tree_pair structs starting at rtp, 
+ *            returning the count of entries stored; the caller can/should 
+ *            limit the number of returned entries by putting the array size
+ *            (max count) in the rtp->index field of the first structure 
+ *            in the passed-in array.
+ *
+ *     rtp: Unused by RADIX_TREE_COUNT and RADIX_TREE_DUMP. 
+ *          A pointer to a radix_tree_pair structure for RADIX_TREE_SEARCH.
+ *          A pointer to an array of radix_tree_pair structures for
+ *          RADIX_TREE_GATHER; the dimension (max count) of the array may
+ *          be stored in the index field of the first structure to avoid
+ *          any chance of an overrun.
+ */
+ulong
+do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
+{
+	int i, ilen, height; 
+	long nlen;
+	ulong index, maxindex, count, maxcount;
+	long *height_to_maxindex;
+	char *radix_tree_root_buf;
+	struct radix_tree_pair *r;
+	ulong root_rnode;
+	void *ret;
+
+	if (!VALID_STRUCT(radix_tree_root) || !VALID_STRUCT(radix_tree_node) ||
+	    !VALID_MEMBER(radix_tree_root_height) ||
+	    !VALID_MEMBER(radix_tree_root_rnode) ||
+	    !ARRAY_LENGTH(height_to_maxindex)) 
+		error(FATAL, 
+		   "radix trees do not exist (or have changed their format)\n");
+
+	if (!(nlen = 
+	    datatype_info("radix_tree_node", "slots", MEMBER_SIZE_REQUEST)))
+		error(FATAL, 
+		    "cannot determine length of radix_tree_node.slots array\n");
+	else if ((nlen / sizeof(void *)) != RADIX_TREE_MAP_SIZE)
+		error(FATAL, 
+		    "unexpected length of radix_tree_node.slots array: %ld\n",
+			nlen / sizeof(void *));
+
+	if (SIZE(radix_tree_node) != sizeof(struct radix_tree_node))
+		error(FATAL, 
+		    "unexpected length of radix_tree_node structure\n");
+
+	ilen = ARRAY_LENGTH(height_to_maxindex);
+	height_to_maxindex = (ulong *)GETBUF(ilen * sizeof(long));
+	readmem(symbol_value("height_to_maxindex"), KVADDR, 
+	    	height_to_maxindex, ilen*sizeof(long),
+		"height_to_maxindex array", FAULT_ON_ERROR);
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "radix_tree_node.slots[%ld]\n", 
+			nlen/sizeof(void *));
+		fprintf(fp, "height_to_maxindex[%d]: ", ilen);
+		for (i = 0; i < ilen; i++)
+			fprintf(fp, "%lu ", height_to_maxindex[i]);
+		fprintf(fp, "\n");
+		fprintf(fp, "radix_tree_root at %lx:\n", root);
+		dump_struct("radix_tree_root", (ulong)root, RADIX(16));
+	}
+
+	radix_tree_root_buf = GETBUF(SIZE(radix_tree_root));
+	readmem(root, KVADDR, radix_tree_root_buf, SIZE(radix_tree_root),
+		"radix_tree_root", FAULT_ON_ERROR);
+	height = UINT(radix_tree_root_buf + OFFSET(radix_tree_root_height));
+
+	if (height > ilen) {
+		fprintf(fp, "radix_tree_root at %lx:\n", root);
+		dump_struct("radix_tree_root", (ulong)root, RADIX(16));
+		error(FATAL, 
+                   "height %d is greater than height_to_maxindex[] index %ld\n",
+			height, ilen);
+	}
+	
+	maxindex = height_to_maxindex[height];
+	FREEBUF(height_to_maxindex);
+
+	root_rnode = root + OFFSET(radix_tree_root_rnode);
+
+	switch (flag)
+	{
+	case RADIX_TREE_COUNT:
+		for (index = count = 0; index <= maxindex; index++) {
+			if (radix_tree_lookup(root_rnode, index, height))
+				count++;
+		}
+		break;
+
+	case RADIX_TREE_SEARCH:
+		count = 0;
+		if (rtp->index > maxindex) 
+			break;
+
+		if ((ret = radix_tree_lookup(root_rnode, rtp->index, height))) {
+			rtp->value = ret;
+			count++;
+		}
+		break;
+
+	case RADIX_TREE_DUMP:
+		for (index = count = 0; index <= maxindex; index++) {
+			if ((ret = 
+			    radix_tree_lookup(root_rnode, index, height))) {
+				fprintf(fp, "[%ld] %lx\n", index, (ulong)ret);
+				count++;
+			}
+		}
+		break;
+
+	case RADIX_TREE_GATHER:
+		if (!(maxcount = rtp->index))
+			maxcount = (ulong)(-1);   /* caller beware */
+
+                for (index = count = 0, r = rtp; index <= maxindex; index++) {
+                        if ((ret = 
+			    radix_tree_lookup(root_rnode, index, height))) {
+				r->index = index;
+				r->value = ret;
+				count++;
+                                if (--maxcount <= 0)
+					break;
+				r++;
+                        }
+                }
+		break;
+
+	default:
+		error(FATAL, "do_radix_tree: invalid flag: %lx\n", flag);
+	}
+
+	return count;
+}
+
+static void *
+radix_tree_lookup(ulong root_rnode, ulong index, int height)
+{
+	unsigned int shift;
+	struct radix_tree_node **slot;
+	struct radix_tree_node slotbuf;
+	void **kslotp, **uslotp;
+
+	shift = (height-1) * RADIX_TREE_MAP_SHIFT;
+	kslotp = (void **)root_rnode;
+
+	while (height > 0) {
+		readmem((ulong)kslotp, KVADDR, &slot, sizeof(void *),
+			"radix_tree_node slot", FAULT_ON_ERROR);
+
+		if (slot == NULL)
+			return NULL;
+
+		readmem((ulong)slot, KVADDR, &slotbuf, 
+			sizeof(struct radix_tree_node),
+			"radix_tree_node struct", FAULT_ON_ERROR);
+
+		uslotp = (void **)
+		    (slotbuf.slots + ((index >> shift) & RADIX_TREE_MAP_MASK));
+		kslotp = *uslotp;
+
+		shift -= RADIX_TREE_MAP_SHIFT;
+		height--;
+	}
+
+	return (void *) kslotp;
+}
+
+int
+is_readable(char *filename)
+{
+	int fd;
+
+        if ((fd = open(filename, O_RDONLY)) < 0) {
+		error(INFO, "%s: %s\n", filename, strerror(errno));
+		return FALSE;
+	} else
+		close(fd);
+
+	return TRUE;
+}

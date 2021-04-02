@@ -1,6 +1,8 @@
 /* s390x_dump.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,7 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.4 $ $Date: 2002/01/29 20:52:26 $
+ * CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:10:25 $
  */
 #include "defs.h"
 #include <asm/page.h>
@@ -38,11 +40,11 @@ s390x_dump_init(char *file)
 }
 
 int
-read_s390x_dumpfile(int fd, void *bufptr, int cnt, ulong addr, ulong paddr)
+read_s390x_dumpfile(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
         paddr += S390_DUMP_HEADER_SIZE;
 
-        if (gzseek(s390x_gzfp, paddr, SEEK_SET) != paddr)
+        if (gzseek(s390x_gzfp, (ulong)paddr, SEEK_SET) != (ulong)paddr)
                 return SEEK_ERROR;
 
         if (gzread(s390x_gzfp, bufptr, cnt) != cnt)
@@ -52,7 +54,7 @@ read_s390x_dumpfile(int fd, void *bufptr, int cnt, ulong addr, ulong paddr)
 }
 
 int
-write_s390x_dumpfile(int fd, void *bufptr, int cnt, ulong addr, ulong paddr)
+write_s390x_dumpfile(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
 	return WRITE_ERROR;
 }

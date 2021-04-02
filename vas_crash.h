@@ -1,6 +1,8 @@
 /* vas_crash.h - kernel crash dump file format (on swap)
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +22,7 @@
  *
  * 09/28/00  Transition to CVS version control
  *
- * CVS: $Revision: 1.7 $ $Date: 2002/01/15 21:24:31 $
+ * CVS: $Revision: 1.3 $ $Date: 2004/01/28 17:11:25 $
  */
 
 #include <sys/types.h>

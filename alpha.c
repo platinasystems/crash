@@ -1,6 +1,8 @@
 /* alpha.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +22,7 @@
  *
  * 09/28/00  ---    Transition to CVS version control
  *
- * CVS: $Revision: 1.64 $ $Date: 2002/01/23 17:44:07 $
+ * CVS: $Revision: 1.30 $ $Date: 2004/11/03 16:35:31 $
  */ 
 #ifdef ALPHA
 #include "defs.h"
@@ -43,6 +45,7 @@ static void alpha_display_machine_stats(void);
 static void alpha_dump_line_number(char *, ulong);
 static void display_hwrpb(void);
 static void alpha_post_init(void);
+static struct line_number_hook alpha_line_number_hooks[];
 
 
 #define ALPHA_CONTINUE_TRACE     (1)
@@ -57,24 +60,21 @@ static void alpha_post_init(void);
 #define ALPHA_SIGNAL_RETURN     (10)
 #define ALPHA_STRACE            (11)
 
-static void alpha_eframe_search(struct bt_info *);
-static int alpha_uvtop(struct task_context *, ulong, ulong *, int);
-static int alpha_kvtop(struct task_context *, ulong, ulong *, int);
+static int alpha_eframe_search(struct bt_info *);
+static int alpha_uvtop(struct task_context *, ulong, physaddr_t *, int);
+static int alpha_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static void alpha_back_trace_cmd(struct bt_info *);
 static ulong alpha_get_task_pgd(ulong task);
 static ulong alpha_processor_speed(void);
 static void alpha_dump_irq(int);
-static int alpha_nr_irqs(void);
 static void alpha_get_stack_frame(struct bt_info *, ulong *, ulong *);
 static void get_alpha_frame(struct bt_info *, ulong *, ulong *);
 static int verify_user_eframe(struct bt_info *, ulong, ulong);
-static int alpha_translate_pte(ulong, ulong *);
+static int alpha_translate_pte(ulong, void *, ulonglong);
 static uint64_t alpha_memory_size(void);
 static ulong alpha_vmalloc_start(void);
-static ulong alpha_SWP_TYPE(ulong);
-static ulong alpha_SWP_OFFSET(ulong pte);
 static int alpha_is_task_addr(ulong);
-static int alpha_verify_symbol(const char *, ulong);
+static int alpha_verify_symbol(const char *, ulong, char);
 
 struct percpu_data {
 	ulong halt_PC;
@@ -116,6 +116,8 @@ alpha_init(int when)
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = generic_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		break;
 		
 	case PRE_GDB:
@@ -148,15 +150,12 @@ alpha_init(int when)
 			machdep->dump_irq = generic_dump_irq;
 		else
 			machdep->dump_irq = alpha_dump_irq;
-		machdep->nr_irqs = alpha_nr_irqs;
 		machdep->get_stack_frame = alpha_get_stack_frame;
 		machdep->get_stackbase = generic_get_stackbase;
 		machdep->get_stacktop = generic_get_stacktop;
 		machdep->translate_pte = alpha_translate_pte;
 		machdep->memory_size = alpha_memory_size;
 		machdep->vmalloc_start = alpha_vmalloc_start;
-		machdep->SWP_TYPE = alpha_SWP_TYPE;
-		machdep->SWP_OFFSET = alpha_SWP_OFFSET;
 		machdep->is_task_addr = alpha_is_task_addr;
 		if (symbol_exists("console_crash")) {
 			get_symbol_data("console_crash", sizeof(int), &tmp);
@@ -166,28 +165,36 @@ alpha_init(int when)
 		machdep->dis_filter = alpha_dis_filter;
 		machdep->cmd_mach = alpha_cmd_mach;
 		machdep->get_smp_cpus = alpha_get_smp_cpus;
+		machdep->line_number_hooks = alpha_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+                machdep->init_kernel_pgd = NULL;
 		break;
 
 	case POST_GDB:
-		OFFSET(thread_struct_ptbr) = 
-			MEMBER_OFFSET("thread_struct", "ptbr");
-		OFFSET(hwrpb_struct_cycle_freq) =
-			MEMBER_OFFSET("hwrpb_struct", "cycle_freq");
-		OFFSET(hwrpb_struct_processor_offset) =
-			MEMBER_OFFSET("hwrpb_struct", "processor_offset");
-		OFFSET(hwrpb_struct_processor_size) =
-			MEMBER_OFFSET("hwrpb_struct", "processor_size");
-		OFFSET(percpu_struct_halt_PC) =
-			MEMBER_OFFSET("percpu_struct", "halt_PC");
-		OFFSET(percpu_struct_halt_ra) =
-                        MEMBER_OFFSET("percpu_struct", "halt_ra");
-                OFFSET(percpu_struct_halt_pv) =
-                        MEMBER_OFFSET("percpu_struct", "halt_pv");
-		OFFSET(switch_stack_r26) = 
-			MEMBER_OFFSET("switch_stack", "r26");
-		SIZE(pt_regs) = STRUCT_SIZE("pt_regs");
-                SIZE(softirq_state) = STRUCT_SIZE("softirq_state");
-                SIZE(desc_struct) = STRUCT_SIZE("desc_struct");
+		MEMBER_OFFSET_INIT(thread_struct_ptbr, 
+			"thread_struct", "ptbr");
+		MEMBER_OFFSET_INIT(hwrpb_struct_cycle_freq, 
+			"hwrpb_struct", "cycle_freq");
+		MEMBER_OFFSET_INIT(hwrpb_struct_processor_offset,
+			"hwrpb_struct", "processor_offset");
+		MEMBER_OFFSET_INIT(hwrpb_struct_processor_size,
+			"hwrpb_struct", "processor_size");
+		MEMBER_OFFSET_INIT(percpu_struct_halt_PC,
+			"percpu_struct", "halt_PC");
+		MEMBER_OFFSET_INIT(percpu_struct_halt_ra, 
+			"percpu_struct", "halt_ra");
+                MEMBER_OFFSET_INIT(percpu_struct_halt_pv,
+                        "percpu_struct", "halt_pv");
+		MEMBER_OFFSET_INIT(switch_stack_r26,
+			"switch_stack", "r26");
+        	if (symbol_exists("irq_action"))
+			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_action, 
+				"irq_action", NULL, 0);
+        	else if (symbol_exists("irq_desc"))
+                	ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc, 
+				"irq_desc", NULL, 0);
+        	else
+                	machdep->nr_irqs = 0;
 		machdep->hz = HZ;
 		break;
 
@@ -208,7 +215,7 @@ alpha_back_trace_cmd(struct bt_info *bt)
 
         bt->flags |= BT_EXCEPTION_FRAME;
 
-        if (MCLXDEBUG(1) || bt->debug)
+        if (CRASHDEBUG(1) || bt->debug)
                 fprintf(fp, " => PC: %lx (%s) FP: %lx \n",
                         bt->instptr, value_to_symstr(bt->instptr, buf, 0),
 			bt->stkptr );
@@ -566,14 +573,14 @@ show_remaining_text:
         if (hook.eip) {
        		fprintf(fp,
 "NOTE: cannot resolve trace from this point -- remaining text symbols on stack:\n");
-		btloc->flags = BT_TEXT_SYMBOLS_PRINT;
+		btloc->flags = BT_TEXT_SYMBOLS_PRINT|BT_ERROR_MASK;
         	hook.esp = req->lastsp + sizeof(long);
         	back_trace(btloc);
 	} else 
        		fprintf(fp, 
 "NOTE: cannot resolve trace from this point -- no remaining text symbols\n");
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "speculate_location: %d\n", speculate_location);
 
 	alpha_exception_frame(USER_EFRAME_ADDR(req->task), 
@@ -626,6 +633,67 @@ alpha_print_stack_entry(struct gnu_request *req,
 		alpha_dump_line_number(name, callpc);
 }
 
+static const char *hook_files[] = {
+        "arch/alpha/kernel/entry.S",
+        "arch/alpha/kernel/head.S",
+	"init/main.c",
+        "arch/alpha/kernel/smp.c",
+};
+
+#define ENTRY_S      ((char **)&hook_files[0])
+#define HEAD_S       ((char **)&hook_files[1])
+#define MAIN_C       ((char **)&hook_files[2])
+#define SMP_C        ((char **)&hook_files[3])
+
+static struct line_number_hook alpha_line_number_hooks[] = {
+	{"entInt", ENTRY_S},
+	{"entMM", ENTRY_S},
+	{"entArith", ENTRY_S},
+	{"entIF", ENTRY_S},
+	{"entDbg", ENTRY_S},
+	{"kernel_clone", ENTRY_S},
+	{"kernel_thread", ENTRY_S},
+	{"__kernel_execve", ENTRY_S},
+	{"do_switch_stack", ENTRY_S},
+	{"undo_switch_stack", ENTRY_S},
+	{"entUna", ENTRY_S},
+	{"entUnaUser", ENTRY_S},
+	{"sys_fork", ENTRY_S},
+	{"sys_clone", ENTRY_S},
+	{"sys_vfork", ENTRY_S},
+	{"alpha_switch_to", ENTRY_S},
+	{"entSys", ENTRY_S},
+	{"ret_from_sys_call", ENTRY_S},
+	{"ret_from_reschedule", ENTRY_S},
+	{"restore_all", ENTRY_S},
+	{"strace", ENTRY_S},
+	{"strace_success", ENTRY_S},
+	{"strace_error", ENTRY_S},
+	{"syscall_error", ENTRY_S},
+	{"ret_success", ENTRY_S},
+	{"signal_return", ENTRY_S},
+	{"ret_from_fork", ENTRY_S},
+	{"reschedule", ENTRY_S},
+	{"sys_sigreturn", ENTRY_S},
+	{"sys_rt_sigreturn", ENTRY_S},
+	{"sys_sigsuspend", ENTRY_S},
+	{"sys_rt_sigsuspend", ENTRY_S},
+	{"ret_from_smpfork", ENTRY_S},
+
+	{"_stext", HEAD_S},
+	{"__start", HEAD_S},
+	{"__smp_callin", HEAD_S},
+	{"cserve_ena", HEAD_S},
+	{"cserve_dis", HEAD_S},
+	{"halt", HEAD_S},
+
+	{"start_kernel", MAIN_C},
+
+	{"smp_callin", SMP_C},
+
+       {NULL, NULL}    /* list must be NULL-terminated */
+};
+
 static void
 alpha_dump_line_number(char *name, ulong callpc)
 {
@@ -634,60 +702,18 @@ alpha_dump_line_number(char *name, ulong callpc)
 
 	retries = 0;
 try_closest:
-	/* 
-	 *  gdb-related kludge for symbols in entry.S and __init funcs
-	 *  (fix this...)
-	 */
-	if (STREQ(name, "entSys") || 
-            STREQ(name, "entMM") ||
-	    STREQ(name, "entArith") ||
-	    STREQ(name, "entIF") ||
-	    STREQ(name, "entUna") ||
-	    STREQ(name, "entDbg") ||
-	    STREQ(name, "entInt") ||
-	    STREQ(name, "kernel_clone") ||
-	    STREQ(name, "__kernel_execve") ||
-	    STREQ(name, "do_switch_stack") ||
-	    STREQ(name, "undo_switch_stack") ||
-	    STREQ(name, "sys_fork") ||
-	    STREQ(name, "sys_clone") ||
-	    STREQ(name, "sys_vfork") ||
-	    STREQ(name, "alpha_switch_to") ||
-	    STREQ(name, "ret_from_smpfork") ||
-	    STREQ(name, "reschedule") ||
-	    STREQ(name, "sys_sigreturn") ||
-	    STREQ(name, "sys_rt_sigreturn") ||
-	    STREQ(name, "sys_sigsuspend") ||
-	    STREQ(name, "sys_rt_sigsuspend") ||
-	    STREQ(name, "__kernel_thread")) {
-		fprintf(fp, "    %s/arch/alpha/kernel/entry.S\n",
-			get_build_directory(buf) ? buf : "..");
-		return;
-	} 
-
-	if (STREQ(name, "start_kernel")) {
-		fprintf(fp, "    %s/init/main.c\n",
-			get_build_directory(buf) ? buf : "..");
-		return;
-	}
-
-	if (STREQ(name, "smp_callin")) {
-		fprintf(fp, "    %s/arch/alpha/kernel/smp.c\n",
-			get_build_directory(buf) ? buf : "..");
-		return;
-	}
-
 	get_line_number(callpc, buf, FALSE);
 	if (strlen(buf)) {
-	if (retries) {
-		p = strstr(buf, ": ");
-			*p = NULLCHAR;
+		if (retries) {
+			p = strstr(buf, ": ");
+			if (p)
+				*p = NULLCHAR;
 		} 
 		fprintf(fp, "    %s\n", buf);
 	} else {
 		if (retries)
-			fprintf(fp, 
-		    "    (cannot determine file and line number)\n");
+			fprintf(fp, GDB_PATCHED() ? 
+			  "" : "    (cannot determine file and line number)\n");
 		else {
 			retries++;
 			callpc = closest_symbol_value(callpc);
@@ -773,6 +799,15 @@ alpha_frame_offset(struct gnu_request *req, ulong alt_pc)
 	}
 
 use_gdb:
+#if defined(GDB_6_0) || defined(GDB_6_1)
+{
+	static int gdb_frame_offset_warnings = 10;
+
+	if (gdb_frame_offset_warnings-- > 0)
+		error(WARNING, 
+	        "GNU_ALPHA_FRAME_OFFSET functionality not ported to gdb-6.1\n");
+}
+#endif
 	req->command = GNU_ALPHA_FRAME_OFFSET;
 	if (alt_pc) {
 		ulong pc_save;
@@ -901,10 +936,10 @@ alpha_exception_frame(ulong addr,
 	int i, j;
 	char buf[BUFSIZE];
 	ulong value; 
-	ulong paddr;
+	physaddr_t paddr;
 	struct alpha_eframe eframe;
 
-	if (MCLXDEBUG(4))
+	if (CRASHDEBUG(4))
 		fprintf(fp, "alpha_exception_frame: %lx\n", addr);
 
 	if (flags & BT_SPECULATE) {
@@ -924,7 +959,7 @@ alpha_exception_frame(ulong addr,
 			continue;
 
 		extract_hex(buf, &value, NULLCHAR, TRUE);
-		if (MCLXDEBUG(4))
+		if (CRASHDEBUG(4))
 			fprintf(pc->saved_fp, "<%s> %lx\n", buf, value);
 
 		if (STRNEQ(buf, "r0 = ")) {
@@ -1095,7 +1130,7 @@ struct alpha_pt_regs {
 	ulong reg_value[NUMREGS];
 };
 
-static void
+static int
 alpha_eframe_search(struct bt_info *bt)
 {
         ulong *first, *last;
@@ -1103,6 +1138,7 @@ alpha_eframe_search(struct bt_info *bt)
 	struct alpha_pt_regs *pt;
 	struct gnu_request *req;   /* needed for alpha_exception_frame */
 	ulong *stack;
+	int cnt;
 
 	stack = (ulong *)bt->stackbuf;
         req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
@@ -1113,7 +1149,7 @@ alpha_eframe_search(struct bt_info *bt)
         last = stack +
            (((bt->stacktop - bt->stackbase) - SIZE(pt_regs)) / sizeof(ulong));
 
-        for ( ; first <= last; first++) {
+        for (cnt = 0; first <= last; first++) {
 		pt = (struct alpha_pt_regs *)first;
 
 		/* check for kernel exception frame */
@@ -1124,6 +1160,9 @@ alpha_eframe_search(struct bt_info *bt)
 		    (is_kernel_text(pt->reg_value[_r26_]) ||
 		     IS_MODULE_VADDR(pt->reg_value[_r26_])) &&
                     IS_KVADDR(pt->reg_value[_gp_])) {
+			cnt++;
+			if (bt->flags & BT_EFRAME_COUNT) 
+				continue;
 			fprintf(fp, "\nKERNEL-MODE EXCEPTION FRAME:\n");
 			eframe = bt->task + ((ulong)first - (ulong)stack);
 			alpha_exception_frame(eframe, BT_EXCEPTION_FRAME, 
@@ -1139,6 +1178,9 @@ alpha_eframe_search(struct bt_info *bt)
                     IS_UVADDR(pt->reg_value[_gp_], bt->tc)) ||
 		    ((first == last) && 
 			(IS_ZOMBIE(bt->task) || IS_EXITING(bt->task))))) {
+			cnt++;
+			if (bt->flags & BT_EFRAME_COUNT) 
+				continue;
 			fprintf(fp, "\nUSER-MODE EXCEPTION FRAME:\n");
 			eframe = bt->task + ((ulong)first - (ulong)stack);
 			alpha_exception_frame(eframe, BT_EXCEPTION_FRAME, 
@@ -1147,6 +1189,8 @@ alpha_eframe_search(struct bt_info *bt)
         }
 
 	FREEBUF(req);
+
+	return cnt;
 }
 
 /*
@@ -1205,7 +1249,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 	char *name;
 	int exception;
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, 
 		    "RESYNC1: [%lx-%d] ra: %lx pc: %lx sp: %lx\n",
                         flags, req->curframe, req->ra, req->pc, req->sp);
@@ -1223,7 +1267,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 	sprintf(lookfor1, "<%s>", name);
 	sprintf(lookfor2, "<%s+", name);
 
-        if (MCLXDEBUG(1))
+        if (CRASHDEBUG(1))
                 fprintf(fp, "RESYNC2: exception: %s lookfor: %s or %s\n",
                         exception ? "TRUE" : "FALSE",
 			lookfor1, lookfor2);
@@ -1294,7 +1338,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 	if (flags & BT_SPECULATE)
 		return FALSE;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "RESYNC3: prevsp: %lx  ra: %lx name: %s\n", 
 			req->prevsp, req->ra, name);
 		fprintf(fp, "RESYNC3: prevpc: %lx\n", req->prevpc); 
@@ -1309,7 +1353,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 	} else 
 		stkp = (ulong *)req->prevsp;
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "RESYNC4: stkp: %lx  newpc: %lx\n",
 			(ulong)stkp, newpc);
 
@@ -1334,7 +1378,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 		if (is_kernel_text(value)) {
 			if (!stkp_next)
 				stkp_next = stkp;
-			if (MCLXDEBUG(2)) {
+			if (CRASHDEBUG(2)) {
 				fprintf(fp, 
 				    "RESYNC6: disassemble %lx (%s)\n",
 					value - sizeof(uint),
@@ -1360,7 +1404,8 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 							pc->tmpfile);
 						clean_line(buf);
 					}
-					if (MCLXDEBUG(2) && (strstr(buf, "jsr") 
+					if (CRASHDEBUG(2) && 
+					    (strstr(buf, "jsr") 
 					    || strstr(buf, "bsr"))) 
 						fprintf(pc->saved_fp, "%s\n",
 							buf);
@@ -1382,7 +1427,7 @@ alpha_backtrace_resync(struct gnu_request *req, ulong flags, struct bt_info *bt)
 		}
 	}
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "RESYNC9: [%d] name: %s pc: %lx ra: %lx\n",
 			req->curframe, name, req->pc, req->ra);
 		fprintf(fp, "RESYNC9: sp: %lx lastsp: %lx\n",
@@ -1436,7 +1481,7 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
 				value = GET_STACK_ULONG(stkp);
 	
 				if (found_ra) {
-					if (is_kernel_text_offset(value, NULL)){
+					if (is_kernel_text_offset(value)) {
 						found_sp = (ulong)stkp;
 						break;
 					}
@@ -1462,14 +1507,14 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
 				value = GET_STACK_ULONG(stkp);
 
                                 if (found_ra && (value != found_ra)) {
-                                        if (is_kernel_text_offset(value, NULL)){
+                                        if (is_kernel_text_offset(value)) {
                                                 found_sp = (ulong)stkp;
                                                 break;
                                         }
                                         continue;
                                 }
 
-				if (is_kernel_text_offset(value, NULL)) 
+				if (is_kernel_text_offset(value)) 
 					found_ra = value;
                         }
 		}
@@ -1486,14 +1531,14 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
 				value = GET_STACK_ULONG(stkp);
 
                                 if (found_ra && (value != found_ra)) {
-                                        if (is_kernel_text_offset(value, NULL)){
+                                        if (is_kernel_text_offset(value)) {
                                                 found_sp = (ulong)stkp;
                                                 break;
                                         }
                                         continue;
                                 }
 
-                                if (is_kernel_text_offset(value, NULL) &&
+                                if (is_kernel_text_offset(value) &&
 				    STREQ(closest_symbol(value), "do_no_page")) 
                                         found_ra = value;
                         }
@@ -1517,7 +1562,7 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
 		hook.esp = found_sp;
 		hook.eip = found_ra;
 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(pc->saved_fp, 
 			    "----- RESYNC SPECULATE START -----\n");
 
@@ -1533,7 +1578,7 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
         	back_trace(btloc);
         	rewind(pc->tmpfile);
         	while (fgets(buf, BUFSIZE, pc->tmpfile)) {
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
 				fprintf(pc->saved_fp, "%s", buf);
 
                         if (strstr(buf, "NOTE: cannot resolve")) {
@@ -1558,7 +1603,7 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
 		}
 		close_tmpfile();
 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(pc->saved_fp, 
 			    "----- RESYNC SPECULATE DONE ------\n");
 
@@ -1583,7 +1628,7 @@ alpha_resync_speculate(struct gnu_request *req, ulong flags, struct bt_info *bt)
  */
 
 static int
-alpha_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
+alpha_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 {
 	ulong mm;
 	ulong *pgd;
@@ -1656,7 +1701,7 @@ alpha_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
 		*paddr = pte;
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			alpha_translate_pte(pte, 0);
+			alpha_translate_pte(pte, 0, 0);
 		}
 		goto no_upage;
 	}
@@ -1665,7 +1710,7 @@ alpha_uvtop(struct task_context *tc, ulong vaddr, ulong *paddr, int verbose)
 
         if (verbose) {
                 fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(*paddr));
-		alpha_translate_pte(pte, 0);
+		alpha_translate_pte(pte, 0, 0);
 	}
 
 	return TRUE;
@@ -1681,7 +1726,7 @@ no_upage:
  */
 
 static int
-alpha_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
+alpha_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 {
 	ulong *pgd;
 	ulong *page_dir;
@@ -1704,7 +1749,7 @@ alpha_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 		return TRUE;
 	}
 
-	pgd = (ulong *)vt->kernel_pgd;
+	pgd = (ulong *)vt->kernel_pgd[0];
 
 	if (verbose) 
 		fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)pgd);
@@ -1746,7 +1791,7 @@ alpha_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 	if (!(pte & (_PAGE_VALID))) {
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			alpha_translate_pte(pte, 0);
+			alpha_translate_pte(pte, 0, 0);
 		}
 		goto no_kpage;
 	}
@@ -1755,7 +1800,7 @@ alpha_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 
         if (verbose) {
                 fprintf(fp, " PAGE: %lx\n\n", PAGEBASE(*paddr));
-		alpha_translate_pte(pte, 0);
+		alpha_translate_pte(pte, 0, 0);
 	}
 
 	return TRUE;
@@ -1774,8 +1819,7 @@ alpha_get_task_pgd(ulong task)
 	long offset;
 	ulong ptbr;
 
-	offset = VALID_OFFSET(task_struct_thread) ? 
-		OFFSET(task_struct_thread) : OFFSET(task_struct_tss);
+	offset = OFFSET_OPTION(task_struct_thread, task_struct_tss);
 
 	offset += OFFSET(thread_struct_ptbr);
 
@@ -1815,7 +1859,7 @@ alpha_processor_speed(void)
 }
 
 void
-alpha_dump_machdep_table(void)
+alpha_dump_machdep_table(ulong arg)
 {
 	int others;
 
@@ -1830,7 +1874,7 @@ alpha_dump_machdep_table(void)
 	fprintf(fp, "  identity_map_base: %lx\n", machdep->identity_map_base);
         fprintf(fp, "           pagesize: %d\n", machdep->pagesize);
         fprintf(fp, "          pageshift: %d\n", machdep->pageshift);
-        fprintf(fp, "           pagemask: %lx\n", machdep->pagemask);
+        fprintf(fp, "           pagemask: %llx\n", machdep->pagemask);
         fprintf(fp, "         pageoffset: %lx\n", machdep->pageoffset);
 	fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
 	fprintf(fp, "                 hz: %d\n", machdep->hz);
@@ -1838,6 +1882,7 @@ alpha_dump_machdep_table(void)
         fprintf(fp, "            memsize: %ld (0x%lx)\n", 
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
+	fprintf(fp, "            nr_irqs: %d\n", machdep->nr_irqs);
         fprintf(fp, "      eframe_search: alpha_eframe_search()\n");
         fprintf(fp, "         back_trace: alpha_back_trace_cmd()\n");
         fprintf(fp, "    processor_speed: alpha_processor_speed()\n");
@@ -1848,15 +1893,12 @@ alpha_dump_machdep_table(void)
 		fprintf(fp, "           dump_irq: generic_dump_irq()\n");
 	else
 		fprintf(fp, "           dump_irq: alpha_dump_irq()\n");
-	fprintf(fp, "            nr_irqs: alpha_nr_irqs()\n");
 	fprintf(fp, "    get_stack_frame: alpha_get_stack_frame()\n");
 	fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
 	fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
         fprintf(fp, "      translate_pte: alpha_translate_pte()\n");
 	fprintf(fp, "        memory_size: alpha_get_memory_size()\n");
 	fprintf(fp, "      vmalloc_start: alpha_get_vmalloc_start()\n");
-	fprintf(fp, "           SWP_TYPE: alpha_SWP_TYPE()\n");
-	fprintf(fp, "         SWP_OFFSET: alpha_SWP_OFFSET()\n");
 	fprintf(fp, "       is_task_addr: alpha_is_task_addr()\n");
 	fprintf(fp, "      verify_symbol: alpha_verify_symbol()\n");
 	fprintf(fp, "         dis_filter: alpha_dis_filter()\n");
@@ -1864,12 +1906,17 @@ alpha_dump_machdep_table(void)
 	fprintf(fp, "       get_smp_cpus: alpha_get_smp_cpus()\n");
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
+        fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+	fprintf(fp, "    init_kernel_pgd: NULL\n");
+	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+	fprintf(fp, "  line_number_hooks: alpha_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
         fprintf(fp, "                pgd: %lx\n", (ulong)machdep->pgd);
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
+	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
         fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
@@ -1916,7 +1963,6 @@ alpha_dis_filter(ulong vaddr, char *buf)
 {
 	struct syment *sp;
 	struct instruction_data *id;
-	off_t offset;
 	char buf2[BUFSIZE], *p1;
 
 	id = &instruction_data;
@@ -1924,7 +1970,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 	if (!buf) {
 		BZERO(id, sizeof(struct instruction_data));
 
-		if (!(sp = value_search(vaddr, &offset)))   
+		if (!(sp = value_search(vaddr, NULL)))   
 			return FALSE;
 
 		readmem(sp->value, KVADDR, &id->inst[0], 
@@ -1940,7 +1986,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 				id->mem_disp[1];
 			id->curfunc = sp->name;
 
-			if (MCLXDEBUG(1))
+			if (CRASHDEBUG(1))
                             console("%s: ldah(%d) and lda(%d) gp: %lx\n",
                                 id->curfunc,
                                 id->mem_disp[0], id->mem_disp[1],
@@ -1954,7 +2000,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 
 	dis_address_translation(vaddr, buf);
 
-	if (!id->gp || !(sp = value_search(vaddr, &offset)) || 
+	if (!id->gp || !(sp = value_search(vaddr, NULL)) || 
 	    !STREQ(id->curfunc, sp->name)) {
 		BZERO(id, sizeof(struct instruction_data));
 		return FALSE;
@@ -1973,7 +2019,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 		sprintf(p1, "0x%lx <%s>%s", 
 			id->target,
 			value_to_symstr(id->target, buf2, pc->output_radix),
-			MCLXDEBUG(1) ? "  [PATCHED]\n" : "\n");
+			CRASHDEBUG(1) ? "  [PATCHED]\n" : "\n");
 		return TRUE;
 	}
 
@@ -2050,7 +2096,7 @@ alpha_dump_irq(int irq)
 	ulong value;
         char *arglist[MAXARGS];
 	int argc, others;
-	char *buf;
+	char buf[BUFSIZE];
 
 	if (symbol_exists("irq_desc")) {
 		machdep->dump_irq = generic_dump_irq;
@@ -2076,8 +2122,6 @@ alpha_dump_irq(int irq)
         fprintf(fp, "    IRQ: %d\n", irq);
 
 	open_tmpfile();
-
-        buf = GETBUF(pc->sym_maxline);
 
 do_linked_action:
 	dump_struct("irqaction", action, RADIX(16));
@@ -2171,25 +2215,6 @@ do_linked_action:
 }
 
 /*
- *  Get the number of IRQs.
- */
-static int
-alpha_nr_irqs(void)
-{
-	int nr_irqs;
-
-	if (symbol_exists("irq_action"))
-        	nr_irqs = get_array_length("irq_action", NULL);
-	else if (symbol_exists("irq_desc"))
-        	nr_irqs = get_array_length("irq_desc", NULL);
-	else
-		error(FATAL, "cannot determine number of IRQs\n");
-
-	return nr_irqs;
-
-}
-
-/*
  *  Get a stack frame combination of pc and ra from the most relevent spot.
  */
 static void
@@ -2254,7 +2279,11 @@ get_alpha_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	task = bt->task;
 	stack = (ulong *)bt->stackbuf;
 
-        if (OFFSET(task_struct_tss_ksp) > 0) 
+	if (tt->flags & THREAD_INFO) { /* pcb.ksp is 1st word in thread_info */
+		readmem(bt->tc->thread_info, KVADDR, &ksp, sizeof(ulong),
+                	"thread_info pcb ksp", FAULT_ON_ERROR);
+		sp = ksp;
+	} else if (VALID_MEMBER(task_struct_tss_ksp))
                 ksp = sp = stack[OFFSET(task_struct_tss_ksp)/sizeof(long)];
 	else 
                 ksp = sp = stack[OFFSET(task_struct_thread_ksp)/sizeof(long)];
@@ -2286,14 +2315,14 @@ get_alpha_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 
 percpu_retry:
 
-	if (MCLXDEBUG(1) && percpu_ra) {
+	if (CRASHDEBUG(1) && percpu_ra) {
 		fprintf(fp, "get_alpha_frame: look for %lx (%s)\n",
 			percpu_ra, value_to_symstr(percpu_ra, buf, 0));
 	}
 
 	for (i = 0, spp++; spp < &stack[LONGS_PER_STACK]; spp++,i++) {
 
-		if (MCLXDEBUG(1) && (percpu_ra || percpu_pv) && 
+		if (CRASHDEBUG(1) && (percpu_ra || percpu_pv) && 
 		    is_kernel_text(*spp)) {
 			fprintf(fp, "%lx: %lx (%s)\n", 
 				((ulong)spp - (ulong)stack) + task,
@@ -2334,7 +2363,7 @@ percpu_retry:
 		error(INFO,
          "looking for procedure address (percpu_pv) in HARDWARE RESET stack\n");
 
-        	if (MCLXDEBUG(1)) {
+        	if (CRASHDEBUG(1)) {
                 	fprintf(fp, "get_alpha_frame: look for %lx (%s)\n",
                         	percpu_pv, value_to_symstr(percpu_pv, buf, 0));
         	}
@@ -2437,7 +2466,7 @@ get_percpu_data(int cpu, ulong flag, struct percpu_data *pd)
  *  passed in, don't print anything.
  */
 static int
-alpha_translate_pte(ulong pte, ulong *physaddr)
+alpha_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 {
 	int c, len1, len2, len3, others, page_present;
 	char buf[BUFSIZE];
@@ -2446,13 +2475,13 @@ alpha_translate_pte(ulong pte, ulong *physaddr)
 	char ptebuf[BUFSIZE];
 	char physbuf[BUFSIZE];
         char *arglist[MAXARGS];
-	ulong paddr;
+	physaddr_t paddr;
 
         paddr = PTOB(pte >> 32);
 	page_present = (pte & _PAGE_VALID);
 
 	if (physaddr) {
-		*physaddr = paddr;
+		*((ulong *)physaddr) = paddr;
 		return page_present;
 	}
 
@@ -2482,7 +2511,7 @@ alpha_translate_pte(ulong pte, ulong *physaddr)
                 return page_present;
         }
 
-	sprintf(physbuf, "%lx", paddr);
+	sprintf(physbuf, "%llx", paddr);
 	len2 = MAX(strlen(physbuf), strlen("PHYSICAL"));
 	fprintf(fp, "%s  ", mkstring(buf, len2, CENTER|LJUST, "PHYSICAL"));
 
@@ -2526,23 +2555,6 @@ alpha_translate_pte(ulong pte, ulong *physaddr)
 	return page_present;
 }
 
-/*
- *  Break out the swap type and offset from a pte.
- */
-#define SWP_TYPE(entry) (((entry) >> 32) & 0xff)
-#define SWP_OFFSET(entry) ((entry) >> 40)
-
-static ulong
-alpha_SWP_TYPE(ulong pte)
-{
-	return SWP_TYPE(pte);
-}
-
-static ulong
-alpha_SWP_OFFSET(ulong pte)
-{
-	return SWP_OFFSET(pte);
-}
 
 /*
  *  This is currently not machine-dependent, but eventually I'd prefer to use
@@ -2576,9 +2588,9 @@ alpha_is_task_addr(ulong task)
  *  Keep or reject a symbol from the kernel namelist.
  */
 int
-alpha_verify_symbol(const char *name, ulong value)
+alpha_verify_symbol(const char *name, ulong value, char type)
 {
-        if (MCLXDEBUG(8) && name && strlen(name))
+        if (CRASHDEBUG(8) && name && strlen(name))
                 fprintf(fp, "%016lx %s\n", value, name);
 
 	return (name && strlen(name) && (value > MIN_SYMBOL_VALUE));
@@ -2590,7 +2602,10 @@ alpha_verify_symbol(const char *name, ulong value)
 int
 alpha_get_smp_cpus(void)
 {
-        return kt->cpus;
+        if ((cpus = get_cpus_online()))
+                return cpus;
+        else
+        	return kt->cpus;
 }
 
 /*

@@ -3,6 +3,9 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
+# Copyright (C) 2002, 2003, 2004 David Anderson
+# Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 2 of the License, or
@@ -17,24 +20,33 @@
 #
 # 09/28/00  Transition to CVS version control
 #
-# CVS: $Revision: 1.72 $ $Date: 2002/01/30 19:28:34 $
+# CVS: $Revision: 1.62 $ $Date: 2005/02/21 18:15:16 $
 #
 
 PROGRAM=crash
 
 #
-# Supported targets: X86 ALPHA PPC IA64
-# TARGET will be configured automatically by mktarget
+# Supported targets: X86 ALPHA PPC IA64 PPC64
+# TARGET will be configured automatically by configure
 #
 TARGET=
 
+ARCH := $(shell uname -m | sed -e s/i.86/i386/ -e s/sun4u/sparc64/ -e s/arm.*/arm/ -e s/sa110/arm/)
+ifeq ($(ARCH), ppc64)
+CONF_FLAGS = -m64
+endif
+
 #
-# Supported gdb versions: gdb-5.0 gdb-5.0-7 gdb-5.1
-# GDB, GDB_FILES and GDB_OFILES will be configured automatically by mktarget 
+# GDB, GDB_FILES and GDB_OFILES will be configured automatically by configure 
 #
-GDB=
-GDB_FILES=${GDB_5.1_FILES}
+GDB=gdb-6.0
+GDB_FILES=${GDB_6.0_FILES}
 GDB_OFILES=
+
+#
+# Default installation directory
+#
+INSTALLDIR=${DESTDIR}/usr/bin
 
 #
 # The executable is dynamically linked by default.  To build a statically 
@@ -52,23 +64,38 @@ GDB_OFILES=
 # (2) Or invoke make like so:
 #    make LDFLAGS=-static NAT_CLIBS="-lc -lresolv" GDBSERVER_LIBS="-lc -lresolv"
 
-MCLX_HFILES=defs.h va_server.h vas_crash.h 
-LKCD_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h
+GENERIC_HFILES=defs.h 
+MCORE_HFILES=va_server.h vas_crash.h
+REDHAT_HFILES=netdump.h diskdump.h
+LKCD_DUMP_HFILES=lkcd_vmdump_v1.h lkcd_vmdump_v2_v3.h lkcd_dump_v5.h \
+        lkcd_dump_v7.h lkcd_dump_v8.h lkcd_fix_mem.h
+LKCD_TRACE_HFILES=lkcd_x86_trace.h
 IBM_HFILES=ibm_common.h
-MCLX_CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
-	kernel.c test.c gdb_interface.c mktarget.c net.c dev.c \
-	alpha.c x86.c ppc.c ia64.c s390.c s390x.c \
+UNWIND_HFILES=unwind.h unwind_i.h rse.h
+
+CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
+	kernel.c test.c gdb_interface.c configure.c net.c dev.c \
+	alpha.c x86.c ppc.c ia64.c s390.c s390x.c ppc64.c x86_64.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
-	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c \
-	s390_dump.c s390x_dump.c
-SOURCE_FILES=${MCLX_CFILES} ${MCLX_HFILES} ${LKCD_HFILES} ${IBM_HFILES} 
+	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
+	lkcd_fix_mem.c s390_dump.c s390x_dump.c lkcd_x86_trace.c \
+	netdump.c diskdump.c unwind.c unwind_decoder.c
+
+SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
+	${REDHAT_CFILES} ${REDHAT_HFILES} ${UNWIND_HFILES} \
+	${LKCD_DUMP_HFILES} ${LKCD_TRACE_HFILES} ${IBM_HFILES} 
 
 OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	build_data.o kernel.o test.o gdb_interface.o net.o dev.o \
-	alpha.o x86.o ppc.o ia64.o s390.o s390x.o \
+	alpha.o x86.o ppc.o ia64.o s390.o s390x.o ppc64.o x86_64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
-	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o \
-	s390_dump.o s390x_dump.o
+	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
+	lkcd_fix_mem.o s390_dump.o s390x_dump.o netdump.o diskdump.o \
+	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o
+
+DAEMON_OBJECT_FILES=remote_daemon.o va_server.o va_server_v1.o \
+	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
+	s390_dump.o s390x_dump.o netdump_daemon.o
 
 GDB_5.0_FILES=${GDB}/gdb/Makefile.in \
 	  ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
@@ -82,9 +109,6 @@ GDB_5.0_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o ${GDB}/gdb/target.o \
           ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/gnu-regex.o \
           ${GDB}/gdb/ppc-linux-nat.o
 
-GDB_5.0-7_FILES=${GDB_5.0_FILES}
-GDB_5.0-7_OFILES=${GDB_5.0_OFILES}
-
 GDB_5.1_FILES=${GDB}/gdb/Makefile.in \
 	  ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
 	  ${GDB}/gdb/blockframe.c ${GDB}/gdb/alpha-tdep.c \
@@ -95,9 +119,47 @@ GDB_5.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o ${GDB}/gdb/target.o \
           ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
           ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/gnu-regex.o
 
+GDB_5.2.1_FILES=${GDB}/gdb/Makefile.in \
+          ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
+          ${GDB}/gdb/blockframe.c ${GDB}/gdb/alpha-tdep.c \
+          ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
+          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c
+GDB_5.2.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o ${GDB}/gdb/target.o \
+          ${GDB}/gdb/blockframe.o ${GDB}/gdb/alpha-tdep.o \
+          ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
+          ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o 
+
+GDB_5.3post-0.20021129.36rh_FILES=${GDB}/gdb/Makefile.in \
+          ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
+          ${GDB}/gdb/frame.c ${GDB}/gdb/alpha-tdep.c \
+          ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
+          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c ${GDB}/gdb/dwarf2read.c
+GDB_5.3post-0.20021129.36rh_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
+          ${GDB}/gdb/target.o ${GDB}/gdb/frame.o ${GDB}/gdb/alpha-tdep.o \
+          ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o ${GDB}/gdb/ui-file.o \
+          ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o
+
+GDB_6.0_FILES=${GDB}/gdb/Makefile.in ${GDB}/Makefile.in \
+          ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
+          ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
+          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c \
+	  ${GDB}/gdb/ppc-linux-tdep.c ${GDB}/sim/ppc/ppc-instructions \
+	  ${GDB}/bfd/simple.c
+GDB_6.0_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
+          ${GDB}/gdb/target.o ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
+          ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o \
+	  ${GDB}/gdb/ppc-linux-tdep.o ${GDB}/bfd/simple.o
+
+GDB_6.1_FILES=${GDB}/gdb/Makefile.in ${GDB}/Makefile.in \
+          ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
+          ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
+          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c ${GDB}/gdb/dwarf2read.c
+GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
+          ${GDB}/gdb/target.o ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
+          ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o
+
 # 
-# GDB_FLAGS is currently unused.  It's passed up from the gdb Makefile, and
-# can be resurrected if the need arises.
+# GDB_FLAGS is passed up from the gdb Makefile.
 #
 GDB_FLAGS=
 
@@ -111,27 +173,36 @@ GDB_FLAGS=
 #WARNING_OPTIONS=-Wall -Wstrict-prototypes -Wmissing-prototypes
 #WARNING_ERROR=-Werror
 
-CFLAGS=-g -DMCLX -D${TARGET}
+# TARGET_CFLAGS will be configured automatically by configure
+TARGET_CFLAGS=
 
-TAR_FILES=${SOURCE_FILES} Makefile COPYING README
+CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS}
+
+TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8
 CSCOPE_FILES=${SOURCE_FILES}
 
 READLINE_DIRECTORY=./${GDB}/readline
 BFD_DIRECTORY=./${GDB}/bfd
+GDB_INCLUDE_DIRECTORY=./${GDB}/include
 
-all: target
-	@./mktarget -b
+REDHATFLAGS=-DREDHAT
+
+all: make_configure
+	@./configure -p "RPMPKG=${RPMPKG}" -b
 	@make --no-print-directory gdb_merge
 
 gdb_merge: force
-	@if [ ! -f ${GDB}/Makefile.in ]; then \
+	@if [ ! -f ${GDB}/README ]; then \
 	  make --no-print-directory gdb_unzip; fi
-	@echo "${LDFLAGS} ../../${PROGRAM}lib.a -lz -ldl -rdynamic" > \
-		${GDB}/gdb/mergelibs
-	@echo "../../${PROGRAM}" > ${GDB}/gdb/mergeobj
+	@echo "${LDFLAGS} -lz -ldl -rdynamic" > ${GDB}/gdb/mergelibs
+	@echo "../../${PROGRAM} ../../${PROGRAM}lib.a" > ${GDB}/gdb/mergeobj
 	@if [ ! -f ${GDB}/config.status ]; then \
-	  (cd ${GDB}; ./configure; make --no-print-directory;) \
+	  (cd ${GDB}; ./configure --with-separate-debug-dir=/usr/lib/debug; \
+	  make --no-print-directory;) \
 	else (cd ${GDB}/gdb; make --no-print-directory;); fi
+	@if [ ! -f ${GDB}/gdb/libgdb.a ]; then \
+	  echo; echo "gdb build failed: ${GDB}/gdb/libgdb.a does not exist"; \
+	  echo; exit 1; fi
 
 gdb_unzip:
 	@rm -f gdb.files
@@ -139,9 +210,9 @@ gdb_unzip:
 	  echo $$FILE >> gdb.files; done
 	@tar --exclude-from gdb.files -xvzmf ${GDB}.tar.gz
 
-library: stamp ${OBJECT_FILES}
+library: make_build_data ${OBJECT_FILES}
 	ar -rs ${PROGRAM}lib.a ${OBJECT_FILES}
-	
+
 gdb: force
 	rm -f ${GDB_OFILES}
 	@make --no-print-directory all
@@ -149,189 +220,259 @@ gdb: force
 force:
 	
 
-target: force
-	@rm -f mktarget
-	@cc -o mktarget mktarget.c ${WARNING_ERROR} ${WARNING_OPTIONS}
+make_configure: force
+	@rm -f configure
+	@cc ${CONF_FLAGS} -o configure configure.c ${WARNING_ERROR} ${WARNING_OPTIONS}
 
 clean:
-	rm -f ${OBJECT_FILES} ${PROGRAM} ${PROGRAM}lib.a ${GDB_OFILES}
+	rm -f ${OBJECT_FILES} ${DAEMON_OBJECT_FILES} ${PROGRAM} ${PROGRAM}lib.a ${GDB_OFILES}
 
-stamp: force
+make_build_data: force
 	cc -c ${CFLAGS} build_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-unconfig: target
-	@./mktarget -u
+install:
+	/usr/bin/install ${PROGRAM} ${INSTALLDIR}
+#	/usr/bin/install ${PROGRAM}d ${INSTALLDIR}
 
-warn: target
-	@./mktarget -w -b
+unconfig: make_configure
+	@./configure -u
+
+warn: make_configure
+	@./configure -w -b
 	@make --no-print-directory gdb_merge
 
-Warn: target
-	@./mktarget -W -b
+Warn: make_configure
+	@./configure -W -b
 	@make --no-print-directory gdb_merge
 
-nowarn: target
-	@./mktarget -n -b
+nowarn: make_configure
+	@./configure -n -b
 	@make --no-print-directory gdb_merge
 
-main.o: ${MCLX_HFILES} main.c
+main.o: ${GENERIC_HFILES} main.c
 	cc -c ${CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
-cmdline.o: ${MCLX_HFILES} cmdline.c
-	cc -c ${CFLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS}
+cmdline.o: ${GENERIC_HFILES} cmdline.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} cmdline.c -I${READLINE_DIRECTORY} ${WARNING_OPTIONS}
 
-tools.o: ${MCLX_HFILES} tools.c
+tools.o: ${GENERIC_HFILES} tools.c
 	cc -c ${CFLAGS} tools.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-global_data.o: ${MCLX_HFILES} global_data.c
+global_data.o: ${GENERIC_HFILES} global_data.c
 	cc -c ${CFLAGS} global_data.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-symbols.o: ${MCLX_HFILES} symbols.c
-	cc -c ${CFLAGS} symbols.c -I${BFD_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
+symbols.o: ${GENERIC_HFILES} symbols.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} symbols.c -I${BFD_DIRECTORY} -I${GDB_INCLUDE_DIRECTORY} ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-filesys.o: ${MCLX_HFILES} filesys.c
+filesys.o: ${GENERIC_HFILES} filesys.c
 	cc -c ${CFLAGS} filesys.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-help.o: ${MCLX_HFILES} help.c
-	cc -c ${CFLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+help.o: ${GENERIC_HFILES} help.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} help.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-memory.o: ${MCLX_HFILES} memory.c
+memory.o: ${GENERIC_HFILES} memory.c
 	cc -c ${CFLAGS} memory.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-test.o: ${MCLX_HFILES} test.c
+test.o: ${GENERIC_HFILES} test.c
 	cc -c ${CFLAGS} test.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-task.o: ${MCLX_HFILES} task.c
-	cc -c ${CFLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+task.o: ${GENERIC_HFILES} task.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} task.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-kernel.o: ${MCLX_HFILES} kernel.c
-	cc -c ${CFLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+kernel.o: ${GENERIC_HFILES} kernel.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} kernel.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-gdb_interface.o: ${MCLX_HFILES} gdb_interface.c
-	cc -c ${CFLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+gdb_interface.o: ${GENERIC_HFILES} gdb_interface.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} gdb_interface.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-va_server.o: ${MCLX_HFILES} va_server.c
+va_server.o: ${MCORE_HFILES} va_server.c
 	cc -c ${CFLAGS} va_server.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-va_server_v1.o: ${MCLX_HFILES} va_server_v1.c
+va_server_v1.o: ${MCORE_HFILES} va_server_v1.c
 	cc -c ${CFLAGS} va_server_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-lkcd_common.o: ${MCLX_HFILES} ${LKCD_HFILES} lkcd_common.c
+lkcd_common.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_common.c
 	cc -c ${CFLAGS} lkcd_common.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-lkcd_v1.o: ${MCLX_HFILES} ${LKCD_HFILES} lkcd_v1.c
-	cc -c ${CFLAGS} lkcd_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+lkcd_v1.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v1.c
+	cc -c ${CFLAGS} -DMCLX lkcd_v1.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-lkcd_v2_v3.o: ${MCLX_HFILES} ${LKCD_HFILES} lkcd_v2_v3.c
-	cc -c ${CFLAGS} lkcd_v2_v3.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+lkcd_v2_v3.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v2_v3.c
+	cc -c ${CFLAGS} -DMCLX lkcd_v2_v3.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-lkcd_v5.o: ${MCLX_HFILES} ${LKCD_HFILES} lkcd_v5.c
-	cc -c ${CFLAGS} lkcd_v5.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+lkcd_v5.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v5.c
+	cc -c ${CFLAGS} -DMCLX lkcd_v5.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-net.o: ${MCLX_HFILES} net.c
+lkcd_v7.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v7.c
+	cc -c ${CFLAGS} -DMCLX lkcd_v7.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+lkcd_v8.o: ${GENERIC_HFILES} ${LKCD_DUMP_HFILES} lkcd_v8.c
+	cc -c ${CFLAGS} -DMCLX lkcd_v8.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+net.o: ${GENERIC_HFILES} net.c
 	cc -c ${CFLAGS} net.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-dev.o: ${MCLX_HFILES} dev.c
+dev.o: ${GENERIC_HFILES} dev.c
 	cc -c ${CFLAGS} dev.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-remote.o: ${MCLX_HFILES} remote.c
-	cc -c ${CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+# remote.c functionality has been deprecated
+remote.o: ${GENERIC_HFILES} remote.c
+	@cc -c ${CFLAGS} remote.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+remote_daemon.o: ${GENERIC_HFILES} remote.c
+	cc -c ${CFLAGS} -DDAEMON remote.c -o remote_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-x86.o: ${MCLX_HFILES} x86.c
-	cc -c ${CFLAGS} x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+x86.o: ${GENERIC_HFILES} x86.c
+	cc -c ${CFLAGS} -DMCLX x86.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-alpha.o: ${MCLX_HFILES} alpha.c
-	cc -c ${CFLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+alpha.o: ${GENERIC_HFILES} alpha.c
+	cc -c ${CFLAGS} ${GDB_FLAGS} alpha.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-ppc.o: ${MCLX_HFILES} ppc.c
+ppc.o: ${GENERIC_HFILES} ppc.c
 	cc -c ${CFLAGS} ppc.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-ia64.o: ${MCLX_HFILES} ia64.c
+ia64.o: ${GENERIC_HFILES} ia64.c
 	cc -c ${CFLAGS} ia64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-s390.o: ${MCLX_HFILES} ${IBM_HFILES} s390.c
+ppc64.o: ${GENERIC_HFILES} ppc64.c
+	cc -c ${CFLAGS} ppc64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+x86_64.o: ${GENERIC_HFILES} x86_64.c
+	cc -c ${CFLAGS} x86_64.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+s390.o: ${GENERIC_HFILES} ${IBM_HFILES} s390.c
 	cc -c ${CFLAGS} s390.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-s390x.o: ${MCLX_HFILES} ${IBM_HFILES} s390x.c
+s390x.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x.c
 	cc -c ${CFLAGS} s390x.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-s390_dump.o: ${MCLX_HFILES} ${IBM_HFILES} s390_dump.c
+s390_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390_dump.c
 	cc -c ${CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-s390x_dump.o: ${MCLX_HFILES} ${IBM_HFILES} s390x_dump.c
+s390x_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x_dump.c
 	cc -c ${CFLAGS} s390x_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-extensions.o: ${MCLX_HFILES} extensions.c
+netdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
+	cc -c ${CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
+	cc -c ${CFLAGS} -DDAEMON netdump.c -o netdump_daemon.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+diskdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} diskdump.c
+	cc -c ${CFLAGS} diskdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+extensions.o: ${GENERIC_HFILES} extensions.c
 	cc -c ${CFLAGS} extensions.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+lkcd_x86_trace.o: ${GENERIC_HFILES} ${LKCD_TRACE_HFILES} lkcd_x86_trace.c 
+	cc -c ${CFLAGS} -DREDHAT lkcd_x86_trace.c ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+unwind_v1.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
+	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V1 unwind.c -o unwind_v1.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+unwind_v2.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
+	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V2 unwind.c -o unwind_v2.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+unwind_v3.o: ${GENERIC_HFILES} ${UNWIND_HFILES} unwind.c unwind_decoder.c
+	cc -c ${CFLAGS} -DREDHAT -DUNWIND_V3 unwind.c -o unwind_v3.o ${WARNING_OPTIONS} ${WARNING_ERROR}
+
+lkcd_fix_mem.o: ${GENERIC_HFILES} ${LKCD_HFILES} lkcd_fix_mem.c
+	cc -c ${CFLAGS} lkcd_fix_mem.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
 ${PROGRAM}: force
 	@make --no-print-directory all
 
-${PROGRAM}d: target
-	@./mktarget -d
-	@make --no-print-directory stamp
+# Remote daemon functionality has been deprecated.
+daemon_deprecated: force
+	@echo "WARNING: remote daemon functionality has been deprecated"
+	@echo 
+
+${PROGRAM}d: daemon_deprecated make_configure
+	@./configure -d
+	@make --no-print-directory make_build_data
 	@make --no-print-directory daemon 
 
-daemon: va_server.o va_server_v1.o lkcd_common.o lkcd_v1.o \
-	lkcd_v2_v3.o lkcd_v5.o s390_dump.o s390x_dump.o
-	cc -c ${CFLAGS} remote.c -o daemon.o -D_DAEMON_ ${WARNING_OPTIONS} ${WARNING_ERROR} 
-	cc ${LDFLAGS} -o ${PROGRAM}d daemon.o va_server.o va_server_v1.o \
-	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o \
-	s390_dump.o s390x_dump.o build_data.o -lz 
-	
-files: target
-	@./mktarget -q -b
+daemon: ${DAEMON_OBJECT_FILES}
+	cc ${LDFLAGS} -o ${PROGRAM}d ${DAEMON_OBJECT_FILES} build_data.o -lz 
+
+files: make_configure
+	@./configure -q -b
 	@make --no-print-directory show_files
 
+gdb_files: make_configure
+	@./configure -q -b
+	@echo ${GDB_FILES}
+
 show_files:
-	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} COPYING README
+	@if [ -f ${PROGRAM}  ]; then \
+		./${PROGRAM} --no_crashrc -h README > README; fi
+	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} COPYING README \
+	.rh_rpm_package crash.8
 
 ctags:
 	ctags ${SOURCE_FILES}
 
-tar: target
-	@./mktarget -q -b
+tar: make_configure
+	@./configure -q -b
 	@make --no-print-directory do_tar
 
 do_tar:
+	@if [ -f ${PROGRAM}  ]; then \
+		./${PROGRAM} --no_crashrc -h README > README; fi
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES}
+	@echo; ls -l ${PROGRAM}.tar.gz
 
-RELEASE=
+# To create a base tar file for Red Hat RPM packaging, pass the base RPM
+# version number without the release number, as in: "make release RPMPKG=x.y".
+# This will cause the local src.rpm creation to fail below (as it should).
+# However, when the package is created by the Red Hat build procedure, its 
+# spec file will have its own release number, which will in turn get passed 
+# to the "all" target upon the initial build.
 
-release:
+RELEASE=3.10-11
+
+release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
 		echo "make release: must be super-user"; exit 1; fi
-	@if [ "${RELEASE}" = "" ] || [ "${GDB}" = "" ] ; then \
-		echo "Enter RELEASE=x.x and, if not set, GDB=gdb-x.x on make command line "; \
-	else make --no-print-directory release_configure; fi
+	@./configure -p "RPMPKG=${RPMPKG}" -u -g
+	@make --no-print-directory release_configure
+	@echo 
+	@echo "cvs tag this release if necessary"
 
-release_configure: target
-	@./mktarget -u -r ${GDB}
+release_configure: make_configure
+	@if [ "${GDB}" = "" ] ; then \
+		echo "make release: GDB not defined: append GDB=gdb-x.x to make command line"; echo; exit 1; fi 
+	@./configure -r ${GDB}
 	@make --no-print-directory do_release
 
 do_release:
 	@echo "RELEASE: ${RELEASE}  GDB VERSION: ${GDB}"
-	@rm -rf ./RELDIR; mkdir ./RELDIR; mkdir ./RELDIR/${PROGRAM}${RELEASE}
-	@rm -f ${PROGRAM}${RELEASE}.tar.gz ${PROGRAM}${RELEASE}-IA64.tar.gz
-	@chown root ./RELDIR/${PROGRAM}${RELEASE}
+	@if [ ! -f .rh_rpm_package  ]; then \
+		echo "no .rh_rpm_package exists!"; exit 1; fi
+	@chmod 666 .rh_rpm_package
+	@rm -rf ./RELDIR; mkdir ./RELDIR; mkdir ./RELDIR/${PROGRAM}-${RELEASE}
+	@rm -f ${PROGRAM}-${RELEASE}.tar.gz 
+	@rm -f ${PROGRAM}-${RELEASE}.src.rpm
+	@chown root ./RELDIR/${PROGRAM}-${RELEASE}
 	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} COPYING \
-	| (cd ./RELDIR/${PROGRAM}${RELEASE}; tar xf -)
-	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}${RELEASE}
-	@./crash -h README > ./RELDIR/${PROGRAM}${RELEASE}/README
+	.rh_rpm_package crash.8 | (cd ./RELDIR/${PROGRAM}-${RELEASE}; tar xf -)
+	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${RELEASE}
+	@./${PROGRAM} --no_crashrc -h README > ./RELDIR/${PROGRAM}-${RELEASE}/README
 	@(cd ./RELDIR; find . -exec chown root {} ";")
 	@(cd ./RELDIR; find . -exec chgrp root {} ";")
 	@(cd ./RELDIR; find . -exec touch {} ";")
 	@(cd ./RELDIR; \
-		tar czvf ../${PROGRAM}${RELEASE}.tar.gz ${PROGRAM}${RELEASE})
-	@chgrp root ${PROGRAM}${RELEASE}.tar.gz
+		tar czvf ../${PROGRAM}-${RELEASE}.tar.gz ${PROGRAM}-${RELEASE})
+	@chgrp root ${PROGRAM}-${RELEASE}.tar.gz
 	@rm -rf ./RELDIR
 	@echo
-	@if [ "${GDB}" = "gdb-5.0-7" ]; then \
-		mv ${PROGRAM}${RELEASE}.tar.gz \
-			${PROGRAM}${RELEASE}-IA64.tar.gz; \
-		ls -l ${PROGRAM}${RELEASE}-IA64.tar.gz; \
-	else ls -l ${PROGRAM}${RELEASE}.tar.gz; fi
-
+	@ls -l ${PROGRAM}-${RELEASE}.tar.gz
+	@./configure -s -u > ${PROGRAM}.spec
+	@if [ -s ${PROGRAM}.spec ]; then \
+	  cp ${PROGRAM}-${RELEASE}.tar.gz /usr/src/redhat/SOURCES; \
+	  /usr/bin/rpmbuild -bs ${PROGRAM}.spec > /dev/null; \
+	  rm -f /usr/src/redhat/SOURCES/${PROGRAM}-${RELEASE}.tar.gz; \
+	  cp /usr/src/redhat/SRPMS/${PROGRAM}-${RELEASE}.src.rpm . ; \
+	  ls -l ${PROGRAM}-${RELEASE}.src.rpm; \
+	exit 0; fi
 
 ref:
 	make ctags cscope
@@ -342,11 +483,14 @@ cscope:
 	echo $$FILE >> cscope.files; done
 	cscope
 
-glink: target
-	@./mktarget -q -b
+glink: make_configure
+	@./configure -q -b
 	rm -f gdb
 	ln -s ${GDB}/gdb gdb
 	(cd ${GDB}/gdb; rm -f ${PROGRAM}; ln -s ../../${PROGRAM} ${PROGRAM})
 
 name:
 	@echo ${PROGRAM}
+
+dis:
+	objdump --disassemble --line-numbers ${PROGRAM} > ${PROGRAM}.dis

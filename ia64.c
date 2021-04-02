@@ -1,6 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,40 +18,45 @@
  *
  * 09/28/00  Transition to CVS version control
  *
- * CVS: $Revision: 1.58 $ $Date: 2002/01/23 17:44:07 $
+ * CVS: $Revision: 1.64 $ $Date: 2005/02/09 21:12:05 $
  */ 
 #ifdef IA64 
 #include "defs.h"
 
-static int ia64_verify_symbol(const char *, ulong);
-static void ia64_eframe_search(struct bt_info *);
+static int ia64_verify_symbol(const char *, ulong, char);
+static int ia64_eframe_search(struct bt_info *);
 static void ia64_back_trace_cmd(struct bt_info *);
 static void ia64_old_unwind(struct bt_info *);
-static void ia64_new_unwind(struct bt_info *);
+static void ia64_old_unwind_init(void);
+static void try_old_unwind(struct bt_info *);
 static void ia64_dump_irq(int);
 static ulong ia64_processor_speed(void);
-static int ia64_uvtop(struct task_context *, ulong, ulong *, int);
-static int ia64_kvtop(struct task_context *, ulong, ulong *, int);
+static int ia64_uvtop(struct task_context *, ulong, physaddr_t *, int);
+static int ia64_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static ulong ia64_get_task_pgd(ulong);
-static int ia64_nr_irqs(void);
 static ulong ia64_get_pc(struct bt_info *);
 static ulong ia64_get_sp(struct bt_info *);
+static ulong ia64_get_thread_ksp(ulong);
 static void ia64_get_stack_frame(struct bt_info *, ulong *, ulong *);
-static int ia64_translate_pte(ulong, ulong *);
+static int ia64_translate_pte(ulong, void *, ulonglong);
 static ulong ia64_vmalloc_start(void);
-static ulong ia64_SWP_TYPE(ulong);
-static ulong ia64_SWP_OFFSET(ulong);
 static int ia64_is_task_addr(ulong);
 static int ia64_dis_filter(ulong, char *);
-static void ia64_exception_frame(ulong, ulong);
 static void ia64_dump_switch_stack(ulong, ulong);
 static void ia64_cmd_mach(void);
 static int ia64_get_smp_cpus(void);
 static void ia64_display_machine_stats(void);
 static void ia64_display_cpu_data(void);
+static void ia64_display_memmap(void);
+static void ia64_create_memmap(void);
+static ulong check_mem_limit(void);
+static int ia64_verify_paddr(uint64_t);
+static int ia64_available_memory(struct efi_memory_desc_t *);
 static void ia64_post_init(void);
-static ulong ia64_get_thread_ksp(ulong);
-static void ia64_dump_line_number(ulong);
+static struct line_number_hook ia64_line_number_hooks[];
+static ulong ia64_get_stackbase(ulong);
+static ulong ia64_get_stacktop(ulong);
+static void parse_cmdline_arg(void);
 
 struct unw_frame_info;
 static void dump_unw_frame_info(struct unw_frame_info *);
@@ -61,18 +68,19 @@ static ulong *ia64_rse_rnat_addr(ulong *);
 static ulong rse_read_reg(struct unw_frame_info *, int, int *);
 static void rse_function_params(struct unw_frame_info *, char *);
 
-struct machine_specific {
-	ulong unimpl_va_mask;
-	ulong unimpl_pa_mask;
-} ia64_machine_specific = { 0 };
+
+struct machine_specific ia64_machine_specific = { 0 };
 
 void
 ia64_init(int when)
 {
+	struct syment *sp, *spn;
+
         switch (when)
         {
         case PRE_SYMTAB:
                 machdep->verify_symbol = ia64_verify_symbol;
+		machdep->machspec = &ia64_machine_specific;
 		if (pc->flags & KERNEL_DEBUG_QUERY)
 			return;
                 machdep->pagesize = memory_page_size();
@@ -103,17 +111,24 @@ ia64_init(int when)
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
+		machdep->verify_paddr = ia64_verify_paddr;
+		machdep->ptrs_per_pgd = PTRS_PER_PGD;
+                machdep->machspec->phys_start = UNKNOWN_PHYS_START;
+                if (machdep->cmdline_arg) 
+			parse_cmdline_arg();
+		if (ACTIVE())
+			machdep->flags |= DEVMEMRD;
                 break;     
 
         case PRE_GDB:
-		{
+		if (pc->flags & KERNEL_DEBUG_QUERY)
+			return;
 		/*
 		 * Until the kernel core dump and va_server library code
 		 * do the right thing with respect to the configured page size,
 		 * try to recognize a fatal inequity between the compiled-in 
 		 * page size and the page size used by the kernel.
 		 */ 
-		struct syment *sp, *spn;
 
 		if ((sp = symbol_search("empty_zero_page")) &&
 		    (spn = next_symbol(NULL, sp)) && 
@@ -121,7 +136,6 @@ ia64_init(int when)
 			error(FATAL, 
 	        "compiled-in page size: %d  (apparent) kernel page size: %ld\n",
 				PAGESIZE(), spn->value - sp->value);
-		}
 
                 machdep->kvbase = KERNEL_VMALLOC_BASE;
 		machdep->identity_map_base = KERNEL_CACHED_BASE;
@@ -134,35 +148,68 @@ ia64_init(int when)
                 machdep->kvtop = ia64_kvtop;
                 machdep->get_task_pgd = ia64_get_task_pgd;
                 machdep->dump_irq = ia64_dump_irq;
-                machdep->nr_irqs = ia64_nr_irqs;
 		machdep->get_stack_frame = ia64_get_stack_frame;
-		machdep->get_stackbase = generic_get_stackbase;
-		machdep->get_stacktop = generic_get_stacktop;
+		machdep->get_stackbase = ia64_get_stackbase;
+		machdep->get_stacktop = ia64_get_stacktop;
                 machdep->translate_pte = ia64_translate_pte;
                 machdep->memory_size = generic_memory_size;
                 machdep->vmalloc_start = ia64_vmalloc_start;
-                machdep->SWP_TYPE = ia64_SWP_TYPE;
-                machdep->SWP_OFFSET = ia64_SWP_OFFSET;
                 machdep->is_task_addr = ia64_is_task_addr;
                 machdep->dis_filter = ia64_dis_filter;
 		machdep->cmd_mach = ia64_cmd_mach;
-		machdep->machspec = &ia64_machine_specific;
 		machdep->get_smp_cpus = ia64_get_smp_cpus;
+		machdep->line_number_hooks = ia64_line_number_hooks;
+		machdep->value_to_symbol = generic_machdep_value_to_symbol;
+                machdep->init_kernel_pgd = NULL;
+
+		if ((sp = symbol_search("_stext"))) {
+			machdep->machspec->kernel_region = 
+				VADDR_REGION(sp->value);
+			machdep->machspec->kernel_start = sp->value;
+		} else {
+			machdep->machspec->kernel_region = KERNEL_CACHED_REGION;
+			machdep->machspec->kernel_start = KERNEL_CACHED_BASE;
+		}
+        	if (machdep->machspec->kernel_region == KERNEL_VMALLOC_REGION) {
+                	machdep->machspec->vmalloc_start = 
+				machdep->machspec->kernel_start +
+				GIGABYTES((ulong)(4));
+			if (machdep->machspec->phys_start == UNKNOWN_PHYS_START)
+				machdep->machspec->phys_start = 
+					DEFAULT_PHYS_START;
+		} else
+               		machdep->machspec->vmalloc_start = KERNEL_VMALLOC_BASE;
                 break;
 
         case POST_GDB:
-                SIZE(pt_regs) = STRUCT_SIZE("pt_regs");
-                SIZE(softirq_state) = STRUCT_SIZE("softirq_state");
-                SIZE(desc_struct) = STRUCT_SIZE("desc_struct");
-		SIZE(cpuinfo_ia64) = STRUCT_SIZE("cpuinfo_ia64");
-		OFFSET(switch_stack_b0) = MEMBER_OFFSET("switch_stack", "b0");
-		OFFSET(switch_stack_ar_bspstore) = 
-			MEMBER_OFFSET("switch_stack", "ar_bspstore");
-		OFFSET(switch_stack_ar_pfs) = 
-			MEMBER_OFFSET("switch_stack", "ar_pfs");
-		OFFSET(switch_stack_ar_rnat) = 
-			MEMBER_OFFSET("switch_stack", "ar_rnat");
+		STRUCT_SIZE_INIT(cpuinfo_ia64, "cpuinfo_ia64");
+		STRUCT_SIZE_INIT(switch_stack, "switch_stack");
+		MEMBER_OFFSET_INIT(thread_struct_fph, "thread_struct", "fph");
+		MEMBER_OFFSET_INIT(switch_stack_b0, "switch_stack", "b0");
+		MEMBER_OFFSET_INIT(switch_stack_ar_bspstore,  
+			"switch_stack", "ar_bspstore");
+		MEMBER_OFFSET_INIT(switch_stack_ar_pfs,  
+			"switch_stack", "ar_pfs");
+		MEMBER_OFFSET_INIT(switch_stack_ar_rnat, 
+			"switch_stack", "ar_rnat");
+		MEMBER_OFFSET_INIT(switch_stack_pr, 
+			"switch_stack", "pr");
+        	MEMBER_OFFSET_INIT(cpuinfo_ia64_proc_freq, 
+			"cpuinfo_ia64", "proc_freq");
+        	MEMBER_OFFSET_INIT(cpuinfo_ia64_unimpl_va_mask,
+			"cpuinfo_ia64", "unimpl_va_mask");
+        	MEMBER_OFFSET_INIT(cpuinfo_ia64_unimpl_pa_mask, 
+			"cpuinfo_ia64", "unimpl_pa_mask");
+		ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc, 
+			"irq_desc", NULL, 0);
+		if (symbol_exists("irq_desc"))
+			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc, 
+				"irq_desc", NULL, 0);
+		else if (symbol_exists("_irq_desc"))
+			ARRAY_LENGTH_INIT(machdep->nr_irqs, irq_desc, 
+				"_irq_desc", NULL, 0);
 		machdep->hz = 1024;
+		ia64_create_memmap();
                 break;
 
 	case POST_INIT:
@@ -171,30 +218,207 @@ ia64_init(int when)
 	}
 }
 
+/*
+ *  --machdep <addr> defaults to the physical start location.
+ *
+ *  Otherwise, it's got to be a "item=value" string, separated
+ *  by commas if more than one is passed in.
+ */
+
 void
-ia64_dump_machdep_table(void)
+parse_cmdline_arg(void)
 {
-        int others;
+	int i, c, errflag;
+	char *p;
+	char buf[BUFSIZE];
+	char *arglist[MAXARGS];
+	ulong value;
+        struct machine_specific *ms;
+
+        ms = &ia64_machine_specific;
+
+	if (!strstr(machdep->cmdline_arg, "=")) {
+		errflag = 0;
+        	value = htol(machdep->cmdline_arg,
+                	RETURN_ON_ERROR|QUIET, &errflag);
+		if (!errflag) {
+        		ms->phys_start = value;
+			error(NOTE, "setting phys_start to: 0x%lx\n",
+				ms->phys_start);
+		} else
+			error(WARNING, "ignoring --machdep option: %s\n\n",
+				machdep->cmdline_arg);
+		return;
+        }
+
+	strcpy(buf, machdep->cmdline_arg);
+
+	for (p = buf; *p; p++) {
+		if (*p == ',')
+			 *p = ' ';
+	}
+
+	c = parse_line(buf, arglist);
+
+	for (i = 0; i < c; i++) {
+		errflag = 0;
+
+		if (STRNEQ(arglist[i], "phys_start=")) {
+			p = arglist[i] + strlen("phys_start=");
+			if (strlen(p)) {
+        			value = htol(p, RETURN_ON_ERROR|QUIET, 
+					&errflag);
+				if (!errflag) {
+        				ms->phys_start = value;
+					error(NOTE, 
+					    "setting phys_start to: 0x%lx\n",
+						ms->phys_start);
+					continue;
+				}
+			}
+		} else if (STRNEQ(arglist[i], "init_stack_size=")) {
+			p = arglist[i] + strlen("init_stack_size=");
+			if (strlen(p)) {
+				value = stol(p, RETURN_ON_ERROR|QUIET, 
+					&errflag);
+				if (!errflag) {
+					ms->ia64_init_stack_size = (int)value;
+					error(NOTE, 
+		    	    	      "setting init_stack_size to: 0x%x (%d)\n",
+				    		ms->ia64_init_stack_size,
+				    		ms->ia64_init_stack_size);
+					continue;
+				}
+			}
+		}
+
+		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
+	} 
+
+	if (c)
+		fprintf(fp, "\n");
+}
+
+
+int
+ia64_in_init_stack(ulong addr)
+{
+	ulong init_stack_addr;
+
+	if (!symbol_exists("ia64_init_stack"))
+		return FALSE;
+
+	/* 
+	 *  ia64_init_stack could be aliased to region 5 
+	 */
+	init_stack_addr = ia64_VTOP(symbol_value("ia64_init_stack"));
+	addr = ia64_VTOP(addr);
+	if ((addr < init_stack_addr) ||
+	    (addr >= (init_stack_addr+machdep->machspec->ia64_init_stack_size)))
+		return FALSE;
+
+	return TRUE;
+}
+
+void
+ia64_dump_machdep_table(ulong arg)
+{
+        int others, verbose;
+	struct machine_specific *ms;
+
+	verbose = FALSE;
+	ms = &ia64_machine_specific;
+
+	if (arg) {
+		switch (arg)
+		{
+		default:
+		case 1:
+			verbose = TRUE;
+			break;
+
+		case 2: 
+			if (machdep->flags & NEW_UNWIND) {
+				machdep->flags &= 
+				        ~(NEW_UNWIND|NEW_UNW_V1|NEW_UNW_V2|NEW_UNW_V3);
+				machdep->flags |= OLD_UNWIND;
+                        	ms->unwind_init = ia64_old_unwind_init;
+                        	ms->unwind = ia64_old_unwind;
+                        	ms->dump_unwind_stats = NULL;
+                        	ms->unwind_debug = NULL;
+			} else {
+				machdep->flags &= ~OLD_UNWIND;
+				machdep->flags |= NEW_UNWIND;
+				if (MEMBER_EXISTS("unw_frame_info", "pt")) {
+					if (MEMBER_EXISTS("pt_regs", "ar_csd")) {
+						machdep->flags |= NEW_UNW_V3;
+                        			ms->unwind_init = unwind_init_v3;
+                        			ms->unwind = unwind_v3;
+                        			ms->unwind_debug = unwind_debug_v3;
+                        			ms->dump_unwind_stats = 
+							dump_unwind_stats_v3;
+					} else {
+						machdep->flags |= NEW_UNW_V2;
+                        			ms->unwind_init = unwind_init_v2;
+                        			ms->unwind = unwind_v2;
+                        			ms->unwind_debug = unwind_debug_v2;
+                        			ms->dump_unwind_stats = 
+							dump_unwind_stats_v2;
+					}
+				} else {
+					machdep->flags |= NEW_UNW_V1;
+                        		ms->unwind_init = unwind_init_v1;
+                        		ms->unwind = unwind_v1;
+                        		ms->unwind_debug = unwind_debug_v1;
+                        		ms->dump_unwind_stats = 
+						dump_unwind_stats_v1;
+				}
+			}
+			ms->unwind_init();
+			return;
+
+		case 3:
+			if (machdep->flags & NEW_UNWIND) 
+				ms->unwind_debug(arg);
+			return;
+		}
+	}
 
         others = 0;
         fprintf(fp, "              flags: %lx (", machdep->flags);
         /* future flags tests here */
 	if (machdep->flags & NEW_UNWIND)
 		fprintf(fp, "%sNEW_UNWIND", others++ ? "|" : "");
+	if (machdep->flags & NEW_UNW_V1)
+		fprintf(fp, "%sNEW_UNW_V1", others++ ? "|" : "");
+	if (machdep->flags & NEW_UNW_V2)
+		fprintf(fp, "%sNEW_UNW_V2", others++ ? "|" : "");
+	if (machdep->flags & NEW_UNW_V3)
+		fprintf(fp, "%sNEW_UNW_V3", others++ ? "|" : "");
 	if (machdep->flags & OLD_UNWIND)
 		fprintf(fp, "%sOLD_UNWIND", others++ ? "|" : "");
-	if (machdep->flags & UNW_FI_INSYNC)
-		fprintf(fp, "%sUNW_FI_INSYNC", others++ ? "|" : "");
-	if (machdep->flags & UNW_FI_UNKNOWN)
-		fprintf(fp, "%sUNW_FI_UNKNOWN", others++ ? "|" : "");
+	if (machdep->flags & UNW_OUT_OF_SYNC)
+		fprintf(fp, "%sUNW_OUT_OF_SYNC", others++ ? "|" : "");
+	if (machdep->flags & UNW_READ)
+		fprintf(fp, "%sUNW_READ", others++ ? "|" : "");
+	if (machdep->flags & UNW_PTREGS)
+		fprintf(fp, "%sUNW_PTREGS", others++ ? "|" : "");
+	if (machdep->flags & UNW_R0)
+		fprintf(fp, "%sUNW_R0", others++ ? "|" : "");
+	if (machdep->flags & MEM_LIMIT)
+		fprintf(fp, "%sMEM_LIMIT", others++ ? "|" : "");
 	if (machdep->flags & SYSRQ)
 		fprintf(fp, "%sSYSRQ", others++ ? "|" : "");
+	if (machdep->flags & DEVMEMRD)
+		fprintf(fp, "%sDEVMEMRD", others++ ? "|" : "");
+	if (machdep->flags & INIT)
+		fprintf(fp, "%sINIT", others++ ? "|" : "");
         fprintf(fp, ")\n");
         fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
 	fprintf(fp, "  identity_map_base: %lx\n", machdep->identity_map_base);
         fprintf(fp, "           pagesize: %d\n", machdep->pagesize);
         fprintf(fp, "          pageshift: %d\n", machdep->pageshift);
-        fprintf(fp, "           pagemask: %lx\n", machdep->pagemask);
+        fprintf(fp, "           pagemask: %llx\n", machdep->pagemask);
         fprintf(fp, "         pageoffset: %lx\n", machdep->pageoffset);
         fprintf(fp, "          stacksize: %ld\n", machdep->stacksize);
         fprintf(fp, "                 hz: %d\n", machdep->hz);
@@ -202,6 +426,7 @@ ia64_dump_machdep_table(void)
         fprintf(fp, "            memsize: %ld (0x%lx)\n", 
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
+        fprintf(fp, "            nr_irqs: %d\n", machdep->nr_irqs);
         fprintf(fp, "      eframe_search: ia64_eframe_search()\n");
         fprintf(fp, "         back_trace: ia64_back_trace_cmd()\n");
         fprintf(fp, "get_processor_speed: ia64_processor_speed()\n");
@@ -209,15 +434,12 @@ ia64_dump_machdep_table(void)
         fprintf(fp, "              kvtop: ia64_kvtop()\n");
         fprintf(fp, "       get_task_pgd: ia64_get_task_pgd()\n");
         fprintf(fp, "           dump_irq: ia64_dump_irq()\n");
-        fprintf(fp, "            nr_irqs: ia64_nr_irqs()\n");
 	fprintf(fp, "    get_stack_frame: ia64_get_stack_frame()\n");
-	fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
-	fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
+	fprintf(fp, "      get_stackbase: ia64_get_stackbase()\n");
+	fprintf(fp, "       get_stacktop: ia64_get_stacktop()\n");
         fprintf(fp, "      translate_pte: ia64_translate_pte()\n");
         fprintf(fp, "        memory_size: generic_memory_size()\n");
         fprintf(fp, "      vmalloc_start: ia64_vmalloc_start()\n");
-        fprintf(fp, "           SWP_TYPE: ia64_SWP_TYPE()\n");
-        fprintf(fp, "         SWP_OFFSET: ia64_SWP_OFFSET\n");
         fprintf(fp, "       is_task_addr: ia64_is_task_addr()\n");
         fprintf(fp, "      verify_symbol: ia64_verify_symbol()\n");
         fprintf(fp, "         dis_filter: ia64_dis_filter()\n");
@@ -225,39 +447,149 @@ ia64_dump_machdep_table(void)
         fprintf(fp, "       get_smp_cpus: ia64_get_smp_cpus()\n");
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
+        fprintf(fp, "       verify_paddr: %s()\n",
+		(machdep->verify_paddr == ia64_verify_paddr) ?
+		"ia64_verify_paddr" : "generic_verify_paddr");
+        fprintf(fp, "    init_kernel_pgd: NULL\n");
+	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
+        fprintf(fp, "  line_number_hooks: ia64_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
         fprintf(fp, "                pgd: %lx\n", (ulong)machdep->pgd);
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
+	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
+	fprintf(fp, "        cmdline_arg: %s\n", machdep->cmdline_arg);
         fprintf(fp, "           machspec: ia64_machine_specific\n");
+	fprintf(fp, "                   cpu_data_address: %lx\n", 
+			machdep->machspec->cpu_data_address);
 	fprintf(fp, "                     unimpl_va_mask: %lx\n", 
 		machdep->machspec->unimpl_va_mask);
 	fprintf(fp, "                     unimpl_pa_mask: %lx\n",
 		machdep->machspec->unimpl_pa_mask);
+	fprintf(fp, "                                unw: %lx\n",
+		(ulong)machdep->machspec->unw);
+	fprintf(fp, "                  unw_tables_offset: %ld\n",
+		machdep->machspec->unw_tables_offset);
+	fprintf(fp, "            unw_kernel_table_offset: %ld %s\n",
+		machdep->machspec->unw_kernel_table_offset,
+		machdep->machspec->unw_kernel_table_offset ? "" : "(unused)");
+	fprintf(fp, "                unw_pt_regs_offsets: %ld %s\n",
+		machdep->machspec->unw_pt_regs_offsets,
+		machdep->machspec->unw_pt_regs_offsets ? "" : "(unused)");
+	fprintf(fp, "                       script_index: %d\n",
+		machdep->machspec->script_index);
+	fprintf(fp, "                       script_cache: %lx%s",
+		(ulong)machdep->machspec->script_cache,
+		machdep->flags & OLD_UNWIND ? "\n" : " ");
+	if (machdep->flags & NEW_UNWIND)
+		ms->dump_unwind_stats();
+	if (!(machdep->flags & (NEW_UNWIND|OLD_UNWIND)))
+		fprintf(fp, "\n");
+	fprintf(fp, "                          mem_limit: %lx\n", 
+		machdep->machspec->mem_limit);
+	fprintf(fp, "                      kernel_region: %ld\n", 
+		machdep->machspec->kernel_region);
+	fprintf(fp, "                       kernel_start: %lx\n", 
+		machdep->machspec->kernel_start);
+	fprintf(fp, "                         phys_start: %lx (%lx)\n", 
+		machdep->machspec->phys_start,
+		machdep->machspec->phys_start & KERNEL_TR_PAGE_MASK);
+	fprintf(fp, "                      vmalloc_start: %lx\n", 
+		machdep->machspec->vmalloc_start);
+
+	fprintf(fp, "                        ia64_memmap: %lx\n", 
+		(ulong)machdep->machspec->ia64_memmap);
+	fprintf(fp, "                    efi_memmap_size: %ld\n", 
+		(ulong)machdep->machspec->efi_memmap_size);
+	fprintf(fp, "                   efi_memdesc_size: %ld\n", 
+		(ulong)machdep->machspec->efi_memdesc_size);
+
+	fprintf(fp, "                        unwind_init: ");
+	if (ms->unwind_init == unwind_init_v1)
+		fprintf(fp, "unwind_init_v1()\n");
+	else if (ms->unwind_init == unwind_init_v2)
+		fprintf(fp, "unwind_init_v2()\n");
+	else if (ms->unwind_init == unwind_init_v3)
+		fprintf(fp, "unwind_init_v3()\n");
+	else if (ms->unwind_init == ia64_old_unwind_init)
+		fprintf(fp, "ia64_old_unwind_init()\n");
+	else 
+		fprintf(fp, "%lx\n", (ulong)ms->unwind_init);
+
+	fprintf(fp, "                             unwind: ");
+        if (ms->unwind == unwind_v1)
+                fprintf(fp, "unwind_v1()\n");
+        else if (ms->unwind == unwind_v2)
+                fprintf(fp, "unwind_v2()\n");
+        else if (ms->unwind == unwind_v3)
+                fprintf(fp, "unwind_v3()\n");
+	else if (ms->unwind == ia64_old_unwind)
+		fprintf(fp, "ia64_old_unwind()\n");
+        else
+                fprintf(fp, "%lx\n", (ulong)ms->unwind);
+
+	fprintf(fp, "                  dump_unwind_stats: ");
+        if (ms->dump_unwind_stats == dump_unwind_stats_v1)
+                fprintf(fp, "dump_unwind_stats_v1()\n");
+        else if (ms->dump_unwind_stats == dump_unwind_stats_v2)
+                fprintf(fp, "dump_unwind_stats_v2()\n");
+        else if (ms->dump_unwind_stats == dump_unwind_stats_v3)
+                fprintf(fp, "dump_unwind_stats_v3()\n");
+        else
+                fprintf(fp, "%lx\n", (ulong)ms->dump_unwind_stats);
+
+	fprintf(fp, "                       unwind_debug: ");
+        if (ms->unwind_debug == unwind_debug_v1)
+                fprintf(fp, "unwind_debug_v1()\n");
+        else if (ms->unwind_debug == unwind_debug_v2)
+                fprintf(fp, "unwind_debug_v2()\n");
+        else if (ms->unwind_debug == unwind_debug_v3)
+                fprintf(fp, "unwind_debug_v3()\n");
+        else
+                fprintf(fp, "%lx\n", (ulong)ms->unwind_debug);
+
+	fprintf(fp, "               ia64_init_stack_size: %d\n", 
+		ms->ia64_init_stack_size);
+
+	if (verbose)
+		ia64_display_memmap();
 }
 
 /*
  *  Keep or reject a symbol from the namelist.
  */
 static int
-ia64_verify_symbol(const char *name, ulong value)
+ia64_verify_symbol(const char *name, ulong value, char type)
 {
-        if (MCLXDEBUG(8) && name && strlen(name))
+	ulong region;
+
+	if (!name || !strlen(name))
+		return FALSE;
+
+        if (CRASHDEBUG(8))
                 fprintf(fp, "%016lx %s\n", value, name);
 
-	return (name && strlen(name) && (value >= MIN_SYMBOL_VALUE));
+	if (STREQ(name, "phys_start") && type == 'A')
+		if (machdep->machspec->phys_start == UNKNOWN_PHYS_START)
+			machdep->machspec->phys_start = value;
+
+	region = VADDR_REGION(value);
+
+	return (((region == KERNEL_CACHED_REGION) ||
+		 (region == KERNEL_VMALLOC_REGION)));
 }
 
 
 /*
  *   Look for likely exception frames in a stack.
  */
-static void
+static int 
 ia64_eframe_search(struct bt_info *bt)
 {
-	error(FATAL, "ia64_eframe_search: TBD\n");
+	return(error(FATAL, 
+	    "ia64_eframe_search: not available for this architecture\n"));
 }
 
 
@@ -270,25 +602,20 @@ ia64_eframe_search(struct bt_info *bt)
 static void
 ia64_back_trace_cmd(struct bt_info *bt)
 {
+	struct machine_specific *ms = &ia64_machine_specific;
+
 	if (bt->flags & BT_SWITCH_STACK)
         	ia64_dump_switch_stack(bt->task, 0);
 
-	switch (machdep->flags & (OLD_UNWIND|NEW_UNWIND))
-	{
-	case OLD_UNWIND:
-		ia64_old_unwind(bt);
-		break;
+        if (machdep->flags & UNW_OUT_OF_SYNC) 
+                error(FATAL,
+                    "kernel and %s unwind data structures are out of sync\n",
+                        pc->program_name);
 
-	case NEW_UNWIND:
-		ia64_new_unwind(bt);
-		break;
-	}
+	ms->unwind(bt);
 
-	if (BT_REFERENCE_CHECK(bt))
-		return;
-
-        if (!is_kernel_thread(bt->task))
-                ia64_exception_frame(bt->stacktop - SIZE(pt_regs), 0);
+	if (bt->flags & BT_UNWIND_ERROR) 
+		try_old_unwind(bt);
 }
 
 
@@ -298,12 +625,13 @@ ia64_back_trace_cmd(struct bt_info *bt)
 static void
 ia64_dump_irq(int irq)
 {
-        if (symbol_exists("irq_desc")) {
+        if (symbol_exists("irq_desc") || symbol_exists("_irq_desc")) {
                 machdep->dump_irq = generic_dump_irq;
                 return(generic_dump_irq(irq));
         }
 
-	error(FATAL, "ia64_dump_irq: irq_desc does not exist?\n");
+	error(FATAL, 
+		"ia64_dump_irq: neither irq_desc or _irq_desc exist\n");
 }
 
 
@@ -322,9 +650,9 @@ ia64_processor_speed(void)
 	mhz = 0;
 	bootstrap_processor = 0;
 
-	if (!symbol_exists("cpu_data") ||
-	    !STRUCT_EXISTS("cpuinfo_ia64") ||
-	    !MEMBER_EXISTS("cpuinfo_ia64", "proc_freq"))
+	if (!machdep->machspec->cpu_data_address ||
+	    !VALID_STRUCT(cpuinfo_ia64) ||
+	    !VALID_MEMBER(cpuinfo_ia64_proc_freq))
 		return (machdep->mhz = mhz);
 
 	if (symbol_exists("bootstrap_processor"))
@@ -333,8 +661,8 @@ ia64_processor_speed(void)
 	if (bootstrap_processor == -1)
 		bootstrap_processor = 0;
 
-        readmem(symbol_value("cpu_data") + 
-		MEMBER_OFFSET("cpuinfo_ia64", "proc_freq"),
+        readmem(machdep->machspec->cpu_data_address + 
+		OFFSET(cpuinfo_ia64_proc_freq),
         	KVADDR, &proc_freq, sizeof(ulong),
                 "cpuinfo_ia64 proc_freq", FAULT_ON_ERROR);
 
@@ -354,7 +682,7 @@ ia64_processor_speed(void)
  *  swapper_pg_dir, making it irrelevant in this processor's case.
  */
 static int
-ia64_uvtop(struct task_context *tc, ulong uvaddr, ulong *paddr, int verbose)
+ia64_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
 {
 	ulong mm;
 	ulong *pgd;
@@ -423,7 +751,7 @@ ia64_uvtop(struct task_context *tc, ulong uvaddr, ulong *paddr, int verbose)
 		*paddr = pte;
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			ia64_translate_pte(pte, 0);
+			ia64_translate_pte(pte, 0, 0);
 		}
                 goto no_upage;
         }
@@ -432,7 +760,7 @@ ia64_uvtop(struct task_context *tc, ulong uvaddr, ulong *paddr, int verbose)
 
         if (verbose) {
                 fprintf(fp, "  PAGE: %lx\n\n", PAGEBASE(*paddr));
-		ia64_translate_pte(pte, 0);
+		ia64_translate_pte(pte, 0, 0);
 	}
 
 	return TRUE;
@@ -449,7 +777,7 @@ no_upage:
  *  other callers quietly accept the translation.
  */
 static int
-ia64_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
+ia64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 {
         ulong *pgd;
         ulong *page_dir;
@@ -464,7 +792,7 @@ ia64_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
                 return FALSE;
 
         if (!vt->vmalloc_start) {
-                *paddr = VTOP(kvaddr);
+                *paddr = ia64_VTOP(kvaddr);
                 return TRUE;
         }
 
@@ -477,16 +805,21 @@ ia64_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
                 return TRUE;
 
 	case KERNEL_CACHED_REGION:
-                *paddr = VTOP(kvaddr);
+                *paddr = ia64_VTOP(kvaddr);
 		if (verbose)
 			fprintf(fp, "[MAPPED IN TRANSLATION REGISTER]\n");
                 return TRUE;
 
 	case KERNEL_VMALLOC_REGION:
-		break;
+		if (ia64_IS_VMALLOC_ADDR(kvaddr))
+			break;
+                *paddr = ia64_VTOP(kvaddr);
+		if (verbose)
+			fprintf(fp, "[MAPPED IN TRANSLATION REGISTER]\n");
+                return TRUE;
         }
 
-        pgd = (ulong *)vt->kernel_pgd;
+        pgd = (ulong *)vt->kernel_pgd[0];
 
         if (verbose) {
                 fprintf(fp, "PAGE DIRECTORY: %lx\n", (ulong)pgd);
@@ -529,7 +862,7 @@ ia64_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
         if (!(pte & (_PAGE_P))) {
 		if (pte && verbose) {
 			fprintf(fp, "\n");
-			ia64_translate_pte(pte, 0);
+			ia64_translate_pte(pte, 0, 0);
 		}
                 goto no_kpage;
         }
@@ -538,7 +871,7 @@ ia64_kvtop(struct task_context *tc, ulong kvaddr, ulong *paddr, int verbose)
 
         if (verbose) {
                 fprintf(fp, "  PAGE: %lx\n\n", PAGEBASE(*paddr));
-		ia64_translate_pte(pte, 0);
+		ia64_translate_pte(pte, 0, 0);
 	}
 
 	return TRUE;
@@ -548,6 +881,21 @@ no_kpage:
 	return FALSE;
 }
 
+/*
+ *  Even though thread_info structs are used in 2.6, they
+ *  are not the stack base. (until further notice...)
+ */
+static ulong 
+ia64_get_stackbase(ulong task)
+{
+	return (task);
+}
+
+static ulong 
+ia64_get_stacktop(ulong task)
+{
+	return (ia64_get_stackbase(task) + STACKSIZE());
+}
 
 
 /*
@@ -557,23 +905,6 @@ static ulong
 ia64_get_task_pgd(ulong task)
 {
 	return (error(FATAL, "ia64_get_task_pgd: N/A\n"));
-}
-
-
-/*
- *  Get the number of IRQs.
- */
-static int
-ia64_nr_irqs(void)
-{
-	int nr_irqs;
-
-	if (symbol_exists("irq_desc")) 
-                nr_irqs = get_array_length("irq_desc", NULL);
-	else
-        	error(FATAL, "cannot determine number of IRQs\n");
-
-       	return nr_irqs;
 }
 
 static void
@@ -587,9 +918,7 @@ ia64_get_stack_frame(struct bt_info *bt, ulong *pcp, ulong *spp)
 
 
 /*
- *  Get the saved PC from a user-space copy of the kernel stack.
- *
- *  TBD: For now -- just read it from the kernel switch_stack b0.
+ *  Return the kernel switch_stack b0 value.
  */
 static ulong
 ia64_get_pc(struct bt_info *bt)
@@ -604,10 +933,8 @@ ia64_get_pc(struct bt_info *bt)
 
 
 /*
- *  Get the saved SP from a user-space copy of the kernel stack if it
- *  cannot be found in the panic_ksp array.
- *
- *  TBD: For now -- just return the kernel switch_stack ar_bspstore. 
+ *  Return the kernel switch_stack ar_bspstore value. 
+ *  If it's "bt -t" request, calculate the register backing store offset.
  */
 static ulong
 ia64_get_sp(struct bt_info *bt)
@@ -617,6 +944,14 @@ ia64_get_sp(struct bt_info *bt)
         readmem(SWITCH_STACK_ADDR(bt->task) + OFFSET(switch_stack_ar_bspstore), 
 		KVADDR, &bspstore, sizeof(void *), "switch_stack ar_bspstore", 
 		FAULT_ON_ERROR);
+
+	if (bt->flags &
+	    (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT)) {
+		bspstore = bt->task + SIZE(task_struct);
+		if (tt->flags & THREAD_INFO)
+			bspstore += SIZE(thread_info);
+		bspstore = roundup(bspstore, sizeof(ulong));
+	}
 
         return bspstore;
 }
@@ -637,11 +972,34 @@ ia64_get_thread_ksp(ulong task)
 }
 
 /*
+ *  Return the switch_stack structure address of a task.
+ */ 
+ulong
+ia64_get_switch_stack(ulong task)
+{
+	ulong sw;
+		
+	if (LKCD_DUMPFILE() && (sw = get_lkcd_switch_stack(task)))
+	    return sw;
+	/*
+	 * debug only: get panic switch_stack from the ELF header.
+	 */
+	if (CRASHDEBUG(3) && NETDUMP_DUMPFILE() && 
+		(sw = get_netdump_switch_stack(task))) 
+		return sw;
+
+	if (DISKDUMP_DUMPFILE() && (sw = get_diskdump_switch_stack(task)))
+		return sw;
+
+	return (ia64_get_thread_ksp((ulong)(task)) + 16);
+}
+
+/*
  *  Translate a PTE, returning TRUE if the page is _PAGE_P.
  *  If a physaddr pointer is passed in, don't print anything.
  */
 static int
-ia64_translate_pte(ulong pte, ulong *physaddr)
+ia64_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 {
 	int c, len1, len2, len3, others, page_present;
 	char buf[BUFSIZE];
@@ -657,7 +1015,7 @@ ia64_translate_pte(ulong pte, ulong *physaddr)
 	page_present = pte & _PAGE_P;
 
 	if (physaddr) {
-		*physaddr = paddr;
+		*((ulong *)physaddr) = paddr;
 		return page_present;
 	}
 
@@ -795,27 +1153,7 @@ ia64_translate_pte(ulong pte, ulong *physaddr)
 static ulong
 ia64_vmalloc_start(void)
 {
-	return KERNEL_VMALLOC_BASE;
-}
-
-
-/*
- *  Break out the swap type and offset from a pte.
- */
-
-#define SWP_TYPE(entry)    (((entry) >> 1) & 0xff)
-#define SWP_OFFSET(entry)  ((entry) >> 9)
-
-static ulong
-ia64_SWP_TYPE(ulong pte)
-{
-	return SWP_TYPE(pte); 
-}
-
-static ulong
-ia64_SWP_OFFSET(ulong pte)
-{
-	return SWP_OFFSET(pte); 
+	return machdep->machspec->vmalloc_start;
 }
 
 
@@ -846,9 +1184,9 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
-        char *colon, *p1;
+        char *colon, *p1, *p2;
         int argc;
-	int revise, stop_bit;
+	int revise_bracket, stop_bit;
         char *argv[MAXARGS];
         ulong value;
 
@@ -874,25 +1212,24 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
         strcpy(buf1, inbuf);
         argc = parse_line(buf1, argv);
 
-	revise = stop_bit = 0;
+	revise_bracket = stop_bit = 0;
 	if ((FIRSTCHAR(argv[argc-1]) == '<') &&
             (LASTCHAR(argv[argc-1]) == '>')) {
-		revise = TRUE;
+		revise_bracket = TRUE;
 		stop_bit = FALSE;
 	} else if ((FIRSTCHAR(argv[argc-1]) == '<') &&
             strstr(argv[argc-1], ">;;")) {
-		revise = TRUE;
+		revise_bracket = TRUE;
 		stop_bit = TRUE;
 	}
 
-        if (revise) {
+        if (revise_bracket) {
                 p1 = rindex(inbuf, '<');
-                while ((p1 > inbuf) && !STRNEQ(p1, " 0x"))
+                while ((p1 > inbuf) && !STRNEQ(p1, "0x"))
                         p1--;
 
-                if (!STRNEQ(p1, " 0x"))
+                if (!STRNEQ(p1, "0x"))
                         return FALSE;
-                p1++;
 
                 if (!extract_hex(p1, &value, NULLCHAR, TRUE))
                         return FALSE;
@@ -902,10 +1239,46 @@ ia64_dis_filter(ulong vaddr, char *inbuf)
 			stop_bit ? ";;" : "");
 
                 sprintf(p1, "%s", buf1);
-        }
+
+        } else if (STRNEQ(argv[argc-2], "br.call.") &&
+		 STRNEQ(argv[argc-1], "b0=0x")) {
+		/*  
+		 *  Update module function calls of these formats:
+	 	 *
+		 *     br.call.sptk.many b0=0xa0000000003d5e40;;
+		 *     br.call.sptk.many b0=0xa00000000001dfc0
+		 *
+		 *  to show a bracketed function name if the destination
+		 *  address is a known symbol with no offset.
+		 */
+		if ((p1 = strstr(argv[argc-1], ";;")) &&
+		    (p2 = strstr(inbuf, ";;\n"))) {
+			*p1 = NULLCHAR;
+			p1 = &argv[argc-1][3];
+
+                	if (extract_hex(p1, &value, NULLCHAR, TRUE)) {
+				sprintf(buf1, " <%s>;;\n",
+					value_to_symstr(value, buf2, 
+					pc->output_radix));
+				if (IS_MODULE_VADDR(value) &&
+				    !strstr(buf2, "+"))
+					sprintf(p2, buf1);
+			} 
+		} else {
+			p1 = &argv[argc-1][3];
+			p2 = &LASTCHAR(inbuf);
+                	if (extract_hex(p1, &value, '\n', TRUE)) {
+				sprintf(buf1, " <%s>\n",
+					value_to_symstr(value, buf2, 
+					pc->output_radix));
+				if (IS_MODULE_VADDR(value) &&
+				    !strstr(buf2, "+"))
+					sprintf(p2, buf1);
+			}
+		}
+	}
 
         console("    %s", inbuf);
-
 
 	return TRUE;
 }
@@ -926,15 +1299,24 @@ enum pt_reg_names {
 		P_f6_lo, P_f6_hi,
 		P_f7_lo, P_f7_hi,
 		P_f8_lo, P_f8_hi,
-		P_f9_lo, P_f9_hi, NUM_PT_REGS};
+		P_f9_lo, P_f9_hi, 
+		P_f10_lo, P_f10_hi, 
+		P_f11_lo, P_f11_hi, 
+		NUM_PT_REGS};
  
-static void
-ia64_exception_frame(ulong addr, ulong flag)
+void
+ia64_exception_frame(ulong addr, struct bt_info *bt)
 {
-	char buf[BUFSIZE], *p;
+	char buf[BUFSIZE], *p, *p1;
 	int fval;
 	ulong value1, value2;
 	ulong eframe[NUM_PT_REGS];
+
+	console("ia64_exception_frame: pt_regs: %lx\n", addr);
+
+        if (bt->debug)
+                CRASHDEBUG_RESTORE();
+	CRASHDEBUG_SUSPEND(0);
 
         BZERO(&eframe, sizeof(ulong) * NUM_PT_REGS);
 
@@ -962,14 +1344,26 @@ ia64_exception_frame(ulong addr, ulong flag)
 			continue;
 		}
 
+                if (strstr(buf, "f10 = ")) {
+                        fval = 10;
+                        continue;
+                }
+
+                if (strstr(buf, "f11 = ")) {
+                        fval = 11;
+                        continue;
+                }
+
                 if (!strstr(buf, "0x"))
                         continue;
 
 		if (fval) {
 			p = strstr(buf, "0x");
+			if ((p1 = strstr(p, "}")))
+				*p1 = NULLCHAR;
 			extract_hex(p, &value1, ',', TRUE);
 			p = strstr(buf, ",");
-			extract_hex(p, &value2, '}', FALSE);  
+			extract_hex(p, &value2, NULLCHAR, FALSE);  
 			switch (fval)
 			{
 			case 6:
@@ -988,6 +1382,14 @@ ia64_exception_frame(ulong addr, ulong flag)
 				eframe[P_f9_lo] = value1;
 				eframe[P_f9_hi] = value2;
 				break;
+                        case 10:
+                                eframe[P_f10_lo] = value1;
+                                eframe[P_f10_hi] = value2;
+                                break;
+                        case 11:
+                                eframe[P_f11_lo] = value1;
+                                eframe[P_f11_hi] = value2;
+                                break;
 			}
 			fval = 0;
 			continue;
@@ -1231,6 +1633,17 @@ ia64_exception_frame(ulong addr, ulong flag)
                 eframe[P_f8_hi], eframe[P_f8_lo]);
         fprintf(fp, "   F9: %05lx%016lx\n",
                 eframe[P_f9_hi], eframe[P_f9_lo]);
+
+	if (machdep->flags & NEW_UNW_V3) {
+        	fprintf(fp, "     F10: %05lx%016lx  ",
+                	eframe[P_f10_hi], eframe[P_f10_lo]);
+        	fprintf(fp, "  F11: %05lx%016lx\n",
+                	eframe[P_f11_hi], eframe[P_f11_lo]);
+	}
+
+	CRASHDEBUG_RESTORE();
+        if (bt->debug)
+                CRASHDEBUG_SUSPEND(bt->debug);
 }
 
 enum ss_reg_names { 
@@ -1633,7 +2046,12 @@ ia64_dump_switch_stack(ulong task, ulong flag)
 int
 ia64_get_smp_cpus(void)
 {
-	return kt->cpus;
+	int cpus;
+
+	if ((cpus = get_cpus_online()))
+		return cpus;
+	else
+		return kt->cpus;
 }
 
 /*
@@ -1644,11 +2062,14 @@ ia64_cmd_mach(void)
 {
         int c;
 
-        while ((c = getopt(argcnt, args, "c")) != EOF) {
+        while ((c = getopt(argcnt, args, "cm")) != EOF) {
                 switch(c)
                 {
 		case 'c':
 			ia64_display_cpu_data();
+			return;
+		case 'm':
+			ia64_display_memmap();
 			return;
                 default:
                         argerrs++;
@@ -1692,9 +2113,9 @@ ia64_display_machine_stats(void)
 		(ulong)KERNEL_UNCACHED_REGION << REGION_SHIFT);
         fprintf(fp, "     KERNEL VMALLOC REGION: %lx\n", 
 		(ulong)KERNEL_VMALLOC_REGION << REGION_SHIFT);
-	fprintf(fp, "         USER STACK REGION: %lx\n",
+	fprintf(fp, "    USER DATA/STACK REGION: %lx\n",
 		(ulong)USER_STACK_REGION << REGION_SHIFT);
-	fprintf(fp, "          USER DATA REGION: %lx\n",
+	fprintf(fp, "    USER DATA/STACK REGION: %lx\n",
 		(ulong)USER_DATA_REGION << REGION_SHIFT);
 	fprintf(fp, "          USER TEXT REGION: %lx\n",
 		(ulong)USER_TEXT_REGION << REGION_SHIFT);
@@ -1708,16 +2129,392 @@ static void
 ia64_display_cpu_data(void)
 {
         int cpu;
-        ulong cpu_data;
+	ulong cpu_data;
+	int array_location_known;
 
-        cpu_data = symbol_value("cpu_data");
+	if (!(cpu_data = machdep->machspec->cpu_data_address)) {
+		error(FATAL, "cannot find cpuinfo_ia64 location\n");
+		return;
+	}
+
+	array_location_known = symbol_exists("cpu_data") || 
+		symbol_exists("_cpu_data") || 
+		symbol_exists("per_cpu__cpu_info");
 
         for (cpu = 0; cpu < kt->cpus; cpu++) {
-                fprintf(fp, "%sCPU %d:\n", cpu ? "\n" : "", cpu);
+                fprintf(fp, "%sCPU %d: %s\n", cpu ? "\n" : "", cpu,
+			array_location_known ? "" : "(boot)");
                 dump_struct("cpuinfo_ia64", cpu_data, 0);
-                cpu_data += SIZE(cpuinfo_ia64);
+
+		if (!array_location_known)
+			break;
+		
+		if (symbol_exists("per_cpu__cpu_info")) {
+                       if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+                                cpu_data =
+                                        symbol_value("per_cpu__cpu_info") +
+                                        kt->__per_cpu_offset[cpu+1];
+                       } else
+				break;   /* we've already done cpu 0 */
+		} else
+			cpu_data += SIZE(cpuinfo_ia64);
         }
 }
+
+
+/*
+ *  Dump the EFI memory map.  
+ */
+static void
+ia64_display_memmap(void)
+{
+	int i, others;
+	struct efi_memory_desc_t *desc;
+        struct machine_specific *ms;
+	char *map;
+
+        ms = &ia64_machine_specific;
+	map = ms->ia64_memmap;
+
+	if (!map) { 
+		check_mem_limit();
+		error(FATAL, "efi_mmap not accessible\n");
+	}
+
+	fprintf(fp, 
+	  "      PHYSICAL ADDRESS RANGE         TYPE / ATTRIBUTE / [ACCESS]\n");
+
+        for (i = 0; i < ms->efi_memmap_size/ms->efi_memdesc_size; i++) {
+		desc = (struct efi_memory_desc_t *)map;
+
+		fprintf(fp, "%016lx - %016lx  ",
+			desc->phys_addr, desc->phys_addr + 
+			(desc->num_pages * (1 << EFI_PAGE_SHIFT)));
+
+		switch (desc->type)
+		{
+		case EFI_RESERVED_TYPE:
+			fprintf(fp, "%s", "RESERVED_TYPE"); break;
+		case EFI_LOADER_CODE:  
+			fprintf(fp, "%s", "LOADER_CODE"); break;
+		case EFI_LOADER_DATA: 
+			fprintf(fp, "%s", "LOADER_DATA"); break;
+		case EFI_BOOT_SERVICES_CODE:    
+			fprintf(fp, "%s", "BOOT_SERVICES_CODE"); break;
+		case EFI_BOOT_SERVICES_DATA:   
+			fprintf(fp, "%s", "BOOT_SERVICES_DATA"); break;
+		case EFI_RUNTIME_SERVICES_CODE: 
+			fprintf(fp, "%s", "RUNTIME_SERVICES_CODE"); break;
+		case EFI_RUNTIME_SERVICES_DATA: 
+			fprintf(fp, "%s", "RUNTIME_SERVICES_DATA"); break;
+		case EFI_CONVENTIONAL_MEMORY: 
+			fprintf(fp, "%s", "CONVENTIONAL_MEMORY"); break;
+		case EFI_UNUSABLE_MEMORY:    
+			fprintf(fp, "%s", "UNUSABLE_MEMORY"); break;
+		case EFI_ACPI_RECLAIM_MEMORY: 
+			fprintf(fp, "%s", "ACPI_RECLAIM_MEMORY"); break;
+		case EFI_ACPI_MEMORY_NVS:    
+			fprintf(fp, "%s", "ACPI_MEMORY_NVS"); break;
+		case EFI_MEMORY_MAPPED_IO:  
+			fprintf(fp, "%s", "MEMORY_MAPPED_IO"); break;
+		case EFI_MEMORY_MAPPED_IO_PORT_SPACE:
+			fprintf(fp, "%s", "MEMORY_MAPPED_IO_PORT_SPACE"); 
+			break;
+		case EFI_PAL_CODE:                  
+			fprintf(fp, "%s", "PAL_CODE"); break;
+		default:
+			fprintf(fp, "%s", "(unknown type)"); break;
+		}
+
+		fprintf(fp, " ");
+		others = 0;
+		if (desc->attribute & EFI_MEMORY_UC)
+			fprintf(fp, "%sUC", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WC)
+			fprintf(fp, "%sWC", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WT)
+			fprintf(fp, "%sWT", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WB)
+			fprintf(fp, "%sWB", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WP)
+			fprintf(fp, "%sWP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_RP)
+			fprintf(fp, "%sRP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_XP)
+			fprintf(fp, "%sXP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_RUNTIME)
+			fprintf(fp, "%sRUNTIME", others++ ? "|" : "");
+
+		fprintf(fp, " %s", ia64_available_memory(desc) ? 
+			"[available]" : "");
+
+		switch (VADDR_REGION(desc->virt_addr))
+		{
+        	case KERNEL_UNCACHED_REGION:
+			fprintf(fp, "[R6]\n");
+			break;
+        	case KERNEL_CACHED_REGION:
+			fprintf(fp, "[R7]\n");
+			break;
+		default:
+			fprintf(fp, "\n");
+		}
+
+		if (!CRASHDEBUG(1))
+			goto next_desc;
+
+		fprintf(fp, 
+		    "physical: %016lx  %dk pages: %ld  virtual: %016lx\n",
+			desc->phys_addr, (1 << EFI_PAGE_SHIFT)/1024, 
+			desc->num_pages, desc->virt_addr);
+
+		fprintf(fp, "type: ");
+		switch (desc->type)
+		{
+		case EFI_RESERVED_TYPE:
+			fprintf(fp, "%-27s", "RESERVED_TYPE"); break;
+		case EFI_LOADER_CODE:  
+			fprintf(fp, "%-27s", "LOADER_CODE"); break;
+		case EFI_LOADER_DATA: 
+			fprintf(fp, "%-27s", "LOADER_DATA"); break;
+		case EFI_BOOT_SERVICES_CODE:    
+			fprintf(fp, "%-27s", "BOOT_SERVICES_CODE"); break;
+		case EFI_BOOT_SERVICES_DATA:   
+			fprintf(fp, "%-27s", "BOOT_SERVICES_DATA"); break;
+		case EFI_RUNTIME_SERVICES_CODE: 
+			fprintf(fp, "%-27s", "RUNTIME_SERVICES_CODE"); break;
+		case EFI_RUNTIME_SERVICES_DATA: 
+			fprintf(fp, "%-27s", "RUNTIME_SERVICES_DATA"); break;
+		case EFI_CONVENTIONAL_MEMORY: 
+			fprintf(fp, "%-27s", "CONVENTIONAL_MEMORY"); break;
+		case EFI_UNUSABLE_MEMORY:    
+			fprintf(fp, "%-27s", "UNUSABLE_MEMORY"); break;
+		case EFI_ACPI_RECLAIM_MEMORY: 
+			fprintf(fp, "%-27s", "ACPI_RECLAIM_MEMORY"); break;
+		case EFI_ACPI_MEMORY_NVS:    
+			fprintf(fp, "%-27s", "ACPI_MEMORY_NVS"); break;
+		case EFI_MEMORY_MAPPED_IO:  
+			fprintf(fp, "%-27s", "MEMORY_MAPPED_IO"); break;
+		case EFI_MEMORY_MAPPED_IO_PORT_SPACE:
+			fprintf(fp, "%-27s", "MEMORY_MAPPED_IO_PORT_SPACE"); 
+			break;
+		case EFI_PAL_CODE:                  
+			fprintf(fp, "%-27s", "PAL_CODE"); break;
+		default:
+			fprintf(fp, "%-27s", "(unknown type)"); break;
+		}
+
+		fprintf(fp, "  attribute: (");
+		others = 0;
+		if (desc->attribute & EFI_MEMORY_UC)
+			fprintf(fp, "%sUC", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WC)
+			fprintf(fp, "%sWC", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WT)
+			fprintf(fp, "%sWT", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WB)
+			fprintf(fp, "%sWB", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_WP)
+			fprintf(fp, "%sWP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_RP)
+			fprintf(fp, "%sRP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_XP)
+			fprintf(fp, "%sXP", others++ ? "|" : "");
+		if (desc->attribute & EFI_MEMORY_RUNTIME)
+			fprintf(fp, "%sRUNTIME", others++ ? "|" : "");
+		fprintf(fp, ") %s\n", ia64_available_memory(desc) ? 
+			"[available]" : "");
+
+next_desc:
+                map += ms->efi_memdesc_size;
+        }
+}
+
+static int
+ia64_available_memory(struct efi_memory_desc_t *desc)
+{
+	if (desc->attribute & EFI_MEMORY_WB) {
+	        switch (desc->type) {
+                case EFI_LOADER_CODE:
+                case EFI_LOADER_DATA:
+                case EFI_BOOT_SERVICES_CODE:
+                case EFI_BOOT_SERVICES_DATA:
+                case EFI_CONVENTIONAL_MEMORY:
+                	return TRUE;
+                }
+        }
+	return FALSE;
+}
+
+/*
+ *  Make a copy of the memmap descriptor array.
+ */
+static void 
+ia64_create_memmap(void)
+{
+        struct machine_specific *ms;
+        uint64_t ia64_boot_param, efi_memmap;
+	ulong num_physpages;
+	char *memmap;
+
+        ms = &ia64_machine_specific;
+	ms->ia64_memmap = NULL;
+
+        if (symbol_exists("num_physpages")) {
+                get_symbol_data("num_physpages", sizeof(ulong), &num_physpages);
+                machdep->memsize = num_physpages * PAGESIZE();
+        }
+
+	if (!symbol_exists("ia64_boot_param"))
+		return;
+
+	if ((ms->mem_limit = check_mem_limit()))
+		machdep->flags |= MEM_LIMIT;
+
+       	get_symbol_data("ia64_boot_param", sizeof(void *), &ia64_boot_param);
+
+        if ((ms->mem_limit && (ia64_VTOP(ia64_boot_param) >= ms->mem_limit)) ||
+            !readmem(ia64_boot_param+
+	    MEMBER_OFFSET("ia64_boot_param", "efi_memmap"),
+            KVADDR, &efi_memmap, sizeof(uint64_t), "efi_memmap", 
+	    RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read ia64_boot_param: " 
+			"memory verification will not be performed\n\n");
+		return;
+	}
+
+        readmem(ia64_boot_param+MEMBER_OFFSET("ia64_boot_param",
+                "efi_memmap_size"), KVADDR, &ms->efi_memmap_size,
+                sizeof(uint64_t), "efi_memmap_size", FAULT_ON_ERROR);
+        readmem(ia64_boot_param+MEMBER_OFFSET("ia64_boot_param",
+                "efi_memdesc_size"), KVADDR, &ms->efi_memdesc_size,
+                sizeof(uint64_t), "efi_memdesc_size", FAULT_ON_ERROR);
+
+	if (!(memmap = (char *) malloc(ms->efi_memmap_size))) {
+		error(WARNING, "cannot malloc ia64_memmap\n");
+		return;
+	}
+
+	if ((ms->mem_limit && (efi_memmap >= ms->mem_limit)) ||
+            !readmem(PTOV(efi_memmap), KVADDR, memmap,
+	    ms->efi_memmap_size, "efi_mmap contents", RETURN_ON_ERROR)) {
+		error(WARNING, "cannot read efi_mmap: " 
+			"memory verification will not be performed\n");
+		free(memmap);
+		return;
+	}
+
+	ms->ia64_memmap = memmap;
+}
+
+/*
+ *  Kernel pages may cross EFI memmap boundaries, so the system page is
+ *  broken into EFI pages, and then each of them is verified.
+ */
+static int
+ia64_verify_paddr(uint64_t paddr)
+{
+        int i, j, cnt, found, desc_count, desc_size;
+        struct efi_memory_desc_t *desc;
+        struct machine_specific *ms;
+	uint64_t phys_end;
+        char *map;
+	int efi_pages;
+	ulong efi_pagesize;
+
+	/*
+	 *  When kernel text and data are mapped in region 5,
+	 *  and we're using the crash memory device driver,
+         *  then the driver will gracefully fail the read attempt
+ 	 *  if the address is bogus.  
+	 */
+	if ((VADDR_REGION(paddr) == KERNEL_VMALLOC_REGION) && 
+	    (pc->flags & MEMMOD)) 
+		return TRUE;
+
+        ms = &ia64_machine_specific;
+        if (ms->ia64_memmap == NULL)
+		return TRUE;
+
+	desc_count = ms->efi_memmap_size/ms->efi_memdesc_size;
+        desc_size = ms->efi_memdesc_size;
+
+	efi_pagesize = (1 << EFI_PAGE_SHIFT);
+	efi_pages = PAGESIZE() / efi_pagesize;
+	paddr = PAGEBASE(paddr); 
+
+	for (i = cnt = 0; i < efi_pages; i++, paddr += efi_pagesize) {
+		map = ms->ia64_memmap;
+	        for (j = found = 0; j < desc_count; j++) {
+	                desc = (struct efi_memory_desc_t *)map;
+	                if (ia64_available_memory(desc)) {
+	                        phys_end = desc->phys_addr +
+	                                (desc->num_pages * efi_pagesize);
+	                        if ((paddr >= desc->phys_addr) &&
+	                            ((paddr + efi_pagesize) <= phys_end)) {
+	                                cnt++;
+					found = TRUE;
+				}
+	                }
+			if (found)  
+				break;
+	                map += desc_size;
+	        }
+	} 
+
+	return (cnt == efi_pages);
+}
+
+/*
+ *  Check whether a "mem=X" argument was entered on the boot command line.
+ *  Note that the default setting of the kernel mem_limit is ~0UL.
+ */
+static ulong
+check_mem_limit(void)
+{
+	ulong mem_limit;
+        char *saved_command_line, *p1, *p2;
+	int len;
+
+        if (!symbol_exists("mem_limit")) 
+		return 0;
+
+        get_symbol_data("mem_limit", sizeof(ulong), &mem_limit);
+        if (mem_limit == ~0UL) 
+		return 0;
+
+	mem_limit += 1;
+
+	if (!symbol_exists("saved_command_line"))
+		goto no_command_line;
+
+	len = get_array_length("saved_command_line", 0, sizeof(char));
+	if (!len)
+		goto no_command_line;
+
+	saved_command_line = GETBUF(len+1);
+	if (!readmem(symbol_value("saved_command_line"), KVADDR, 
+	    saved_command_line, len, "saved_command_line", RETURN_ON_ERROR))
+		goto no_command_line;
+
+	if (!(p1 = strstr(saved_command_line, "mem=")))
+		goto no_command_line;
+
+	p2 = p1;
+	while (*p2 && !whitespace(*p2))
+		p2++;
+	*p2 = NULLCHAR;
+
+	error(pc->flags & RUNTIME ? INFO : WARNING, 
+		"boot command line argument: %s\n", p1);
+	return mem_limit;
+
+no_command_line:
+	error(pc->flags & RUNTIME ? INFO : WARNING, 
+		"boot command line memory limit: %lx\n", mem_limit);
+	return mem_limit;
+}
+
 
 #ifndef _ASM_IA64_UNWIND_H
 #define _ASM_IA64_UNWIND_H
@@ -1807,51 +2604,105 @@ struct unw_frame_info {
 
 #endif /* _ASM_UNWIND_H */
 
-#define IA64_RBS_OFFSET   ((SIZE(task_struct) + 15) & ~15)
-#define IA64_STK_OFFSET   (STACKSIZE())
-
 /*
  *  Perform any leftover pre-prompt machine-specific initialization tasks here.
  */
 static void
 ia64_post_init(void)
 {
-	struct datatype_member datatype_member, *dm;
 	struct machine_specific *ms;
-	long len;
-
-	if (symbol_exists("unw_init_frame_info"))
-		machdep->flags |= NEW_UNWIND;
-	else
-		machdep->flags |= OLD_UNWIND;
-
-	dm = &datatype_member;
-        if (arg_to_datatype("unw_frame_info", dm, RETURN_ON_ERROR)) {
-                if ((len = dm->size) < 0) {
-			fprintf(fp, 
-			    "cannot determine length of unw_frame_info\n");
-			machdep->flags |= UNW_FI_UNKNOWN;
-		} else if (len != sizeof(struct unw_frame_info)) {
-			error(WARNING, 
-			   "unw_frame_info differs: %ld (local: %d)\n", 
-				len, sizeof(struct unw_frame_info));
-			machdep->flags |= UNW_FI_UNKNOWN;
-		} else
-			machdep->flags |= UNW_FI_INSYNC;
-	}
 
 	ms = &ia64_machine_specific;
-        if (symbol_exists("cpu_data") && STRUCT_EXISTS("cpuinfo_ia64")) {
-            	if (MEMBER_EXISTS("cpuinfo_ia64", "unimpl_va_mask"))
-       			readmem(symbol_value("cpu_data") +
-                		MEMBER_OFFSET("cpuinfo_ia64", "unimpl_va_mask"),
-                		KVADDR, &ms->unimpl_va_mask, sizeof(ulong),
-                		"cpuinfo_ia64 unimpl_va_mask", FAULT_ON_ERROR);
-            	if (MEMBER_EXISTS("cpuinfo_ia64", "unimpl_pa_mask"))
-                        readmem(symbol_value("cpu_data") +
-                                MEMBER_OFFSET("cpuinfo_ia64", "unimpl_pa_mask"),
-                                KVADDR, &ms->unimpl_pa_mask, sizeof(ulong),
-                                "cpuinfo_ia64 unimpl_pa_mask", FAULT_ON_ERROR);
+
+	if (symbol_exists("unw_init_frame_info")) {
+		machdep->flags |= NEW_UNWIND;
+		if (MEMBER_EXISTS("unw_frame_info", "pt")) {
+			if (MEMBER_EXISTS("pt_regs", "ar_csd")) {
+				machdep->flags |= NEW_UNW_V3;
+				ms->unwind_init = unwind_init_v3;
+				ms->unwind = unwind_v3;
+				ms->unwind_debug = unwind_debug_v3;
+				ms->dump_unwind_stats = dump_unwind_stats_v3;
+			} else {
+				machdep->flags |= NEW_UNW_V2;
+				ms->unwind_init = unwind_init_v2;
+				ms->unwind = unwind_v2;
+				ms->unwind_debug = unwind_debug_v2;
+				ms->dump_unwind_stats = dump_unwind_stats_v2;
+			}
+		} else {
+			machdep->flags |= NEW_UNW_V1;
+			ms->unwind_init = unwind_init_v1;
+			ms->unwind = unwind_v1;
+			ms->unwind_debug = unwind_debug_v1;
+			ms->dump_unwind_stats = dump_unwind_stats_v1;
+		}
+	} else {
+		machdep->flags |= OLD_UNWIND;
+		ms->unwind_init = ia64_old_unwind_init;
+		ms->unwind = ia64_old_unwind;
+	}
+	ms->unwind_init();
+
+	if (!VALID_STRUCT(cpuinfo_ia64)) 
+		error(WARNING, "cpuinfo_ia64 structure does not exist\n");
+	else {
+		if (symbol_exists("_cpu_data"))
+			ms->cpu_data_address = symbol_value("_cpu_data");
+		else if (symbol_exists("boot_cpu_data"))
+			get_symbol_data("boot_cpu_data", sizeof(ulong), 
+				&ms->cpu_data_address);
+		else if (symbol_exists("cpu_data"))
+			ms->cpu_data_address = symbol_value("cpu_data");
+		else if (symbol_exists("per_cpu__cpu_info"))
+                       if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+                                ms->cpu_data_address = 
+					symbol_value("per_cpu__cpu_info") +
+                                        kt->__per_cpu_offset[0];
+                        } else
+				ms->cpu_data_address = 
+					symbol_value("per_cpu__cpu_info");
+		else {
+			error(WARNING, "cannot find cpuinfo_ia64 location\n");
+			ms->cpu_data_address = 0;
+		}
+	
+	        if (ms->cpu_data_address) {
+	            	if (VALID_MEMBER(cpuinfo_ia64_unimpl_va_mask))
+	       			readmem(ms->cpu_data_address +
+	                		OFFSET(cpuinfo_ia64_unimpl_va_mask),
+	                		KVADDR, &ms->unimpl_va_mask, 
+					sizeof(ulong),
+	                		"unimpl_va_mask", FAULT_ON_ERROR);
+	            	if (VALID_MEMBER(cpuinfo_ia64_unimpl_pa_mask))
+	                        readmem(ms->cpu_data_address +
+	                                OFFSET(cpuinfo_ia64_unimpl_pa_mask),
+	                                KVADDR, &ms->unimpl_pa_mask, 
+					sizeof(ulong),
+	                                "unimpl_pa_mask", FAULT_ON_ERROR);
+		}
+	}
+
+        if (symbol_exists("ia64_init_stack") && !ms->ia64_init_stack_size) 
+		ms->ia64_init_stack_size = get_array_length("ia64_init_stack", 
+			NULL, 0);
+
+	if (DUMPFILE() && ia64_in_init_stack(SWITCH_STACK_ADDR(CURRENT_TASK())))
+		machdep->flags |= INIT;
+}
+
+/*
+ *  Try using the old unwind scheme if the new one fails,
+ *  that is as long as the unw_frame_info structs are the
+ *  same size.
+ */
+static void
+try_old_unwind(struct bt_info *bt)
+{
+	if ((machdep->flags & NEW_UNWIND) &&
+	     (STRUCT_SIZE("unw_frame_info") == sizeof(struct unw_frame_info))) {
+		error(INFO, "unwind: trying old unwind mechanism\n");
+		ia64_old_unwind(bt);
 	}
 }
 
@@ -1862,6 +2713,23 @@ ia64_post_init(void)
  *  NOTE: see kernel source: show_stack() and/or kdba_bt_stack()
  */
 
+static void
+ia64_old_unwind_init(void)
+{
+	long len;
+
+        len = STRUCT_SIZE("unw_frame_info");
+        if (len < 0) {
+                error(WARNING, "cannot determine size of unw_frame_info\n");
+                        machdep->flags |= UNW_OUT_OF_SYNC;
+        } else if (len != sizeof(struct unw_frame_info)) {
+                error(WARNING, "unw_frame_info size differs: %ld (local: %d)\n",
+                        len, sizeof(struct unw_frame_info));
+                        machdep->flags |= UNW_OUT_OF_SYNC;
+        }
+
+}
+
 static int unw_debug;  /* debug fprintf indent */
 
 static void
@@ -1869,17 +2737,13 @@ ia64_old_unwind(struct bt_info *bt)
 {
         struct unw_frame_info unw_frame_info, *info;
 	struct syment *sm;
-	ulong offset;
 	int frame;
-	ulong debug_save;
 	char *name;
 
-	if (bt->debug) {
-		debug_save = pc->debug;
-		pc->debug = bt->debug;
-	}
+	if (bt->debug)
+		CRASHDEBUG_SUSPEND(bt->debug);
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		unw_debug = 0;
 
 	info = &unw_frame_info;
@@ -1893,7 +2757,7 @@ ia64_old_unwind(struct bt_info *bt)
 		if (!IS_KVADDR(info->ip))
 			break;
 
-		if ((sm = value_search(info->ip, &offset)))
+		if ((sm = value_search(info->ip, NULL)))
 			name = sm->name;
 		else
 			name = "(unknown)";
@@ -1905,14 +2769,14 @@ ia64_old_unwind(struct bt_info *bt)
                 	case BT_REF_SYMBOL:
                         	if (STREQ(name, bt->ref->str)) {
                                 	bt->ref->cmdflags |= BT_REF_FOUND;
-					return;
+					goto unwind_return;
 				}
                         	break;
 
                 	case BT_REF_HEXVAL:
                         	if (bt->ref->hexval == info->ip) {
                                 	bt->ref->cmdflags |= BT_REF_FOUND;
-					return;
+					goto unwind_return;
 				}
                         	break;   
                 	}
@@ -1922,31 +2786,29 @@ ia64_old_unwind(struct bt_info *bt)
 				frame >= 10 ? "" : " ", frame,
 				info->bsp, name, info->ip);
 
-			rse_function_params(info, name);
+			if (bt->flags & BT_FULL)
+				rse_function_params(info, name);
 			if (bt->flags & BT_LINE_NUMBERS)
 				ia64_dump_line_number(info->ip);
 		}
 
 		frame++;
 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			unw_debug = 0;
+
+		if (STREQ(name, "start_kernel"))
+			break;
 
 	} while (old_unw_unwind(info) >= 0);
 
-        if (bt->debug) 
-                pc->debug = debug_save;
-}
+unwind_return:
 
-/*
- *  Unwind the stack using the basic method used when CONFIG_IA64_NEW_UNWIND
- *  is configured into the kernel.
- */
-static void
-ia64_new_unwind(struct bt_info *bt)
-{
-	error(INFO, "this kernel has CONFIG_IA64_NEW_UNWIND turned on!\n");
-	ia64_old_unwind(bt);
+        if (!BT_REFERENCE_CHECK(bt) && !is_kernel_thread(bt->task))
+        	ia64_exception_frame(bt->stacktop - SIZE(pt_regs), bt);
+
+	if (bt->debug)
+		CRASHDEBUG_RESTORE();
 }
 
 static unsigned long
@@ -1964,7 +2826,7 @@ ia64_rse_skip_regs (unsigned long *addr, long num_regs)
 {
         long delta = ia64_rse_slot_num(addr) + num_regs;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, 
 	    "%sia64_rse_skip_regs: ia64_rse_slot_num(%lx): %ld num_regs: %ld\n",
 			space(unw_debug),
@@ -1974,7 +2836,7 @@ ia64_rse_skip_regs (unsigned long *addr, long num_regs)
         if (num_regs < 0)
                 delta -= 0x3e;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "%sia64_rse_skip_regs: delta: %ld return(%lx)",
 			space(unw_debug), delta,
 			(ulong)(addr + num_regs + delta/0x3f));
@@ -2029,7 +2891,7 @@ unw_init_from_blocked_task(struct unw_frame_info *info, ulong task)
         if ((top - task) >= IA64_STK_OFFSET)
                 top = limit;
 
-        if (MCLXDEBUG(1)) {
+        if (CRASHDEBUG(1)) {
 		unw_debug++;
                 fprintf(fp, 
                     "unw_init_from_blocked_task: stack top: %lx sol: %ld\n",
@@ -2043,7 +2905,7 @@ unw_init_from_blocked_task(struct unw_frame_info *info, ulong task)
         info->cfm = (ulong *)(sw + OFFSET(switch_stack_ar_pfs));
         info->ip = b0;
 
-	if (MCLXDEBUG(1)) 
+	if (CRASHDEBUG(1)) 
 		dump_unw_frame_info(info);
 }
 
@@ -2073,7 +2935,7 @@ old_unw_unwind (struct unw_frame_info *info)
 
         sol = (cfm >> 7) & 0x7f;        /* size of locals */
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "old_unw_unwind: cfm: %lx  sol: %ld\n", cfm, sol);
 		unw_debug++;
 	}
@@ -2092,7 +2954,7 @@ old_unw_unwind (struct unw_frame_info *info)
 
         info->ip = rse_read_reg(info, sol - 2, &is_nat);
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "old_unw_unwind: ip: %lx\n", info->ip);
 
         if (is_nat || (info->ip & (machdep->machspec->unimpl_va_mask | 0xf)))
@@ -2102,7 +2964,7 @@ old_unw_unwind (struct unw_frame_info *info)
 
         cfm = rse_read_reg(info, sol - 1, &is_nat);
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "old_unw_unwind: info->cfm: %lx => %lx\n", 
 			(ulong)info->cfm, cfm);
 
@@ -2113,7 +2975,7 @@ old_unw_unwind (struct unw_frame_info *info)
 
         info->bsp = (ulong)ia64_rse_skip_regs((ulong *)info->bsp, -sol);
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "old_unw_unwind: next sol: %ld\n", sol);
 		fprintf(fp, "old_unw_unwind: next bsp: %lx\n", info->bsp);
 	}
@@ -2168,7 +3030,7 @@ rse_read_reg (struct unw_frame_info *info, int regnum, int *is_nat)
         ulong *addr, *rnat_addr, rnat;
 	ulong regcontent;
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		fprintf(fp, "%srse_read_reg: bsp: %lx\n", space(unw_debug),
 			info->bsp);
 		unw_debug++;
@@ -2176,7 +3038,7 @@ rse_read_reg (struct unw_frame_info *info, int regnum, int *is_nat)
 
         addr = ia64_rse_skip_regs((unsigned long *) info->bsp, regnum);
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		unw_debug--;
 		fprintf(fp, "%srse_read_reg: addr: %lx\n", 
 			space(unw_debug), (ulong)addr);
@@ -2187,7 +3049,7 @@ rse_read_reg (struct unw_frame_info *info, int regnum, int *is_nat)
 	    (((long)addr & 0x7) != 0)) {
                 *is_nat = 1;
 
-		if (MCLXDEBUG(1))
+		if (CRASHDEBUG(1))
 			fprintf(fp, 
 		    "%srse_read_reg: is_nat: %d -- return 0xdeadbeefdeadbeef\n",
 				space(unw_debug), *is_nat);
@@ -2197,7 +3059,7 @@ rse_read_reg (struct unw_frame_info *info, int regnum, int *is_nat)
 
         rnat_addr = ia64_rse_rnat_addr(addr);
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "%srse_read_reg: rnat_addr: %lx\n", 
 			space(unw_debug), (ulong)rnat_addr);
 
@@ -2211,14 +3073,14 @@ rse_read_reg (struct unw_frame_info *info, int regnum, int *is_nat)
 
         *is_nat = (rnat & (1UL << ia64_rse_slot_num(addr))) != 0;
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "%srse_read_reg: rnat: %lx is_nat: %d\n",
 			space(unw_debug), rnat, *is_nat);
 
 	readmem((ulong)addr, KVADDR, &regcontent, sizeof(long), 
 		"rse_read_reg addr", FAULT_ON_ERROR);
 
-	if (MCLXDEBUG(1)) {
+	if (CRASHDEBUG(1)) {
 		char buf[BUFSIZE];
 
 		fprintf(fp, "%srse_read_reg: addr: %lx => %lx ", 
@@ -2249,7 +3111,7 @@ rse_function_params(struct unw_frame_info *info, char *name)
 
 	numargs = MIN(get_function_numargs(info->ip), MAX_REGISTER_PARAMS);
 
-	if (MCLXDEBUG(1))
+	if (CRASHDEBUG(1))
 		fprintf(fp, "rse_function_params: %s: %d args\n",
 			name, numargs);
 
@@ -2312,53 +3174,58 @@ dump_unw_frame_info(struct unw_frame_info *info)
 	unw_debug--;
 }
 
-static void 
+static const char *hook_files[] = {
+        "arch/ia64/kernel/entry.S",
+        "arch/ia64/kernel/head.S",
+};
+
+#define ENTRY_S      ((char **)&hook_files[0])
+#define HEAD_S       ((char **)&hook_files[1])
+
+static struct line_number_hook ia64_line_number_hooks[] = {
+	{"ia64_execve", ENTRY_S},
+	{"sys_clone2", ENTRY_S},
+	{"sys_clone", ENTRY_S},
+	{"ia64_switch_to", ENTRY_S},
+	{"save_switch_stack", ENTRY_S},
+	{"load_switch_stack", ENTRY_S},
+	{"__ia64_syscall", ENTRY_S},
+	{"invoke_syscall_trace", ENTRY_S},
+	{"ia64_trace_syscall", ENTRY_S},
+	{"ia64_ret_from_clone", ENTRY_S},
+	{"ia64_ret_from_syscall", ENTRY_S},
+	{"ia64_leave_kernel", ENTRY_S},
+	{"handle_syscall_error", ENTRY_S},
+	{"invoke_schedule_tail", ENTRY_S},
+	{"invoke_schedule", ENTRY_S},
+	{"handle_signal_delivery", ENTRY_S},
+	{"sys_rt_sigsuspend", ENTRY_S},
+	{"sys_rt_sigreturn", ENTRY_S},
+	{"ia64_prepare_handle_unaligned", ENTRY_S},
+	{"unw_init_running", ENTRY_S},
+
+        {"_start", HEAD_S},
+        {"ia64_save_debug_regs", HEAD_S},
+        {"ia64_load_debug_regs", HEAD_S},
+        {"__ia64_save_fpu", HEAD_S},
+        {"__ia64_load_fpu", HEAD_S},
+        {"__ia64_init_fpu", HEAD_S},
+        {"ia64_switch_mode", HEAD_S},
+        {"ia64_set_b1", HEAD_S},
+        {"ia64_set_b2", HEAD_S},
+        {"ia64_set_b3", HEAD_S},
+        {"ia64_set_b4", HEAD_S},
+        {"ia64_set_b5", HEAD_S},
+        {"ia64_spinlock_contention", HEAD_S},
+
+       {NULL, NULL}    /* list must be NULL-terminated */
+};
+
+void 
 ia64_dump_line_number(ulong ip)
 {
 	int retries;
 	char buf[BUFSIZE], *p;
-	char *name;
-
-	name = closest_symbol(ip);
-
-	/*
-	 *  gdb-related kludge for routines in entry.S, head.S and initfunc
-         *  (fix this...)
-	 */
-        if (STREQ(name, "sys_clone2") ||
-	    STREQ(name, "sys_clone") ||
-	    STREQ(name, "ia64_switch_to") ||
-	    STREQ(name, "save_switch_stack") ||
-	    STREQ(name, "invoke_syscall_trace") ||
-	    STREQ(name, "ia64_trace_syscall") ||
-	    STREQ(name, "ia64_ret_from_clone") ||
-	    STREQ(name, "ia64_ret_from_syscall") ||
-	    STREQ(name, "ia64_leave_kernel") ||
-	    STREQ(name, "sys_rt_sigsuspend") ||
-	    STREQ(name, "ia64_prepare_handle_unaligned") ||
-	    STREQ(name, "unw_init_running") ||
-            STREQ(name, "__ia64_syscall")) {
-                fprintf(fp, "    %s/arch/ia64/kernel/entry.S\n",
-                        get_build_directory(buf) ? buf : "..");
-                return;
-        }
-	if (STREQ(name, "_start") ||
-            STREQ(name, "ia64_save_debug_regs") ||
-            STREQ(name, "ia64_load_debug_regs") ||
-            STREQ(name, "__ia64_save_fpu") ||
-            STREQ(name, "__ia64_load_fpu") ||
-            STREQ(name, "__ia64_init_fpu") ||
-            STREQ(name, "ia64_switch_mode") ||
-            STREQ(name, "ia64_set_b1") ||
-            STREQ(name, "ia64_set_b2") ||
-            STREQ(name, "ia64_set_b3") ||
-            STREQ(name, "ia64_set_b4") ||
-            STREQ(name, "ia64_set_b5") ||
-            STREQ(name, "ia64_spinlock_contention")) {
-                fprintf(fp, "    %s/arch/ia64/kernel/head.S\n",
-                	get_build_directory(buf) ? buf : "..");
-		return;
-	}
 
         retries = 0;
 try_closest:
@@ -2367,19 +3234,102 @@ try_closest:
         if (strlen(buf)) {
                 if (retries) {
                         p = strstr(buf, ": ");
-			*p = NULLCHAR;
+			if (p)
+				*p = NULLCHAR;
                 }
                 fprintf(fp, "    %s\n", buf);
         } else {
                 if (retries)
-                        fprintf(fp,
-                            "    (cannot determine file and line number)\n");
+                        fprintf(fp, GDB_PATCHED() ? 
+			  "" : "    (cannot determine file and line number)\n");
                 else {
                         retries++;
                         ip = closest_symbol_value(ip);
                         goto try_closest;
                 }
         }
+}
+
+/*
+ *  For now, just make it a region 7 address for all cases, ignoring the
+ *  fact that it might be in a 2.6 kernel's non-unity mapped region.  XXX
+ */
+ulong
+ia64_PTOV(ulong paddr)
+{
+	ulong vaddr;
+	switch (machdep->machspec->kernel_region)
+	{
+	case KERNEL_VMALLOC_REGION:
+//		error(FATAL, "ia64_PTOV: TBD for kernels loaded in region 5\n");
+	default:
+	case KERNEL_CACHED_REGION:
+		vaddr = paddr + (ulong)(KERNEL_CACHED_BASE);
+	}
+
+	return vaddr;
+}
+
+/*
+ *  Account for 2.6 kernel mapping in region 5.
+ */
+ulong
+ia64_VTOP(ulong vaddr)
+{
+        struct machine_specific *ms;
+	ulong paddr;
+
+        ms = &ia64_machine_specific;
+
+	switch (VADDR_REGION(vaddr)) 
+	{
+	case KERNEL_CACHED_REGION:
+		paddr = vaddr - (ulong)(KERNEL_CACHED_BASE);
+		break;
+
+	case KERNEL_UNCACHED_REGION:
+		paddr = vaddr - (ulong)(KERNEL_UNCACHED_BASE);
+		break;
+
+	/* 
+	 *  Differentiate between a 2.6 kernel address in region 5 and 
+	 *  a real vmalloc() address.  
+	 */
+	case KERNEL_VMALLOC_REGION:
+	       /*
+	 	* Real vmalloc() addresses should never be the subject 
+	        * of a VTOP() translation.
+	        */
+		if (ia64_IS_VMALLOC_ADDR(vaddr) ||
+        	    (ms->kernel_region != KERNEL_VMALLOC_REGION))
+			return(error(FATAL, 
+			    "ia64_VTOP(%lx): unexpected region 5 address\n",
+				 vaddr));
+	       /*
+	 	*  If it's a region 5 kernel address, subtract the starting
+		*  kernel virtual address, and then add the base physical page.
+	 	*/
+		paddr = vaddr - ms->kernel_start + 
+			(ms->phys_start & KERNEL_TR_PAGE_MASK);
+		break;
+
+	default:
+		return(error(FATAL, 
+			"ia64_VTOP(%lx): invalid kernel address\n", vaddr));
+	}
+
+	return paddr;
+}
+
+/*
+ *  vmalloc() starting address is either the traditional 0xa000000000000000 or
+ *  bumped up in 2.6 to 0xa000000200000000.
+ */
+int
+ia64_IS_VMALLOC_ADDR(ulong vaddr)
+{
+	return ((vaddr >= machdep->machspec->vmalloc_start) && 
+        	(vaddr < (ulong)KERNEL_UNCACHED_BASE));
 }
 
 #endif

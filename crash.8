@@ -1,0 +1,371 @@
+.\"
+.de CO
+\dB\\$1\fP \fI\\$2\fP
+..
+.TH CRASH 8
+.SH NAME
+crash \- Analyze Linux crash data or a live system
+.SH SYNAPSIS
+.B crash
+[
+.B -h
+[
+.I opt
+]
+]
+[
+.B -v
+]
+[
+.B -s
+]
+[
+.B -i \fIfile
+]
+[
+.B -d \fInum
+]
+[
+.B -S
+]
+[
+.I mapfile
+]
+[
+.I namelist
+]
+[
+.I dumpfile
+]
+.SH DESCRIPTION
+.B Crash
+is a tool for interactively analyzing the state of the Linux system
+while it is running, or after a kernel crash has occurred and a 
+core dump has been created by the Red Hat 
+.I netdump
+facility.  It is loosely based on the SVR4 UNIX crash 
+command, but has been signficantly enhanced
+by completely merging it with the 
+.I gdb
+debugger. The marriage of the two effectively combines the 
+kernel-specific nature of the traditional UNIX crash utility with the 
+source code level debugging capabilities of 
+.I gdb. 
+
+The current set of commands consist of common kernel core analysis tools 
+such as kernel stack back traces of all processes, source code disassembly,
+formatted kernel structure and variable displays, virtual memory data, 
+dumps of linked-lists, etc., along with several commands that delve 
+deeper into specific kernel subsystems.  Appropriate 
+.I gdb
+commands may also be entered, which in
+turn are passed on to the gdb module for execution. 
+
+The crash utility is designed to be independent of Linux version 
+dependencies. When new kernel source code impacts the
+correct functionality of crash and its command set, the utility will 
+be updated to recognize new kernel code changes, while
+maintaining backwards compatibility with earlier releases.
+.SH OPTIONS
+.de BS
+\fB\\$1\fP\ \fR\\$2\fP
+..
+.TP
+.BI \-h \ opt
+.B Crash
+displays a help message.  If the optional
+.I opt
+argument is
+a
+.B crash
+command name, the help page for that command is displayed.  If it is
+the string "input", a page describing the various
+.B crash
+command line input options is displayed.  If it is the string "output", a
+page describing command line output options is displayed.
+.TP
+.B \-v
+.B Crash
+displays the versions of the original gdb and crash libraries
+that make up the
+.B crash
+executable.
+.TP
+.B \-s
+.B Crash
+does not display any version, GPL, or crash initialization data during startup.  It
+proceeds directly to the "crash>" prompt.
+.TP
+.BI \-i \ file
+.B Crash
+reads and executes the crash command(s) contained in
+.I file
+before accepting any user input.
+.TP
+.BI \-d \ num
+.B Crash
+sets its internal debug level.
+The higher the number, the more debugging data will be printed while
+.B crash
+runs.
+.TP
+.B \-S
+.B Crash
+uses "/boot/System.map" as the
+.I mapfile\fP.
+.TP
+.I namelist
+This is a pathname to an uncompressed kernel image
+(a vmlinux file) that has been compiled with the "-g" option,
+or that has an accessible, associated, debuginfo file.
+If the
+.I dumpfile
+argument is entered, then this argument must also be used.  If the
+.I namelist
+argument is not entered and no
+.I dumpfile
+argument is entered,
+.B crash
+will search in several typical directories
+for a kernel namelist that matches the live system.
+.TP
+.I mapfile
+If the live system kernel, or the kernel from which the
+.I dumpfile
+was derived, was not compiled with the -g switch, then the additional
+.I mapfile
+argument is required.  It may be either the associated System.map file, or
+the non-debug kernel namelist.  However, if the
+.I mapfile
+argument is used, then the
+.I namelist
+argument must be a kernel namelist of a similar kernel
+version that was built with the -g switch.
+.TP
+.I dumpfile
+This is a pathname to a kernel memory core dump
+file.  If the
+.I dumpfile
+argument is not entered, the session will be invoked on the live system
+using /dev/mem, which usually requires root privileges.
+.SH COMMANDS
+Each crash command generally falls into one of the following categories:
+.TP
+.I Symbolic display
+Displays of kernel text/data, which take full advantage of the power of 
+.I gdb
+to format and display data structures symbolically.
+.TP
+.I System state
+The majority of crash commands come consist of a set of "kernel-aware" 
+commands, which delve into various kernel subsystems on a system-wide 
+or per-task basis. 
+.TP
+.I Utility functions
+A set of useful helper commands serving various purposes, some simple, 
+others quite powerful. 
+.TP
+.I Session control
+Commands that control the crash session itself.
+.PP
+The following alphabetical list consists of a very simple overview of each crash command.
+However, since individual commands often have several options resulting in 
+significantly different output, it is suggested that the full description
+of each command be viewed by entering the command
+.B crash\ -h\ \fIcommand\fP, 
+or during a crash session by simply entering
+.B \fIhelp command\fP. 
+.TP
+.I *
+"pointer to" is shorthand for either the
+.I struct
+or
+.I union
+commands.  It displays the contents of a kernel structure or union.
+.TP
+.I alias
+creates a single-word alias for a command.
+.TP
+.I ascii
+displays an ascii chart or translates a numeric value into its ascii components.
+.TP
+.I bt
+displays a task's kernel-stack backtrace.  If it is given the
+.I \-a
+option, it displays the stack traces of the active tasks on all CPUs.
+It is often used with the
+.I foreach
+command to display the backtraces of all tasks with one command.
+.TP
+.I btop
+translates a byte value (physical offset) to it's page number.
+.TP
+.I dev
+displays data concerning the character and block device
+assignments, I/O port usage, I/O memory usage, and PCI device data. 
+.TP
+.I dis
+disassembles memory, either entire kernel functions, from a
+location for a specified number of instructions, or from the start of a
+fuction up to a specified memory location.
+.TP
+.I eval
+evalues an expression or numeric type and displays the result
+in hexidecimal, decimal, octal and binary.
+.TP
+.I exit
+causes
+.I crash
+to exit.
+.TP
+.I extend
+dynamically loads or unloads crash extension shared object
+libraries.
+.TP
+.I files
+displays information about open files in a context.
+.TP
+.I foreach
+repeats a specified command for the specified (or all) tasks
+in the system.
+.TP
+.I fuser
+displays the tasks using the specifed file or socket.
+.TP
+.I gdb
+passes its argument to the underlying
+.I gdb
+program.  It is useful for executing
+.I GDB
+commands that have the same name as
+.I crash
+commands.
+.TP
+.I help
+alone displays the command menu; if followed by a command name, a full
+description of a command, its options, and examples are displayed.
+Its output is far more complete and useful than this man page.
+.TP
+.I irq
+displays data concerning interrupt request numbers and
+bottom-half interrupt handling. 
+.TP
+.I kmem
+displays information about the use of kernel memory.
+.TP
+.I list
+displays the contents of a linked list.
+.TP
+.I log
+displays the kernel log_buf contents in chronological order.
+.TP
+.I mach
+displays data specific to the machine type.
+.TP
+.I mod
+displays information about the currently installed kernel modules,
+or adds or deletes symbolic or debugging information about specified kernel
+modules.
+.TP
+.I mount
+displays information about the currently-mounted filesystems.
+.TP
+.I net
+display various network related data.
+.TP
+.I p
+passes its argumnts to the
+.I gdb
+"print" command for evaluation and display.
+.TP
+.I ps
+displays process status for specified, or all, processes
+in the system.
+.TP
+.I pte
+translates the hexadecimal contents of a PTE into its physical
+page address and page bit settings.
+.TP
+.I ptob
+translates a page frame number to its byte value.
+.TP
+.I ptov
+translates a hexadecimal physical address into a kernel 
+virtual address.
+.TP
+.I q
+is an alias for the "exit" command.
+.TP
+.I rd
+displays the contents of memory, with the output formatted
+in several different manners.
+.TP
+.I repeat
+repeats a command indefinitely, optionally delaying a given
+number of seconds between each command execution.
+.TP
+.I runq
+displays the tasks on the run queue.
+.TP
+.I search
+searches a range of user or kernel memory space for given value.
+.TP
+.I set
+either sets a new context, or gets the current context for
+display.
+.TP
+.I sig
+displays signal-handling data of one or more tasks.
+.TP
+.I struct
+displays either a structure definition or the contents of a
+kernel structure at a specified address.
+.TP
+.I swap
+displays information about each configured swap device.
+.TP
+.I sym
+translates a symbol to its virtual address, or a static 
+kernel virtual address to its symbol -- or to a symbol-plus-offset value,
+if appropriate.
+.TP
+.I sys
+displays system-specific data.
+.TP
+.I task
+displays the contents of a task_struct.
+.TP
+.I timer
+displays the timer queue entries, both old- and new-style,
+in chronological order.
+.TP
+.I union
+is similar to the
+.I struct
+command, except that it works on kernel unions.
+.TP
+.I vm
+displays basic virtual memory information of a context.
+.TP
+.I vtop
+translates a user or kernel virtual address to its physical
+address.
+.TP
+.I waitq
+walks the wait queue list displaying the tasks which 
+are blocked on the specified wait queue.
+.TP
+.I whatis
+displays the definition of structures, unions, typedefs or
+text/data symbols.
+.I wr
+modifies the contents of memory.  When writing to memory on
+a live system, this command should obviously be used with great care.
+.SH AUTHOR
+Dave Anderson <anderson@redhat.com> wrote
+.B Crash
+.TP
+Jay Fenlason <fenlason@redhat.com> wrote this man page.
+.SH "SEE ALSO"
+netdump(8)
+gdb(1)

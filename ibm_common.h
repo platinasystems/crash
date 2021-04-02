@@ -1,6 +1,8 @@
 /* ibm_common.h - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
+ * Copyright (C) 2002, 2003, 2004 David Anderson
+ * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,7 +14,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * CVS: $Revision: 1.1 $ $Date: 2002/01/29 20:37:15 $
+ * CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:07:55 $
  */
 
 /*
@@ -30,11 +32,6 @@
 #define DUMP_MAGIC_S390     0xa8190173618f23fdULL  /* s390 magic number     */
 #define S390_DUMP_HEADER_SIZE     4096
 #define DUMP_ASM_MAGIC_NUMBER     0xdeaddeadULL    /* magic number            */
-
-#ifndef MCLX
-typedef unsigned int  uint32_t;
-typedef unsigned long long uint64_t;
-#endif
 
 /*
  * Structure: s390_dump_header_t
