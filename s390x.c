@@ -42,6 +42,8 @@
 
 #define LOWCORE_SIZE 8192
 
+#define S390X_PSW_MASK_PSTATE	0x0001000000000000UL
+
 /*
  * S390x prstatus ELF Note
  */
@@ -113,7 +115,17 @@ static struct line_number_hook s390x_line_number_hooks[];
 static int s390x_is_uvaddr(ulong, struct task_context *);
 static int s390x_get_kvaddr_ranges(struct vaddr_range *);
 
- 
+/*
+ * Read a unsigned long value from address
+ */
+static unsigned long readmem_ul(unsigned long addr)
+{
+	unsigned long rc;
+
+	readmem(addr, KVADDR, &rc, sizeof(rc), "readmem_ul", FAULT_ON_ERROR);
+	return rc;
+}
+
 /*
  * Initialize member offsets
  */
@@ -125,6 +137,17 @@ static void s390x_offsets_init(void)
 	else
 		MEMBER_OFFSET_INIT(s390_lowcore_psw_save_area, "_lowcore",
 				   "psw_save_area");
+	if (!STRUCT_EXISTS("stack_frame")) {
+		ASSIGN_OFFSET(s390_stack_frame_back_chain) = 0;
+		ASSIGN_OFFSET(s390_stack_frame_r14) = 112;
+		ASSIGN_SIZE(s390_stack_frame) = 160;
+	} else {
+		ASSIGN_OFFSET(s390_stack_frame_back_chain) =
+			MEMBER_OFFSET("stack_frame", "back_chain");
+		ASSIGN_OFFSET(s390_stack_frame_r14) =
+			MEMBER_OFFSET("stack_frame", "gprs") + 8 * 8;
+		ASSIGN_SIZE(s390_stack_frame) = STRUCT_SIZE("stack_frame");
+	}
 }
 
 static struct s390x_cpu *s390x_cpu_vec;
@@ -796,39 +819,152 @@ s390x_get_lowcore(struct bt_info *bt, char* lowcore)
 /*
  * Read interrupt stack (either "async_stack" or "panic_stack");
  */
-static void s390x_get_int_stack(char *stack_name, char* lc, char* int_stack,
-				unsigned long* start, unsigned long* end)
+static void get_int_stack(char *stack_name, char *lc, unsigned long *start,
+			  unsigned long *end)
 {
 	unsigned long stack_addr;
 
+	*start = *end = 0;
 	if (!MEMBER_EXISTS("_lowcore", stack_name))
 		return;
 	stack_addr = ULONG(lc + MEMBER_OFFSET("_lowcore", stack_name));
 	if (stack_addr == 0)
 		return;
-	readmem(stack_addr - INT_STACK_SIZE, KVADDR, int_stack,
-		INT_STACK_SIZE, stack_name, FAULT_ON_ERROR);
 	*start = stack_addr - INT_STACK_SIZE;
 	*end = stack_addr;
 }
 
 /*
- * Unroll a kernel stack.
+ * Print hex data
  */
-static void
-s390x_back_trace_cmd(struct bt_info *bt)
+static void print_hex(unsigned long addr, int len, int cols)
 {
-	char* stack;
-	char async_stack[INT_STACK_SIZE];
-	char panic_stack[INT_STACK_SIZE];
-	long ksp,backchain,old_backchain;
-	int i=0, r14_offset,bc_offset, skip_first_frame=0;
-	unsigned long async_start = 0, async_end = 0;
-	unsigned long panic_start = 0, panic_end = 0;
-	unsigned long stack_end, stack_start, stack_base;
-	unsigned long r14;
-	char buf[BUFSIZE];
-	int cpu = bt->tc->processor;
+	int j, first = 1;
+
+	for (j = 0; j < len; j += 8) {
+		if (j % (cols * 8) == 0) {
+			if (!first)
+				fprintf(fp, "\n");
+			else
+				first = 0;
+			fprintf(fp, "    %016lx: ", addr + j);
+		}
+		fprintf(fp, " %016lx", readmem_ul(addr + j));
+	}
+	if (len)
+		fprintf(fp, "\n");
+}
+
+/*
+ * Print hexdump of stack frame data
+ */
+static void print_frame_data(unsigned long sp, unsigned long high)
+{
+	unsigned long next_sp, len = high - sp;
+
+	next_sp = readmem_ul(sp + MEMBER_OFFSET("stack_frame", "back_chain"));
+	if (next_sp == 0)
+		len = MIN(len, SIZE(s390_stack_frame) + STRUCT_SIZE("pt_regs"));
+	else
+		len = MIN(len, next_sp - sp);
+	print_hex(sp, len, 2);
+}
+
+/*
+ * Print stack frame
+ */
+static void print_frame(struct bt_info *bt, int cnt, unsigned long sp,
+			unsigned long r14)
+{
+	struct load_module *lm;
+	char *sym;
+
+	if (BT_REFERENCE_CHECK(bt)) {
+		if (bt->ref->cmdflags & BT_REF_HEXVAL) {
+			if (r14 == bt->ref->hexval)
+				bt->ref->cmdflags |= BT_REF_FOUND;
+		} else {
+			if (STREQ(closest_symbol(r14), bt->ref->str))
+				bt->ref->cmdflags |= BT_REF_FOUND;
+		}
+		return;
+	}
+	fprintf(fp, "%s#%d [%08lx] ", cnt < 10 ? " " : "", cnt, sp);
+	sym = closest_symbol(r14);
+	fprintf(fp, "%s at %lx", sym, r14);
+	if (module_symbol(r14, NULL, &lm, NULL, 0))
+		fprintf(fp, " [%s]", lm->mod_name);
+	fprintf(fp, "\n");
+	if (bt->flags & BT_LINE_NUMBERS)
+		s390x_dump_line_number(r14);
+}
+
+/*
+ * Print back trace for one stack
+ */
+static unsigned long show_trace(struct bt_info *bt, int cnt, unsigned long sp,
+				unsigned long low, unsigned long high)
+{
+	unsigned long reg, psw_addr;
+
+	while (1) {
+		if (sp < low || sp > high - SIZE(s390_stack_frame))
+			return sp;
+		reg = readmem_ul(sp + OFFSET(s390_stack_frame_r14));
+		if (!s390x_has_cpu(bt))
+			print_frame(bt, cnt++, sp, reg);
+		if (bt->flags & BT_FULL)
+			print_frame_data(sp, high);
+		/* Follow the backchain. */
+		while (1) {
+			low = sp;
+			sp = readmem_ul(sp +
+					OFFSET(s390_stack_frame_back_chain));
+			if (!sp) {
+				sp = low;
+				break;
+			}
+			if (sp <= low || sp > high - SIZE(s390_stack_frame))
+				return sp;
+			reg = readmem_ul(sp + OFFSET(s390_stack_frame_r14));
+			print_frame(bt, cnt++, sp, reg);
+			if (bt->flags & BT_FULL)
+				print_frame_data(sp, high);
+		}
+		/* Zero backchain detected, check for interrupt frame. */
+		sp += SIZE(s390_stack_frame);
+		if (sp <= low || sp > high - STRUCT_SIZE("pt_regs"))
+			return sp;
+		/* Check for user PSW */
+		reg = readmem_ul(sp + MEMBER_OFFSET("pt_regs", "psw"));
+		if (reg & S390X_PSW_MASK_PSTATE)
+			return sp;
+		/* Get new backchain from r15 */
+		reg = readmem_ul(sp + MEMBER_OFFSET("pt_regs", "gprs") +
+				 15 * sizeof(long));
+		/* Get address of interrupted function */
+		psw_addr = readmem_ul(sp + MEMBER_OFFSET("pt_regs", "psw") +
+				      sizeof(long));
+		/* Check for loop (kernel_thread_starter) of second zero bc */
+		if (low == reg || reg == 0)
+			return reg;
+		fprintf(fp, " - Interrupt -\n");
+		print_frame(bt, cnt++, sp, psw_addr);
+		low = sp;
+		sp = reg;
+		cnt = 0;
+	}
+}
+
+/*
+ * Unroll a kernel stack
+ */
+static void s390x_back_trace_cmd(struct bt_info *bt)
+{
+	unsigned long low, high, sp = bt->stkptr;
+	int cpu = bt->tc->processor, cnt = 0;
+	char lowcore[LOWCORE_SIZE];
+	unsigned long psw_flags;
 
 	if (bt->hp && bt->hp->eip) {
 		error(WARNING,
@@ -838,13 +974,11 @@ s390x_back_trace_cmd(struct bt_info *bt)
 		fprintf(fp, " CPU offline\n");
 		return;
 	}
-	ksp = bt->stkptr;
 
-	/* print lowcore and get async stack when task has cpu */
-	if(s390x_has_cpu(bt)){
-		char lowcore[LOWCORE_SIZE];
-		unsigned long psw_flags;
-
+	/*
+	 * Print lowcore and print interrupt stacks when task has cpu
+	 */
+	if (s390x_has_cpu(bt)) {
 		if (ACTIVE()) {
 			fprintf(fp,"(active)\n");
 			return;
@@ -852,128 +986,29 @@ s390x_back_trace_cmd(struct bt_info *bt)
 		s390x_get_lowcore(bt, lowcore);
 		psw_flags = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area));
 
-		if(psw_flags & 0x1000000000000ULL){
+		if (psw_flags & S390X_PSW_MASK_PSTATE) {
 			fprintf(fp,"Task runs in userspace\n");
 			s390x_print_lowcore(lowcore,bt,0);
 			return;
 		}
-		s390x_get_int_stack("async_stack", lowcore, async_stack,
-				    &async_start, &async_end);
-		s390x_get_int_stack("panic_stack", lowcore, panic_stack,
-				    &panic_start, &panic_end);
 		s390x_print_lowcore(lowcore,bt,1);
 		fprintf(fp,"\n");
-		skip_first_frame=1;
+		get_int_stack("panic_stack", lowcore, &low, &high);
+		sp = show_trace(bt, cnt, sp, low, high);
+		get_int_stack("async_stack", lowcore, &low, &high);
+		sp = show_trace(bt, cnt, sp, low, high);
 	}
-
-	/* get task stack start and end */
-	if(THIS_KERNEL_VERSION >= LINUX(2,6,0)){
-		readmem(bt->task + OFFSET(task_struct_thread_info),KVADDR,
-			&stack_start, sizeof(long), "thread info", 
-			FAULT_ON_ERROR);
+	/*
+	 * Print task stack
+	 */
+	if (THIS_KERNEL_VERSION >= LINUX(2, 6, 0)) {
+		readmem(bt->task + OFFSET(task_struct_thread_info), KVADDR,
+			&low, sizeof(long), "thread info", FAULT_ON_ERROR);
 	} else {
-		stack_start = bt->task;
+		low = bt->task;
 	}
-	stack_end   = stack_start + KERNEL_STACK_SIZE;
-
-	if(!STRUCT_EXISTS("stack_frame")){
-		r14_offset = 112;
-		bc_offset=0;
-	} else {
-		r14_offset = MEMBER_OFFSET("stack_frame","gprs") + 
-			     8 * S390X_WORD_SIZE;
-		bc_offset  = MEMBER_OFFSET("stack_frame","back_chain");
-	}
-	backchain = ksp; 
-	do {
-		unsigned long r14_stack_off;
-		struct load_module *lm;
-		int j;
-
-		/* Find stack: Either async, panic stack or task stack */
-		if((backchain > stack_start) && (backchain < stack_end)){
-			stack = bt->stackbuf;
-			stack_base = stack_start;
-		} else if((backchain > async_start) && (backchain < async_end)
-			  && s390x_has_cpu(bt)){
-			stack = async_stack;
-			stack_base = async_start;
-		} else if((backchain > panic_start) && (backchain < panic_end)
-			  && s390x_has_cpu(bt)){
-			stack = panic_stack;
-			stack_base = panic_start;
-		} else {
-			/* invalid stackframe */
-			break;
-		}
-		r14_stack_off=backchain - stack_base + r14_offset; 
-		r14 = ULONG(&stack[r14_stack_off]);
-
-		/* print function name */
-		if(BT_REFERENCE_CHECK(bt)){
-			if(bt->ref->cmdflags & BT_REF_HEXVAL){
-				if(r14 == bt->ref->hexval)
-					bt->ref->cmdflags |= BT_REF_FOUND;
-			} else {
-				if(STREQ(closest_symbol(r14),bt->ref->str))
-					bt->ref->cmdflags |= BT_REF_FOUND;
-			}
-		} else if(skip_first_frame){
-			skip_first_frame=0;
-		} else {
-			fprintf(fp," #%i [%08lx] ",i,backchain);
-			fprintf(fp,"%s at %lx", closest_symbol(r14), r14);
-			if (module_symbol(r14, NULL, &lm, NULL, 0))
-				fprintf(fp, " [%s]", lm->mod_name);
-			fprintf(fp, "\n");
-			if (bt->flags & BT_LINE_NUMBERS)
-				s390x_dump_line_number(r14);
-			i++;
-		}
-		old_backchain=backchain;
-		backchain = ULONG(&stack[backchain - stack_base + bc_offset]);
-
-		/* print stack content if -f is specified */
-		if ((bt->flags & BT_FULL) && !BT_REFERENCE_CHECK(bt)) {
-			int frame_size;
-			if (backchain == 0) {
-				frame_size = stack_base - old_backchain 
-					     + KERNEL_STACK_SIZE;
-			} else {
-				frame_size = MIN((backchain - old_backchain),
-					(stack_base - old_backchain +
-					KERNEL_STACK_SIZE));
-			}
-			for (j = 0; j < frame_size; j += 8) {
-				if(j % 16 == 0){
-					fprintf(fp, "%s    %016lx: ", 
-                                            j ? "\n" : "", old_backchain + j);
-				}
-				fprintf(fp," %s",
-				    format_stack_entry(bt, buf,
-                                    ULONG(&stack[old_backchain - stack_base + j]), 0));
-			}
-			fprintf(fp, "\n");
-		}
-
-		/* Check for interrupt stackframe */
-		if((backchain == 0) &&
-		   (stack == async_stack || stack == panic_stack)) {
-			int pt_regs_off = old_backchain - stack_base + 160;
-			unsigned long psw_flags;
-
-			psw_flags = ULONG(&stack[pt_regs_off +
-					  MEMBER_OFFSET("pt_regs", "psw")]);
-			if(psw_flags & 0x1000000000000ULL){
-				/* User psw: should not happen */
-				break;
-			}
-			backchain = ULONG(&stack[pt_regs_off +
-					  MEMBER_OFFSET("pt_regs", "gprs") +
-					  15 * S390X_WORD_SIZE]);
-			fprintf(fp," - Interrupt -\n");
-		}
-      } while(backchain != 0);
+	high = low + KERNEL_STACK_SIZE;
+	sp = show_trace(bt, cnt, sp, low, high);
 }
 
 /*

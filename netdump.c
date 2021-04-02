@@ -39,6 +39,8 @@ static physaddr_t xen_kdump_p2m(physaddr_t);
 static void check_dumpfile_size(char *);
 static int proc_kcore_init_32(FILE *fp);
 static int proc_kcore_init_64(FILE *fp);
+static char *get_regs_from_note(char *, ulong *, ulong *);
+static void kdump_get_osrelease(void);
 
 #define ELFSTORE 1
 #define ELFREAD  0
@@ -377,6 +379,10 @@ is_netdump(char *file, ulong source_query)
 
 	if (CRASHDEBUG(1))
 		netdump_memory_dump(fp);
+
+	if ((source_query == KDUMP_LOCAL) && 
+	    (pc->flags2 & GET_OSRELEASE))
+		kdump_get_osrelease();
 
 	return nd->header_size;
 
@@ -1588,7 +1594,7 @@ vmcoreinfo_read_string(const char *key)
 			}
 
 			value_length = end - (1+ i + key_length);
-			value = malloc(value_length);
+			value = calloc(value_length+1, sizeof(char));
 			if (value)
 				strncpy(value, vmcoreinfo + i + key_length + 1, 
 					value_length);
@@ -1729,9 +1735,11 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 			if (store)
 				error(WARNING, "unknown Xen n_type: %lx\n\n", 
 					note->n_type);
-		} else if (vmcoreinfo)
+		} else if (vmcoreinfo) {
 			netdump_print("(unused)\n");
-		else
+			nd->vmcoreinfo = (char *)(ptr + note->n_namesz + 1);
+			nd->size_vmcoreinfo = note->n_descsz;
+		} else
 			netdump_print("(?)\n");
 		break;
 
@@ -1981,14 +1989,14 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 		} else if (vmcoreinfo) {
                         netdump_print("(unused)\n");
 
-			if (READ_PAGESIZE_FROM_VMCOREINFO() && store) {
-				nd->vmcoreinfo = (char *)nd->elf64 + offset +
-					(sizeof(Elf64_Nhdr) +
-					((note->n_namesz + 3) & ~3));
-				nd->size_vmcoreinfo = note->n_descsz;
+			nd->vmcoreinfo = (char *)nd->elf64 + offset +
+				(sizeof(Elf64_Nhdr) +
+				((note->n_namesz + 3) & ~3));
+			nd->size_vmcoreinfo = note->n_descsz;
+
+			if (READ_PAGESIZE_FROM_VMCOREINFO() && store)
 				nd->page_size = (uint)
 					vmcoreinfo_read_integer("PAGESIZE", 0);
-			}
                 } else
                         netdump_print("(?)\n");
                 break;
@@ -2170,6 +2178,42 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 	}
 }
 
+/* 
+ * get regs from elf note, and return the address of user_regs. 
+ */
+static char * 
+get_regs_from_note(char *note, ulong *ip, ulong *sp)
+{
+	Elf32_Nhdr *note32;
+	Elf64_Nhdr *note64;
+	size_t len;
+	char *user_regs;
+	long offset_sp, offset_ip;
+
+	if (machine_type("X86_64")) {
+		note64 = (Elf64_Nhdr *)note;
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note64->n_namesz, 4);
+		len = roundup(len + note64->n_descsz, 4);
+		offset_sp = OFFSET(user_regs_struct_rsp);
+		offset_ip = OFFSET(user_regs_struct_rip);
+	} else if (machine_type("X86")) {
+		note32 = (Elf32_Nhdr *)note;
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note32->n_namesz, 4);
+		len = roundup(len + note32->n_descsz, 4);
+		offset_sp = OFFSET(user_regs_struct_esp);
+		offset_ip = OFFSET(user_regs_struct_eip);
+	} else
+		return NULL;
+
+	user_regs = note + len - SIZE(user_regs_struct) - sizeof(long);
+	*sp = ULONG(user_regs + offset_sp);
+	*ip = ULONG(user_regs + offset_ip);
+
+	return user_regs;
+}
+
 struct x86_64_user_regs_struct {
         unsigned long r15,r14,r13,r12,rbp,rbx,r11,r10;
         unsigned long r9,r8,rax,rcx,rdx,rsi,rdi,orig_rax;
@@ -2186,6 +2230,7 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
         size_t len;
         char *user_regs;
 	ulong regs_size, rsp_offset, rip_offset;
+	ulong rip, rsp;
 
         if (is_task_active(bt->task)) 
                 bt->flags |= BT_DUMPFILE_SEARCH;
@@ -2232,6 +2277,25 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 		bt->machdep = (void *)user_regs;
 	}
 
+	if (ELF_NOTES_VALID() && 
+	    (bt->flags & BT_DUMPFILE_SEARCH) && DISKDUMP_DUMPFILE() && 
+	    (note = (Elf64_Nhdr *)
+	     diskdump_get_prstatus_percpu(bt->tc->processor))) {
+		user_regs = get_regs_from_note((char *)note, &rip, &rsp);
+
+		if (CRASHDEBUG(1))
+			netdump_print("ELF prstatus rsp: %lx rip: %lx\n",
+				rsp, rip);
+
+		*rspp = rsp;
+		*ripp = rip;
+
+		if (*ripp && *rspp)
+			bt->flags |= BT_KDUMP_ELF_REGS;
+
+		bt->machdep = (void *)user_regs;
+	}
+
         machdep->get_stack_frame(bt, ripp, rspp);
 }
 
@@ -2250,6 +2314,9 @@ get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 	ulong halt_eip, halt_esp, panic_eip, panic_esp;
 	int check_hardirq, check_softirq;
 	ulong stackbase, stacktop;
+	Elf32_Nhdr *note;
+	char *user_regs;
+	ulong ip, sp;
 
 	if (!is_task_active(bt->task)) {
 		machdep->get_stack_frame(bt, eip, esp);
@@ -2422,6 +2489,20 @@ next_sysrq:
 		altered = TRUE;
                 goto retry;
         }
+
+	if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE() &&
+	    (note = (Elf32_Nhdr *)
+	     diskdump_get_prstatus_percpu(bt->tc->processor))) {
+		user_regs = get_regs_from_note((char *)note, &ip, &sp);
+		if (is_kernel_text(ip) &&
+		    (((sp >= GET_STACKBASE(bt->task)) &&
+		      (sp < GET_STACKTOP(bt->task))) ||
+		    in_alternate_stack(bt->tc->processor, sp))) {
+			*eip = ip;
+			*esp = sp;
+			return;
+		}
+	}
 
 	if (CRASHDEBUG(1))
 		error(INFO, 
@@ -2780,10 +2861,41 @@ int get_netdump_arch(void)
 	return e_machine;
 }
 
+int 
+exist_regs_in_elf_notes(struct task_context *tc)
+{
+	if ((tc->task == tt->panic_task) ||
+	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1) &&
+	     (tc->processor < nd->num_prstatus_notes)))
+		return TRUE;
+	else
+		return FALSE;
+}
+
 void * 
 get_regs_from_elf_notes(struct task_context *tc)
 {
-	switch(get_netdump_arch())
+	int e_machine = get_netdump_arch();
+
+	switch (e_machine)
+	{
+	case EM_386:
+	case EM_PPC64:
+	case EM_X86_64:
+	case EM_ARM:
+		break;
+	default:
+		error(FATAL,
+		      "support for ELF machine type %d not available\n",
+		      e_machine);
+	}
+
+	if (!exist_regs_in_elf_notes(tc))
+		error(FATAL, "cannot determine register set "
+		      "for active task: %lx comm: \"%s\"\n",
+		      tc->task, tc->comm);
+
+	switch(e_machine)
 	{
 	case EM_386:
 		return get_x86_regs_from_elf_notes(tc);
@@ -2793,10 +2905,6 @@ get_regs_from_elf_notes(struct task_context *tc)
 		return get_x86_64_regs_from_elf_notes(tc);
 	case EM_ARM:
 		return get_arm_regs_from_elf_notes(tc);
-	default:
-		error(FATAL,
-		    "support for ELF machine type %d not available\n",
-			get_netdump_arch());
 	}
 
 	return NULL;
@@ -2814,31 +2922,25 @@ get_x86_regs_from_elf_notes(struct task_context *tc)
 	len = 0;
 	pt_regs = NULL;
 
-	if ((tc->task == tt->panic_task) || 
-	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
-		if (nd->num_prstatus_notes > 1)
-			note = (void *)
-				nd->nt_prstatus_percpu[tc->processor];
-		else
-			note = (void *)nd->nt_prstatus;
-		if (nd->elf32) {
-			note_32 = (Elf32_Nhdr *)note;
-			len = sizeof(Elf32_Nhdr);
-			len = roundup(len + note_32->n_namesz, 4);
-		} else if (nd->elf64) {
-			note_64 = (Elf64_Nhdr *)note;
-			len = sizeof(Elf64_Nhdr);
-			len = roundup(len + note_64->n_namesz, 4);
-		}
-		
-		pt_regs = (void *)((char *)note + len + 
-			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
-		/* NEED TO BE FIXED: Hack to get the proper alignment */
-		pt_regs +=4;
-	} else
-		error(FATAL, 
-		    "cannot determine register set for task \"%s\"\n",
-			tc->comm);
+	if (nd->num_prstatus_notes > 1)
+		note = (void *)nd->nt_prstatus_percpu[tc->processor];
+	else
+		note = (void *)nd->nt_prstatus;
+	if (nd->elf32) {
+		note_32 = (Elf32_Nhdr *)note;
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note_32->n_namesz, 4);
+	} else if (nd->elf64) {
+		note_64 = (Elf64_Nhdr *)note;
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note_64->n_namesz, 4);
+	}
+
+	pt_regs = (void *)((char *)note + len +
+			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	/* NEED TO BE FIXED: Hack to get the proper alignment */
+	pt_regs +=4;
+
 	return pt_regs;
 
 }
@@ -2852,22 +2954,16 @@ get_x86_64_regs_from_elf_notes(struct task_context *tc)
 
 	pt_regs = NULL;
 
-	if ((tc->task == tt->panic_task) || 
-	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
-		if (nd->num_prstatus_notes > 1)
-			note = (Elf64_Nhdr *)
-				nd->nt_prstatus_percpu[tc->processor];
-		else
-			note = (Elf64_Nhdr *)nd->nt_prstatus;
+	if (nd->num_prstatus_notes > 1)
+		note = (Elf64_Nhdr *)nd->nt_prstatus_percpu[tc->processor];
+	else
+		note = (Elf64_Nhdr *)nd->nt_prstatus;
 
-		len = sizeof(Elf64_Nhdr);
-		len = roundup(len + note->n_namesz, 4);
-		pt_regs = (void *)((char *)note + len + 
-			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
-	} else
-		error(FATAL, 
-		    "cannot determine register set for task \"%s\"\n",
-			tc->comm);
+	len = sizeof(Elf64_Nhdr);
+	len = roundup(len + note->n_namesz, 4);
+	pt_regs = (void *)((char *)note + len +
+			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+
 	return pt_regs;
 }
 
@@ -2881,32 +2977,21 @@ get_ppc64_regs_from_elf_notes(struct task_context *tc)
 
 	pt_regs = NULL;
 
-	if ((tc->task == tt->panic_task) ||
-	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
-		/*	
-		 * Registers are always saved during the dump process for the 
-		 * panic task.  Kdump also captures registers for all CPUs if
-		 * they responded to an IPI.
-		 */
-		if (nd->num_prstatus_notes > 1) {
-			if (tc->processor >= nd->num_prstatus_notes)
-				error(FATAL, "cannot determine NT_PRSTATUS ELF note "
-				    "for %s task: %lx\n", (tc->task == tt->panic_task) ?
-				    "panic" : "active", tc->task);	
-			note = (Elf64_Nhdr *)
-				nd->nt_prstatus_percpu[tc->processor];
-		} else
-			note = (Elf64_Nhdr *)nd->nt_prstatus;
-
-		len = sizeof(Elf64_Nhdr);
-		len = roundup(len + note->n_namesz, 4);
-		pt_regs = (void *)((char *)note + len + 
-			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	/*
+	 * Registers are always saved during the dump process for the
+	 * panic task.  Kdump also captures registers for all CPUs if
+	 * they responded to an IPI.
+	 */
+	if (nd->num_prstatus_notes > 1) {
+		note = (Elf64_Nhdr *)nd->nt_prstatus_percpu[tc->processor];
 	} else
-		error(FATAL, 
-		    "cannot determine register set for task \"%s\"\n",
-			tc->comm);
-	
+		note = (Elf64_Nhdr *)nd->nt_prstatus;
+
+	len = sizeof(Elf64_Nhdr);
+	len = roundup(len + note->n_namesz, 4);
+	pt_regs = (void *)((char *)note + len +
+			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+
 	return pt_regs;
 }
 
@@ -2949,29 +3034,23 @@ get_arm_regs_from_elf_notes(struct task_context *tc)
 	len = 0;
 	pt_regs = NULL;
 
-	if ((tc->task == tt->panic_task) ||
-	    (is_task_active(tc->task) && (nd->num_prstatus_notes > 1))) {
-		if (nd->num_prstatus_notes > 1)
-			note = (void *)
-				nd->nt_prstatus_percpu[tc->processor];
-		else
-			note = (void *)nd->nt_prstatus;
-		if (nd->elf32) {
-			note_32 = (Elf32_Nhdr *)note;
-			len = sizeof(Elf32_Nhdr);
-			len = roundup(len + note_32->n_namesz, 4);
-		} else if (nd->elf64) {
-			note_64 = (Elf64_Nhdr *)note;
-			len = sizeof(Elf64_Nhdr);
-			len = roundup(len + note_64->n_namesz, 4);
-		}
+	if (nd->num_prstatus_notes > 1)
+		note = (void *)nd->nt_prstatus_percpu[tc->processor];
+	else
+		note = (void *)nd->nt_prstatus;
+	if (nd->elf32) {
+		note_32 = (Elf32_Nhdr *)note;
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note_32->n_namesz, 4);
+	} else if (nd->elf64) {
+		note_64 = (Elf64_Nhdr *)note;
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note_64->n_namesz, 4);
+	}
 
-		pt_regs = (void *)((char *)note + len +
-			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
-	} else
-		error(FATAL,
-		    "cannot determine arm register set for task \"%s\"\n",
-			tc->comm);
+	pt_regs = (void *)((char *)note + len +
+			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+
 	return pt_regs;
 }
 
@@ -3256,4 +3335,16 @@ kcore_memory_dump(FILE *ofp)
 	}
 
 	return TRUE;
+}
+
+static void
+kdump_get_osrelease(void)
+{
+	char *string;
+
+	if ((string = vmcoreinfo_read_string("OSRELEASE"))) {
+		fprintf(fp, "%s\n", string);
+		free(string);
+	} else 
+		pc->flags2 &= ~GET_OSRELEASE;
 }

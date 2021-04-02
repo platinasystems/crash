@@ -3659,6 +3659,9 @@ cleanup_memory_driver(void)
 
 	count = errors = 0;
 
+	if (pc->flags & KERNEL_DEBUG_QUERY)
+		return TRUE;
+
 	close(pc->mfd);
 	if (file_exists(pc->memory_device, NULL) &&
 	    unlink(pc->memory_device)) {

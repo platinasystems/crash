@@ -1218,3 +1218,43 @@ kvmdump_regs_store(uint32_t cpu, struct qemu_device_x86 *dx86)
 
 	return retval;
 }
+
+int 
+get_kvm_register_set(int cpu, struct kvm_register_set *krs)
+{
+	struct register_set *rs = &kvm->registers[cpu];
+
+	if (!krs)
+		return FALSE;
+
+	if (machine_type("X86") || machine_type("X86_64")) {
+		krs->x86.cs = rs->cs;
+		krs->x86.ss = rs->ss;
+		krs->x86.ds = rs->ds;
+		krs->x86.es = rs->es;
+		krs->x86.fs = rs->fs;
+		krs->x86.gs = rs->gs;
+		krs->x86.ip = rs->ip;
+		krs->x86.flags = rs->flags;
+		krs->x86.regs[0] = rs->regs[0];
+		krs->x86.regs[1] = rs->regs[1];
+		krs->x86.regs[2] = rs->regs[2];
+		krs->x86.regs[3] = rs->regs[3];
+		krs->x86.regs[4] = rs->regs[4];
+		krs->x86.regs[5] = rs->regs[5];
+		krs->x86.regs[6] = rs->regs[6];
+		krs->x86.regs[7] = rs->regs[7];
+		krs->x86.regs[8] = rs->regs[8];
+		krs->x86.regs[9] = rs->regs[9];
+		krs->x86.regs[10] = rs->regs[10];
+		krs->x86.regs[11] = rs->regs[11];
+		krs->x86.regs[12] = rs->regs[12];
+		krs->x86.regs[13] = rs->regs[13];
+		krs->x86.regs[14] = rs->regs[14];
+		krs->x86.regs[15] = rs->regs[15];
+	
+		return TRUE;
+	}
+
+	return FALSE;
+}

@@ -458,6 +458,8 @@ task_init(void)
 	else {
 		if (KDUMP_DUMPFILE())
 			map_cpus_to_prstatus();
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			map_cpus_to_prstatus_kdump_cmprs();
 		please_wait("determining panic task");
 		set_context(get_panic_context(), NO_PID);
 		please_wait_done();

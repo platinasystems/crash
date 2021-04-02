@@ -34,7 +34,6 @@ static int is_vsyscall_addr(ulong);
 struct syment *x86_64_value_to_symbol(ulong, ulong *);
 static int x86_64_eframe_search(struct bt_info *);
 static int x86_64_eframe_verify(struct bt_info *, long, long, long, long, long, long);
-static long x86_64_exception_frame(ulong,ulong,char *,struct bt_info *, FILE *);
 #define EFRAME_PRINT  (0x1)
 #define EFRAME_VERIFY (0x2)
 #define EFRAME_CS     (0x4)
@@ -124,6 +123,9 @@ x86_64_init(int when)
 
 	switch (when)
 	{
+	case SETUP_ENV:
+		machdep->process_elf_notes = x86_process_elf_notes;
+		break;
 	case PRE_SYMTAB:
 		machdep->verify_symbol = x86_64_verify_symbol;
                 machdep->machspec = &x86_64_machine_specific;
@@ -436,6 +438,12 @@ x86_64_init(int when)
 		x86_64_irq_eframe_link_init();
 		x86_64_framepointer_init();
 		x86_64_thread_return_init();
+
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,28))
+			machdep->machspec->page_protnone = _PAGE_GLOBAL;
+		else
+			machdep->machspec->page_protnone = _PAGE_PSE;
+
 		break;
 
 	case POST_VM:
@@ -651,6 +659,7 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "\n");
 	fprintf(fp, "            vsyscall_page: %lx\n", ms->vsyscall_page); 
 	fprintf(fp, "            thread_return: %lx\n", ms->thread_return); 
+	fprintf(fp, "            page_protnone: %lx\n", ms->page_protnone); 
 
 	fprintf(fp, "                  stkinfo: isize: %d\n", 
 		ms->stkinfo.isize);
@@ -1281,7 +1290,7 @@ x86_64_uvtop_level4(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, in
 	pmd_pte = ULONG(machdep->pmd + PAGEOFFSET(pmd));
         if (verbose) 
                 fprintf(fp, "   PMD: %lx => %lx\n", (ulong)pmd, pmd_pte);
-	if (!(pmd_pte & _PAGE_PRESENT))
+	if (!(pmd_pte & (_PAGE_PRESENT | _PAGE_PROTNONE)))
 		goto no_upage;
         if (pmd_pte & _PAGE_PSE) {
                 if (verbose) {
@@ -2076,7 +2085,7 @@ x86_64_translate_pte(ulong pte, void *physaddr, ulonglong unused)
 	int page_present;
 
         paddr = pte & PHYSICAL_PAGE_MASK;
-        page_present = pte & _PAGE_PRESENT;
+        page_present = pte & (_PAGE_PRESENT | _PAGE_PROTNONE);
 
         if (physaddr) {
 		*((ulong *)physaddr) = paddr;
@@ -3594,8 +3603,8 @@ x86_64_back_trace(struct gnu_request *req, struct bt_info *bt)
  *
  */
 
-static long 
-x86_64_exception_frame(ulong flags, ulong kvaddr, char *local, 
+long
+x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	struct bt_info *bt, FILE *ofp)
 {
         long rip, rsp, cs, ss, rflags, orig_rax, rbp; 
@@ -3606,11 +3615,11 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	ulong offset;
 	char *pt_regs_buf;
 	long verified;
-	int err;
+	long err;
 
         ms = machdep->machspec;
 
-	if (!(machdep->flags & PT_REGS_INIT)) {
+	if (!(machdep->flags & PT_REGS_INIT) || (flags == EFRAME_INIT)) {
 		err = 0;
 		err |= ((ms->pto.r15 = MEMBER_OFFSET("pt_regs", "r15")) == 
 			INVALID_OFFSET);
@@ -3695,6 +3704,9 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 			error(WARNING, "pt_regs structure has changed\n");
 
 		machdep->flags |= PT_REGS_INIT;
+
+		if (flags == EFRAME_INIT)
+			return err;
 	}
 
 	if (kvaddr) {
@@ -4020,6 +4032,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 	sysrq_c_rip = sysrq_c_rsp = 0;
 	stage = 0;
 	estack = -1;
+	panic = FALSE;
 
 	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
 
@@ -4043,9 +4056,13 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 				goto skip_stage;
 			}
 		}
+	} else if (ELF_NOTES_VALID()) {
+		user_regs = bt->machdep;
+		ur_rip = ULONG(user_regs +
+			OFFSET(user_regs_struct_rip));
+		ur_rsp = ULONG(user_regs +
+			OFFSET(user_regs_struct_rsp));
 	}
-
-	panic = FALSE;
 
 	/*
 	 *  Check the process stack first.
