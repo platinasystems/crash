@@ -1,8 +1,9 @@
 /* s390_dump.c - core analysis suite
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2005 Michael Holzheu, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,30 +14,39 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:10:25 $
  */
 #include "defs.h"
 #include <asm/page.h>
 #include "ibm_common.h"
 
-static gzFile s390_gzfp;
+static FILE * s390_file;
 
 int 
 is_s390_dump(char *file) 
 {
-	return FALSE;
+	FILE* fh;
+	long long int magic;
+	int rc;
+
+	fh = fopen(file,"r");
+	fread(&magic, sizeof(magic), 1,fh);
+	if(magic == 0xa8190173618f23fdLL)
+		rc = TRUE;
+	else
+		rc = FALSE;
+	fclose(fh);
+	return rc;
 }
 
-gzFile
+FILE*
 s390_dump_init(char *file)
 {
-        if ((s390_gzfp = gzopen(file, "r+")) == NULL) {
-		if ((s390_gzfp = gzopen(file, "r")) == NULL)
+        if ((s390_file = fopen(file, "r+")) == NULL) {
+		if ((s390_file = fopen(file, "r")) == NULL)
 			return NULL;
 	}
 
-	return s390_gzfp;
+	return s390_file;
 }
 
 int
@@ -44,13 +54,13 @@ read_s390_dumpfile(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
 	paddr += S390_DUMP_HEADER_SIZE;
 
-        if (gzseek(s390_gzfp, (ulong)paddr, SEEK_SET) != (ulong)paddr) 
+        if (fseek(s390_file, (ulong)paddr, SEEK_SET) != 0) 
 		return SEEK_ERROR;
 
-        if (gzread(s390_gzfp, bufptr, cnt) != cnt) 
+        if (fread(bufptr, 1 , cnt, s390_file) != cnt) 
 		return READ_ERROR;
 
-	return READ_ERROR;
+	return 0;
 }
 
 int

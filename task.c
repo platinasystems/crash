@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)task.c 1.12
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.81 $ $Date: 2005/01/28 20:26:13 $
  */
 
 #include "defs.h"
@@ -48,10 +33,12 @@ static void parent_list(ulong);
 static void child_list(ulong);
 static void show_task_times(struct task_context *, ulong);
 static int compare_start_time(const void *, const void *);
+static int start_time_timespec(void);
+static ulonglong convert_start_time(ulonglong, ulonglong);
 static ulong get_dumpfile_panic_task(void);
 static ulong get_active_set_panic_task(void);
 static void populate_panic_threads(void);
-static int verify_task(struct task_context *);
+static int verify_task(struct task_context *, int);
 static ulong get_idle_task(int, char *);
 static ulong get_curr_task(int, char *);
 static long rq_idx(int);
@@ -259,6 +246,8 @@ task_init(void)
         MEMBER_OFFSET_INIT(tms_tms_stime, "tms", "tms_stime");
 	MEMBER_OFFSET_INIT(task_struct_utime, "task_struct", "utime");
 	MEMBER_OFFSET_INIT(task_struct_stime, "task_struct", "stime");
+
+	STRUCT_SIZE_INIT(cputime_t, "cputime_t");
 
 	if (VALID_MEMBER(runqueue_arrays)) 
 		MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
@@ -554,28 +543,35 @@ retry:
  *  in the task_context array.
  */
 static int
-verify_task(struct task_context *tc)
+verify_task(struct task_context *tc, int level)
 {
 	ulong next_task;
 	ulong readflag;
 
         readflag = ACTIVE() ? (RETURN_ON_ERROR|QUIET) : (RETURN_ON_ERROR);
 
-        if (!readmem(tc->task + OFFSET(task_struct_next_task),
-	    KVADDR, &next_task, sizeof(void *), "next_task", readflag)) {
-		return FALSE;
-        }
-	if (!IS_TASK_ADDR(next_task))
-		return FALSE;
+	switch (level)
+	{
+	case 1:
+        	if (!readmem(tc->task + OFFSET(task_struct_next_task),
+	    	    KVADDR, &next_task, sizeof(void *), "next_task", readflag)) {
+			return FALSE;
+        	}
+		if (!IS_TASK_ADDR(next_task))
+			return FALSE;
 
-	if (tc->processor & ~NO_PROC_ID)
-		return FALSE;
+		if (tc->processor & ~NO_PROC_ID)
+			return FALSE;
 
-        if ((tc->processor < 0) || (tc->processor >= NR_CPUS))
-		return FALSE;
+		/* fall through */
+	case 2:
+        	if ((tc->processor < 0) || (tc->processor >= NR_CPUS))
+			return FALSE;
 
-	if (!IS_TASK_ADDR(tc->ptask))
-		return FALSE;
+		if (!IS_TASK_ADDR(tc->ptask))
+			return FALSE;
+		break;
+	}
 
 	return TRUE;
 }
@@ -1426,7 +1422,12 @@ store_context(struct task_context *tc, ulong task, char *tp)
         int has_cpu;
 	int do_verify;
 
-	do_verify = (tt->refresh_task_table == refresh_fixed_task_table);
+	if (tt->refresh_task_table == refresh_fixed_task_table)
+		do_verify = 1;
+	else if (tt->refresh_task_table == refresh_pid_hash_task_table)
+		do_verify = 2;
+	else
+		do_verify = 0;
 
 	if (!tc)
 		tc = tt->context_array + tt->running_tasks;
@@ -1458,7 +1459,8 @@ store_context(struct task_context *tc, ulong task, char *tp)
         tc->task = task;
         tc->tc_next = NULL;
 
-        if (do_verify && !verify_task(tc)) {
+        if (do_verify && !verify_task(tc, do_verify)) {
+		error(INFO, "invalid task address: %lx\n", tc->task);
                 BZERO(tc, sizeof(struct task_context));
                 return NULL;
         }
@@ -2227,8 +2229,11 @@ show_task_times(struct task_context *tcp, ulong flags)
  
 	use_kernel_timeval = STRUCT_EXISTS("kernel_timeval");
         get_symbol_data("jiffies", sizeof(long), &jiffies);
-	if (symbol_exists("jiffies_64"))
+	if (symbol_exists("jiffies_64")) {
         	get_symbol_data("jiffies_64", sizeof(long long), &jiffies_64);
+		if ((jiffies_64 & 0xffffffff00000000ULL) == 0x100000000ULL) 
+			jiffies_64 &= 0xffffffffULL;
+	}
 	tsp = task_start_times;
 	tc = tcp ? tcp : FIRST_CONTEXT();
 
@@ -2247,12 +2252,21 @@ show_task_times(struct task_context *tcp, ulong flags)
 		}
 
  		tsp->tc = tc;
-		if (BITS32() && (SIZE(task_struct_start_time) == 8))
-			tsp->start_time = ULONGLONG(tt->task_struct +
-				OFFSET(task_struct_start_time));
-		else
+
+		if (BITS32() && (SIZE(task_struct_start_time) == 8)) {
+			if (start_time_timespec())
+				tsp->start_time = 
+					ULONG(tt->task_struct +
+					OFFSET(task_struct_start_time));
+			else
+				tsp->start_time = 
+					ULONGLONG(tt->task_struct +
+					OFFSET(task_struct_start_time));
+		} else {
+			start_time_timespec();
 			tsp->start_time = ULONG(tt->task_struct +
 				OFFSET(task_struct_start_time));
+		}
 
 		if (VALID_MEMBER(task_struct_times)) {
 			tsp->tms_utime = ULONG(tt->task_struct +
@@ -2263,12 +2277,36 @@ show_task_times(struct task_context *tcp, ulong flags)
                         	OFFSET(tms_tms_stime));
 		} else if (VALID_MEMBER(task_struct_utime)) {
 			if (use_kernel_timeval) {
-                               BCOPY(tt->task_struct +
+                                BCOPY(tt->task_struct +
                                         OFFSET(task_struct_utime), &tsp->kutime,
 					sizeof(struct kernel_timeval));
                                 BCOPY(tt->task_struct +
                                         OFFSET(task_struct_stime), &tsp->kstime,
 					sizeof(struct kernel_timeval));
+			} else if (VALID_STRUCT(cputime_t)) {
+				/* since linux 2.6.11 */
+				if (SIZE(cputime_t) == 8) {
+					uint64_t utime_64, stime_64;
+					BCOPY(tt->task_struct + 
+						OFFSET(task_struct_utime), 
+						&utime_64, 8);
+					BCOPY(tt->task_struct + 
+						OFFSET(task_struct_stime), 
+						&stime_64, 8);
+					/* convert from micro-sec. to sec. */
+					tsp->utime.tv_sec = utime_64 / 1000000;
+					tsp->stime.tv_sec = stime_64 / 1000000;
+				} else {
+					uint32_t utime_32, stime_32;
+					BCOPY(tt->task_struct + 
+						OFFSET(task_struct_utime), 
+						&utime_32, 4);
+					BCOPY(tt->task_struct + 
+						OFFSET(task_struct_stime), 
+						&stime_32, 4);
+					tsp->utime.tv_sec = utime_32;
+					tsp->stime.tv_sec = stime_32;
+				}
 			} else {
 				BCOPY(tt->task_struct + 
 					OFFSET(task_struct_utime), 
@@ -2292,7 +2330,8 @@ show_task_times(struct task_context *tcp, ulong flags)
         for (i = 0, tsp = task_start_times; i < tasks; i++, tsp++) {
 		print_task_header(fp, tsp->tc, 0);
 		fprintf(fp, "    RUN TIME: %s\n", symbol_exists("jiffies_64") ? 
-			convert_time(jiffies_64 - tsp->start_time, buf1) :
+			convert_time(jiffies_64 - 
+			convert_start_time(tsp->start_time, jiffies_64), buf1) :
 			convert_time(jiffies - tsp->start_time, buf1));
 		fprintf(fp, "  START TIME: %llu\n", tsp->start_time); 
 		if (VALID_MEMBER(task_struct_times)) {
@@ -2313,6 +2352,65 @@ show_task_times(struct task_context *tcp, ulong flags)
 		}
 	}
 	FREEBUF(task_start_times);
+}
+
+static int
+start_time_timespec(void)
+{
+        char buf[BUFSIZE], *p1;
+
+	switch(tt->flags & (TIMESPEC | NO_TIMESPEC))
+	{
+	case TIMESPEC:
+		return TRUE;
+	case NO_TIMESPEC:
+		return FALSE;
+	default:
+		break;
+	}
+
+	tt->flags |= NO_TIMESPEC;
+
+        open_tmpfile();
+        sprintf(buf, "ptype struct task_struct");
+        if (!gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR)) {
+                close_tmpfile();
+                return FALSE;
+        }
+
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                p1 = buf;
+                if (strstr(buf, "start_time;")) {
+			if (strstr(buf, "struct timespec")) {
+				tt->flags &= ~NO_TIMESPEC;
+				tt->flags |= TIMESPEC;
+			}
+		}
+        }
+
+        close_tmpfile();
+
+        return (tt->flags & TIMESPEC ? TRUE : FALSE);
+}
+
+static ulonglong
+convert_start_time(ulonglong start_time, ulonglong current)
+{
+        switch(tt->flags & (TIMESPEC | NO_TIMESPEC))
+        {
+        case TIMESPEC:
+		if ((start_time * (ulonglong)machdep->hz) > current) 
+			return current;
+		else
+                	return start_time * (ulonglong)machdep->hz; 
+
+        case NO_TIMESPEC:
+        default:
+                break;
+        }
+
+	return start_time;
 }
 
 /*
@@ -2855,8 +2953,14 @@ show_context(struct task_context *tc)
 	if (!(pc->flags & RUNTIME) && (tt->flags & PANIC_TASK_NOT_FOUND) &&
 	    !SYSRQ_TASK(tc->task)) {
 		fprintf(fp, "\n"); INDENT(indent);
-		fprintf(fp, "WARNING: reported panic task %lx not found", 
-			tt->panic_threads[tt->panic_processor]);
+		if (machine_type("S390") || machine_type("S390X"))
+			fprintf(fp, "   INFO: no panic task found");
+		else if (tt->panic_processor >= 0)
+			fprintf(fp,
+			    "WARNING: reported panic task %lx not found",
+				tt->panic_threads[tt->panic_processor]);
+		else 
+			fprintf(fp, "WARNING: panic task not found");
 	}
 
 	fprintf(fp, "\n");
@@ -3260,6 +3364,7 @@ get_panic_context(void)
 	ulong panic_threads_addr;
 	ulong task;
 
+	tt->panic_processor = -1;
 	task = NO_TASK;
         tc = FIRST_CONTEXT();
 
@@ -4300,6 +4405,12 @@ dump_task_table(int verbose)
         if (tt->flags & IRQSTACKS)
                 sprintf(&buf[strlen(buf)], 
 			"%sIRQSTACKS", others++ ? "|" : "");
+        if (tt->flags & TIMESPEC)
+                sprintf(&buf[strlen(buf)], 
+			"%sTIMESPEC", others++ ? "|" : "");
+        if (tt->flags & NO_TIMESPEC)
+                sprintf(&buf[strlen(buf)], 
+			"%sNO_TIMESPEC", others++ ? "|" : "");
 	sprintf(&buf[strlen(buf)], ")");
 
         if (strlen(buf) > 54)
@@ -4740,12 +4851,25 @@ get_active_set_panic_task()
 	ulong task;
 	char buf[BUFSIZE];
 	ulong panic_task, die_task;
+	char *tp;
+	struct task_context *tc;
 
 	panic_task = die_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]))
 			continue;
+
+		if (!task_exists(task)) {
+			error(WARNING, 
+			  "active task %lx on cpu %d not found in PID hash\n\n",
+				task, i);
+                	if ((tp = fill_task_struct(task))) {
+                        	if ((tc = store_context(NULL, task, tp))) 
+                                	tt->running_tasks++;
+                	}
+			continue;
+		}
 
         	open_tmpfile();
 		raw_stack_dump(GET_STACKBASE(task), STACKSIZE());
@@ -5386,9 +5510,9 @@ dump_signal_data(struct task_context *tc)
 		mask = sigaction_mask((ulong)uaddr);
 		flags = ULONG(uaddr + OFFSET(sigaction_sa_flags));
 
-		fprintf(fp, "%s%lx %s %016llx %lx ",
+		fprintf(fp, "%s%s %s %016llx %lx ",
 			space(MINSPACE-1), 
-			kaddr,
+			mkstring(buf2,UVADDR_PRLEN,LJUST|LONG_HEX,MKSTR(kaddr)),
 			buf1,
 			mask,
 			flags);

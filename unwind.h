@@ -10,15 +10,13 @@
 /*
  *  unwind.h
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted from:
  *
  *    include/asm-ia64/fpu.h  (kernel-2.4.18-6.23)
  *    include/asm-ia64/unwind.h  (kernel-2.4.18-6.23)
- *
- *  CVS: $Revision: 1.13 $ $Date: 2004/07/14 13:30:36 $
  */
 
 #ifndef _ASM_IA64_FPU_H

@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)kernel.c 1.21
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.115 $ $Date: 2005/01/28 20:26:13 $
  */
 
 #include "defs.h"
@@ -335,7 +320,10 @@ kernel_init(int when)
 	        MEMBER_OFFSET_INIT(module_kallsyms_start, "module", 
 			"kallsyms_start");
 
-		if (VALID_MEMBER(module_kallsyms_start)) {
+		STRUCT_SIZE_INIT(kallsyms_header, "kallsyms_header");
+
+		if (VALID_MEMBER(module_kallsyms_start) &&
+		    VALID_SIZE(kallsyms_header)) {
         		MEMBER_OFFSET_INIT(kallsyms_header_sections,
 				"kallsyms_header", "sections");
         		MEMBER_OFFSET_INIT(kallsyms_header_section_off,
@@ -358,7 +346,6 @@ kernel_init(int when)
 				"kallsyms_section", "size");
         		MEMBER_OFFSET_INIT(kallsyms_section_name_off,
 				"kallsyms_section", "name_off");
-			STRUCT_SIZE_INIT(kallsyms_header, "kallsyms_header");
 			STRUCT_SIZE_INIT(kallsyms_symbol, "kallsyms_symbol");
 			STRUCT_SIZE_INIT(kallsyms_section, "kallsyms_section");
 			
@@ -393,13 +380,19 @@ verify_version(void)
         int argc;
         char *arglist[MAXARGS];
 	char *p1, *p2;
+	struct syment *sp;
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
 
 	BZERO(buf, BUFSIZE);
 
-	get_symbol_data("linux_banner", sizeof(ulong), &linux_banner);
+	if (!(sp = symbol_search("linux_banner")))
+		error(FATAL, "linux_banner symbol does not exist?\n");
+	else if (sp->type == 'R')
+		linux_banner = symbol_value("linux_banner");
+	else
+		get_symbol_data("linux_banner", sizeof(ulong), &linux_banner);
 
 	if (!IS_KVADDR(linux_banner))
 		error(WARNING, "invalid linux_banner pointer: %lx\n", 
@@ -1231,6 +1224,9 @@ cmd_bt(void)
 		case 'S':
 			bt->hp = &hook;
 			hook.esp = htol(optarg, FAULT_ON_ERROR, NULL);
+			if (!hook.esp)
+				error(FATAL, 
+				    "invalid stack address for this task: 0\n");
 			break;
 
 		case 'a':
@@ -2313,12 +2309,13 @@ do_module_cmd(ulong flag, char *modref, ulong address,
 			lm = &st->load_modules[i];
 			if (!address || (lm->module_struct == address) ||
 			    (lm->mod_base == address)) {
-				fprintf(fp, "%lx  ", lm->module_struct);
-		
-				fprintf(fp, "%s  ", mkstring(buf1, maxnamelen, 
+				fprintf(fp, "%s  ", mkstring(buf1, VADDR_PRLEN,
+				    LONG_HEX|RJUST, MKSTR(lm->module_struct)));
+				fprintf(fp, "%s  ", mkstring(buf2, maxnamelen, 
 					LJUST, lm->mod_name));
-		
-				fprintf(fp, "%6ld  ", lm->mod_size);
+				fprintf(fp, "%s  ", mkstring(buf3, maxsizelen,
+					RJUST|LONG_DEC, MKSTR(lm->mod_size)));
+				// fprintf(fp, "%6ld  ", lm->mod_size);
 		
 				if (strlen(lm->mod_namelist))
 					fprintf(fp, "%s %s", 
@@ -2862,11 +2859,17 @@ display_sys_stats(void)
                 	fprintf(fp, "%s\n", pc->live_memsrc);
 	} else {
 		if (REMOTE_DUMPFILE())
-                	fprintf(fp, "%s@%s  (remote dumpfile)\n", 
+                	fprintf(fp, "%s@%s  (remote dumpfile)", 
 				pc->server_memsrc, pc->server);
 		else
-                	fprintf(fp, "%s\n", pc->dumpfile);
+                	fprintf(fp, "%s", pc->dumpfile);
+
+		if (NETDUMP_DUMPFILE() && is_partial_netdump())
+			fprintf(fp, "  [PARTIAL DUMP]");
+
+		fprintf(fp, "\n");
 	}
+	
 
         fprintf(fp, "        CPUS: %d\n", kt->cpus);
 	if (ACTIVE())
@@ -2956,6 +2959,14 @@ get_uptime(char *buf)
 	ulong jiffies; 
 
 	get_symbol_data("jiffies", sizeof(long), &jiffies);
+
+	if ((machine_type("S390") || machine_type("S390X")) &&
+	    (THIS_KERNEL_VERSION >= LINUX(2,6,0))) 
+		jiffies -= ((unsigned long)(unsigned int)(-300*machdep->hz));
+	else if (symbol_exists("jiffies_64") && BITS64() && 
+		((jiffies & 0xffffffff00000000) == 0x100000000))
+		jiffies &= 0xffffffff;
+
 	convert_time((ulonglong)jiffies, buf);
 
 	return buf;
@@ -3027,7 +3038,6 @@ static void
 dump_sys_call_table(char *spec, int cnt)
 {
         int i;
-        ulong *sys_call_table, *sct, addr;
         char buf1[BUFSIZE], *scp;
         char buf2[BUFSIZE], *p;
 	char buf3[BUFSIZE];
@@ -3036,15 +3046,23 @@ dump_sys_call_table(char *spec, int cnt)
 	int number, printit, hdr_printed;
 	struct syment *sp, *spn;
         long size;
-
+#ifdef S390X
+	unsigned int *sct, *sys_call_table, addr;
+#else
+	ulong *sys_call_table, *sct, addr;
+#endif
 	if (GDB_PATCHED())
 		error(INFO, "line numbers are not available\n"); 
 
 	NR_syscalls = get_NR_syscalls();
 	if (CRASHDEBUG(1))
 		fprintf(fp, "NR_syscalls: %d\n", NR_syscalls);
-        size = sizeof(void *) * NR_syscalls;
+        size = sizeof(addr) * NR_syscalls;
+#ifdef S390X
+        sys_call_table = (unsigned int *)GETBUF(size);
+#else
         sys_call_table = (ulong *)GETBUF(size);
+#endif
 
         readmem(symbol_value("sys_call_table"), KVADDR, sys_call_table,
                 size, "sys_call_table", FAULT_ON_ERROR);
@@ -3150,7 +3168,10 @@ get_NR_syscalls(void)
                         return 256;
         }
 
-	cnt = (sp->value - sys_call_table)/sizeof(void *);
+	if (machine_type("S390X"))
+		cnt = (sp->value - sys_call_table)/sizeof(int);
+	else
+		cnt = (sp->value - sys_call_table)/sizeof(void *);
 
 	return cnt;
 }
@@ -3288,6 +3309,9 @@ cmd_irq(void)
 {
         int i, c;
 	int nr_irqs;
+
+	if (machine_type("S390") || machine_type("S390X"))
+		command_not_supported();
 
         while ((c = getopt(argcnt, args, "db")) != EOF) {
                 switch(c)

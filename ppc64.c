@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004 David Anderson
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005 David Anderson
+ * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -13,8 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.10 $ $Date: 2004/10/01 12:53:12 $
  */
 #ifdef PPC64
 #include "defs.h"

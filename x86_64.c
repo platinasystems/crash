@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004 David Anderson
- * Copyright (C) 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005 David Anderson
+ * Copyright (C) 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,8 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.41 $ $Date: 2005/02/14 21:59:44 $
  */
 #include "defs.h"
 
@@ -28,7 +26,7 @@ static ulong x86_64_get_task_pgd(ulong);
 static int x86_64_translate_pte(ulong, void *, ulonglong);
 static ulong x86_64_processor_speed(void);
 static int x86_64_eframe_search(struct bt_info *);
-static int x86_64_eframe_verify(struct bt_info *, long, long, long, long, long);
+static int x86_64_eframe_verify(struct bt_info *, long, long, long, long, long, long);
 static long x86_64_exception_frame(ulong,ulong,char *,struct bt_info *, FILE *);
 #define EFRAME_PRINT  (0x1)
 #define EFRAME_VERIFY (0x2)
@@ -308,7 +306,7 @@ x86_64_dump_machdep_table(ulong arg)
 static void 
 x86_64_cpu_pda_init(void)
 {
-	int i, cpus;
+	int i, cpus, nr_pda, cpunumber;
 	char *cpu_pda_buf;
 	ulong level4_pgt, data_offset;
 	struct syment *sp, *nsp;
@@ -321,13 +319,19 @@ x86_64_cpu_pda_init(void)
 	MEMBER_OFFSET_INIT(x8664_pda_irqrsp, "x8664_pda", "irqrsp");
 	MEMBER_OFFSET_INIT(x8664_pda_irqstackptr, "x8664_pda", "irqstackptr");
 	MEMBER_OFFSET_INIT(x8664_pda_level4_pgt, "x8664_pda", "level4_pgt");
+	MEMBER_OFFSET_INIT(x8664_pda_cpunumber, "x8664_pda", "cpunumber");
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	for (i = cpus = 0; i < NR_CPUS; i++) {
-		CPU_PDA_READ(i, cpu_pda_buf);
+	if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+		nr_pda = NR_CPUS;
+
+	for (i = cpus = 0; i < nr_pda; i++) {
+		if (!CPU_PDA_READ(i, cpu_pda_buf))
+			break;
 		level4_pgt = ULONG(cpu_pda_buf + OFFSET(x8664_pda_level4_pgt));
-		if (!level4_pgt)
+		cpunumber = INT(cpu_pda_buf + OFFSET(x8664_pda_cpunumber));
+		if (!VALID_LEVEL4_PGT_ADDR(level4_pgt) || (cpunumber != cpus))
 			break;
 		cpus++;
 
@@ -1143,9 +1147,10 @@ x86_64_do_bt_reference_check(struct bt_info *bt, ulong text, char *name)
 /*
  *  print one entry of a stack trace
  */
-#define BACKTRACE_COMPLETE        (1)
-#define BACKTRACE_ENTRY_IGNORED   (2)
-#define BACKTRACE_ENTRY_DISPLAYED (3)
+#define BACKTRACE_COMPLETE                   (1)
+#define BACKTRACE_ENTRY_IGNORED              (2)
+#define BACKTRACE_ENTRY_DISPLAYED            (3)
+#define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
 
 static int
 x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level, 
@@ -1237,9 +1242,10 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	}
 
 	if (eframe_check >= 0) {
-		x86_64_exception_frame(EFRAME_PRINT|EFRAME_VERIFY, 
-			bt->stackbase + (stkindex*sizeof(long)) + eframe_check,
-			NULL, bt, ofp);
+		if (x86_64_exception_frame(EFRAME_PRINT|EFRAME_VERIFY, 
+		    bt->stackbase + (stkindex*sizeof(long)) + eframe_check,
+		    NULL, bt, ofp))
+			result = BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED;
 	}
 
 	if (BT_REFERENCE_CHECK(bt))
@@ -1451,6 +1457,8 @@ in_exception_stack:
 
 	                switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
 	                {
+	                case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
+				rsp += SIZE(pt_regs);
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
 	                        break;
@@ -1530,6 +1538,8 @@ in_exception_stack:
 
                         switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
                         {
+			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
+				rsp += SIZE(pt_regs);
                         case BACKTRACE_ENTRY_DISPLAYED:
                                 level++;
                                 break;
@@ -1687,6 +1697,8 @@ in_exception_stack:
 
 		switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
 		{
+		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
+			rsp += SIZE(pt_regs);
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
 			break;
@@ -1902,7 +1914,9 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	r14 = ULONG(pt_regs_buf + ms->pto.r14);
 	r15 = ULONG(pt_regs_buf + ms->pto.r15);
 
-        verified = x86_64_eframe_verify(bt, cs, ss, rip, rsp, rflags);
+        verified = x86_64_eframe_verify(bt, 
+		kvaddr ? kvaddr : (local - bt->stackbuf) + bt->stackbase,
+		cs, ss, rip, rsp, rflags);
 
 	/*
 	 *  If it's print-if-verified request, don't print bogus eframes.
@@ -1983,8 +1997,8 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 #define RAZ_MASK 0xffffffffffc08028    /* return-as-zero bits */
 
 static int 
-x86_64_eframe_verify(struct bt_info *bt, long cs, long ss, long rip, 
-	long rsp, long rflags)
+x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
+	long rip, long rsp, long rflags)
 {
 	if ((rflags & RAZ_MASK) || !(rflags & 0x2))
 		return FALSE;
@@ -1993,6 +2007,12 @@ x86_64_eframe_verify(struct bt_info *bt, long cs, long ss, long rip,
                 if (is_kernel_text(rip) && IS_KVADDR(rsp))
                         return TRUE;
         }
+
+        if ((cs == 0x10) && kvaddr) {
+                if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
+		    (rsp == (kvaddr + SIZE(pt_regs) + 8)))
+                        return TRUE;
+	}
 
         if ((cs == 0x33) && (ss == 0x2b)) {
                 if (IS_UVADDR(rip, bt->tc) && IS_UVADDR(rsp, bt->tc))
@@ -2046,6 +2066,7 @@ x86_64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *rip, ulong *rsp)
 		user_regs = bt->machdep;
 
 		if (x86_64_eframe_verify(bt, 
+		    0,
 		    ULONG(user_regs + OFFSET(user_regs_struct_cs)),
 		    ULONG(user_regs + OFFSET(user_regs_struct_ss)),
 		    ULONG(user_regs + OFFSET(user_regs_struct_rip)),
@@ -2415,19 +2436,24 @@ x86_64_dis_filter(ulong vaddr, char *inbuf)
 int
 x86_64_get_smp_cpus(void)
 {
-	int i, cpus;
+	int i, cpus, nr_pda, cpunumber;
 	char *cpu_pda_buf;
 	ulong level4_pgt;
 
-	if (!VALID_SIZE(x8664_pda))
+	if (!VALID_STRUCT(x8664_pda))
 		return 1;
 
 	cpu_pda_buf = GETBUF(SIZE(x8664_pda));
 
-	for (i = cpus = 0; i < NR_CPUS; i++) {
-                CPU_PDA_READ(i, cpu_pda_buf);
+	if (!(nr_pda = get_array_length("cpu_pda", NULL, 0)))
+               nr_pda = NR_CPUS;
+
+	for (i = cpus = 0; i < nr_pda; i++) {
+		if (!CPU_PDA_READ(i, cpu_pda_buf))
+			break;
 		level4_pgt = ULONG(cpu_pda_buf + OFFSET(x8664_pda_level4_pgt));
-                if (!level4_pgt)
+		cpunumber = INT(cpu_pda_buf + OFFSET(x8664_pda_cpunumber));
+                if (!VALID_LEVEL4_PGT_ADDR(level4_pgt) || (cpunumber != cpus))
                         break;
                 cpus++;
 	}

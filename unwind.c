@@ -6,14 +6,12 @@
 /*
  *  unwind.c
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted from:  
  *
  *    arch/ia64/kernel/unwind.c  (kernel-2.4.18-6.23)
- *
- *  CVS: $Revision: 1.34 $ $Date: 2005/02/07 21:02:44 $
  */
 
 #ifdef IA64

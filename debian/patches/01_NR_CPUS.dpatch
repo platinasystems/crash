@@ -1,0 +1,19 @@
+#! /bin/sh /usr/share/dpatch/dpatch-run
+## 02_NR_CPUS.dpatch by  <troyhebe@me>
+##
+## All lines beginning with `## DP:' are a description of the patch.
+## DP: No description.
+
+@DPATCH@
+diff -urNad trunk/defs.h /tmp/dpep.whtqkj/trunk/defs.h
+--- trunk/defs.h	2005-03-08 10:03:49.736578610 -0700
++++ /tmp/dpep.whtqkj/trunk/defs.h	2005-03-14 13:24:31.277213865 -0700
+@@ -83,7 +83,7 @@
+ #define NR_CPUS  (32)
+ #endif
+ #ifdef IA64
+-#define NR_CPUS  (512)
++#define NR_CPUS  (64)
+ #endif
+ #ifdef PPC64
+ #define NR_CPUS  (128)

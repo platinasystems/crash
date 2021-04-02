@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This software may be freely redistributed under the terms of the
  * GNU General Public License.
@@ -11,12 +11,16 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Author: David Anderson
- *
- * CVS: $Revision: 1.33 $ $Date: 2005/02/17 15:48:56 $
  */
 
 #include "defs.h"
 #include "netdump.h"
+
+struct pt_load_segment {
+	off_t file_offset;
+	physaddr_t phys_start;
+	physaddr_t phys_end;
+};
 
 struct netdump_data {
 	ulong flags;
@@ -24,6 +28,8 @@ struct netdump_data {
 	FILE *ofp;
 	uint header_size;
 	char *netdump_header;
+	uint num_pt_load_segments;
+	struct pt_load_segment *pt_load_segments;
         Elf32_Ehdr *elf32;
         Elf32_Phdr *notes32;
         Elf32_Phdr *load32;
@@ -41,14 +47,17 @@ static struct netdump_data netdump_data = { 0 };
 static struct netdump_data *nd = &netdump_data;
 static void netdump_print(char *, ...);
 static void dump_Elf32_Ehdr(Elf32_Ehdr *);
-static void dump_Elf32_Phdr(Elf32_Phdr *);
+static void dump_Elf32_Phdr(Elf32_Phdr *, int);
 static size_t dump_Elf32_Nhdr(Elf32_Off offset, int);
 static void dump_Elf64_Ehdr(Elf64_Ehdr *);
-static void dump_Elf64_Phdr(Elf64_Phdr *);
+static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
 static void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
+
+#define ELFSTORE 1
+#define ELFREAD  0
 	
 /*
  *  Determine whether a file is a netdump creation, and if TRUE, 
@@ -63,9 +72,9 @@ is_netdump(char *file, ulong source)
 	Elf32_Phdr *load32;
 	Elf64_Ehdr *elf64;
 	Elf64_Phdr *load64;
-	char header[MAX_NETDUMP_ELF_HEADER_SIZE];
+	char header[MIN_NETDUMP_ELF_HEADER_SIZE];
 	char buf[BUFSIZE];
-	size_t size, len;
+	size_t size, len, tot;
         Elf32_Off offset32;
         Elf64_Off offset64;
 
@@ -77,7 +86,7 @@ is_netdump(char *file, ulong source)
 		}
 	}
 
-	size = MAX_NETDUMP_ELF_HEADER_SIZE;
+	size = MIN_NETDUMP_ELF_HEADER_SIZE;
         if (read(fd, header, size) != size) {
                 sprintf(buf, "%s: read", file);
                 perror(buf);
@@ -102,11 +111,11 @@ is_netdump(char *file, ulong source)
     	    (elf32->e_ident[EI_VERSION] == EV_CURRENT) &&
 	    (elf32->e_type == ET_CORE) &&
 	    (elf32->e_version == EV_CURRENT) &&
-	    (elf32->e_phnum == 2)) {
+	    (elf32->e_phnum >= 2)) {
 		switch (elf32->e_machine)
 		{
 		case EM_386:
-			if (STREQ(MACHINE_TYPE, "X86"))
+			if (machine_type("X86"))
 				break;
 		default:
                 	goto bailout;
@@ -120,26 +129,26 @@ is_netdump(char *file, ulong source)
 	    (elf64->e_ident[EI_VERSION] == EV_CURRENT) &&
 	    (elf64->e_type == ET_CORE) &&
 	    (elf64->e_version == EV_CURRENT) &&
-	    (elf64->e_phnum == 2)) { 
+	    (elf64->e_phnum >= 2)) { 
 		switch (elf64->e_machine)
 		{
 		case EM_IA_64:
 			if ((elf64->e_ident[EI_DATA] == ELFDATA2LSB) &&
-				STREQ(MACHINE_TYPE, "IA64"))
+				machine_type("IA64"))
 				break;
 			else
 				goto bailout;
 
 		case EM_PPC64:
 			if ((elf64->e_ident[EI_DATA] == ELFDATA2MSB) &&
-				STREQ(MACHINE_TYPE, "PPC64"))
+				machine_type("PPC64"))
 				break;
 			else
 				goto bailout;
 
 		case EM_X86_64:
 			if ((elf64->e_ident[EI_DATA] == ELFDATA2LSB) &&
-				STREQ(MACHINE_TYPE, "X86_64"))
+				machine_type("X86_64"))
 				break;
 			else
 				goto bailout;
@@ -173,34 +182,50 @@ is_netdump(char *file, ulong source)
 	case NETDUMP_ELF32:
 		nd->header_size = load32->p_offset;
         	nd->elf32 = (Elf32_Ehdr *)&nd->netdump_header[0];
+		nd->num_pt_load_segments = nd->elf32->e_phnum - 1;
+		if ((nd->pt_load_segments = (struct pt_load_segment *)
+		    malloc(sizeof(struct pt_load_segment) *
+		    nd->num_pt_load_segments)) == NULL) {
+			fprintf(stderr, "cannot malloc PT_LOAD segment buffers\n");
+			clean_exit(1);
+		}
         	nd->notes32 = (Elf32_Phdr *)
 		    &nd->netdump_header[sizeof(Elf32_Ehdr)];
         	nd->load32 = (Elf32_Phdr *)
 		    &nd->netdump_header[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
                 dump_Elf32_Ehdr(nd->elf32);
-                dump_Elf32_Phdr(nd->notes32);
-                dump_Elf32_Phdr(nd->load32);
+                dump_Elf32_Phdr(nd->notes32, ELFREAD);
+		for (i = 0; i < nd->num_pt_load_segments; i++) 
+                	dump_Elf32_Phdr(nd->load32 + i, ELFSTORE+i);
         	offset32 = nd->notes32->p_offset;
-        	for (i = len = 0; i < 3; i++) {
-                	offset32 += len;
-                	len = dump_Elf32_Nhdr(offset32, TRUE);
-        	}
+                for (tot = 0; tot < nd->notes32->p_filesz; tot += len) {
+                        len = dump_Elf32_Nhdr(offset32, ELFSTORE);
+                        offset32 += len;
+                }
 		break;
 
 	case NETDUMP_ELF64:
                 nd->header_size = load64->p_offset;
                 nd->elf64 = (Elf64_Ehdr *)&nd->netdump_header[0];
+		nd->num_pt_load_segments = nd->elf64->e_phnum - 1;
+                if ((nd->pt_load_segments = (struct pt_load_segment *)
+                    malloc(sizeof(struct pt_load_segment) *
+                    nd->num_pt_load_segments)) == NULL) {
+                        fprintf(stderr, "cannot malloc PT_LOAD segment buffers\n");
+                        clean_exit(1);
+                }
                 nd->notes64 = (Elf64_Phdr *)
                     &nd->netdump_header[sizeof(Elf64_Ehdr)];
                 nd->load64 = (Elf64_Phdr *)
                     &nd->netdump_header[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
                 dump_Elf64_Ehdr(nd->elf64);
-                dump_Elf64_Phdr(nd->notes64);
-                dump_Elf64_Phdr(nd->load64);
+                dump_Elf64_Phdr(nd->notes64, ELFREAD);
+		for (i = 0; i < nd->num_pt_load_segments; i++)
+                	dump_Elf64_Phdr(nd->load64 + i, ELFSTORE+i);
                 offset64 = nd->notes64->p_offset;
-                for (i = len = 0; i < 3; i++) {
+                for (tot = 0; tot < nd->notes64->p_filesz; tot += len) {
+                        len = dump_Elf64_Nhdr(offset64, ELFSTORE);
                         offset64 += len;
-                        len = dump_Elf64_Nhdr(offset64, TRUE);
                 }
 		break;
 	}
@@ -232,8 +257,45 @@ int
 read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
 	off_t offset;
+	struct pt_load_segment *pls;
+	int i;
 
-        offset = (off_t)paddr + (off_t)nd->header_size;
+	/*
+	 *  The Elf32_Phdr has 32-bit fields for p_paddr, p_filesz and
+	 *  p_memsz, so for now, multiple PT_LOAD segment support is
+	 *  restricted to 64-bit machines.  Until a "standard" becomes 
+	 *  available in the future that deals with physical memory 
+	 *  segments that start at greater then 4GB, or memory segments
+	 *  sizes that are greater than 4GB (kexec?), then this feature
+	 *  is restricted to 64-bit machines.
+	 */ 
+        switch (nd->flags & (NETDUMP_ELF32|NETDUMP_ELF64))
+	{
+	case NETDUMP_ELF32:
+		offset = (off_t)paddr + (off_t)nd->header_size;
+		break;
+
+	case NETDUMP_ELF64:
+		if (nd->num_pt_load_segments == 1) {
+			offset = (off_t)paddr + (off_t)nd->header_size;
+			break;
+		}
+
+		for (i = offset = 0; i < nd->num_pt_load_segments; i++) {
+			pls = &nd->pt_load_segments[i];
+			if ((paddr >= pls->phys_start) &&
+			    (paddr < pls->phys_end)) {
+				offset = (off_t)(paddr - pls->phys_start) +
+					pls->file_offset;
+				break;
+			}
+		}
+	
+		if (!offset) 
+	                return READ_ERROR;
+		
+		break;
+	}	
 
         if (lseek(nd->ndfd, offset, SEEK_SET) == -1)
                 return SEEK_ERROR;
@@ -464,10 +526,11 @@ int
 netdump_memory_dump(FILE *fp)
 {
 	int i, others;
-	size_t len;
+	size_t len, tot;
 	FILE *fpsave;
 	Elf32_Off offset32;
 	Elf32_Off offset64;
+	struct pt_load_segment *pls;
 
 	if (!NETDUMP_VALID())
 		return FALSE;
@@ -486,10 +549,23 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("%sNETDUMP_ELF32", others++ ? "|" : "");
 	if (nd->flags & NETDUMP_ELF64)
 		netdump_print("%sNETDUMP_ELF64", others++ ? "|" : "");
+	if (nd->flags & PARTIAL_DUMP)
+		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
 	netdump_print(")\n");
 	netdump_print("                   ndfd: %d\n", nd->ndfd);
 	netdump_print("                    ofp: %lx\n", nd->ofp);
 	netdump_print("            header_size: %d\n", nd->header_size);
+	netdump_print("   num_pt_load_segments: %d\n", nd->num_pt_load_segments);
+	for (i = 0; i < nd->num_pt_load_segments; i++) {
+		pls = &nd->pt_load_segments[i];
+		netdump_print("     pt_load_segment[%d]:\n", i);
+		netdump_print("            file_offset: %lx\n", 
+			pls->file_offset);
+		netdump_print("             phys_start: %llx\n", 
+			pls->phys_start);
+		netdump_print("               phys_end: %llx\n", 
+			pls->phys_end);
+	}
 	netdump_print("         netdump_header: %lx\n", nd->netdump_header);
 	netdump_print("                  elf32: %lx\n", nd->elf32);
 	netdump_print("                notes32: %lx\n", nd->notes32);
@@ -507,23 +583,25 @@ netdump_memory_dump(FILE *fp)
 	{
 	case NETDUMP_ELF32:
 		dump_Elf32_Ehdr(nd->elf32);
-		dump_Elf32_Phdr(nd->notes32);
-		dump_Elf32_Phdr(nd->load32);
+		dump_Elf32_Phdr(nd->notes32, ELFREAD);
+                for (i = 0; i < nd->num_pt_load_segments; i++) 
+			dump_Elf32_Phdr(nd->load32 + i, ELFREAD);
         	offset32 = nd->notes32->p_offset;
-        	for (i = len = 0; i < 3; i++) {
-                	offset32 += len;
-                	len = dump_Elf32_Nhdr(offset32, FALSE);
+        	for (tot = 0; tot < nd->notes32->p_filesz; tot += len) {
+                	len = dump_Elf32_Nhdr(offset32, ELFREAD);
+			offset32 += len;
         	}
 		break;
 
 	case NETDUMP_ELF64:
 		dump_Elf64_Ehdr(nd->elf64);
-		dump_Elf64_Phdr(nd->notes64);
-		dump_Elf64_Phdr(nd->load64);
+		dump_Elf64_Phdr(nd->notes64, ELFREAD);
+                for (i = 0; i < nd->num_pt_load_segments; i++)
+			dump_Elf64_Phdr(nd->load64 + i, ELFREAD);
         	offset64 = nd->notes64->p_offset;
-        	for (i = len = 0; i < 3; i++) {
+        	for (tot = 0; tot < nd->notes64->p_filesz; tot += len) {
+                	len = dump_Elf64_Nhdr(offset64, ELFREAD);
                 	offset64 += len;
-                	len = dump_Elf64_Nhdr(offset64, FALSE);
         	}
 		break;
 	}
@@ -820,10 +898,14 @@ dump_Elf64_Ehdr(Elf64_Ehdr *elf)
 /*
  *  Dump a program segment header 
  */
-static void 
-dump_Elf32_Phdr(Elf32_Phdr *prog)
+static void
+dump_Elf32_Phdr(Elf32_Phdr *prog, int store_pt_load_data)
 {
 	int others;
+	struct pt_load_segment *pls;
+
+	if (store_pt_load_data) 
+		pls = &nd->pt_load_segments[store_pt_load_data-1];
 
 	netdump_print("Elf32_Phdr:\n");
 	netdump_print("                 p_type: %lx ", prog->p_type);
@@ -871,11 +953,17 @@ dump_Elf32_Phdr(Elf32_Phdr *prog)
 
 	netdump_print("               p_offset: %ld (%lx)\n", prog->p_offset, 
 		prog->p_offset);
+	if (store_pt_load_data)
+		pls->file_offset = prog->p_offset;
 	netdump_print("                p_vaddr: %lx\n", prog->p_vaddr);
 	netdump_print("                p_paddr: %lx\n", prog->p_paddr);
-	netdump_print("               p_filesz: %ld (%lx)\n", prog->p_filesz, 
+	if (store_pt_load_data)
+		pls->phys_start = prog->p_paddr; 
+	netdump_print("               p_filesz: %lu (%lx)\n", prog->p_filesz, 
 		prog->p_filesz);
-	netdump_print("                p_memsz: %ld (%lx)\n", prog->p_memsz,
+	if (store_pt_load_data)
+		pls->phys_end = pls->phys_start + prog->p_filesz;
+	netdump_print("                p_memsz: %lu (%lx)\n", prog->p_memsz,
 		prog->p_memsz);
 	netdump_print("                p_flags: %lx (", prog->p_flags);
 	others = 0;
@@ -890,9 +978,13 @@ dump_Elf32_Phdr(Elf32_Phdr *prog)
 }
 
 static void 
-dump_Elf64_Phdr(Elf64_Phdr *prog)
+dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 {
 	int others;
+	struct pt_load_segment *pls;
+
+	if (store_pt_load_data)
+		pls = &nd->pt_load_segments[store_pt_load_data-1];
 
 	netdump_print("Elf64_Phdr:\n");
 	netdump_print("                 p_type: %lx ", prog->p_type);
@@ -940,11 +1032,17 @@ dump_Elf64_Phdr(Elf64_Phdr *prog)
 
 	netdump_print("               p_offset: %ld (%lx)\n", prog->p_offset, 
 		prog->p_offset);
+	if (store_pt_load_data)
+		pls->file_offset = prog->p_offset;
 	netdump_print("                p_vaddr: %lx\n", prog->p_vaddr);
 	netdump_print("                p_paddr: %lx\n", prog->p_paddr);
-	netdump_print("               p_filesz: %ld (%lx)\n", prog->p_filesz, 
+	if (store_pt_load_data)
+		pls->phys_start = prog->p_paddr; 
+	netdump_print("               p_filesz: %lu (%lx)\n", prog->p_filesz, 
 		prog->p_filesz);
-	netdump_print("                p_memsz: %ld (%lx)\n", prog->p_memsz,
+	if (store_pt_load_data)
+		pls->phys_end = pls->phys_start + prog->p_filesz;
+	netdump_print("                p_memsz: %lu (%lx)\n", prog->p_memsz,
 		prog->p_memsz);
 	netdump_print("                p_flags: %lx (", prog->p_flags);
 	others = 0;
@@ -963,7 +1061,7 @@ dump_Elf64_Phdr(Elf64_Phdr *prog)
  */
 
 static size_t 
-dump_Elf32_Nhdr(Elf32_Off offset, int store_address)
+dump_Elf32_Nhdr(Elf32_Off offset, int store_addresses)
 {
 	int i, lf;
 	Elf32_Nhdr *note;
@@ -982,27 +1080,33 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_address)
         netdump_print("(\"%s\")\n", buf);
 
         netdump_print("               n_descsz: %ld\n", note->n_descsz);
-        netdump_print("                 n_type: %ld ", note->n_type);
+        netdump_print("                 n_type: %lx ", note->n_type);
 	switch (note->n_type)
 	{
 	case NT_PRSTATUS:
 		netdump_print("(NT_PRSTATUS)\n");
-		if (store_address)
+		if (store_addresses)
 			nd->nt_prstatus = (void *)note;
 		break;
 	case NT_PRPSINFO:
 		netdump_print("(NT_PRPSINFO)\n");
-		if (store_address)
+		if (store_addresses)
 			nd->nt_prpsinfo = (void *)note;
 		break;
 	case NT_TASKSTRUCT:
 		netdump_print("(NT_TASKSTRUCT)\n");
-		if (store_address) {
+		if (store_addresses) {
 			nd->nt_taskstruct = (void *)note;
 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
 			nd->switch_stack = *((ulong *)
 				(ptr + note->n_namesz + sizeof(ulong)));
 		}
+		break;
+        case NT_DISKDUMP:
+                netdump_print("(NT_DISKDUMP)\n");
+		uptr = (ulong *)(ptr + note->n_namesz);
+		if (*uptr)
+			nd->flags |= PARTIAL_DUMP;
 		break;
 	default:
 		netdump_print("(?)\n");
@@ -1018,7 +1122,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_address)
 			lf = 0;
 		netdump_print("%08lx ", *uptr++);
 	}
-	if (!lf || (note->n_type == NT_TASKSTRUCT))
+	if (!lf || (note->n_type == NT_TASKSTRUCT) ||
+	    (note->n_type == NT_DISKDUMP))
 		netdump_print("\n");
 
   	len = sizeof(Elf32_Nhdr);
@@ -1030,7 +1135,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_address)
 
 
 static size_t 
-dump_Elf64_Nhdr(Elf64_Off offset, int store_address)
+dump_Elf64_Nhdr(Elf64_Off offset, int store_addresses)
 {
 	int i, lf;
 	Elf64_Nhdr *note;
@@ -1038,6 +1143,7 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store_address)
 	char buf[BUFSIZE];
 	char *ptr;
 	ulonglong *uptr;
+	int *iptr;
 
 	note = (Elf64_Nhdr *)((char *)nd->elf64 + offset);
 
@@ -1049,27 +1155,35 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store_address)
         netdump_print("(\"%s\")\n", buf);
 
         netdump_print("               n_descsz: %ld\n", note->n_descsz);
-        netdump_print("                 n_type: %ld ", note->n_type);
+        netdump_print("                 n_type: %lx ", note->n_type);
 	switch (note->n_type)
 	{
 	case NT_PRSTATUS:
 		netdump_print("(NT_PRSTATUS)\n");
-		if (store_address)
+		if (store_addresses)
 			nd->nt_prstatus = (void *)note;
 		break;
 	case NT_PRPSINFO:
 		netdump_print("(NT_PRPSINFO)\n");
-		if (store_address)
+		if (store_addresses)
 			nd->nt_prpsinfo = (void *)note;
 		break;
 	case NT_TASKSTRUCT:
 		netdump_print("(NT_TASKSTRUCT)\n");
-		if (store_address) {
+		if (store_addresses) {
 			nd->nt_taskstruct = (void *)note;
 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
                         nd->switch_stack = *((ulong *)
                                 (ptr + note->n_namesz + sizeof(ulong)));
 		}
+		break;
+        case NT_DISKDUMP:
+                netdump_print("(NT_DISKDUMP)\n");
+		iptr = (int *)(ptr + note->n_namesz);
+		if (*iptr)
+			nd->flags |= PARTIAL_DUMP;
+		if (note->n_descsz < sizeof(ulonglong))
+			netdump_print("                         %08x", *iptr);
 		break;
 	default:
 		netdump_print("(?)\n");
@@ -1325,4 +1439,10 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 	}
 
 	machdep->get_stack_frame(bt, eip, esp);
+}
+
+int 
+is_partial_netdump(void)
+{
+	return (nd->flags & PARTIAL_DUMP ? TRUE : FALSE);
 }

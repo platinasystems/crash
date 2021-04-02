@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)help.c 1.21
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.68 $ $Date: 2005/01/28 20:26:13 $
  */
 
 #include "defs.h"
@@ -1077,7 +1062,7 @@ char *help_rd[] = {
 "             1  the default presumes a kernel virtual address.",
 "             2. -p specifies a physical address.",
 "             3. -u specifies a user virtual address, but is only necessary on",
-"              processors with common user and kernel virtual address spaces.",
+"                processors with common user and kernel virtual address spaces.",
 "   symbol  symbol of starting address to read.",
 "    count  number of memory locations to display (default is 1).",
 "\nEXAMPLES",
@@ -1200,6 +1185,7 @@ char *help_bt[] = {
 "      pid  displays the stack trace(s) of this pid.",
 "    taskp  displays the stack trace the the task referenced by this hexadecimal",
 "           task_struct pointer.\n",
+"  Multiple pid and taskp arguments may be specified.\n",
 "  Note that all examples below are for x86 only.  The output format will differ",
 "  for other architectures.  x86 backtraces from kernels that were compiled",
 "  with the --fomit-frame-pointer CFLAG occasionally will drop stack frames,",
@@ -2086,7 +2072,7 @@ NULL
 char *help_log[] = {
 "log",
 "dump system message buffer",
-"[-c]",
+"[-m]",
 "  This command dumps the kernel log_buf contents in chronological order.",
 "  ",
 "    -m  Display the message log level preceding each message.",
@@ -2850,7 +2836,8 @@ NULL
 char *help_struct[] = {
 "struct",
 "structure contents",
-"struct_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]",
+"struct_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]\n"
+"                              [-c count]",
 "  This command displays either a structure definition, or a formatted display",
 "  of the contents of a structure at a specified address.  When no address is",
 "  specified, the structure definition is shown along with the structure size.",
@@ -2869,10 +2856,14 @@ char *help_struct[] = {
 "             -r  raw dump of structure data.",
 "        address  hexadecimal address of a structure; if the address points",  
 "                 to an embedded list_head structure contained within the",
-"                 target data structure, then the \"=l\" option must be used.",
+"                 target data structure, then the \"-l\" option must be used.",
 "         symbol  symbolic reference to the address of a structure.",
 "          count  count of structures to dump from an array of structures;",
-"                 if used, this must be the last argument entered.\n",
+"                 if used, this must be the last argument entered.",
+"       -c count  \"-c\" is only required if \"count\" is not the last argument",
+"                 entered or if a negative number is entered; if a negative",
+"                 value is entered, the (positive) \"count\" structures that",
+"                 lead up to and include the target structure will be displayed.\n",
 "  Structure data, sizes, and member offsets are shown in the current output",
 "  radix.",
 " ",
@@ -3061,7 +3052,8 @@ NULL
 char *help_union[] = {
 "union",
 "union contents",
-"union_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]",
+"union_name[.member] [[-o][-l offset][-r] [address | symbol] [count]]\n"
+"                            [-c count]",
 "  This command displays either a union definition, or a formatted display",
 "  of the contents of a union at a specified address.  When no address is",
 "  specified, the union definition is shown along with the union size.",
@@ -3081,10 +3073,14 @@ char *help_union[] = {
 "             -r  raw dump of union data.",
 "        address  hexadecimal address of a union; if the address points",
 "                 to an embedded list_head structure contained within the",
-"                 target union structure, then the \"=l\" option must be used.",
+"                 target union structure, then the \"-l\" option must be used.",
 "         symbol  symbolic reference to the address of a union.",
 "          count  count of unions to dump from an array of unions; if used,",
-"                 this must be the last argument entered.\n",
+"                 this must be the last argument entered.",
+"       -c count  \"-c\" is only required if \"count\" is not the last argument",
+"                 entered or if a negative number is entered; if a negative",
+"                 value is entered, the (positive) \"count\" structures that",
+"                 lead up to and include the target structure will be displayed.\n",
 "  Union data, sizes, and member offsets are shown in the current output radix.",
 " ",
 "  Please note that in the vast majority of cases, the \"union\" command",
@@ -4858,9 +4854,9 @@ display_version(void)
 static 
 char *version_info[] = {
 
-"Copyright (C) 2002, 2003, 2004  Red Hat, Inc.",
-"Copyright (C) 2004  IBM Corp.", 
-"Copyright (C) 1998-2004  Hewlett-Packard Co",
+"Copyright (C) 2002, 2003, 2004, 2005  Red Hat, Inc.",
+"Copyright (C) 2004, 2005  IBM Corporation", 
+"Copyright (C) 1999-2005  Hewlett-Packard Co",
 "Copyright (C) 1999, 2002  Silicon Graphics, Inc.",
 "Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.",
 "This program is free software, covered by the GNU General Public License,",
@@ -5258,8 +5254,8 @@ char *README[] = {
 " ",
 "  These are the current prerequisites: ",
 "",
-"  o  At this point, x86, ia64, x86_64, alpha and ppc64-based kernels are ",
-"     supported.  Other architectures may be addressed in the future.",
+"  o  At this point, x86, ia64, x86_64, ppc64, alpha, s390 and s390x-based",
+"     kernels are supported.  Other architectures may be addressed in the future.",
 "",
 "  o  One size fits all -- the utility can be run on any Linux kernel version ",
 "     from 2.2.5-15 through 2.6.*.",

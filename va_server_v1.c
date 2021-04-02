@@ -1,8 +1,8 @@
 /* va_server_v1.c - kernel crash dump file translation library
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,12 +15,6 @@
  * GNU General Public License for more details.
  *
  * 11/12/99, Dave Winchell, Preserve V1 interface.
- *
- * BitKeeper ID: @(#)va_server_v1.c 1.1
- *
- * 09/28/00  Transition to CVS version control
- *
- * CVS: $Revision: 1.7 $ $Date: 2004/06/22 16:45:33 $
  */
 #include <zlib.h>
 #include <sys/types.h>

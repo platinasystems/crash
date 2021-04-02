@@ -6,14 +6,12 @@
 /*
  *  unwind_decoder.c
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted from:
  *
  *    arch/ia64/kernel/unwind_decoder.c  (kernel-2.4.18-6.23)
- *
- *  CVS: $Revision: 1.6 $ $Date: 2004/01/28 17:11:25 $
  */
 
 

@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,21 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)filesys.c 1.14
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.36 $ $Date: 2004/11/10 21:02:28 $
  */
 
 #include "defs.h"
@@ -218,10 +203,6 @@ memory_source_init(void)
 					pc->dumpfile);
 		} else if (pc->flags & S390D) { 
 			if (!s390_dump_init(pc->dumpfile))
-				error(FATAL, "%s: initialization failed\n",
-                                        pc->dumpfile);
-		} else if (pc->flags & S390XD) {
-			if (!s390x_dump_init(pc->dumpfile))
 				error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
 		}
@@ -1144,7 +1125,7 @@ cmd_mount(void)
 {
 	int i;
 	int c, found;
-	char *spec_string, *n;
+	char *spec_string;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
         char *arglist[MAXARGS*2];
@@ -1203,24 +1184,20 @@ cmd_mount(void)
 					if (STREQ(arglist[i], spec_string)) 
 						found = TRUE;
 				}
-				if (found)
-					break;
+				if (found) {
+					fp = pc->saved_fp;
+					if (flags) {
+						sscanf(buf2,"%lx",&vfsmount);
+						show_mounts(vfsmount, flags);
+					} else {
+						fprintf(fp, mount_hdr);
+						fprintf(fp, buf2);
+					}
+					found = FALSE;
+					fp = pc->tmpfile;
+				}
         		}
 			close_tmpfile();
-
-			if (found) {
-				if (flags) {
-					n = strchr(buf2, ' ');
-					*n = NULLCHAR;
-					vfsmount = htol(buf2, 
-						FAULT_ON_ERROR, NULL);
-					show_mounts(vfsmount, flags);
-				} else {
-					fprintf(fp, mount_hdr);
-					fprintf(fp, buf2);
-				}
-			}
-
 		} while (args[++optind]);
 	} else
 		show_mounts(0, flags);
@@ -1573,7 +1550,7 @@ nopath:
 		space(MINSPACE),
 		mkstring(buf3, VADDR_PRLEN, CENTER|LONG_HEX, MKSTR(superblock)),
 		space(MINSPACE), 
-		inode_type(inode_buf, pathname),
+		inode ? inode_type(inode_buf, pathname) : "N/A",
 		space(MINSPACE), pathname);
 }
 
@@ -1763,6 +1740,13 @@ vfs_init(void)
 		MEMBER_OFFSET_INIT(namespace_list, "namespace", "list");
 		MEMBER_OFFSET_INIT(task_struct_namespace, 
 			"task_struct", "namespace");
+	} else if (THIS_KERNEL_VERSION >= LINUX(2,4,20)) {
+		if (CRASHDEBUG(2))
+			fprintf(fp, "hardwiring namespace stuff\n");
+		ASSIGN_OFFSET(task_struct_namespace) = OFFSET(task_struct_files) +
+			sizeof(void *);
+		ASSIGN_OFFSET(namespace_root) = sizeof(void *);
+		ASSIGN_OFFSET(namespace_list) = sizeof(void *) * 2;
 	}
 
         MEMBER_OFFSET_INIT(super_block_s_dirty, "super_block", "s_dirty");
@@ -3457,7 +3441,7 @@ do_radix_tree(ulong root, int flag, struct radix_tree_pair *rtp)
 		    "unexpected length of radix_tree_node structure\n");
 
 	ilen = ARRAY_LENGTH(height_to_maxindex);
-	height_to_maxindex = (ulong *)GETBUF(ilen * sizeof(long));
+	height_to_maxindex = (long *)GETBUF(ilen * sizeof(long));
 	readmem(symbol_value("height_to_maxindex"), KVADDR, 
 	    	height_to_maxindex, ilen*sizeof(long),
 		"height_to_maxindex array", FAULT_ON_ERROR);

@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -14,21 +14,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details. 
- *
- * 11/09/99, 1.0    Initial Release
- * 11/12/99, 1.0-1  Bug fixes
- * 12/10/99, 1.1    Fixes, new commands, support for v1 SGI dumps
- * 01/18/00, 2.0    Initial gdb merger, support for Alpha
- * 02/01/00, 2.1    Bug fixes, new commands, options, support for v2 SGI dumps
- * 02/29/00, 2.2    Bug fixes, new commands, options
- * 04/11/00, 2.3    Bug fixes, new command, options, initial PowerPC framework
- * 04/12/00  ---    Transition to BitKeeper version control
- * 
- * BitKeeper ID: @(#)defs.h 1.56
- *
- * 09/28/00  ---    Transition to CVS version control
- *
- * CVS: $Revision: 1.210 $ $Date: 2005/01/28 20:26:12 $
  */
 
 #ifndef GDB_COMMON
@@ -103,8 +88,9 @@
 
 #define HIST_BLKSIZE  (4096)
 
-#define STREQ(A, B)      (A && B && (strcmp(A, B) == 0))
-#define STRNEQ(A, B)     (A && B && (strncmp(A, B, strlen(B)) == 0))
+#define STREQ(A, B)      (A && B && (strcmp((char *)(A), (char *)(B)) == 0))
+#define STRNEQ(A, B)     (A && B && \
+        (strncmp((char *)(A), (char *)(B), strlen((char *)(B))) == 0))
 #define BZERO(S, N)      (memset(S, NULLCHAR, N))
 #define BCOPY(S, D, C)   (memcpy(D, S, C))
 #define BNEG(S, N)       (memset(S, 0xff, N))
@@ -169,8 +155,8 @@ struct number_option {
 #define UNLINK_MODULES     (0x1000000000ULL)
 #define S390D              (0x2000000000ULL)
 #define REM_S390D          (0x4000000000ULL)
-#define S390XD             (0x8000000000ULL)
-#define REM_S390XD        (0x10000000000ULL)
+#define PC_UNUSED_1        (0x8000000000ULL)
+#define PC_UNUSED_2       (0x10000000000ULL)
 #define NETDUMP           (0x20000000000ULL)
 #define REM_NETDUMP       (0x40000000000ULL)
 #define SYSMAP            (0x80000000000ULL)
@@ -186,12 +172,12 @@ struct number_option {
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|MCLXCD|LKCD|DEVMEM|S390D|S390XD|MEMMOD|DISKDUMP)
-#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|MCLXCD|LKCD|S390D|S390XD)
+#define MEMORY_SOURCES (NETDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP)
+#define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|MCLXCD|LKCD|S390D)
 #define REMOTE()            (pc->flags & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
-	   (pc->flags & (REM_NETDUMP|REM_MCLXCD|REM_LKCD|REM_S390D|REM_S390XD))
+	   (pc->flags & (REM_NETDUMP|REM_MCLXCD|REM_LKCD|REM_S390D))
 #define REMOTE_MEMSRC()     (REMOTE_ACTIVE() || REMOTE_DUMPFILE())
 #define LKCD_DUMPFILE()     (pc->flags & (LKCD|REM_LKCD))
 #define NETDUMP_DUMPFILE()  (pc->flags & (NETDUMP|REM_NETDUMP))
@@ -202,6 +188,7 @@ struct number_option {
 #define NETDUMP_VALID()  (nd->flags & (NETDUMP_LOCAL|NETDUMP_REMOTE))
 #define NETDUMP_ELF32    (0x4)
 #define NETDUMP_ELF64    (0x8)
+#define PARTIAL_DUMP    (0x10)  /* netdump or diskdump */
 
 #define DISKDUMP_LOCAL   (0x1)
 #define DISKDUMP_VALID() (dd->flags & DISKDUMP_LOCAL)
@@ -538,6 +525,8 @@ struct task_table {                      /* kernel/local task table data */
 #define PID_HASH           (0x200)
 #define THREAD_INFO        (0x400)
 #define IRQSTACKS          (0x800)
+#define TIMESPEC          (0x1000)
+#define NO_TIMESPEC       (0x2000)
 
 #define TASK_SLUSH (20)
 
@@ -1220,6 +1209,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long x8664_pda_irqrsp;
 	long x8664_pda_irqstackptr;
 	long x8664_pda_level4_pgt;
+	long x8664_pda_cpunumber;
 	long tss_struct_ist;
 };
 
@@ -1310,6 +1300,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long gate_struct;
 	long tss_struct;
 	long task_struct_start_time;
+	long cputime_t;
 };
 
 struct array_table {
@@ -1679,8 +1670,8 @@ struct load_module {
 
 #define MIN_PAGE_SIZE  (4096)
 
-#define PTOB(X)       ((ulong)(X) << machdep->pageshift)
-#define BTOP(X)       ((ulong)(X) >> machdep->pageshift)
+#define PTOB(X)       ((ulonglong)(X) << machdep->pageshift)
+#define BTOP(X)       ((ulonglong)(X) >> machdep->pageshift)
 
 #define PAGESIZE()    (machdep->pagesize)
 #define PAGESHIFT()   (machdep->pageshift)
@@ -1806,9 +1797,14 @@ struct load_module {
 #define PAGEBASE(X)           (((ulong)(X)) & (ulong)machdep->pagemask)
 
 #define CPU_PDA_READ(CPU, BUFFER) \
-        readmem(symbol_value("cpu_pda") + ((CPU) * SIZE(x8664_pda)), \
-                KVADDR, (BUFFER), SIZE(x8664_pda), "cpu_pda entry", \
-                FAULT_ON_ERROR);
+	(STRNEQ("cpu_pda", closest_symbol((symbol_value("cpu_pda") +	\
+	     ((CPU) * SIZE(x8664_pda))))) &&				\
+        readmem(symbol_value("cpu_pda") + ((CPU) * SIZE(x8664_pda)),	\
+             KVADDR, (BUFFER), SIZE(x8664_pda), "cpu_pda entry",	\
+             FAULT_ON_ERROR))
+
+#define VALID_LEVEL4_PGT_ADDR(X) \
+	(((X) == VIRTPAGEBASE(X)) && IS_KVADDR(X) && !IS_VMALLOC_ADDR(X))
 
 #endif  /* X86_64 */
 
@@ -2097,37 +2093,18 @@ struct efi_memory_desc_t {
 #define _32BIT_
 #define MACHINE_TYPE       "S390"
 
-#define PAGEBASE(X)  (((ulong)(X)) & (ulong)machdep->pagemask)
-
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
-#define VMALLOC_END        (0x7fffffffL)
+#define IS_VMALLOC_ADDR(X) s390_IS_VMALLOC_ADDR(X)
 
-#define IS_LOWCORE(X)  ((unsigned long)(X) < (unsigned long)(machdep->pagesize))
-
-#define PMD_SHIFT       22
-#define PMD_SIZE        (1UL << PMD_SHIFT)
-#define PMD_MASK        (~(PMD_SIZE-1))
-#define PGDIR_SHIFT     22
-#define PGDIR_SIZE      (1UL << PGDIR_SHIFT)
-#define PGDIR_MASK      (~(PGDIR_SIZE-1))
 #define PTRS_PER_PTE    1024
 #define PTRS_PER_PMD    1
 #define PTRS_PER_PGD    512
-/* 
- * pgd_t swapper_pg_dir[PTRS_PER_PGD]  NOTE: w/4 ulongs per pgd_t 
- */
 #define SEGMENT_TABLE_SIZE  ((sizeof(ulong)*4) * PTRS_PER_PGD)  
-#define _PAGE_TABLE_INV     0x20        /* invalid in segment table */
-#define PAGE_TABLE_ORIGIN   (0x7fffffc0)
 
-/* PTE bit translation -- NOTE: changes in 2.4.13 */
-#define _PAGE_PRESENT   0x001          /* Software                         */
-#define _PAGE_INVALID   0x400          /* HW invalid                       */
-
-#define SWP_TYPE(entry)   (error("s390_SWP_TYPE: TBD\n"))
-#define SWP_OFFSET(entry) (error("s390_SWP_OFFSET: TBD\n"))
+#define SWP_TYPE(entry) (((entry) >> 2) & 0x1f)
+#define SWP_OFFSET(entry) ((((entry) >> 11) & 0xfffffffe) | \
+                           (((entry) >> 7) & 0x1))
 
 #define TIF_SIGPENDING (2)
 
@@ -2137,42 +2114,17 @@ struct efi_memory_desc_t {
 #define _64BIT_
 #define MACHINE_TYPE       "S390X"
 
-#define PAGEBASE(X)  (((ulong)(X)) & (ulong)machdep->pagemask)
-
 #define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
 #define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
 #define IS_VMALLOC_ADDR(X) ((ulong)(X) >= vt->vmalloc_start)
-#define VMALLOC_END        (0x40000000000L)
-
-#define IS_LOWCORE(X) \
-	          ((unsigned long)(X) < ((unsigned long)(machdep->pagesize)*2))
-
-#define PMD_SHIFT       21
-#define PMD_SIZE        (1UL << PMD_SHIFT)
-#define PMD_MASK        (~(PMD_SIZE-1))
-#define PGDIR_SHIFT     31
-#define PGDIR_SIZE      (1UL << PGDIR_SHIFT)
-#define PGDIR_MASK      (~(PGDIR_SIZE-1))
 #define PTRS_PER_PTE    512
 #define PTRS_PER_PMD    1024
 #define PTRS_PER_PGD    2048
-/* 
- *  pgd_t swapper_pg_dir[PTRS_PER_PGD]  NOTE: 1 ulong per pgd_t 
- */
-#define REGION_TABLE_SIZE     (sizeof(ulong) * PTRS_PER_PGD)
-#define _PGD_ENTRY_INV        0x20          /* invalid region table entry */
-#define SEGMENT_TABLE_ORIGIN  (0xfffffffffffff000)
-
 #define SEGMENT_TABLE_SIZE    ((sizeof(ulong)*2) * PTRS_PER_PMD)
-#define _PMD_ENTRY_INV        0x20          /* invalid segment table entry */
-#define PAGE_TABLE_ORIGIN     (0xfffffffffffff800)
 
-/* PTE bit translation -- NOTE: changes in 2.4.13 */
-#define _PAGE_PRESENT   0x001          /* Software                         */
-#define _PAGE_INVALID   0x400          /* HW invalid                       */
-
-#define SWP_TYPE(entry)   (error("s390x_SWP_TYPE: TBD\n"))
-#define SWP_OFFSET(entry) (error("s390x_SWP_OFFSET: TBD\n"))
+#define SWP_TYPE(entry)   (((entry) >> 2) & 0x1f)
+#define SWP_OFFSET(entry) ((((entry) >> 11) & 0xfffffffffffffffe) | \
+                           (((entry) >> 7) & 0x1)) 
 
 #define TIF_SIGPENDING (2)
 
@@ -2730,6 +2682,9 @@ void stall(ulong);
 char *pages_to_size(ulong, char *);
 int clean_arg(void);
 int empty_list(ulong);
+int machine_type(char *);
+void command_not_supported(void);
+void option_not_supported(int);
 
 
 /* 
@@ -3143,8 +3098,7 @@ struct remote_file {
 #define TYPE_MCLXCD      (REMOTE_VERBOSE << 4)
 #define TYPE_LKCD        (REMOTE_VERBOSE << 5)
 #define TYPE_S390D       (REMOTE_VERBOSE << 6)
-#define TYPE_S390XD      (REMOTE_VERBOSE << 7)
-#define TYPE_NETDUMP     (REMOTE_VERBOSE << 8)
+#define TYPE_NETDUMP     (REMOTE_VERBOSE << 7)
 
 /*
  *  dev.c
@@ -3408,7 +3362,7 @@ void s390_dump_machdep_table(ulong);
  *  s390_dump.c
  */
 int is_s390_dump(char *);
-gzFile s390_dump_init(char *);
+FILE* s390_dump_init(char *);
 int read_s390_dumpfile(int, void *, int, ulong, physaddr_t);
 int write_s390_dumpfile(int, void *, int, ulong, physaddr_t);
 uint s390_page_size(void);
@@ -3430,20 +3384,6 @@ void s390x_dump_machdep_table(ulong);
 #endif
 
 /*
- *  s390x_dump.c
- */
-int is_s390x_dump(char *);
-gzFile s390x_dump_init(char *);
-int read_s390x_dumpfile(int, void *, int, ulong, physaddr_t);
-int write_s390x_dumpfile(int, void *, int, ulong, physaddr_t);
-uint s390x_page_size(void);
-int s390x_memory_used(void);
-int s390x_free_memory(void);
-int s390x_memory_dump(FILE *);
-ulong get_s390x_panic_task(void);
-void get_s390x_panicmsg(char *);
-
-/*
  *  netdump.c 
  */
 int is_netdump(char *, ulong);
@@ -3458,6 +3398,7 @@ ulong get_netdump_switch_stack(ulong);
 int netdump_memory_dump(FILE *);
 FILE *set_netdump_fp(FILE *);
 void get_netdump_regs(struct bt_info *, ulong *, ulong *);
+int is_partial_netdump(void);
 
 /*
  *  diskdump.c
@@ -3781,7 +3722,7 @@ void gdb_session_init(void);
 void gdb_interface(struct gnu_request *);
 int gdb_pass_through(char *, FILE *, ulong);
 int gdb_readmem_callback(ulong, void *, int, int);
-volatile void gdb_error_hook(void);
+void gdb_error_hook(void);
 void restore_gdb_sanity(void);
 int is_gdb_command(int, ulong);
 char *gdb_command_string(int, char *, int);
@@ -3791,12 +3732,13 @@ void dump_gdb_data(void);
 #if defined(GDB_6_0) || defined(GDB_6_1)
 void update_gdb_hooks(void);
 #endif
+void gdb_readnow_warning(void);
 
 /*
  *  gdb/top.c
  */
 extern void (*command_loop_hook)(void);
-extern volatile void (*error_hook)(void);
+extern void (*error_hook)(void);
 extern void execute_command (char *, int);
 
 /*

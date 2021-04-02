@@ -34,8 +34,8 @@
  
   These are the current prerequisites: 
 
-  o  At this point, x86, ia64, x86_64, alpha and ppc64-based kernels are 
-     supported.  Other architectures may be addressed in the future.
+  o  At this point, x86, ia64, x86_64, ppc64, alpha, s390 and s390x-based
+     kernels are supported.  Other architectures may be addressed in the future.
 
   o  One size fits all -- the utility can be run on any Linux kernel version 
      from 2.2.5-15 through 2.6.*.
@@ -69,7 +69,7 @@
      After the kernel is re-compiled, the uncompressed "vmlinux" kernel
      that is created in the top-level kernel build directory must be saved.
 
-  To build this utility, simply uncompress the tar file, enter the crash3.10-10rc
+  To build this utility, simply uncompress the tar file, enter the crash3.10-13.8d
   subdirectory, and type "make".  The initial build will take several minutes 
   because the gdb module must be configured and and built.  
 
@@ -87,10 +87,10 @@
 
     $ crash
     
-    crash 3.10-10rc
-    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
-    Copyright (C) 2004  IBM Corp.
-    Copyright (C) 1998-2004  Hewlett-Packard Co
+    crash 3.10-13.8d
+    Copyright (C) 2002, 2003, 2004, 2005  Red Hat, Inc.
+    Copyright (C) 2004, 2005  IBM Corporation
+    Copyright (C) 1999-2005  Hewlett-Packard Co
     Copyright (C) 1999, 2002  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
@@ -98,7 +98,7 @@
     certain conditions.  Enter "help copying" to see the conditions.
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
-    GNU gdb 6.0
+    GNU gdb 6.1
     Copyright 2003 Free Software Foundation, Inc.
     GDB is free software, covered by the GNU General Public License, and you are
     welcome to change it and/or distribute copies of it under certain conditions
@@ -109,7 +109,7 @@
           KERNEL: /boot/vmlinux
         DUMPFILE: /dev/mem
             CPUS: 1
-            DATE: Mon Feb 21 13:17:40 2005
+            DATE: Wed Jun  8 09:53:19 2005
           UPTIME: 10 days, 22:55:18
     LOAD AVERAGE: 0.08, 0.03, 0.01
            TASKS: 42
@@ -137,7 +137,7 @@
     exit           log            rd             task           
     extend         mach           repeat         timer          
     
-    crash version: 3.10-10rc   gdb version: 6.0
+    crash version: 3.10-13.8d   gdb version: 6.1
     For help on any command above, enter "help <command>".
     For help on input options, enter "help input".
     For help on output options, enter "help output".
@@ -150,10 +150,10 @@
 
     $ crash vmlinux vmcore
  
-    crash 3.10-10rc
-    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
-    Copyright (C) 2004  IBM Corp.
-    Copyright (C) 1998-2004  Hewlett-Packard Co
+    crash 3.10-13.8d
+    Copyright (C) 2002, 2003, 2004, 2005  Red Hat, Inc.
+    Copyright (C) 2004, 2005  IBM Corporation
+    Copyright (C) 1999-2005  Hewlett-Packard Co
     Copyright (C) 1999, 2002  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
@@ -161,7 +161,7 @@
     certain conditions.  Enter "help copying" to see the conditions.
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
-    GNU gdb 6.0
+    GNU gdb 6.1
     Copyright 2003 Free Software Foundation, Inc.
     GDB is free software, covered by the GNU General Public License, and you are
     welcome to change it and/or distribute copies of it under certain conditions.
@@ -194,10 +194,10 @@
 
     $ crash vmlinux.17 lcore.cr.17
 
-    crash 3.10-10rc
-    Copyright (C) 2002, 2003, 2004  Red Hat, Inc.
-    Copyright (C) 2004  IBM Corp.
-    Copyright (C) 1998-2004  Hewlett-Packard Co
+    crash 3.10-13.8d
+    Copyright (C) 2002, 2003, 2004, 2005  Red Hat, Inc.
+    Copyright (C) 2004, 2005  IBM Corporation
+    Copyright (C) 1999-2005  Hewlett-Packard Co
     Copyright (C) 1999, 2002  Silicon Graphics, Inc.
     Copyright (C) 1999, 2000, 2001, 2002  Mission Critical Linux, Inc.
     This program is free software, covered by the GNU General Public License,
@@ -205,7 +205,7 @@
     certain conditions.  Enter "help copying" to see the conditions.
     This program has absolutely no warranty.  Enter "help warranty" for details.
      
-    GNU gdb 6.0
+    GNU gdb 6.1
     Copyright 2003 Free Software Foundation, Inc.
     GDB is free software, covered by the GNU General Public License, and you are
     welcome to change it and/or distribute copies of it under certain conditions

@@ -9,14 +9,12 @@
 /*
  *  rse.h
  *
- *  Copyright (C) 2002, 2003, 2004 David Anderson
- *  Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ *  Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  *  Adapted from:
  *
  *    include/asm-ia64/rse.h  (2.4.9-e.3)
- *
- *  CVS: $Revision: 1.4 $ $Date: 2004/01/28 17:10:25 $
  */
 
 /*

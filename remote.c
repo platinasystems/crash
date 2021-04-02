@@ -1,8 +1,8 @@
 /* remote.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004 David Anderson
- * Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,8 +13,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * CVS: $Revision: 1.16 $
  */
 
 #include "defs.h"
@@ -453,8 +451,6 @@ handle_connection(int sock)
 				sprintf(sendbuf, "%s LKCD", savebuf);
                         else if (is_s390_dump(file))
                                 sprintf(sendbuf, "%s S390D", savebuf);
-                        else if (is_s390x_dump(file))
-                                sprintf(sendbuf, "%s S390XD", savebuf);
 			else
 				sprintf(sendbuf, "%s UNSUPPORTED", savebuf);
 
@@ -585,9 +581,6 @@ handle_connection(int sock)
                         else if (strstr(recvbuf, "S390D"))
                                 sprintf(sendbuf, "%s %d", recvbuf,
                                         s390_page_size());
-                        else if (strstr(recvbuf, "S390XD"))
-                                sprintf(sendbuf, "%s %d", recvbuf,
-                                        s390x_page_size());
 
                         console("[%s]\n", sendbuf);
                         daemon_send(sendbuf, strlen(sendbuf));
@@ -659,8 +652,6 @@ handle_connection(int sock)
 					retval = lkcd_free_memory();
                                 else if (STREQ(p3, "S390D")) 
                                         retval = s390_free_memory();
-                                else if (STREQ(p3, "S390XD")) 
-                                        retval = s390x_free_memory();
 			}
 
 			if (STREQ(p2, "USED")) {
@@ -672,8 +663,6 @@ handle_connection(int sock)
 					retval = lkcd_memory_used();
                                 else if (STREQ(p3, "S390D"))
                                         retval = s390_memory_used();
-                                else if (STREQ(p3, "S390XD"))
-                                        retval = s390x_memory_used();
 			}
 
 			sprintf(sendbuf, "%s %d", savebuf, retval);
@@ -712,8 +701,6 @@ handle_connection(int sock)
 				set_lkcd_fp(NULL);
 			} else if (STREQ(p2, "S390D"))
                                 s390_memory_dump(tmp);
-                        else if (STREQ(p2, "S390XD"))
-                                s390x_memory_dump(tmp);
 
 			rewind(tmp);
 			errno = cnt = done = total = first = 0;
@@ -922,38 +909,6 @@ handle_connection(int sock)
 
 			if ((len = read_s390_dumpfile(UNUSED, 
 			    &readbuf[DATA_HDRSIZE], len, UNUSED, addr)) < 0)
-                                len = 0;
-
-                        if (len) {
-                                sprintf(readbuf, "%s%07ld", DONEMSG,(ulong)len);
-                                console("(%ld)\n", (ulong)len);
-                        } else {
-                                sprintf(readbuf, "%s%07ld", FAILMSG,
-                                        (ulong)errno);
-                                console("[%s]\n", readbuf);
-                        }
-
-                        daemon_send(readbuf, len+DATA_HDRSIZE);
-                        continue;
-
-                } else if (STRNEQ(recvbuf, "READ_S390XD ")) {
-
-                        strcpy(savebuf, recvbuf);
-
-                        p1 = strtok(recvbuf, " ");   /* READ_S390XD */
-                        p1 = strtok(NULL, " ");      /* filename id */
-                        p2 = strtok(NULL, " ");      /* address */
-                        p3 = strtok(NULL, " ");      /* length */
-
-                        mfd = atoi(p1);
-                        addr = daemon_htol(p2);
-                        len = atoi(p3);
-
-                        BZERO(readbuf, READBUFSIZE);
-                        errno = 0;
-
-                        if ((len = read_s390x_dumpfile(UNUSED, 
-                            &readbuf[DATA_HDRSIZE], len, UNUSED, addr)) < 0)
                                 len = 0;
 
                         if (len) {
@@ -1850,7 +1805,6 @@ static int remote_file_checksum(struct remote_file *);
 static int remote_file_type(char *);
 static int remote_lkcd_dump_init(void);
 static int remote_s390_dump_init(void);
-static int remote_s390x_dump_init(void);
 static int remote_netdump_init(void);
 
 /*
@@ -2009,10 +1963,6 @@ is_remote_daemon(char *dp)
                         pc->server_memsrc = file1;
                         pc->flags |= REM_S390D;
                         break;
-                case TYPE_S390XD:
-                        pc->server_memsrc = file1;
-                        pc->flags |= REM_S390XD;
-                        break;
 		}
 	}
 
@@ -2058,14 +2008,6 @@ is_remote_daemon(char *dp)
                         pc->server_memsrc = file2;
                         pc->flags |= REM_S390D;
                         break;
-                case TYPE_S390XD:
-                        if (pc->server_memsrc)
-                                error(FATAL,
-                                    "neither %s or %s is an ELF file\n",
-                                         file1, file2);
-                        pc->server_memsrc = file2;
-                        pc->flags |= REM_S390XD;
-                        break;
                 case TYPE_DEVMEM:
                         pc->server_memsrc = file2;
                         break;
@@ -2107,8 +2049,6 @@ remote_file_type(char *file)
 		return TYPE_LKCD;
         else if (strstr(recvbuf, " S390D")) 
 		return TYPE_S390D;
-        else if (strstr(recvbuf, " S390XD")) 
-		return TYPE_S390XD;
        
         return (error(FATAL, "unknown remote file type: %s\n", file));
 }
@@ -2134,7 +2074,7 @@ remote_socket_options(int sockfd)
 
 	optlen = sizeof(rcvbuf);
         if (getsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&rcvbuf,
-            &optlen) < 0) {
+            (socklen_t *)&optlen) < 0) {
                 error(INFO, "SO_RCVBUF getsockopt error\n");
                 return;
         }
@@ -2159,7 +2099,7 @@ remote_socket_options(int sockfd)
 
         optlen = sizeof(rcvbuf);
         if (getsockopt(sockfd, SOL_SOCKET, SO_RCVLOWAT, (char *)&rcvbuf,
-            &optlen) < 0) {
+            (socklen_t *)&optlen) < 0) {
                 error(INFO, "SO_RCVLOWAT getsockopt error\n");
                 return;
         }
@@ -2341,12 +2281,6 @@ remote_fd_init(void)
 
                         if ((pc->flags & REM_S390D) &&
                             !remote_s390_dump_init())
-                                error(FATAL,
-                                    "%s: remote initialization failed\n",
-                                        pc->server_memsrc);
-
-                        if ((pc->flags & REM_S390XD) &&
-                            !remote_s390x_dump_init())
                                 error(FATAL,
                                     "%s: remote initialization failed\n",
                                         pc->server_memsrc);
@@ -2934,41 +2868,6 @@ remote_s390_dump_init(void)
 }
 
 static int
-remote_s390x_dump_init(void)
-{
-        char sendbuf[BUFSIZE];
-        char recvbuf[BUFSIZE];
-        char *p1, *p2, *p3;
-
-        BZERO(sendbuf, BUFSIZE);
-        BZERO(recvbuf, BUFSIZE);
-        sprintf(sendbuf, "S390X_DUMP_INIT %d %s", pc->rmfd, pc->server_memsrc);
-        send(pc->sockfd, sendbuf, strlen(sendbuf), 0);
-        recv(pc->sockfd, recvbuf, BUFSIZE-1, 0);
-        if (strstr(recvbuf, "<FAIL>"))
-                return FALSE;
-
-	p1 = strstr(recvbuf, "panic_task: "); 
-	p2 = strstr(recvbuf, "panicmsg: "); 
-
-	if (p1) {
-		p1 += strlen("panic_task: ");
-		p3 = strstr(p1, "\n");
-		*p3 = NULLCHAR;
-		tt->panic_task = htol(p1, FAULT_ON_ERROR, NULL);
-		if (CRASHDEBUG(1))
-			fprintf(fp, "panic_task: %lx\n", tt->panic_task);
-	}
-	if (p2) {
-		p2 += strlen("panicmsg: ");
-		if (CRASHDEBUG(1))
-			fprintf(fp, "panicmsg: %s", p2);
-	}
-
-        return TRUE;
-}
-
-static int
 remote_netdump_init(void)
 {
         char sendbuf[BUFSIZE];
@@ -3020,8 +2919,6 @@ remote_page_size(void)
         	sprintf(sendbuf, "PAGESIZE LKCD");
         else if (pc->flags & REM_S390D)
                 sprintf(sendbuf, "PAGESIZE S390D");
-        else if (pc->flags & REM_S390XD)
-                sprintf(sendbuf, "PAGESIZE S390XD");
 	else 
                 error(FATAL, 
 		 "cannot determine remote page size (unknown memory source)\n");
@@ -3323,8 +3220,6 @@ remote_free_memory(void)
 		type = "LKCD";
         else if (pc->flags & REM_S390D)
                 type = "S390D";
-        else if (pc->flags & REM_S390XD)
-                type = "S390XD";
 	else
 		return 0;
 
@@ -3361,8 +3256,6 @@ remote_memory_used(void)
                 type = "LKCD";
         else if (pc->flags & REM_S390D)
                 type = "S390D";
-        else if (pc->flags & REM_S390XD)
-                type = "S390XD";
         else
                 return 0;
 
@@ -3404,8 +3297,6 @@ remote_memory_dump(int verbose)
                 type = "LKCD";
         else if (pc->flags & REM_S390D)
                 type = "S390D";
-        else if (pc->flags & REM_S390XD)
-                type = "S390XD";
         else
                 return 0;
 
@@ -3491,8 +3382,6 @@ remote_memory_read(int rfd, char *buffer, int cnt, physaddr_t address)
                 sprintf(sendbuf, "READ_LKCD %d %lx %d", rfd, addr, cnt);
         else if (pc->flags & REM_S390D)
                 sprintf(sendbuf, "READ_S390D %d %lx %d", rfd, addr, cnt);
-        else if (pc->flags & REM_S390XD)
-                sprintf(sendbuf, "READ_S390XD %d %lx %d", rfd, addr, cnt);
         else
                 sprintf(sendbuf, "READ_LIVE %d %lx %d", rfd, addr, cnt);
 

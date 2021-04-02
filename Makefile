@@ -3,8 +3,8 @@
 # Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
 #       www.missioncriticallinux.com, info@missioncriticallinux.com
 #
-# Copyright (C) 2002, 2003, 2004 David Anderson
-# Copyright (C) 2002, 2003, 2004 Red Hat, Inc. All rights reserved.
+# Copyright (C) 2002, 2003, 2004, 2005 David Anderson
+# Copyright (C) 2002, 2003, 2004, 2005 Red Hat, Inc. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,10 +17,6 @@
 # GNU General Public License for more details.
 #
 # BitKeeper ID: @(#)Makefile 1.13
-#
-# 09/28/00  Transition to CVS version control
-#
-# CVS: $Revision: 1.62 $ $Date: 2005/02/21 18:15:16 $
 #
 
 PROGRAM=crash
@@ -39,8 +35,8 @@ endif
 #
 # GDB, GDB_FILES and GDB_OFILES will be configured automatically by configure 
 #
-GDB=gdb-6.0
-GDB_FILES=${GDB_6.0_FILES}
+GDB=gdb-6.1
+GDB_FILES=${GDB_6.1_FILES}
 GDB_OFILES=
 
 #
@@ -78,7 +74,7 @@ CFILES=main.c tools.c global_data.c memory.c filesys.c help.c task.c \
 	alpha.c x86.c ppc.c ia64.c s390.c s390x.c ppc64.c x86_64.c \
 	extensions.c remote.c va_server.c va_server_v1.c symbols.c cmdline.c \
 	lkcd_common.c lkcd_v1.c lkcd_v2_v3.c lkcd_v5.c lkcd_v7.c lkcd_v8.c\
-	lkcd_fix_mem.c s390_dump.c s390x_dump.c lkcd_x86_trace.c \
+	lkcd_fix_mem.c s390_dump.c lkcd_x86_trace.c \
 	netdump.c diskdump.c unwind.c unwind_decoder.c
 
 SOURCE_FILES=${CFILES} ${GENERIC_HFILES} ${MCORE_HFILES} \
@@ -90,12 +86,12 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	alpha.o x86.o ppc.o ia64.o s390.o s390x.o ppc64.o x86_64.o \
 	extensions.o remote.o va_server.o va_server_v1.o symbols.o cmdline.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
-	lkcd_fix_mem.o s390_dump.o s390x_dump.o netdump.o diskdump.o \
+	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o
 
 DAEMON_OBJECT_FILES=remote_daemon.o va_server.o va_server_v1.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
-	s390_dump.o s390x_dump.o netdump_daemon.o
+	s390_dump.o netdump_daemon.o
 
 GDB_5.0_FILES=${GDB}/gdb/Makefile.in \
 	  ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
@@ -144,7 +140,7 @@ GDB_6.0_FILES=${GDB}/gdb/Makefile.in ${GDB}/Makefile.in \
           ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
           ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c \
 	  ${GDB}/gdb/ppc-linux-tdep.c ${GDB}/sim/ppc/ppc-instructions \
-	  ${GDB}/bfd/simple.c
+	  ${GDB}/bfd/simple.c ${GDB}/include/obstack.h
 GDB_6.0_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
           ${GDB}/gdb/target.o ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
           ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o \
@@ -153,7 +149,8 @@ GDB_6.0_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
 GDB_6.1_FILES=${GDB}/gdb/Makefile.in ${GDB}/Makefile.in \
           ${GDB}/gdb/main.c ${GDB}/gdb/symtab.c ${GDB}/gdb/target.c \
           ${GDB}/gdb/symfile.c ${GDB}/gdb/elfread.c \
-          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c ${GDB}/gdb/dwarf2read.c
+          ${GDB}/gdb/ui-file.c ${GDB}/gdb/utils.c ${GDB}/gdb/dwarf2read.c \
+	  ${GDB}/include/obstack.h
 GDB_6.1_OFILES=${GDB}/gdb/main.o ${GDB}/gdb/symtab.o \
           ${GDB}/gdb/target.o ${GDB}/gdb/symfile.o ${GDB}/gdb/elfread.o \
           ${GDB}/gdb/ui-file.o ${GDB}/gdb/utils.o ${GDB}/gdb/dwarf2read.o
@@ -348,9 +345,6 @@ s390x.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x.c
 s390_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390_dump.c
 	cc -c ${CFLAGS} s390_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 
-s390x_dump.o: ${GENERIC_HFILES} ${IBM_HFILES} s390x_dump.c
-	cc -c ${CFLAGS} s390x_dump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
-
 netdump.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
 	cc -c ${CFLAGS} netdump.c ${WARNING_OPTIONS} ${WARNING_ERROR}
 netdump_daemon.o: ${GENERIC_HFILES} ${REDHAT_HFILES} netdump.c
@@ -427,7 +421,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=3.10-11
+RELEASE=3.10-13.9
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
