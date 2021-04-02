@@ -1,8 +1,8 @@
 /*
  * arm64.c - core analysis suite
  *
- * Copyright (C) 2012-2016 David Anderson
- * Copyright (C) 2012-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2012-2017 David Anderson
+ * Copyright (C) 2012-2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2447,7 +2447,7 @@ arm64_in_kdump_text(struct bt_info *bt, struct arm64_stackframe *frame)
 			    (*ptr < ms->crash_kexec_end) &&
 			    INSTACK(*(ptr - 1), bt)) {
 				bt->bptr = ((ulong)(ptr - 1) - (ulong)base)
-					   + bt->tc->thread_info;
+					   + task_to_stackbase(bt->tc->task);
 				if (CRASHDEBUG(1))
 					fprintf(fp, "%lx: %lx (crash_kexec)\n", bt->bptr, *ptr);
 				return TRUE;
@@ -2456,20 +2456,22 @@ arm64_in_kdump_text(struct bt_info *bt, struct arm64_stackframe *frame)
 			    (*ptr < ms->crash_save_cpu_end) &&
 			    INSTACK(*(ptr - 1), bt)) {
 				bt->bptr = ((ulong)(ptr - 1) - (ulong)base)
-					   + bt->tc->thread_info;
+					   + task_to_stackbase(bt->tc->task);
 				if (CRASHDEBUG(1))
 					fprintf(fp, "%lx: %lx (crash_save_cpu)\n", bt->bptr, *ptr);
 				return TRUE;
 			}
 		} else {
 			if ((*ptr >= ms->crash_kexec_start) && (*ptr < ms->crash_kexec_end)) {
-				bt->bptr = ((ulong)ptr - (ulong)base) + bt->tc->thread_info;
+				bt->bptr = ((ulong)ptr - (ulong)base)
+					   + task_to_stackbase(bt->tc->task);
 				if (CRASHDEBUG(1))
 					fprintf(fp, "%lx: %lx (crash_kexec)\n", bt->bptr, *ptr);
 				return TRUE;
 			}
 			if ((*ptr >= ms->crash_save_cpu_start) && (*ptr < ms->crash_save_cpu_end)) {
-				bt->bptr = ((ulong)ptr - (ulong)base) + bt->tc->thread_info;
+				bt->bptr = ((ulong)ptr - (ulong)base)
+					   + task_to_stackbase(bt->tc->task);
 				if (CRASHDEBUG(1))
 					fprintf(fp, "%lx: %lx (crash_save_cpu)\n", bt->bptr, *ptr);
 				return TRUE;
@@ -3388,6 +3390,7 @@ arm64_calc_VA_BITS(void)
 	int bitval;
 	struct syment *sp;
 	ulong value;
+	char *string;
 
 	if (!(sp = symbol_search("swapper_pg_dir")) &&
 	    !(sp = symbol_search("idmap_pg_dir")) &&
@@ -3413,6 +3416,18 @@ arm64_calc_VA_BITS(void)
 			break;
 		}
 	}
+
+	/*
+	 *  Verify against dumpfiles that export VA_BITS in vmcoreinfo
+	 */
+        if ((string = pc->read_vmcoreinfo("NUMBER(VA_BITS)"))) {
+                value = atol(string);
+                free(string);
+		if (machdep->machspec->VA_BITS != value)
+			error(WARNING, "VA_BITS: calculated: %ld  vmcoreinfo: %ld\n",
+				machdep->machspec->VA_BITS, value);
+        }
+
 
 	if (CRASHDEBUG(1))
 		fprintf(fp, "VA_BITS: %ld\n", machdep->machspec->VA_BITS);

@@ -5,8 +5,8 @@
 /* 
  *  lkcd_x86_trace.c
  *
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- *  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ *  Copyright (C) 2002-2012, 2017 David Anderson
+ *  Copyright (C) 2002-2012, 2017 Red Hat, Inc. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -581,7 +581,7 @@ framesize_modify(struct framesize_cache *fc)
 		fc->bp_adjust = fmp->post_adjust;
 
 	if (fmp->called_function) {
-        	if (STREQ(fmp->called_function,x86_function_called_by(fc->pc)));
+		if (STREQ(fmp->called_function,x86_function_called_by(fc->pc)))
 			fc->flags |= FRAMESIZE_VALIDATE;
 	}
 
@@ -1718,7 +1718,9 @@ find_trace(
 					ra, sp, bp, asp, 0, 0, 0, EX_FRAME|SET_EX_FRAME_ADDR);
 				return(trace->nframes);
 #ifdef REDHAT
-                        } else if (STREQ(func_name, "cpu_idle")) {
+                        } else if (STREQ(func_name, "cpu_idle") ||
+				STREQ(func_name, "cpu_startup_entry") ||
+				STREQ(func_name, "start_secondary")) {
                                 ra = 0;
                                 bp = sp = saddr - 4;
                                 asp = curframe->asp;
@@ -2732,16 +2734,20 @@ eframe_label(char *funcname, ulong eip)
 	efp = &eframe_labels;
 
 	if (!efp->init) {
-		if (!(efp->syscall = symbol_search("system_call")))
-			error(WARNING, 
-			   "\"system_call\" symbol does not exist\n");
+		if (!(efp->syscall = symbol_search("system_call"))) {
+			if (CRASHDEBUG(1))
+				error(WARNING, 
+					"\"system_call\" symbol does not exist\n");
+		}
 		if ((sp = symbol_search("ret_from_sys_call")))
 			efp->syscall_end = sp;
 		else if ((sp = symbol_search("syscall_badsys")))
 			efp->syscall_end = sp;
-		else
-			error(WARNING, 
+		else {
+			if (CRASHDEBUG(1)) 
+				error(WARNING, 
         "neither \"ret_from_sys_call\" nor \"syscall_badsys\" symbols exist\n");
+		}
 
 		if (efp->syscall) {
                 	efp->tracesys = symbol_search("tracesys");

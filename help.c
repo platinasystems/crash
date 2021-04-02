@@ -1,8 +1,8 @@
 /* help.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
- * Copyright (C) 2002-2016 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2017 David Anderson
+ * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -160,6 +160,7 @@ char *program_usage_info[] = {
     "      phys_base=<physical-address>",
     "      irq_eframe_link=<value>",
     "      max_physmem_bits=<value>",
+    "      kernel_image_size=<value>",
     "      vm=orig       (pre-2.6.11 virtual memory address ranges)",
     "      vm=2.6.11     (2.6.11 and later virtual memory address ranges)",
     "      vm=xen        (Xen kernel virtual memory address ranges)",
@@ -176,6 +177,8 @@ char *program_usage_info[] = {
     "    ARM64:",
     "      phys_offset=<physical-address>",
     "      kimage_voffset=<kimage_voffset-value>",
+    "    X86:",
+    "      page_offset=<CONFIG_PAGE_OFFSET-value>",
     "",
     "  -x     ",
     "    Automatically load extension modules from a particular directory.",
@@ -328,8 +331,8 @@ char *program_usage_info[] = {
     "    and verification.  The default count is 32768.",
     "",
     "  --kaslr offset | auto",
-    "    If an x86_64 kernel was configured with CONFIG_RANDOMIZE_BASE, the",
-    "    offset value is equal to the difference between the symbol values ",
+    "    If an x86 or x86_64 kernel was configured with CONFIG_RANDOMIZE_BASE,",
+    "    the offset value is equal to the difference between the symbol values ",
     "    compiled into the vmlinux file and their relocated KASLR value.  If", 
     "    set to auto, the KASLR offset value will be automatically calculated.",
     "",
@@ -1071,8 +1074,11 @@ char *help_set[] = {
 "                               must be a kernel or module text address, which", 
 "                               may be expressed symbolically or as a hexadecimal",
 "                               value.",
-"         offline  show | hide  Show or hide command output that is associated",
+"         offline  show | hide  show or hide command output that is associated",
 "                               with offline cpus.",
+"         redzone  on | off     if on, CONFIG_SLUB object addresses displayed by",
+"                               the kmem command will point to the SLAB_RED_ZONE",
+"                               padding inserted at the beginning of the object.", 
 " ",
 "  Internal variables may be set in four manners:\n",
 "    1. entering the set command in $HOME/.%src.",
@@ -1123,6 +1129,7 @@ char *help_set[] = {
 "               gdb: off",
 "             scope: (not set)",
 "           offline: show",
+"           redzone: on",
 " ",
 "  Show the current context:\n",
 "    %s> set",
@@ -2283,7 +2290,7 @@ NULL
 char *help_mach[] = {
 "mach",
 "machine specific data",    
-"[-m | -c -[xd]]",
+"[-m | -c -[xd] | -o]",
 "  This command displays data specific to a machine type.\n",
 "    -m  Display the physical memory map (x86, x86_64 and ia64 only).",
 "    -c  Display each cpu's cpuinfo structure (x86, x86_64 and ia64 only).",
@@ -2291,6 +2298,7 @@ char *help_mach[] = {
 "        Display the hwrpb_struct, and each cpu's percpu_struct (alpha only).",
 "    -x  override default output format with hexadecimal format.",
 "    -d  override default output format with decimal format.",
+"    -o  Display the OPAL console log (ppc64 only).",
 "\nEXAMPLES", 
 "    %s> mach",
 "           MACHINE TYPE: i686",
@@ -2317,6 +2325,17 @@ char *help_mach[] = {
 "    00000000fec00000 - 00000000fec90000  E820_RESERVED",
 "    00000000fee00000 - 00000000fee10000  E820_RESERVED",
 "    00000000ffb00000 - 0000000100000000  E820_RESERVED",
+" ",
+"  Display the OPAL console log:\n",
+"    %s> mach -o",
+"    [   65.219056911,5] SkiBoot skiboot-5.4.0-218-ge0225cc-df9a248 starting...",
+"    [   65.219065872,5] initial console log level: memory 7, driver 5",
+"    [   65.219068917,6] CPU: P8 generation processor(max 8 threads/core)",
+"    [   65.219071681,7] CPU: Boot CPU PIR is 0x0060 PVR is 0x004d0200",
+"    [   65.219074685,7] CPU: Initial max PIR set to 0x1fff",
+"    [   65.219607955,5] FDT: Parsing fdt @0xff00000",
+"    [  494.026291523,7] BT: seq 0x25 netfn 0x0a cmd 0x48: Message sent to host",
+"    [  494.027636927,7] BT: seq 0x25 netfn 0x0a cmd 0x48: IPMI MSG done",
 NULL               
 };
 

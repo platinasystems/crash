@@ -18,6 +18,7 @@
 
 #include "defs.h"
 #include <endian.h>
+#include <ctype.h>
 
 static int ppc64_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static int ppc64_uvtop(struct task_context *, ulong, physaddr_t *, int);
@@ -64,19 +65,7 @@ static ulong hugepage_dir(ulong pte);
 static ulong pgd_page_vaddr_l4(ulong pgd);
 static ulong pud_page_vaddr_l4(ulong pud);
 static ulong pmd_page_vaddr_l4(ulong pmd);
-
-static inline uint get_ptetype(ulong pte)
-{
-	uint pte_type = 0; /* 0: regular entry; 1: huge pte; 2: huge pd */
-
-	if (is_hugepage(pte))
-		pte_type = 1;
-	else if (!(machdep->flags & RADIX_MMU) &&
-	    (PAGESIZE() != PPC64_64K_PAGE_SIZE) && is_hugepd(pte))
-		pte_type = 2;
-
-	return pte_type;
-}
+void opalmsg(void);
 
 static inline int is_hugepage(ulong pte)
 {
@@ -126,6 +115,19 @@ static inline int is_hugepd(ulong pte)
 		return (((pte & HUGE_PTE_MASK) == 0x0) &&
 			((pte & HUGEPD_SHIFT_MASK) != 0));
 	}
+}
+
+static inline uint get_ptetype(ulong pte)
+{
+	uint pte_type = 0; /* 0: regular entry; 1: huge pte; 2: huge pd */
+
+	if (is_hugepage(pte))
+		pte_type = 1;
+	else if (!(machdep->flags & RADIX_MMU) &&
+	    (PAGESIZE() != PPC64_64K_PAGE_SIZE) && is_hugepd(pte))
+		pte_type = 2;
+
+	return pte_type;
 }
 
 static inline ulong hugepage_dir(ulong pte)
@@ -2219,66 +2221,11 @@ ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
 }
 
 /*
- * get SP and IP from the saved ptregs.
- */
-static int
-ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
-{
-	struct ppc64_pt_regs *pt_regs;
-	unsigned long unip;
-
-	pt_regs = (struct ppc64_pt_regs *)bt_in->machdep;
-	if (!pt_regs || !pt_regs->gpr[1]) {
-		/*
-		 * Not collected regs. May be the corresponding CPU not
-		 * responded to an IPI.
-		 */
-		fprintf(fp, "%0lx: GPR1 register value (SP) was not saved\n",
-			bt_in->task);
-		return FALSE;
-	}
-	*ksp = pt_regs->gpr[1];
-	if (IS_KVADDR(*ksp)) {
-		readmem(*ksp+16, KVADDR, &unip, sizeof(ulong), "Regs NIP value",
-			FAULT_ON_ERROR);
-		*nip = unip;
-	} else {
-		if (IN_TASK_VMA(bt_in->task, *ksp))
-			fprintf(fp, "%0lx: Task is running in user space\n",
-				bt_in->task);
-		else 
-			fprintf(fp, "%0lx: Invalid Stack Pointer %0lx\n",
-				bt_in->task, *ksp);
-		*nip = pt_regs->nip;
-	}
-
-	if (bt_in->flags && 
-	((BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT))) 
-		return TRUE;
-
-	/*
-	 * Print the collected regs for the active task
-	 */
-	ppc64_print_regs(pt_regs);
-	if (!IS_KVADDR(*ksp)) 
-		return FALSE;
-	
-	fprintf(fp, " NIP [%016lx] %s\n", pt_regs->nip,
-		closest_symbol(pt_regs->nip));
-	if (unip != pt_regs->link)
-		fprintf(fp, " LR  [%016lx] %s\n", pt_regs->link,
-			closest_symbol(pt_regs->link));
-
-	return TRUE;
-}
-
-/*
  *  Get the starting point for the active cpus in a diskdump/netdump.
  */
 static int
 ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 {
-	int panic_task;
 	int i;
 	char *sym;
 	ulong *up;
@@ -2291,25 +2238,13 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 	struct ppc64_pt_regs *pt_regs;
 	struct syment *sp;
 
-	/* 
-	 * For the kdump vmcore, Use SP and IP values that are saved in ptregs.
-	 */ 
-	if (pc->flags & KDUMP)
-		return ppc64_kdump_stack_frame(bt_in, nip, ksp);
-
         bt = &bt_local;
         BCOPY(bt_in, bt, sizeof(struct bt_info));
         ms = machdep->machspec;
-        ur_nip = ur_ksp = 0;
-	
-	panic_task = tt->panic_task == bt->task ? TRUE : FALSE;
 
 	check_hardirq = check_softirq = tt->flags & IRQSTACKS ? TRUE : FALSE;
-	if (panic_task && bt->machdep) {
-		pt_regs = (struct ppc64_pt_regs *)bt->machdep;
-		ur_nip = pt_regs->nip;
-		ur_ksp = pt_regs->gpr[1];
-	} else if (bt->task != tt->panic_task) {
+
+	if (bt->task != tt->panic_task) {
 		char cpu_frozen = FALSE;
 		/*
 		 * Determine whether the CPU responded to an IPI.
@@ -2428,15 +2363,39 @@ retry:
 		alter_stackbuf(bt);
 		check_intrstack = FALSE;
 		goto retry;
-	} 
+	}
+
 	/*
-	 *  We didn't find what we were looking for, so just use what was
-	 *  passed in the ELF header.
+	 * We didn't find what we were looking for, so try to use
+	 * the SP and IP values saved in ptregs.
 	 */
-	if (ur_nip && ur_ksp) {
-        	*nip = ur_nip;
-		*ksp = ur_ksp;
-		return TRUE;
+	pt_regs = (struct ppc64_pt_regs *)bt_in->machdep;
+	if (!pt_regs || !pt_regs->gpr[1]) {
+		/*
+		 * Not collected regs. May be the corresponding CPU did not
+		 * respond to an IPI.
+		 */
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%0lx: GPR1(SP) register value not saved\n",
+				bt_in->task);
+	} else {
+		*ksp = pt_regs->gpr[1];
+		if (IS_KVADDR(*ksp)) {
+			readmem(*ksp+16, KVADDR, nip, sizeof(ulong),
+				"Regs NIP value", FAULT_ON_ERROR);
+			ppc64_print_regs(pt_regs);
+			return TRUE;
+		} else {
+			if (IN_TASK_VMA(bt_in->task, *ksp))
+				fprintf(fp, "%0lx: Task is running in user space\n",
+					bt_in->task);
+			else
+				fprintf(fp, "%0lx: Invalid Stack Pointer %0lx\n",
+					bt_in->task, *ksp);
+			*nip = pt_regs->nip;
+			ppc64_print_regs(pt_regs);
+			return FALSE;
+		}
 	}
 
         console("ppc64_get_dumpfile_stack_frame: cannot find SP for panic task\n");
@@ -2776,6 +2735,102 @@ ppc64_get_smp_cpus(void)
 	return get_cpus_online();
 }
 
+
+/*
+ * Definitions derived from OPAL. These need to track corresponding values in
+ * https://github.com/open-power/skiboot/blob/master/include/mem-map.h
+ */
+#define SKIBOOT_CONSOLE_DUMP_START	0x31000000
+#define SKIBOOT_CONSOLE_DUMP_SIZE	0x40000
+#define SKIBOOT_BASE			0x30000000
+#define ASCII_UNLIMITED ((ulong)(-1) >> 1)
+
+void
+opalmsg(void)
+{
+	struct memloc {
+		uint8_t u8;
+		uint16_t u16;
+		uint32_t u32;
+		uint64_t u64;
+		uint64_t limit64;
+	};
+	struct opal {
+		unsigned long long base;
+		unsigned long long entry;
+	} opal;
+	int i, a;
+	size_t typesz;
+	void *location;
+	char readtype[20];
+	struct memloc mem;
+	int displayed, per_line;
+	int lost;
+	ulong error_handle;
+	long count = SKIBOOT_CONSOLE_DUMP_SIZE;
+	ulonglong addr = SKIBOOT_CONSOLE_DUMP_START;
+
+	if (CRASHDEBUG(4))
+		fprintf(fp, "<addr: %llx count: %ld (%s)>\n",
+				addr, count, "PHYSADDR");
+
+	/*
+	 * OPAL based platform check
+	 * struct opal of BSS section and hence default value will be ZERO(0)
+	 * opal_init() in the kernel initializes this structure based on
+	 * the platform. Use it as a key to determine whether the dump
+	 * was taken on an OPAL based system or not.
+	 */
+	if (symbol_exists("opal")) {
+		get_symbol_data("opal", sizeof(struct opal), &opal);
+		if (opal.base != SKIBOOT_BASE)
+			error(FATAL, "dump was captured on non-PowerNV machine");
+	} else {
+		error(FATAL, "dump was captured on non-PowerNV machine");
+	}
+
+	BZERO(&mem, sizeof(struct memloc));
+	lost = typesz = per_line = 0;
+	location = NULL;
+
+	/* ASCII */
+	typesz = SIZEOF_8BIT;
+	location = &mem.u8;
+	sprintf(readtype, "ascii");
+	per_line = 256;
+	displayed = 0;
+
+	error_handle = FAULT_ON_ERROR;
+
+	for (i = a = 0; i < count; i++) {
+		if (!readmem(addr, PHYSADDR, location, typesz,
+					readtype, error_handle)) {
+			addr += typesz;
+			lost += 1;
+			continue;
+		}
+
+		if (isprint(mem.u8)) {
+			if ((a % per_line) == 0) {
+				if (displayed && i)
+					fprintf(fp, "\n");
+			}
+			fprintf(fp, "%c", mem.u8);
+			displayed++;
+			a++;
+		} else {
+			if (count == ASCII_UNLIMITED)
+				return;
+			a = 0;
+		}
+
+		addr += typesz;
+	}
+
+	if (lost != count)
+		fprintf(fp, "\n");
+}
+
 /*
  *  Machine dependent command.
  */
@@ -2784,7 +2839,7 @@ ppc64_cmd_mach(void)
 {
         int c;
 
-        while ((c = getopt(argcnt, args, "cm")) != EOF) {
+	while ((c = getopt(argcnt, args, "cmo")) != EOF) {
                 switch(c)
                 {
 		case 'c':
@@ -2792,6 +2847,8 @@ ppc64_cmd_mach(void)
 			fprintf(fp, "PPC64: '-%c' option is not supported\n", 
 				c);
 			break;
+		case 'o':
+			return opalmsg();
                 default:
                         argerrs++;
                         break;

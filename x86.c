@@ -1,8 +1,8 @@
 /* x86.c - core analysis suite
  *
  * Portions Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2014 David Anderson
- * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014,2017 David Anderson
+ * Copyright (C) 2002-2014,2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -178,6 +178,7 @@ static void db_symbol_values(db_sym_t, char **, db_expr_t *);
 static int db_sym_numargs(db_sym_t, int *, char **);
 static void x86_dump_line_number(ulong);
 static void x86_clear_machdep_cache(void);
+static void x86_parse_cmdline_args(void);
 
 static ulong mach_debug = 0;
 
@@ -1774,6 +1775,7 @@ x86_init(int when)
 		machdep->last_ptbl_read = 0;
 		machdep->machspec = &x86_machine_specific;
 		machdep->verify_paddr = generic_verify_paddr;
+		x86_parse_cmdline_args();
 		break;
 
 	case PRE_GDB:
@@ -1797,7 +1799,12 @@ x86_init(int when)
 			machdep->pmd = machdep->pgd;   
 		}
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
-	        machdep->kvbase = symbol_value("_stext") & ~KVBASE_MASK;  
+		if (!machdep->kvbase) {
+			if (kernel_symbol_exists("module_kaslr_mutex"))
+				machdep->kvbase = 0xc0000000;
+			else
+				machdep->kvbase = symbol_value("_stext") & ~KVBASE_MASK;  
+		}
 		if (machdep->kvbase & 0x80000000) 
                 	machdep->is_uvaddr = generic_is_uvaddr;
 		else {
@@ -1963,6 +1970,8 @@ x86_init(int when)
 		STRUCT_SIZE_INIT(e820map, "e820map");
 		STRUCT_SIZE_INIT(e820entry, "e820entry");
 		STRUCT_SIZE_INIT(irq_ctx, "irq_ctx");
+		if (!VALID_STRUCT(irq_ctx))
+			STRUCT_SIZE_INIT(irq_ctx, "irq_stack");
 		MEMBER_OFFSET_INIT(e820map_nr_map, "e820map", "nr_map");
 		MEMBER_OFFSET_INIT(e820entry_addr, "e820entry", "addr");
 		MEMBER_OFFSET_INIT(e820entry_size, "e820entry", "size");
@@ -2031,6 +2040,8 @@ x86_init(int when)
 		if (!remap_init())
 			machdep->machspec->max_numnodes = -1;
 
+		MEMBER_OFFSET_INIT(inactive_task_frame_ret_addr, 
+			"inactive_task_frame", "ret_addr");
 		break;
 
 	case POST_INIT:
@@ -2040,6 +2051,63 @@ x86_init(int when)
 	case LOG_ONLY:
 		machdep->kvbase = kt->vmcoreinfo._stext_SYMBOL & ~KVBASE_MASK;
 		break;
+	}
+}
+
+/*
+ *  Handle non-default (c0000000) values of CONFIG_PAGE_OFFSET 
+ *  with "--machdep page_offset=<address>"
+ */
+static void
+x86_parse_cmdline_args(void)
+{
+	int index, i, c, err;
+	char *arglist[MAXARGS];
+	char buf[BUFSIZE];
+	char *p;
+	ulong value = 0;
+
+	for (index = 0; index < MAX_MACHDEP_ARGS; index++) {
+		if (!machdep->cmdline_args[index])
+			break;
+
+		if (!strstr(machdep->cmdline_args[index], "=")) {
+			error(WARNING, "ignoring --machdep option: %x\n",
+				machdep->cmdline_args[index]);
+			continue;
+		}
+
+		strcpy(buf, machdep->cmdline_args[index]);
+
+		for (p = buf; *p; p++) {
+			if (*p == ',')
+				*p = ' ';
+		}
+
+		c = parse_line(buf, arglist);
+
+		for (i = 0; i < c; i++) {
+			err = 0;
+
+			if (STRNEQ(arglist[i], "page_offset=")) {
+				int flags = RETURN_ON_ERROR | QUIET;
+
+				p = arglist[i] + strlen("page_offset=");
+				if (strlen(p))
+					value = htol(p, flags, &err);
+
+				if (!err) {
+					machdep->kvbase = value;
+
+					error(NOTE, "setting PAGE_OFFSET to: 0x%lx\n\n",
+						machdep->kvbase);
+					continue;
+				}
+			}
+
+			error(WARNING, "ignoring --machdep option: %s\n",
+				arglist[i]);
+		}
 	}
 }
 
@@ -3640,12 +3708,22 @@ static ulong
 x86_get_pc(struct bt_info *bt)
 {
 	ulong offset;
-	ulong eip;
+	ulong eip, inactive_task_frame;
 
 	if (tt->flags & THREAD_INFO) {
-        	readmem(bt->task + OFFSET(task_struct_thread_eip), KVADDR,
-                	&eip, sizeof(void *), 
-			"thread_struct eip", FAULT_ON_ERROR);
+		if (VALID_MEMBER(task_struct_thread_eip))
+			readmem(bt->task + OFFSET(task_struct_thread_eip), KVADDR,
+				&eip, sizeof(void *), 
+				"thread_struct eip", FAULT_ON_ERROR);
+		else if (VALID_MEMBER(inactive_task_frame_ret_addr)) {
+			readmem(bt->task + OFFSET(task_struct_thread_esp), KVADDR,
+				&inactive_task_frame, sizeof(void *),
+				"task_struct.inactive_task_frame", FAULT_ON_ERROR);
+			readmem(inactive_task_frame + OFFSET(inactive_task_frame_ret_addr), 
+				KVADDR, &eip, sizeof(void *),
+				"inactive_task_frame.ret_addr", FAULT_ON_ERROR);
+		} else
+			error(FATAL, "cannot determine ip address\n");
 		return eip;
 	}
 
@@ -3670,6 +3748,8 @@ x86_get_sp(struct bt_info *bt)
                 readmem(bt->task + OFFSET(task_struct_thread_esp), KVADDR,
                         &ksp, sizeof(void *),
                         "thread_struct esp", FAULT_ON_ERROR);
+		if (VALID_MEMBER(inactive_task_frame_ret_addr))
+			ksp += OFFSET(inactive_task_frame_ret_addr);
                 return ksp;
 	} 
 
