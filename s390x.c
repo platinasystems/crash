@@ -825,9 +825,14 @@ static void get_int_stack(char *stack_name, char *lc, unsigned long *start,
 	unsigned long stack_addr;
 
 	*start = *end = 0;
-	if (!MEMBER_EXISTS("_lowcore", stack_name))
-		return;
-	stack_addr = ULONG(lc + MEMBER_OFFSET("_lowcore", stack_name));
+	if (strcmp(stack_name, "restart_stack") == 0) {
+		stack_addr = symbol_value("restart_stack");
+		stack_addr = readmem_ul(stack_addr);
+	} else {
+		if (!MEMBER_EXISTS("_lowcore", stack_name))
+			return;
+		stack_addr = ULONG(lc + MEMBER_OFFSET("_lowcore", stack_name));
+	}
 	if (stack_addr == 0)
 		return;
 	*start = stack_addr - INT_STACK_SIZE;
@@ -871,6 +876,24 @@ static void print_frame_data(unsigned long sp, unsigned long high)
 }
 
 /*
+ * Do reference check and set flags
+ */
+static int bt_reference_check(struct bt_info *bt, unsigned long addr)
+{
+	if (!BT_REFERENCE_CHECK(bt))
+		return 0;
+
+	if (bt->ref->cmdflags & BT_REF_HEXVAL) {
+		if (addr == bt->ref->hexval)
+			bt->ref->cmdflags |= BT_REF_FOUND;
+	} else {
+		if (STREQ(closest_symbol(addr), bt->ref->str))
+			bt->ref->cmdflags |= BT_REF_FOUND;
+	}
+	return 1;
+}
+
+/*
  * Print stack frame
  */
 static void print_frame(struct bt_info *bt, int cnt, unsigned long sp,
@@ -879,16 +902,8 @@ static void print_frame(struct bt_info *bt, int cnt, unsigned long sp,
 	struct load_module *lm;
 	char *sym;
 
-	if (BT_REFERENCE_CHECK(bt)) {
-		if (bt->ref->cmdflags & BT_REF_HEXVAL) {
-			if (r14 == bt->ref->hexval)
-				bt->ref->cmdflags |= BT_REF_FOUND;
-		} else {
-			if (STREQ(closest_symbol(r14), bt->ref->str))
-				bt->ref->cmdflags |= BT_REF_FOUND;
-		}
+	if (bt_reference_check(bt, r14))
 		return;
-	}
 	fprintf(fp, "%s#%d [%08lx] ", cnt < 10 ? " " : "", cnt, sp);
 	sym = closest_symbol(r14);
 	fprintf(fp, "%s at %lx", sym, r14);
@@ -898,6 +913,46 @@ static void print_frame(struct bt_info *bt, int cnt, unsigned long sp,
 	if (bt->flags & BT_LINE_NUMBERS)
 		s390x_dump_line_number(r14);
 }
+
+/*
+ * Print pt_regs structure
+ */
+static void print_ptregs(struct bt_info *bt, unsigned long sp)
+{
+	unsigned long addr, psw_flags, psw_addr, offs;
+	struct load_module *lm;
+	char *sym;
+	int i;
+
+	addr = sp + MEMBER_OFFSET("pt_regs", "psw");
+	psw_flags = readmem_ul(addr);
+	psw_addr = readmem_ul(addr + sizeof(long));
+	if (bt_reference_check(bt, psw_addr))
+		return;
+
+	fprintf(fp, " PSW:  %016lx %016lx ", psw_flags, psw_addr);
+	sym = closest_symbol(psw_addr);
+	offs = psw_addr - closest_symbol_value(psw_addr);
+	if (module_symbol(psw_addr, NULL, &lm, NULL, 0))
+		fprintf(fp, "(%s+%ld [%s])\n", sym, offs, lm->mod_name);
+	else
+		fprintf(fp, "(%s+%ld)\n", sym, offs);
+
+	addr = sp + MEMBER_OFFSET("pt_regs", "gprs");
+	for (i = 0; i < 16; i++) {
+		if (i != 0 && i % 4 == 0)
+			fprintf(fp, "\n");
+		if (i % 4 == 0) {
+			if (i == 0)
+				fprintf(fp, " GPRS: ");
+			else
+				fprintf(fp, "       ");
+		}
+		fprintf(fp, "%016lx ", readmem_ul(addr + i * sizeof(long)));
+	}
+	fprintf(fp, "\n");
+}
+
 
 /*
  * Print back trace for one stack
@@ -948,8 +1003,7 @@ static unsigned long show_trace(struct bt_info *bt, int cnt, unsigned long sp,
 		/* Check for loop (kernel_thread_starter) of second zero bc */
 		if (low == reg || reg == 0)
 			return reg;
-		fprintf(fp, " - Interrupt -\n");
-		print_frame(bt, cnt++, sp, psw_addr);
+		print_ptregs(bt, sp);
 		low = sp;
 		sp = reg;
 		cnt = 0;
@@ -993,6 +1047,10 @@ static void s390x_back_trace_cmd(struct bt_info *bt)
 		}
 		s390x_print_lowcore(lowcore,bt,1);
 		fprintf(fp,"\n");
+		if (symbol_exists("restart_stack")) {
+			get_int_stack("restart_stack", lowcore, &low, &high);
+			sp = show_trace(bt, cnt, sp, low, high);
+		}
 		get_int_stack("panic_stack", lowcore, &low, &high);
 		sp = show_trace(bt, cnt, sp, low, high);
 		get_int_stack("async_stack", lowcore, &low, &high);
@@ -1124,16 +1182,16 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	tmp[3]=ULONG(ptr + 7 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
-	tmp[0]=ULONG(ptr);
-	tmp[1]=ULONG(ptr + S390X_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 2 * S390X_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 3 * S390X_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 8 * S390X_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 9 * S390X_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 10 * S390X_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 11 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
-	tmp[0]=ULONG(ptr + 4 * S390X_WORD_SIZE);
-	tmp[1]=ULONG(ptr + 5 * S390X_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 6 * S390X_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 7 * S390X_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 12 * S390X_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 13 * S390X_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 14 * S390X_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 15 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
 
@@ -1151,16 +1209,16 @@ s390x_print_lowcore(char* lc, struct bt_info *bt,int show_symbols)
 	tmp[3]=ULONG(ptr + 7 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
-	tmp[0]=ULONG(ptr + 6 * S390X_WORD_SIZE);
-	tmp[1]=ULONG(ptr + 7 * S390X_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 8 * S390X_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 9 * S390X_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 8 * S390X_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 9 * S390X_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 10 * S390X_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 11 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
-	tmp[0]=ULONG(ptr + 10* S390X_WORD_SIZE);
-	tmp[1]=ULONG(ptr + 11* S390X_WORD_SIZE);
-	tmp[2]=ULONG(ptr + 12* S390X_WORD_SIZE);
-	tmp[3]=ULONG(ptr + 13* S390X_WORD_SIZE);
+	tmp[0]=ULONG(ptr + 12 * S390X_WORD_SIZE);
+	tmp[1]=ULONG(ptr + 13 * S390X_WORD_SIZE);
+	tmp[2]=ULONG(ptr + 14 * S390X_WORD_SIZE);
+	tmp[3]=ULONG(ptr + 15 * S390X_WORD_SIZE);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[0],tmp[1]);
 	fprintf(fp,"     %#018lx %#018lx\n", tmp[2],tmp[3]);
 }

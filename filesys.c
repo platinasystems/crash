@@ -27,7 +27,6 @@ static char **build_searchdirs(int, int *);
 static int redhat_kernel_directory_v1(char *);
 static int redhat_kernel_directory_v2(char *);
 static int redhat_debug_directory(char *);
-static int file_dump(ulong, ulong, ulong, int, int);
 static ulong *create_dentry_array(ulong, int *);
 static ulong *create_dentry_array_percpu(ulong, int *);
 static void show_fuser(char *, char *);
@@ -77,11 +76,6 @@ static struct filesys_table {
 
 
 static struct filesys_table *ft = &filesys_table;
-
-#define DUMP_FULL_NAME   1
-#define DUMP_INODE_ONLY  2
-#define DUMP_DENTRY_ONLY 4
-#define DUMP_EMPTY_FILE  8
 
 /*
  *  Open the namelist, dumpfile and output devices.
@@ -2026,8 +2020,6 @@ show_hit_rates:
  *  lockd server on behalf of an NFS client are displayed.
  */
 
-#define FILES_LOCKD 1
-
 void
 cmd_files(void)
 {
@@ -2043,13 +2035,9 @@ cmd_files(void)
         refarg = NULL;
 	flag = 0;
 
-        while ((c = getopt(argcnt, args, "d:lR:")) != EOF) {
+        while ((c = getopt(argcnt, args, "d:R:")) != EOF) {
                 switch(c)
 		{
-		case 'l':
-			flag |= FILES_LOCKD;
-			break;
-
 		case 'R':
 			if (ref) {
 				error(INFO, "only one -R option allowed\n");
@@ -2072,22 +2060,13 @@ cmd_files(void)
 		}
 	}
 
-	if ((flag & FILES_LOCKD) && ref) {
-		error(INFO, "-R option not applicable to -l option\n");
-		argerrs++;
-	}
-
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
 	if (!args[optind]) {
-		if (flag & FILES_LOCKD) {
-			nlm_files_dump();
-		} else {
-			if (!ref)
-				print_task_header(fp, CURRENT_CONTEXT(), 0);
-			open_files_dump(CURRENT_TASK(), 0, ref);
-		}
+		if (!ref)
+			print_task_header(fp, CURRENT_CONTEXT(), 0);
+		open_files_dump(CURRENT_TASK(), 0, ref);
 		return;
 	}
 
@@ -2125,11 +2104,6 @@ cmd_files(void)
 
 		subsequent++;
 		optind++;
-	}
-
-	if (flag & FILES_LOCKD) {
-		fprintf(fp, "\n");
-		nlm_files_dump();
 	}
 }
 
@@ -2492,6 +2466,7 @@ open_file_reference(struct reference *ref)
 	return FALSE;
 }
 
+#ifdef DEPRECATED
 /*
  * nlm_files_dump() prints files held open by lockd server on behalf
  * of NFS clients
@@ -2607,12 +2582,13 @@ out:
 	if (!header_printed)
 		fprintf(fp, "No lockd server files open for NFS clients\n");
 }
+#endif
 	    
 /*
  * file_dump() prints info for an open file descriptor
  */
 
-static int
+int
 file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 {
 	ulong vfsmnt;
@@ -3076,9 +3052,8 @@ cmd_fuser(void)
 	char task_buf[BUFSIZE];
 	char buf[BUFSIZE];
 	char uses[20];
-	char client[20];
 	char fuser_header[BUFSIZE];
-	int doing_fds, doing_mmap, doing_lockd, len;
+	int doing_fds, doing_mmap, len;
 	int fuser_header_printed, lockd_header_printed;
 
         while ((c = getopt(argcnt, args, "")) != EOF) {
@@ -3101,7 +3076,7 @@ cmd_fuser(void)
 	sprintf(fuser_header, " PID   %s  COMM             USAGE\n",
 		mkstring(buf, VADDR_PRLEN, CENTER, "TASK"));
 
-	doing_lockd = doing_fds = doing_mmap = 0;
+	doing_fds = doing_mmap = 0;
 	while (args[optind]) {
                 spec_string = args[optind];
 		if (STRNEQ(spec_string, "0x") && hexadecimal(spec_string, 0))
@@ -3116,7 +3091,6 @@ cmd_fuser(void)
 		fd->keyword_array[1] = FOREACH_VM;
 		fd->keys = 2;
 		fd->flags |= FOREACH_i_FLAG;
-		fd->flags |= FOREACH_l_FLAG;
 		foreach(fd);
 		rewind(pc->tmpfile);
 		BZERO(uses, 20);
@@ -3133,7 +3107,7 @@ cmd_fuser(void)
 				}
 				BZERO(task_buf, BUFSIZE);
 				strcpy(task_buf, buf);
-				doing_lockd = doing_fds = doing_mmap = 0;
+				doing_fds = doing_mmap = 0;
 				continue;
 			}
 			if (STRNEQ(buf, "ROOT:")) {
@@ -3166,12 +3140,6 @@ cmd_fuser(void)
 				doing_fds = 0;
 				continue;
 			}
-			if (STREQ(buf, nlm_header) ||
-			    STREQ(buf, nlm_files_header)) {
-				doing_lockd = 1;
-				doing_fds = doing_mmap = 0;
-				continue;
-			}
 			if ((tmp = strstr(buf, spec_string)) &&
 			    (tmp[len] == ' ' || tmp[len] == '\n')) {
 				if (doing_fds) {
@@ -3181,16 +3149,6 @@ cmd_fuser(void)
 				if (doing_mmap) {
 					strcat(uses, "mmap ");
 					doing_mmap = 0;
-				}
-				if (doing_lockd) {
-					if (!lockd_header_printed) {
-						fprintf(pc->saved_fp,
-							"LOCKD CLIENTS:\n");
-						lockd_header_printed = 1;
-					}
-					BZERO(client, 20);
-					memccpy(client, buf, ' ', 20);
-					fprintf(pc->saved_fp, "%s\n", client);
 				}
 			}
 

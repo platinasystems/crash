@@ -682,10 +682,16 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 			kvmdump_display_regs(bt->tc->processor, fp);
 		if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
 			diskdump_display_regs(bt->tc->processor, fp);
+		if (SADUMP_DUMPFILE())
+			sadump_display_regs(bt->tc->processor, fp);
 		fprintf(fp, " #0 [user space]\n");
 		return;
-	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE())
-		kvmdump_display_regs(bt->tc->processor, fp);
+	} else if ((bt->flags & BT_KERNEL_SPACE)) {
+		if (KVMDUMP_DUMPFILE())
+			kvmdump_display_regs(bt->tc->processor, fp);
+		if (SADUMP_DUMPFILE())
+			sadump_display_regs(bt->tc->processor, fp);
+	}
 
 	addr = bt->stkptr;
 	have_addr = TRUE;
@@ -1993,6 +1999,12 @@ x86_init(int when)
 			machdep->machspec->page_protnone = _PAGE_GLOBAL;
 		else
 			machdep->machspec->page_protnone = _PAGE_PSE;
+
+		STRUCT_SIZE_INIT(note_buf, "note_buf_t");
+		STRUCT_SIZE_INIT(elf_prstatus, "elf_prstatus");
+		MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus",
+				   "pr_reg");
+		STRUCT_SIZE_INIT(percpu_data, "percpu_data");
 
 		break;
 

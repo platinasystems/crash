@@ -74,6 +74,8 @@ static int display_per_cpu_info(struct syment *);
 static struct load_module *get_module_percpu_sym_owner(struct syment *);
 static int is_percpu_symbol(struct syment *);
 static void dump_percpu_symbols(struct load_module *);
+static void print_struct_with_dereference(ulong, struct datatype_member *, ulong);
+static int dereference_pointer(ulong, struct datatype_member *, ulong);
 
 #define KERNEL_SECTIONS  (void *)(1)
 #define MODULE_SECTIONS  (void *)(2) 
@@ -118,7 +120,7 @@ static int show_member_offset(FILE *, struct datatype_member *, char *);
 #define INDENT_INCR     (2)
 
 static int is_typedef(char *);
-static void whatis_datatype(char *, ulong);
+static void whatis_datatype(char *, ulong, FILE *);
 static void whatis_variable(struct syment *);
 static void print_struct(char *, ulong);
 static void print_union(char *, ulong);
@@ -3387,7 +3389,7 @@ cmd_sym(void)
 			sp = NULL;
 			show_flags &= ~SHOW_MODULE;
 
-			if (hexadecimal(args[optind], 0)) {
+			if (clean_arg() && hexadecimal(args[optind], 0)) {
 				errflag = 0;
 				value = htol(args[optind], RETURN_ON_ERROR,
 					&errflag);
@@ -5037,6 +5039,7 @@ get_symbol_type(char *name, char *member, struct gnu_request *caller_req)
 	req->name = name;
 	req->member = member;
 	req->flags = GNU_RETURN_ON_ERROR; 
+	req->fp = pc->nullfp;
 
         gdb_interface(req);
 
@@ -5073,6 +5076,33 @@ get_symbol_length(char *symbol)
 	return len;
 }
 
+/*
+ *  Initialize the caller's restore_radix, and if valid,
+ *  temporarily override the current output radix.
+ */
+void
+set_temporary_radix(unsigned int radix, unsigned int *restore_radix)
+{
+	*restore_radix = *gdb_output_radix;
+
+	if ((radix == 10) || (radix == 16)) {
+		*gdb_output_radix = radix; \
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
+	}
+}
+
+/*
+ *  Restore the output radix to the current/default value saved
+ *  by the caller.
+ */
+void
+restore_current_radix(unsigned int restore_radix)
+{
+	if ((restore_radix == 10) || (restore_radix == 16)) {
+		*gdb_output_radix = restore_radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
+	}
+}
 
 /*
  *  Externally available routine to dump a structure at an address.
@@ -5088,18 +5118,11 @@ dump_struct(char *s, ulong addr, unsigned radix)
 	if ((len = STRUCT_SIZE(s)) < 0)
 		error(FATAL, "invalid structure name: %s\n", s);
 
-	if (radix) {
-		restore_radix = *gdb_output_radix; 
-		*gdb_output_radix = radix;
-		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-	}
+	set_temporary_radix(radix, &restore_radix);
 
         print_struct(s, addr);
 
-	if (radix) {
-		*gdb_output_radix = restore_radix;
-		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-	}
+	restore_current_radix(restore_radix);
 }
 
 /*
@@ -5135,21 +5158,14 @@ dump_struct_member(char *s, ulong addr, unsigned radix)
 			dm->member);
 	}
  
-        if (radix) {
-                restore_radix = *gdb_output_radix; 
-                *gdb_output_radix = radix;
-                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-        }
+	set_temporary_radix(radix, &restore_radix);
                 
         open_tmpfile();
         print_struct(dm->name, addr);
         parse_for_member(dm, PARSE_FOR_DATA);
         close_tmpfile();
                 
-        if (radix) {
-                *gdb_output_radix = restore_radix;
-                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-        }
+	restore_current_radix(restore_radix);
 
 	FREEBUF(buf);
 }
@@ -5169,18 +5185,11 @@ dump_union(char *s, ulong addr, unsigned radix)
         if ((len = UNION_SIZE(s)) < 0)
                 error(FATAL, "invalid union name: %s\n", s);
 
-        if (radix) {
-                restore_radix = *gdb_output_radix;
-                *gdb_output_radix = radix;
-		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-        }
+	set_temporary_radix(radix, &restore_radix);
 
         print_union(s, addr);
 
-        if (radix) {
-                *gdb_output_radix = restore_radix;
-		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-	}
+	restore_current_radix(restore_radix);
 }
 
 /*
@@ -5222,6 +5231,277 @@ cmd_pointer(void)
 	cmd_datatype_common(0);
 }
 
+static void
+print_struct_with_dereference(ulong addr, struct datatype_member *dm, ulong flags)
+{
+	int indent;
+	char *p1;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	struct datatype_member datatype_member, *dm1;
+
+	dm1 = &datatype_member;
+
+	open_tmpfile();
+
+	if (flags & UNION_REQUEST)
+		print_union(dm->name, addr);
+	else if (flags & STRUCT_REQUEST)
+		print_struct(dm->name, addr);
+
+	rewind(pc->tmpfile);
+	while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+		indent = count_leading_spaces(buf1);
+		if ((indent != 2) || strstr(buf1, "{") || strstr(buf1, "}")) {
+			print_verbatim(pc->saved_fp, buf1);
+			continue;
+		}
+
+		sprintf(buf2, "%s.", dm->name);
+		strcpy(buf3, &buf1[2]);
+		p1 = strstr(buf3, " =");
+		*p1 = NULLCHAR;
+		strcat(buf2, buf3);
+
+		if ((arg_to_datatype(buf2, dm1, RETURN_ON_ERROR) == 2) &&
+		    dereference_pointer(addr, dm1, flags))
+			continue;
+
+		print_verbatim(pc->saved_fp, buf1);
+	}
+
+	close_tmpfile();
+}
+
+
+static int
+dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
+{
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char *typeptr, *member, *charptr, *voidptr, *p1, *sym;
+	int found, indent, ptrptr, funcptr, typedef_is_ptr, use_symbol;
+	ulong target, value;
+
+	found = ptrptr = funcptr = typedef_is_ptr = use_symbol = FALSE;
+	member = GETBUF(strlen(dm->member)+4);
+	typeptr = charptr = voidptr = NULL;
+
+	open_tmpfile2();
+	whatis_datatype(dm->name, flags, pc->tmpfile2);
+
+	rewind(pc->tmpfile2);
+	while (fgets(buf1, BUFSIZE, pc->tmpfile2)) {
+		sprintf(member, " *%s;", dm->member);
+		if (strstr(buf1, member) && (buf1[4] != ' ')) {
+			typeptr = &buf1[4];
+			found++;
+			break;
+		}
+		sprintf(member, "**%s;", dm->member);
+		if (strstr(buf1, member) && (buf1[4] != ' ')) {
+			typeptr = &buf1[4];
+			found++;
+			ptrptr = TRUE;
+			break;
+		}
+		sprintf(member, "(*%s)(", dm->member);
+		if (strstr(buf1, member) && (buf1[4] != ' ')) {
+			typeptr = &buf1[4];
+			funcptr = TRUE;
+			found++;
+			break;
+		}
+                sprintf(member, " %s;", dm->member);
+                if (strstr(buf1, member) && (buf1[4] != ' ')) {
+                        typeptr = &buf1[4];
+                        typedef_is_ptr = TRUE;
+                        strcpy(buf2, typeptr);
+                        p1 = strstr(buf2, " ");
+                        *p1 = NULLCHAR;
+			if (datatype_exists(buf2) == TYPE_CODE_PTR) {
+                        	found++;
+                        	break;
+			}
+                }
+	}
+
+	close_tmpfile2();
+	FREEBUF(member);
+
+	if (!found) {
+		console("%s.%s: not found!\n", dm->name, dm->member);
+		return FALSE;
+	}
+
+	if (funcptr) {
+		p1 = strstr(buf1, ";");
+		*p1 = NULLCHAR;
+	} else if (ptrptr) {
+		p1 = strstr(buf1, "**");
+		*(p1+2) = NULLCHAR;
+		charptr = voidptr = NULL;
+        } else if (typedef_is_ptr) {
+                p1 = strstr(typeptr, " ");
+                *p1 = NULLCHAR;
+	} else {
+		p1 = strstr(buf1, "*");
+		*(p1+1) = NULLCHAR;
+		charptr = strstr(&buf1[4], "char *");
+		voidptr = strstr(&buf1[4], "void *");
+	}
+
+	console("%s.%s typeptr: %s ", 
+		dm->name, dm->member,
+		typeptr);
+	if (charptr)
+		console("[char *]");
+	else if (voidptr)
+		console("[void *]");
+	else if (funcptr)
+		console("[func *]");
+	else if (typedef_is_ptr)
+		console("[typedef is ptr]");
+	console("\n");
+
+	if (!readmem(addr + dm->member_offset, KVADDR, 
+	    &target, sizeof(void *), "target address",
+	    RETURN_ON_ERROR|QUIET)) {
+		error(INFO, "cannot access %s.%s %lx\n",
+			dm->name, dm->member,
+			addr + dm->member_offset);
+		return FALSE;
+	}
+
+	if ((sym = value_symbol(target))) {
+		switch (get_symbol_type(sym, NULL, NULL))
+		{
+		case TYPE_CODE_ARRAY:
+		case TYPE_CODE_UNION:
+		case TYPE_CODE_STRUCT:
+		case TYPE_CODE_INT:
+		case TYPE_CODE_PTR:
+			use_symbol = TRUE;
+			console("use_symbol: %s\n", sym); 
+			break;
+		}
+	}
+
+	if (funcptr) {
+		fprintf(pc->saved_fp, "  %s = 0x%lx\n  -> ", 
+			typeptr, target);
+		if (sym)
+			fprintf(pc->saved_fp, "<%s>\n", sym);
+		else if (target)
+			fprintf(pc->saved_fp, "(unknown)\n");
+		else
+			fprintf(pc->saved_fp, "NULL\n");
+		return TRUE;
+	}
+
+	if (charptr) {
+		fprintf(pc->saved_fp, "  %s%s = 0x%lx\n  -> ", typeptr, dm->member,
+			target);
+		if (sym)
+			fprintf(pc->saved_fp, "<%s> ", sym);
+		if (!target)
+			fprintf(pc->saved_fp, "NULL\n");
+		else if (!accessible(target) || !read_string(target, buf1, BUFSIZE-1))
+			fprintf(pc->saved_fp, "(not accessible)\n");
+		else 
+			fprintf(pc->saved_fp, "\"%s\"\n", buf1);
+		return TRUE;
+	}
+
+	if (voidptr && !use_symbol) {
+		fprintf(pc->saved_fp, "  %s%s = 0x%lx\n  -> ", typeptr, dm->member,
+			target);
+		if (sym)
+			fprintf(pc->saved_fp, "<%s>\n", sym);
+		else if (!target)
+			fprintf(pc->saved_fp, "NULL\n");
+		else if (voidptr)
+			fprintf(pc->saved_fp, "(unknown target type)\n");
+		return TRUE;
+	}
+
+	if (!target || !accessible(target)) {
+		fprintf(pc->saved_fp, "  %s%s%s = 0x%lx\n  -> ", typeptr, 
+			typedef_is_ptr ? " " : "", dm->member, target);
+		if (!target)
+			fprintf(pc->saved_fp, "NULL\n");
+		else
+			fprintf(pc->saved_fp, "(not accessible)\n");
+		return TRUE;
+	}
+
+	if (ptrptr) {
+		fprintf(pc->saved_fp, "  %s%s = 0x%lx\n  -> ", typeptr, dm->member,
+			target);
+		if (sym)
+			fprintf(pc->saved_fp, "<%s> ", sym);
+		if (!target || 
+		    !readmem(target, KVADDR, &value, sizeof(void *), 
+		    "target value", RETURN_ON_ERROR|QUIET))
+			fprintf(pc->saved_fp, "\n");
+		else 
+			fprintf(pc->saved_fp, "%lx\n", value);
+		return TRUE;
+	}
+
+	if (use_symbol)
+		sprintf(buf2, "p %s\n", sym);
+	else
+		sprintf(buf2, "p *((%s)(0x%lx))\n", typeptr, target);
+	console("gdb command: %s", buf2);
+
+	if (!typedef_is_ptr) {
+		p1 = strstr(typeptr, "*");
+		*(p1-1) = NULLCHAR;
+	} 
+
+	if (!datatype_exists(typeptr)) {
+		fprintf(pc->saved_fp, 
+		    "  %s %s%s = 0x%lx\n  -> (%s: no debuginfo data)\n", 
+			typeptr, typedef_is_ptr ? "" : "*", dm->member, target,
+			typeptr);
+		return TRUE;
+	}
+
+	open_tmpfile2();
+	if (!gdb_pass_through(buf2, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
+		console("gdb request failed: %s\n", buf2);
+		close_tmpfile2();
+		return FALSE;
+	}
+
+	fprintf(pc->saved_fp, "  %s %s%s = 0x%lx\n  -> ", typeptr, 
+		typedef_is_ptr ? "" : "*", dm->member, target);
+
+	indent = 0;
+	rewind(pc->tmpfile2);
+	while (fgets(buf1, BUFSIZE, pc->tmpfile2)) {
+		if (buf1[0] == '$') {
+			if (sym)
+				fprintf(pc->saved_fp, "<%s> ", sym);
+			if (typedef_is_ptr || use_symbol) {
+				if (strstr(buf1, "(") && strstr(buf1, ")")) {
+					fprintf(pc->saved_fp, "\n");
+					break;
+				}
+			}
+			p1 = strstr(buf1, "=");
+			fprintf(pc->saved_fp, p1+2);
+		} else
+			fprintf(pc->saved_fp, "     %s", buf1);
+	}
+	
+	close_tmpfile2();
+
+	return TRUE;
+}
+
 static void 
 cmd_datatype_common(ulong flags)
 {
@@ -5231,9 +5511,10 @@ cmd_datatype_common(ulong flags)
 	int rawdata;
 	long len;
 	ulong list_head_offset;
-	int count;
+	int count, pflag;
 	int argc_members;
 	int optind_save;
+	unsigned int radix, restore_radix;
         struct datatype_member datatype_member, *dm;
         char *separator;
         char *structname, *members;
@@ -5245,11 +5526,26 @@ cmd_datatype_common(ulong flags)
 	aflag = addr = 0;
         list_head_offset = 0;
         argc_members = 0;
+	radix = restore_radix = 0;
 	separator = members = NULL;
+	pflag = 0;
 
-        while ((c = getopt(argcnt, args, "fuc:rvol:")) != EOF) {
+        while ((c = getopt(argcnt, args, "pxdhfuc:rvol:")) != EOF) {
                 switch (c)
 		{
+		case 'p':
+			pflag++;
+			break;
+
+		case 'd':
+			radix = 10;
+			break;
+
+		case 'h':
+		case 'x':
+			radix = 16;
+			break;
+
 		case 'c':
 			count = atoi(optarg);
 			break;
@@ -5357,6 +5653,9 @@ cmd_datatype_common(ulong flags)
 		flags &= ~SHOW_OFFSET;
 	}
 
+	if (pflag && !aflag)
+		error(FATAL, "-p option requires address argument\n");
+
 	if (list_head_offset)
 		addr -= list_head_offset;
 
@@ -5432,7 +5731,9 @@ cmd_datatype_common(ulong flags)
 	 		 *  No address was passed -- dump the structure/member declaration.
 	 		 */
 			if (!aflag) {
+				set_temporary_radix(radix, &restore_radix);
 				do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
+				restore_current_radix(restore_radix);
 				goto freebuf;
 			}
 
@@ -5442,21 +5743,31 @@ cmd_datatype_common(ulong flags)
 			/*
 		 	 *  Display data.
 		 	 */
-                	if (rawdata)
-                        	raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
-                	else {
+			if (rawdata)
+				raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
+			else if (pflag && !dm->member) {
+				set_temporary_radix(radix, &restore_radix);
+				print_struct_with_dereference(addr, dm, flags);
+				restore_current_radix(restore_radix);
+                	} else {
 	                        if (dm->member)
 	                                open_tmpfile();
 	
-	        		if (flags & UNION_REQUEST)
-	                		print_union(dm->name, addr);
-	        		else if (flags & STRUCT_REQUEST)
-	                		print_struct(dm->name, addr);
-	
-	                        if (dm->member) {
-	                                parse_for_member(dm, PARSE_FOR_DATA);
-	                                close_tmpfile();
-	                        }
+				set_temporary_radix(radix, &restore_radix);
+
+				if (flags & UNION_REQUEST)
+					print_union(dm->name, addr);
+				else if (flags & STRUCT_REQUEST)
+					print_struct(dm->name, addr);
+
+				if (dm->member) {
+					if (!(pflag && 
+				    	    dereference_pointer(addr, dm, flags)))
+						parse_for_member(dm, PARSE_FOR_DATA);
+					close_tmpfile();
+				}
+
+				restore_current_radix(restore_radix);
                 	}
 		} while (++i < argc_members);
         }
@@ -5485,7 +5796,7 @@ do_datatype_declaration(struct datatype_member *dm, ulong flags)
 		dump_datatype_member(fp, dm);
 
         open_tmpfile();
-        whatis_datatype(dm->name, flags);
+        whatis_datatype(dm->name, flags, pc->tmpfile);
         rewind(pc->tmpfile);
 
 	if (dm->member)
@@ -5863,28 +6174,24 @@ cmd_p(void)
 {
         int c;
 	struct syment *sp, *percpu_sp;
-	unsigned restore_radix;
+	unsigned radix, restore_radix;
 	int leader, do_load_module_filter, success;
 	char buf1[BUFSIZE]; 
 	char buf2[BUFSIZE]; 
 	char *p1;
 
-	leader = do_load_module_filter = restore_radix = 0;
+	leader = do_load_module_filter = radix = restore_radix = 0;
 
         while ((c = getopt(argcnt, args, "dhxu")) != EOF) {
                 switch(c)
                 {
 		case 'd':
-			restore_radix = *gdb_output_radix;
-			*gdb_output_radix = 10;
-                	*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
+			radix = 10;
 			break;
 
 		case 'h':
 		case 'x':
-                        restore_radix = *gdb_output_radix;
-                        *gdb_output_radix = 16;
-                        *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
+			radix = 16;
                         break;
 
 		case 'u':
@@ -5916,6 +6223,8 @@ cmd_p(void)
 
 	if (leader || do_load_module_filter)
 		open_tmpfile();
+
+	set_temporary_radix(radix, &restore_radix);
 
        	success = gdb_pass_through(concat_args(buf1, 0, TRUE), NULL, 
 		GNU_RETURN_ON_ERROR);
@@ -5950,10 +6259,7 @@ cmd_p(void)
 	if (leader || do_load_module_filter)
 		close_tmpfile();
 
-	if (restore_radix) {
-                *gdb_output_radix = restore_radix;
-                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
-	}
+	restore_current_radix(restore_radix);
 
 	if (!success) 
 		error(FATAL, "gdb request failed: %s\n",
@@ -6193,7 +6499,7 @@ print_union(char *s, ulong addr)
  *  file is shown; otherwise the bitpos, size and id data is stripped.
  */
 static void 
-whatis_datatype(char *st, ulong flags)
+whatis_datatype(char *st, ulong flags, FILE *ofp)
 {
 	char lookbuf[BUFSIZE];
 
@@ -6206,7 +6512,7 @@ whatis_datatype(char *st, ulong flags)
         else
                 return;
 
-	if (!gdb_pass_through(lookbuf, fp, GNU_RETURN_ON_ERROR)) {
+	if (!gdb_pass_through(lookbuf, ofp, GNU_RETURN_ON_ERROR)) {
 		/*
 		 *  When a structure is defined using the format:
                  *
@@ -6221,7 +6527,7 @@ whatis_datatype(char *st, ulong flags)
                  */
 		if (flags & (UNION_REQUEST|STRUCT_REQUEST)) {
                 	sprintf(lookbuf, "ptype %s", st);
-			gdb_pass_through(lookbuf, fp, 0);
+			gdb_pass_through(lookbuf, ofp, 0);
 		}
 	}
 }
@@ -6351,6 +6657,7 @@ parse_for_member(struct datatype_member *dm, ulong flag)
 	char lookfor5[BUFSIZE];
 	long curpos, last_open_bracket;
 	int indent, on, array;
+	char *p1;
 
 	s = dm->member;
 	indent = 0;
@@ -6378,12 +6685,20 @@ next_item:
 				    !strstr(buf, "}")) || (buf[0] == '}')) {
 					break;
 				}
-				fprintf(pc->saved_fp, buf);
-				if (!indent)
+				if (!indent) {
+					if ((p1 = strstr(buf, ", \n")))
+						sprintf(p1, "\n");
+					fprintf(pc->saved_fp, buf);
 					break;
+				}
 				if (strstr(buf, "}") && 
-				    (count_leading_spaces(buf) == indent))
+				    (count_leading_spaces(buf) == indent)) {
+					if ((p1 = strstr(buf, "}, \n")))
+						sprintf(p1, "}\n");
+					fprintf(pc->saved_fp, buf);
 					break;
+				}
+				fprintf(pc->saved_fp, buf);
 				on++;
 			}
 		}
@@ -8359,6 +8674,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(unwind_idx));
 	fprintf(fp, "              s390_stack_frame: %ld\n",
 		SIZE(s390_stack_frame));
+	fprintf(fp, "                   percpu_data: %ld\n",
+		SIZE(percpu_data));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

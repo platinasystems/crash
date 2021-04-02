@@ -372,7 +372,7 @@ main(int argc, char **argv)
 				      "too many dumpfile/memory arguments\n");
 				program_usage(SHORT_FORM);
 			}
-			pc->flags |= REMOTE_DAEMON;
+			pc->flags2 |= REMOTE_DAEMON;
 			optind++;
 			continue;
 		}
@@ -554,6 +554,18 @@ main(int argc, char **argv)
                                 pc->readmem = read_s390_dumpfile;
                                 pc->writemem = write_s390_dumpfile;
 
+			} else if (is_sadump(argv[optind])) {
+				if ((pc->flags & MEMORY_SOURCES) &&
+				    !sadump_is_diskset()) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+				}
+				pc->flags |= SADUMP;
+				pc->dumpfile = argv[optind];
+				pc->readmem = read_sadump;
+				pc->writemem = write_sadump;
+
 			} else { 
 				error(INFO, 
 				    "%s: not a supported file format\n",
@@ -603,6 +615,14 @@ main(int argc, char **argv)
 void
 main_loop(void)
 {
+	if (pc->flags2 & ERASEINFO_DATA)
+		error(WARNING, "\n%s:\n         "
+		    "Kernel data has been erased from this dumpfile.  This may "
+		    "cause\n         the crash session to fail entirely, may "
+                    "cause commands to fail,\n         or may result in "
+		    "unpredictable runtime behavior.\n",
+			pc->dumpfile);
+
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
 		show_untrusted_files();
@@ -1081,9 +1101,6 @@ dump_program_context(void)
                 sprintf(&buf[strlen(buf)], "%sDROP_CORE", others++ ? "|" : "");
         if (pc->flags & LKCD)
                 sprintf(&buf[strlen(buf)], "%sLKCD", others++ ? "|" : "");
-        if (pc->flags & REMOTE_DAEMON)
-                sprintf(&buf[strlen(buf)], "%sREMOTE_DAEMON", 
-			others++ ? "|" : "");
         if (pc->flags & GDB_INIT)
                 sprintf(&buf[strlen(buf)], "%sGDB_INIT", others++ ? "|" : "");
         if (pc->flags & IN_GDB)
@@ -1161,6 +1178,9 @@ dump_program_context(void)
         if (pc->flags & KDUMP)
                 sprintf(&buf[strlen(buf)],
                         "%sKDUMP", others++ ? "|" : "");
+        if (pc->flags & SADUMP)
+                sprintf(&buf[strlen(buf)],
+                        "%sSADUMP", others++ ? "|" : "");
         if (pc->flags & SYSRQ)
                 sprintf(&buf[strlen(buf)],
                         "%sSYSRQ", others++ ? "|" : "");
@@ -1251,6 +1271,8 @@ dump_program_context(void)
 		fprintf(fp, "%sELF_NOTES", others++ ? "|" : "");
 	if (pc->flags2 & GET_OSRELEASE)
 		fprintf(fp, "%sGET_OSRELEASE", others++ ? "|" : "");
+	if (pc->flags2 & REMOTE_DAEMON)
+		fprintf(fp, "%sREMOTE_DAEMON", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);

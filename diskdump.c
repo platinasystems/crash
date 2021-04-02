@@ -516,6 +516,12 @@ restart:
 		machdep->process_elf_notes(dd->notes_buf, size);
 	}
 
+	/* Check if dump file contains erasesinfo data */
+	if (KDUMP_CMPRS_VALID() && (dd->header->header_version >= 5) &&
+		(sub_header_kdump->offset_eraseinfo) &&
+		(sub_header_kdump->size_eraseinfo))
+		pc->flags2 |= ERASEINFO_DATA;
+
 	/* For split dumpfile */
 	if (KDUMP_CMPRS_VALID()) {
 		is_split = ((dd->header->header_version >= 2) &&
@@ -1016,6 +1022,50 @@ err:
 }
 
 static void 
+dump_eraseinfo(FILE *fp)
+{
+	char *buf = NULL;
+	unsigned long i = 0;
+	unsigned long size_eraseinfo = dd->sub_header_kdump->size_eraseinfo;
+	off_t offset = dd->sub_header_kdump->offset_eraseinfo;
+	const off_t failed = (off_t)-1;
+
+	if ((buf = malloc(size_eraseinfo)) == NULL) {
+		error(FATAL, "compressed kdump: cannot malloc eraseinfo"
+				" buffer\n");
+	}
+
+	if (FLAT_FORMAT()) {
+		if (!read_flattened_format(dd->dfd, offset, buf, size_eraseinfo)) {
+			error(INFO, "compressed kdump: cannot read eraseinfo data\n");
+			goto err;
+		}
+	} else {
+		if (lseek(dd->dfd, offset, SEEK_SET) == failed) {
+			error(INFO, "compressed kdump: cannot lseek dump eraseinfo\n");
+			goto err;
+		}
+		if (read(dd->dfd, buf, size_eraseinfo) < size_eraseinfo) {
+			error(INFO, "compressed kdump: cannot read eraseinfo data\n");
+			goto err;
+		}
+	}
+
+	fprintf(fp, "                      ");
+	for (i = 0; i < size_eraseinfo; i++) {
+		fprintf(fp, "%c", buf[i]);
+		if (buf[i] == '\n')
+			fprintf(fp, "                      ");
+	}
+	if (buf[i - 1] != '\n')
+		fprintf(fp, "\n");
+err:
+	if (buf)
+		free(buf);
+	return;
+}
+
+static void
 dump_nt_prstatus_offset(FILE *fp)
 {
 	struct kdump_sub_header *sub_header_kdump = dd->sub_header_kdump;
@@ -1259,6 +1309,16 @@ __diskdump_memory_dump(FILE *fp)
 					i, (ulong)dd->nt_prstatus_percpu[i]);
 			}
 			dump_nt_prstatus_offset(fp);
+		}
+		if (dh->header_version >= 5) {
+			fprintf(fp, "    offset_eraseinfo: %lx\n",
+				(ulong)dd->sub_header_kdump->offset_eraseinfo);
+			fprintf(fp, "      size_eraseinfo: %lu\n",
+				dd->sub_header_kdump->size_eraseinfo);
+			if (dd->sub_header_kdump->offset_eraseinfo &&
+				dd->sub_header_kdump->size_eraseinfo) {
+				dump_eraseinfo(fp);
+			}
 		}
 		fprintf(fp, "\n");
 	} else

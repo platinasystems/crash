@@ -1685,3 +1685,304 @@
  	      add_symbol_to_list (sym, &global_symbols);
  	    }
  	  child_die = sibling_die (child_die);
+--- gdb-7.0/bfd/elf64-ppc.c.orig
++++ gdb-7.0/bfd/elf64-ppc.c
+@@ -4764,7 +4764,7 @@ ppc64_elf_check_relocs (bfd *abfd, struc
+ {
+   struct ppc_link_hash_table *htab;
+   Elf_Internal_Shdr *symtab_hdr;
+-  struct elf_link_hash_entry **sym_hashes, **sym_hashes_end;
++  struct elf_link_hash_entry **sym_hashes;
+   const Elf_Internal_Rela *rel;
+   const Elf_Internal_Rela *rel_end;
+   asection *sreloc;
+@@ -4793,10 +4793,6 @@ ppc64_elf_check_relocs (bfd *abfd, struc
+   symtab_hdr = &elf_symtab_hdr (abfd);
+ 
+   sym_hashes = elf_sym_hashes (abfd);
+-  sym_hashes_end = (sym_hashes
+-		    + symtab_hdr->sh_size / sizeof (Elf64_External_Sym)
+-		    - symtab_hdr->sh_info);
+-
+   sreloc = NULL;
+   opd_sym_map = NULL;
+   if (strcmp (bfd_get_section_name (abfd, sec), ".opd") == 0)
+@@ -5672,6 +5668,9 @@ ppc64_elf_gc_sweep_hook (bfd *abfd, stru
+   elf_section_data (sec)->local_dynrel = NULL;
+ 
+   htab = ppc_hash_table (info);
++  if (htab == NULL)
++    return FALSE;
++
+   symtab_hdr = &elf_symtab_hdr (abfd);
+   sym_hashes = elf_sym_hashes (abfd);
+   local_got_ents = elf_local_got_ents (abfd);
+@@ -6790,7 +6789,6 @@ ppc64_elf_edit_opd (bfd *obfd, struct bf
+       Elf_Internal_Rela *relstart, *rel, *relend;
+       Elf_Internal_Shdr *symtab_hdr;
+       Elf_Internal_Sym *local_syms;
+-      struct elf_link_hash_entry **sym_hashes;
+       bfd_vma offset;
+       struct _opd_sec_data *opd;
+       bfd_boolean need_edit, add_aux_fields;
+@@ -6812,7 +6810,6 @@ ppc64_elf_edit_opd (bfd *obfd, struct bf
+ 
+       local_syms = NULL;
+       symtab_hdr = &elf_symtab_hdr (ibfd);
+-      sym_hashes = elf_sym_hashes (ibfd);
+ 
+       /* Read the relocations.  */
+       relstart = _bfd_elf_link_read_relocs (ibfd, sec, NULL, NULL,
+@@ -7664,7 +7661,6 @@ ppc64_elf_edit_toc (bfd *obfd ATTRIBUTE_
+       asection *toc, *sec;
+       Elf_Internal_Shdr *symtab_hdr;
+       Elf_Internal_Sym *local_syms;
+-      struct elf_link_hash_entry **sym_hashes;
+       Elf_Internal_Rela *relstart, *rel;
+       unsigned long *skip, *drop;
+       unsigned char *used;
+@@ -7679,7 +7675,6 @@ ppc64_elf_edit_toc (bfd *obfd ATTRIBUTE_
+ 
+       local_syms = NULL;
+       symtab_hdr = &elf_symtab_hdr (ibfd);
+-      sym_hashes = elf_sym_hashes (ibfd);
+ 
+       /* Look at sections dropped from the final link.  */
+       skip = NULL;
+--- gdb-7.0/bfd/elf32-ppc.c.orig
++++ gdb-7.0/bfd/elf32-ppc.c
+@@ -4735,7 +4735,6 @@ ppc_elf_tls_optimize (bfd *obfd ATTRIBUT
+ 		    }
+ 		  else
+ 		    {
+-		      Elf_Internal_Sym *sym;
+ 		      bfd_signed_vma *lgot_refs;
+ 		      struct plt_entry **local_plt;
+ 		      char *lgot_masks;
+@@ -4754,7 +4753,6 @@ ppc_elf_tls_optimize (bfd *obfd ATTRIBUT
+ 			      return FALSE;
+ 			    }
+ 			}
+-		      sym = locsyms + r_symndx;
+ 		      lgot_refs = elf_local_got_refcounts (ibfd);
+ 		      if (lgot_refs == NULL)
+ 			abort ();
+@@ -5941,7 +5939,7 @@ ppc_elf_relax_section (bfd *abfd,
+   for (irel = internal_relocs; irel < irelend; irel++)
+     {
+       unsigned long r_type = ELF32_R_TYPE (irel->r_info);
+-      bfd_vma reladdr, toff, roff;
++      bfd_vma toff, roff;
+       asection *tsec;
+       struct one_fixup *f;
+       size_t insn_offset = 0;
+@@ -6125,7 +6123,6 @@ ppc_elf_relax_section (bfd *abfd,
+ 	continue;
+ 
+       roff = irel->r_offset;
+-      reladdr = isec->output_section->vma + isec->output_offset + roff;
+ 
+       /* If the branch is in range, no need to do anything.  */
+       if (tsec != bfd_und_section_ptr
+--- gdb-7.0/bfd/coffcode.h.orig
++++ gdb-7.0/bfd/coffcode.h
+@@ -3527,7 +3527,9 @@ coff_write_object_contents (bfd * abfd)
+   asection *current;
+   bfd_boolean hasrelocs = FALSE;
+   bfd_boolean haslinno = FALSE;
++#ifdef COFF_IMAGE_WITH_PE
+   bfd_boolean hasdebug = FALSE;
++#endif
+   file_ptr scn_base;
+   file_ptr reloc_base;
+   file_ptr lineno_base;
+@@ -3630,9 +3632,9 @@ coff_write_object_contents (bfd * abfd)
+        current = current->next)
+     {
+       struct internal_scnhdr section;
++#ifdef COFF_IMAGE_WITH_PE
+       bfd_boolean is_reloc_section = FALSE;
+ 
+-#ifdef COFF_IMAGE_WITH_PE
+       if (strcmp (current->name, DOT_RELOC) == 0)
+ 	{
+ 	  is_reloc_section = TRUE;
+@@ -3731,9 +3733,11 @@ coff_write_object_contents (bfd * abfd)
+ #endif
+       if (current->lineno_count != 0)
+ 	haslinno = TRUE;
++#ifdef COFF_IMAGE_WITH_PE
+       if ((current->flags & SEC_DEBUGGING) != 0
+ 	  && ! is_reloc_section)
+ 	hasdebug = TRUE;
++#endif
+ 
+ #ifdef RS6000COFF_C
+ #ifndef XCOFF64
+--- gdb-7.0/bfd/coff-rs6000.c.orig
++++ gdb-7.0/bfd/coff-rs6000.c
+@@ -3068,7 +3068,7 @@ xcoff_complain_overflow_bitfield_func (i
+      bfd_vma relocation;
+      struct reloc_howto_struct *howto;
+ {
+-  bfd_vma addrmask, fieldmask, signmask, ss;
++  bfd_vma fieldmask, signmask, ss;
+   bfd_vma a, b, sum;
+ 
+   /* Get the values to be added together.  For signed and unsigned
+@@ -3076,7 +3076,6 @@ xcoff_complain_overflow_bitfield_func (i
+      the size of an address.  For bitfields, all the bits matter.
+      See also bfd_check_overflow.  */
+   fieldmask = N_ONES (howto->bitsize);
+-  addrmask = N_ONES (bfd_arch_bits_per_address (input_bfd)) | fieldmask;
+   a = relocation;
+   b = val & howto->src_mask;
+ 
+--- gdb-7.0/bfd/elf32-arm.c.orig
++++ gdb-7.0/bfd/elf32-arm.c
+@@ -3438,7 +3438,6 @@ arm_build_one_stub (struct bfd_hash_entr
+   struct elf32_arm_link_hash_table *htab;
+   asection *stub_sec;
+   bfd *stub_bfd;
+-  bfd_vma stub_addr;
+   bfd_byte *loc;
+   bfd_vma sym_value;
+   int template_size;
+@@ -3471,10 +3470,6 @@ arm_build_one_stub (struct bfd_hash_entr
+ 
+   stub_bfd = stub_sec->owner;
+ 
+-  /* This is the address of the start of the stub.  */
+-  stub_addr = stub_sec->output_section->vma + stub_sec->output_offset
+-    + stub_entry->stub_offset;
+-
+   /* This is the address of the stub destination.  */
+   sym_value = (stub_entry->target_value
+ 	       + stub_entry->target_section->output_offset
+@@ -3660,16 +3655,14 @@ find_stub_size_and_template (enum elf32_
+ 
+ static bfd_boolean
+ arm_size_one_stub (struct bfd_hash_entry *gen_entry,
+-		   void * in_arg)
++		   void * in_arg __attribute__ ((unused)))
+ {
+   struct elf32_arm_stub_hash_entry *stub_entry;
+-  struct elf32_arm_link_hash_table *htab;
+   const insn_sequence *template_sequence;
+   int template_size, size;
+ 
+   /* Massage our args to the form they really have.  */
+   stub_entry = (struct elf32_arm_stub_hash_entry *) gen_entry;
+-  htab = (struct elf32_arm_link_hash_table *) in_arg;
+ 
+   BFD_ASSERT((stub_entry->stub_type > arm_stub_none)
+ 	     && stub_entry->stub_type < ARRAY_SIZE(stub_definitions));
+@@ -5147,7 +5140,6 @@ record_vfp11_erratum_veneer (struct bfd_
+   struct bfd_link_hash_entry *bh;
+   bfd_vma val;
+   struct _arm_elf_section_data *sec_data;
+-  int errcount;
+   elf32_vfp11_erratum_list *newerr;
+ 
+   hash_table = elf32_arm_hash_table (link_info);
+@@ -5186,7 +5178,7 @@ record_vfp11_erratum_veneer (struct bfd_
+   myh->forced_local = 1;
+ 
+   /* Link veneer back to calling location.  */
+-  errcount = ++(sec_data->erratumcount);
++  sec_data->erratumcount += 1;
+   newerr = bfd_zmalloc (sizeof (elf32_vfp11_erratum_list));
+ 
+   newerr->type = VFP11_ERRATUM_ARM_VENEER;
+@@ -6035,9 +6027,8 @@ bfd_elf32_arm_vfp11_erratum_scan (bfd *a
+                 {
+                   elf32_vfp11_erratum_list *newerr
+                     = bfd_zmalloc (sizeof (elf32_vfp11_erratum_list));
+-                  int errcount;
+ 
+-                  errcount = ++(elf32_arm_section_data (sec)->erratumcount);
++		  elf32_arm_section_data (sec)->erratumcount += 1;
+ 
+                   newerr->u.b.vfp_insn = veneer_of_insn;
+ 
+@@ -6747,8 +6738,6 @@ elf32_arm_final_link_relocate (reloc_how
+   unsigned long                 r_symndx;
+   bfd_byte *                    hit_data = contents + rel->r_offset;
+   bfd *                         dynobj = NULL;
+-  Elf_Internal_Shdr *           symtab_hdr;
+-  struct elf_link_hash_entry ** sym_hashes;
+   bfd_vma *                     local_got_offsets;
+   asection *                    sgot = NULL;
+   asection *                    splt = NULL;
+@@ -6785,8 +6774,6 @@ elf32_arm_final_link_relocate (reloc_how
+       sgot = bfd_get_section_by_name (dynobj, ".got");
+       splt = bfd_get_section_by_name (dynobj, ".plt");
+     }
+-  symtab_hdr = & elf_symtab_hdr (input_bfd);
+-  sym_hashes = elf_sym_hashes (input_bfd);
+   local_got_offsets = elf_local_got_offsets (input_bfd);
+   r_symndx = ELF32_R_SYM (rel->r_info);
+ 
+@@ -8886,7 +8873,7 @@ elf32_arm_relocate_section (bfd *       
+ 	}
+       else
+ 	{
+-	  bfd_boolean warned;
++	  bfd_boolean warned __attribute__((unused));
+ 
+ 	  RELOC_FOR_GLOBAL_SYMBOL (info, input_bfd, input_section, rel,
+ 				   r_symndx, symtab_hdr, sym_hashes,
+@@ -10740,7 +10727,6 @@ elf32_arm_check_relocs (bfd *abfd, struc
+   const Elf_Internal_Rela *rel_end;
+   bfd *dynobj;
+   asection *sreloc;
+-  bfd_vma *local_got_offsets;
+   struct elf32_arm_link_hash_table *htab;
+   bfd_boolean needs_plt;
+   unsigned long nsyms;
+@@ -10763,7 +10749,6 @@ elf32_arm_check_relocs (bfd *abfd, struc
+     }
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  local_got_offsets = elf_local_got_offsets (abfd);
+ 
+   symtab_hdr = & elf_symtab_hdr (abfd);
+   sym_hashes = elf_sym_hashes (abfd);
+@@ -12864,10 +12849,8 @@ elf32_arm_output_map_sym (output_arch_sy
+ 			  bfd_vma offset)
+ {
+   static const char *names[3] = {"$a", "$t", "$d"};
+-  struct elf32_arm_link_hash_table *htab;
+   Elf_Internal_Sym sym;
+ 
+-  htab = elf32_arm_hash_table (osi->info);
+   sym.st_value = osi->sec->output_section->vma
+ 		 + osi->sec->output_offset
+ 		 + offset;
+@@ -12962,10 +12945,8 @@ static bfd_boolean
+ elf32_arm_output_stub_sym (output_arch_syminfo *osi, const char *name,
+ 			   bfd_vma offset, bfd_vma size)
+ {
+-  struct elf32_arm_link_hash_table *htab;
+   Elf_Internal_Sym sym;
+ 
+-  htab = elf32_arm_hash_table (osi->info);
+   sym.st_value = osi->sec->output_section->vma
+ 		 + osi->sec->output_offset
+ 		 + offset;
+@@ -12982,7 +12963,6 @@ arm_map_one_stub (struct bfd_hash_entry 
+ {
+   struct elf32_arm_stub_hash_entry *stub_entry;
+   struct bfd_link_info *info;
+-  struct elf32_arm_link_hash_table *htab;
+   asection *stub_sec;
+   bfd_vma addr;
+   char *stub_name;
+@@ -12999,7 +12979,6 @@ arm_map_one_stub (struct bfd_hash_entry 
+ 
+   info = osi->info;
+ 
+-  htab = elf32_arm_hash_table (info);
+   stub_sec = stub_entry->stub_sec;
+ 
+   /* Ensure this stub is attached to the current section being
