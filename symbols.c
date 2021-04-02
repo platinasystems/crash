@@ -1410,7 +1410,8 @@ store_module_symbols_v2(ulong total, int mods_installed)
 		lm->mod_ext_symcnt = mcnt;
 		lm->mod_init_module_ptr = ULONG(modbuf + 
 			OFFSET(module_module_init));
-		lm->mod_percpu = ULONG(modbuf + OFFSET(module_percpu));
+		if (VALID_MEMBER(module_percpu))
+			lm->mod_percpu = ULONG(modbuf + OFFSET(module_percpu));
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 			lm->mod_etext_guess = lm->mod_base +
 				UINT(modbuf + OFFSET(module_core_text_size));
@@ -7968,6 +7969,58 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(user_regs_struct_cs));
 	fprintf(fp, "           user_regs_struct_ss: %ld\n",
 		OFFSET(user_regs_struct_ss));
+	fprintf(fp, "          user_regs_struct_eip: %ld\n",
+		OFFSET(user_regs_struct_eip));
+	fprintf(fp, "          user_regs_struct_rax: %ld\n",
+		OFFSET(user_regs_struct_rax));
+	fprintf(fp, "          user_regs_struct_eax: %ld\n",
+		OFFSET(user_regs_struct_eax));
+	fprintf(fp, "          user_regs_struct_rbx: %ld\n",
+		OFFSET(user_regs_struct_rbx));
+	fprintf(fp, "          user_regs_struct_ebx: %ld\n",
+		OFFSET(user_regs_struct_ebx));
+	fprintf(fp, "          user_regs_struct_rcx: %ld\n",
+		OFFSET(user_regs_struct_rcx));
+	fprintf(fp, "          user_regs_struct_ecx: %ld\n",
+		OFFSET(user_regs_struct_ecx));
+	fprintf(fp, "          user_regs_struct_rdx: %ld\n",
+		OFFSET(user_regs_struct_rdx));
+	fprintf(fp, "          user_regs_struct_edx: %ld\n",
+		OFFSET(user_regs_struct_edx));
+	fprintf(fp, "          user_regs_struct_rsi: %ld\n",
+		OFFSET(user_regs_struct_rsi));
+	fprintf(fp, "          user_regs_struct_esi: %ld\n",
+		OFFSET(user_regs_struct_esi));
+	fprintf(fp, "          user_regs_struct_rdi: %ld\n",
+		OFFSET(user_regs_struct_rdi));
+	fprintf(fp, "          user_regs_struct_edi: %ld\n",
+		OFFSET(user_regs_struct_edi));
+	fprintf(fp, "           user_regs_struct_ds: %ld\n",
+		OFFSET(user_regs_struct_ds));
+	fprintf(fp, "           user_regs_struct_es: %ld\n",
+		OFFSET(user_regs_struct_es));
+	fprintf(fp, "           user_regs_struct_fs: %ld\n",
+		OFFSET(user_regs_struct_fs));
+	fprintf(fp, "           user_regs_struct_gs: %ld\n",
+		OFFSET(user_regs_struct_gs));
+	fprintf(fp, "          user_regs_struct_rbp: %ld\n",
+		OFFSET(user_regs_struct_rbp));
+	fprintf(fp, "           user_regs_struct_r8: %ld\n",
+		OFFSET(user_regs_struct_r8));
+	fprintf(fp, "           user_regs_struct_r9: %ld\n",
+		OFFSET(user_regs_struct_r9));
+	fprintf(fp, "          user_regs_struct_r10: %ld\n",
+		OFFSET(user_regs_struct_r10));
+	fprintf(fp, "          user_regs_struct_r11: %ld\n",
+		OFFSET(user_regs_struct_r11));
+	fprintf(fp, "          user_regs_struct_r12: %ld\n",
+		OFFSET(user_regs_struct_r12));
+	fprintf(fp, "          user_regs_struct_r13: %ld\n",
+		OFFSET(user_regs_struct_r13));
+	fprintf(fp, "          user_regs_struct_r14: %ld\n",
+		OFFSET(user_regs_struct_r14));
+	fprintf(fp, "          user_regs_struct_r15: %ld\n",
+		OFFSET(user_regs_struct_r15));
 
 	fprintf(fp, "                e820map_nr_map: %ld\n",
 		OFFSET(e820map_nr_map));

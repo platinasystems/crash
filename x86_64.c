@@ -337,6 +337,57 @@ x86_64_init(int when)
 			"user_regs_struct", "cs");
 		MEMBER_OFFSET_INIT(user_regs_struct_ss,
 			"user_regs_struct", "ss");
+		MEMBER_OFFSET_INIT(user_regs_struct_rax,
+			"user_regs_struct", "rax");
+		if (INVALID_MEMBER(user_regs_struct_rax))
+			MEMBER_OFFSET_INIT(user_regs_struct_rax,
+				"user_regs_struct", "ax");
+		MEMBER_OFFSET_INIT(user_regs_struct_rbx,
+			"user_regs_struct", "rbx");
+		if (INVALID_MEMBER(user_regs_struct_rbx))
+			MEMBER_OFFSET_INIT(user_regs_struct_rbx,
+				"user_regs_struct", "bx");
+		MEMBER_OFFSET_INIT(user_regs_struct_rcx,
+			"user_regs_struct", "rcx");
+		if (INVALID_MEMBER(user_regs_struct_rcx))
+			MEMBER_OFFSET_INIT(user_regs_struct_rcx,
+				"user_regs_struct", "cx");
+		MEMBER_OFFSET_INIT(user_regs_struct_rdx,
+			"user_regs_struct", "rdx");
+		if (INVALID_MEMBER(user_regs_struct_rdx))
+			MEMBER_OFFSET_INIT(user_regs_struct_rdx,
+				"user_regs_struct", "dx");
+		MEMBER_OFFSET_INIT(user_regs_struct_rsi,
+			"user_regs_struct", "rsi");
+		if (INVALID_MEMBER(user_regs_struct_rsi))
+			MEMBER_OFFSET_INIT(user_regs_struct_rsi,
+				"user_regs_struct", "si");
+		MEMBER_OFFSET_INIT(user_regs_struct_rdi,
+			"user_regs_struct", "rdi");
+		if (INVALID_MEMBER(user_regs_struct_rdi))
+			MEMBER_OFFSET_INIT(user_regs_struct_rdi,
+				"user_regs_struct", "di");
+		MEMBER_OFFSET_INIT(user_regs_struct_rbp,
+			"user_regs_struct", "rbp");
+		if (INVALID_MEMBER(user_regs_struct_rbp))
+			MEMBER_OFFSET_INIT(user_regs_struct_rbp,
+				"user_regs_struct", "bp");
+		MEMBER_OFFSET_INIT(user_regs_struct_r8,
+			"user_regs_struct", "r8");
+		MEMBER_OFFSET_INIT(user_regs_struct_r9,
+			"user_regs_struct", "r9");
+		MEMBER_OFFSET_INIT(user_regs_struct_r10,
+			"user_regs_struct", "r10");
+		MEMBER_OFFSET_INIT(user_regs_struct_r11,
+			"user_regs_struct", "r11");
+		MEMBER_OFFSET_INIT(user_regs_struct_r12,
+			"user_regs_struct", "r12");
+		MEMBER_OFFSET_INIT(user_regs_struct_r13,
+			"user_regs_struct", "r13");
+		MEMBER_OFFSET_INIT(user_regs_struct_r14,
+			"user_regs_struct", "r14");
+		MEMBER_OFFSET_INIT(user_regs_struct_r15,
+			"user_regs_struct", "r15");
 		STRUCT_SIZE_INIT(user_regs_struct, "user_regs_struct");
 		if (!VALID_STRUCT(user_regs_struct)) {
 			/*  Use this hardwired version -- sometimes the
@@ -362,6 +413,36 @@ x86_64_init(int when)
 				offsetof(struct x86_64_user_regs_struct, cs);
 			ASSIGN_OFFSET(user_regs_struct_ss) =
 				offsetof(struct x86_64_user_regs_struct, ss);
+			ASSIGN_OFFSET(user_regs_struct_rax) =
+				offsetof(struct x86_64_user_regs_struct, ax);
+			ASSIGN_OFFSET(user_regs_struct_rbx) =
+				offsetof(struct x86_64_user_regs_struct, bx);
+			ASSIGN_OFFSET(user_regs_struct_rcx) =
+				offsetof(struct x86_64_user_regs_struct, cx);
+			ASSIGN_OFFSET(user_regs_struct_rdx) =
+				offsetof(struct x86_64_user_regs_struct, dx);
+			ASSIGN_OFFSET(user_regs_struct_rsi) =
+				offsetof(struct x86_64_user_regs_struct, si);
+			ASSIGN_OFFSET(user_regs_struct_rdi) =
+				offsetof(struct x86_64_user_regs_struct, di);
+			ASSIGN_OFFSET(user_regs_struct_rbp) =
+				offsetof(struct x86_64_user_regs_struct, bp);
+			ASSIGN_OFFSET(user_regs_struct_r8) =
+				offsetof(struct x86_64_user_regs_struct, r8);
+			ASSIGN_OFFSET(user_regs_struct_r9) =
+				offsetof(struct x86_64_user_regs_struct, r9);
+			ASSIGN_OFFSET(user_regs_struct_r10) =
+				offsetof(struct x86_64_user_regs_struct, r10);
+			ASSIGN_OFFSET(user_regs_struct_r11) =
+				offsetof(struct x86_64_user_regs_struct, r11);
+			ASSIGN_OFFSET(user_regs_struct_r12) =
+				offsetof(struct x86_64_user_regs_struct, r12);
+			ASSIGN_OFFSET(user_regs_struct_r13) =
+				offsetof(struct x86_64_user_regs_struct, r13);
+			ASSIGN_OFFSET(user_regs_struct_r14) =
+				offsetof(struct x86_64_user_regs_struct, r14);
+			ASSIGN_OFFSET(user_regs_struct_r15) =
+				offsetof(struct x86_64_user_regs_struct, r15);
 		}
 		machdep->vmalloc_start = x86_64_vmalloc_start;
 		vt->vmalloc_start = machdep->vmalloc_start();
@@ -2750,7 +2831,11 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	last_process_stack_eframe = 0;
 	bt->call_target = NULL;
 	rsp = bt->stkptr;
-	if (!rsp || !accessible(rsp)) {
+	/* If rsp is in user stack, the memory may not be included in vmcore, and
+	 * we only output the register's value. So it's not necessary to check
+	 * whether it can be accessible.
+	 */
+	if (!(bt->flags & BT_USER_SPACE) && (!rsp || !accessible(rsp))) {
 		error(INFO, "cannot determine starting stack pointer\n");
 		return;
 	}
@@ -2761,6 +2846,9 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 		ofp = fp;
 
         if (bt->flags & BT_TEXT_SYMBOLS) {
+		if ((bt->flags & BT_USER_SPACE) &&
+		    !(bt->flags & BT_TEXT_SYMBOLS_ALL))
+			return;
 		if (!(bt->flags & BT_TEXT_SYMBOLS_ALL))
                 	fprintf(ofp, "%sSTART: %s%s at %lx\n",
                 	    space(VADDR_PRLEN > 8 ? 14 : 6),
@@ -2768,10 +2856,16 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 			    STREQ(closest_symbol(bt->instptr), "thread_return") ?
 			    " (schedule)" : "",
 			    bt->instptr);
-	} else if ((bt->flags & BT_USER_SPACE) && KVMDUMP_DUMPFILE()) {
+	} else if (bt->flags & BT_USER_SPACE) {
 		fprintf(ofp, "    [exception RIP: user space]\n");
-		kvmdump_display_regs(bt->tc->processor, ofp);
-		return;
+		if(KVMDUMP_DUMPFILE()) {
+			kvmdump_display_regs(bt->tc->processor, ofp);
+			return;
+		}
+		if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE()) {
+			diskdump_display_regs(bt->tc->processor, ofp);
+			return;
+		}
 	} else if ((bt->flags & BT_KERNEL_SPACE) && KVMDUMP_DUMPFILE()) {
 		fprintf(ofp, "    [exception RIP: ");
 		if ((sp = value_search(bt->instptr, &offset))) {
@@ -3759,6 +3853,20 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 				cs & 3 ? "USER" : "KERNEL", 
 				kvaddr ?  kvaddr : 
 				(local - bt->stackbuf) + bt->stackbase);
+			if (!(cs & 3)) {
+				fprintf(ofp, "    [exception RIP: ");
+				if ((sp = value_search(rip, &offset))) {
+					fprintf(ofp, "%s", sp->name);
+					if (offset)
+						fprintf(ofp, 
+						    (*gdb_output_radix == 16) ? 
+						    "+0x%lx" : "+%ld", 
+						    offset);
+				} else 
+					fprintf(ofp, 
+						"unknown or invalid address");
+				fprintf(ofp, "]\n");
+			}
 		} else if (!(cs & 3)) {
 			fprintf(ofp, "    [exception RIP: ");
 			if ((sp = value_search(rip, &offset))) {
@@ -4252,6 +4360,8 @@ skip_stage:
 	if (ur_rip && ur_rsp) {
         	*rip = ur_rip;
 		*rsp = ur_rsp;
+		if (!is_kernel_text(ur_rip) && in_user_stack(bt->tc->task, ur_rsp))
+			bt_in->flags |= BT_USER_SPACE;
 		return;
 	}
 
@@ -6746,6 +6856,25 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		textaddr = locking_func;
 	} else
 		textaddr_save = 0;
+
+	/*
+	 *  As of 2.6.29, "irq_entries_start" replaced the range of IRQ
+	 *  entry points named IRQ0x00_interrupt through IRQ0x##_interrupt.
+	 *  Each IRQ entry point in the list of non-symbolically-named 
+	 *  entry stubs consists of a single pushq and a jmp.
+	 */
+	if (STREQ(sp->name, "irq_entries_start")) {
+#define PUSH_IMM8 0x6a
+		if (readmem(textaddr, KVADDR, &instr,
+		    sizeof(short), "irq_entries_start instruction", 
+		    QUIET|RETURN_ON_ERROR) &&
+		    ((instr & 0xff) == PUSH_IMM8))
+			framesize = 0;
+		else 
+			framesize = 8;
+		return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
+                	&framesize, exception));
+	}
 
 	if ((machdep->flags & FRAMEPOINTER) && 
 	    rsp && !exception && !textaddr_save) {

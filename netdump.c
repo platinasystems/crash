@@ -2502,6 +2502,13 @@ next_sysrq:
 			*esp = sp;
 			return;
 		}
+
+		if (!is_kernel_text(ip) && in_user_stack(bt->tc->task, sp)) {
+			bt->flags |= BT_USER_SPACE;
+			*eip = ip;
+			*esp = sp;
+			return;
+		}
 	}
 
 	if (CRASHDEBUG(1))

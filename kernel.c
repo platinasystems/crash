@@ -1082,9 +1082,9 @@ verify_namelist()
 	if (found) {
                 if (CRASHDEBUG(1)) {
                 	fprintf(fp, "verify_namelist:\n");
-			fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
-			fprintf(fp, "utsname version: %s\n",
-				kt->utsname.version);
+			fprintf(fp, "%s /proc/version:\n%s\n", 
+				ACTIVE() ? "live memory" : "dumpfile",
+				kt->proc_version);
 			fprintf(fp, "%s:\n%s\n", namelist, buffer);
 		}
 		return;
@@ -1101,8 +1101,9 @@ verify_namelist()
 			namelist);
 			
                	fprintf(fp, "verify_namelist:\n");
-                fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
-                fprintf(fp, "utsname version: %s\n", kt->utsname.version);
+                fprintf(fp, "%s /proc/version:\n%s\n", 
+			ACTIVE() ? "live memory" : "dumpfile",
+			kt->proc_version);
                 fprintf(fp, "%s:\n%s\n", namelist, buffer2);
         }
 
