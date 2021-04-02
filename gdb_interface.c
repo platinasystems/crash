@@ -558,6 +558,14 @@ restore_gdb_sanity(void)
 
 	error_hook = NULL;
 
+	if (st->flags & ADD_SYMBOL_FILE) {
+		error(INFO, 
+		    "%s\n     gdb add-symbol-file command failed\n", 
+			st->current->mod_namelist);
+		delete_load_module(st->current->mod_base);
+                st->flags &= ~ADD_SYMBOL_FILE;
+	}
+
 	if (pc->cur_gdb_cmd) {
 		pc->last_gdb_cmd = pc->cur_gdb_cmd;
 		pc->cur_gdb_cmd = 0;

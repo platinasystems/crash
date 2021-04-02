@@ -380,7 +380,6 @@ main(int argc, char **argv)
 	machdep_init(PRE_SYMTAB);
         symtab_init();
 	machdep_init(PRE_GDB);
-	read_in_kernel_config(IKCFG_INIT);
         datatype_init();
 
 	/*
@@ -405,9 +404,8 @@ main_loop(void)
 {
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
-		kernel_init(PRE_GDB);
-		verify_version();
-		kernel_init(POST_GDB);
+		read_in_kernel_config(IKCFG_INIT);
+		kernel_init();
 		machdep_init(POST_GDB);
         	vm_init();
         	hq_init();
@@ -505,6 +503,9 @@ reattempt:
 
 	pc->curcmd = pc->program_name;
 	error(INFO, "command not found: %s\n", args[0]);
+
+	if (pc->curcmd_flags & REPEAT)
+		pc->curcmd_flags &= ~REPEAT;
 }
 
 
@@ -1082,6 +1083,8 @@ dump_program_context(void)
 	others = 0;
         if (pc->curcmd_flags & XEN_MACHINE_ADDR)
 		fprintf(fp, "%sXEN_MACHINE_ADDR", others ? "|" : "");
+        if (pc->curcmd_flags & REPEAT)
+		fprintf(fp, "%sREPEAT", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);

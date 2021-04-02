@@ -81,7 +81,11 @@ typedef struct _dump_header_asm_s {
 	uint32_t             dha_eip;
 
 	/* the dump registers */
+#ifndef S390
+#ifndef S390X
 	struct pt_regs       dha_regs;
+#endif
+#endif
 
 } dump_header_asm_t;
 

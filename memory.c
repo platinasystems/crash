@@ -563,7 +563,7 @@ vm_init(void)
 	if (VALID_STRUCT(pglist_data)) {
 		vt->flags |= ZONES;
 
-		if (symbol_exists("pgdat_list")) 
+		if (symbol_exists("pgdat_list") && !IS_SPARSEMEM()) 
 			vt->flags |= NODES;
 
 		if (symbol_exists("numnodes"))
