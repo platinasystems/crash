@@ -294,12 +294,6 @@ task_init(void)
 		error(FATAL, 
         "pidhash and pid_hash both exist -- cannot distinquish between them\n");
 
-	/*
-	 *  NOTE: We rely on PIDTYPE_PID staying at enum value of 0, because
-         *        evan at the lowest level in gdb, I can't seem to find where 
-	 *        the actual value is stored via the struct type. (?)  
-	 *        Should be safe, though...
-	 */
 	if (symbol_exists("pid_hash") && symbol_exists("pidhash_shift")) {
 		int pidhash_shift;
 
@@ -1189,12 +1183,14 @@ refresh_hlist_task_table(void)
 {
 	int i;
 	ulong *pid_hash;
+	struct syment *sp;
 	ulong pidhash_array;
 	ulong kpp;
 	char *tp; 
 	ulong next, pnext, pprev;
 	char *nodebuf;
 	int plen, len, cnt;
+	long value;
         struct task_context *tc;
         ulong curtask;
         ulong curpid;
@@ -1222,8 +1218,21 @@ refresh_hlist_task_table(void)
                 curpid = CURRENT_PID();
         }
 
-	if (!(plen = get_array_length("pid_hash", NULL, sizeof(void *))))
-		error(FATAL, "cannot determine pid_hash array dimensions\n");
+	if (!(plen = get_array_length("pid_hash", NULL, sizeof(void *)))) {
+		/*
+		 *  Workaround for gcc omitting debuginfo data for pid_hash.
+		 */
+		if (enumerator_value("PIDTYPE_MAX", &value)) {
+			if ((sp = next_symbol("pid_hash", NULL)) &&
+		    	    (((sp->value - tt->pidhash_addr) / sizeof(void *)) < value))
+				error(WARNING, "possible pid_hash array mis-handling\n");
+			plen = (int)value;
+		} else {
+			error(WARNING, 
+			    "cannot determine pid_hash array dimensions\n");
+			plen = 1;
+		}
+	}
 
 	pid_hash = (ulong *)GETBUF(plen * sizeof(void *));
 
@@ -1239,6 +1248,16 @@ refresh_hlist_task_table(void)
 	 *  The zero'th (PIDTYPE_PID) entry is the hlist_head array
 	 *  that we want.
 	 */
+	if (CRASHDEBUG(1)) {
+		if (!enumerator_value("PIDTYPE_PID", &value))
+			error(WARNING, 
+			    "possible pid_hash array mis-handling: PIDTYPE_PID: (unknown)\n");
+		else if (value != 0)
+			error(WARNING, 
+			    "possible pid_hash array mis-handling: PIDTYPE_PID: %d \n", 
+				value);
+	}
+
 	pidhash_array = pid_hash[0];
 	FREEBUF(pid_hash);
 

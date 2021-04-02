@@ -3092,6 +3092,7 @@ long SIZE_verify(long, char *, char *, int, char *);
 long OFFSET_option(long, long, char *, char *, int, char *, char *);
 long SIZE_option(long, long, char *, char *, int, char *, char *);
 void dump_trace(ulong *);
+int enumerator_value(char *, long *);
 
 /*  
  *  memory.c 

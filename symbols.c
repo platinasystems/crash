@@ -4652,6 +4652,27 @@ dump_enumerator_list(char *e)
 }
 
 /*
+ *  Given the name of an enum, return its value.
+ */
+int 
+enumerator_value(char *e, long *value) 
+{
+	struct datatype_member datatype_member, *dm;
+
+	dm = &datatype_member;
+
+        if (arg_to_datatype(e, dm, RETURN_ON_ERROR)) {
+                if ((dm->size >= 0) && 
+		    (dm->type == ENUM) && dm->tagname) {
+			*value = dm->value;
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+/*
  *  Verify that a datatype exists, but return on error.
  */
 int
