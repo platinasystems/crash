@@ -1150,6 +1150,9 @@ ppc64_in_irqstack(ulong addr)
 {
 	int c;
 	
+	if (!(tt->flags & IRQSTACKS))
+		return 0;
+
 	for (c = 0; c < NR_CPUS; c++) {
                 if (tt->hardirq_ctx[c]) {
 			if ((addr >= tt->hardirq_ctx[c]) &&

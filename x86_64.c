@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -2271,7 +2271,7 @@ x86_64_in_irqstack(struct bt_info *bt)
 #define STACK_TRANSITION_ERRMSG_E_P \
 "cannot transition from exception stack to current process stack:\n    exception stack pointer: %lx\n      process stack pointer: %lx\n         current_stack_base: %lx\n"
 #define STACK_TRANSITION_ERRMSG_I_P \
-"cannot transition from IRQ stack to current process stack:\n        IRQ stack pointer: %lx\n    process stack pointer: %lx\n       current stack base: %lx"
+"cannot transition from IRQ stack to current process stack:\n        IRQ stack pointer: %lx\n    process stack pointer: %lx\n       current stack base: %lx\n"
 
 /*
  *  Low-budget back tracer -- dump text return addresses, following call chain

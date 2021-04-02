@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -7992,8 +7992,11 @@ load_module_symbols(char *modref, char *namelist, ulong base_addr)
 		error(FATAL, "cannot determine object file format: %s\n",
 			namelist);
 
-        if (!(bfd_get_file_flags(mbfd) & HAS_SYMS)) 
-          	error(FATAL, "no symbols in object file: %s\n", namelist);
+	if (LKCD_KERNTYPES() && (file_elf_version(namelist) == EV_DWARFEXTRACT))
+		goto add_symbols;   /* no symbols, add the debuginfo */
+
+	if (!(bfd_get_file_flags(mbfd) & HAS_SYMS))
+		error(FATAL, "no symbols in object file: %s\n", namelist);
 
 	symcount = bfd_read_minisymbols(mbfd, FALSE, &minisyms, &size);
 	if (symcount < 0)

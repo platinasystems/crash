@@ -409,6 +409,10 @@ s390_verify_symbol(const char *name, ulong value, char type)
 	if (STREQ(name, "Letext") || STREQ(name, "gcc2_compiled."))
 		return FALSE;
 
+	/* reject L2^B symbols */
+	if (strstr(name, "L2\002") == name)
+	    	return FALSE;
+
 	/* throw away all symbols containing a '.' */
 	for(i = 0; i < strlen(name);i++){
 		if(name[i] == '.')

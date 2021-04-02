@@ -36,7 +36,14 @@ static void check_dumpfile_size(char *);
 #define ELFREAD  0
 
 #define MIN_PAGE_SIZE (4096)
-	
+
+/* 
+ * PPC64 and IA64 architectures have configurable page sizes,
+ * which can differ from the host machine's page size.
+ */
+#define READ_PAGESIZE_FROM_VMCOREINFO() \
+	(machine_type("IA64") || machine_type("PPC64"))
+
 /*
  *  Determine whether a file is a netdump/diskdump/kdump creation, 
  *  and if TRUE, initialize the vmcore_data structure.
@@ -888,6 +895,8 @@ netdump_memory_dump(FILE *fp)
 		if (i) netdump_print("\n");
 	}
 	netdump_print("       num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
+	netdump_print("               vmcoreinfo: %lx\n", (ulong)nd->vmcoreinfo);
+	netdump_print("          size_vmcoreinfo: %d\n", nd->size_vmcoreinfo);
 	netdump_print("       nt_prstatus_percpu: ");
         wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
         flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
@@ -1392,6 +1401,96 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
 }
 
 /*
+ * VMCOREINFO
+ *
+ * This is a ELF note intented for makedumpfile that is exported by the
+ * kernel that crashes and presented as ELF note to the /proc/vmcore
+ * of the panic kernel.
+ */
+
+#define VMCOREINFO_NOTE_NAME        "VMCOREINFO"
+#define VMCOREINFO_NOTE_NAME_BYTES  (sizeof(VMCOREINFO_NOTE_NAME))
+
+/*
+ * Reads a string value from VMCOREINFO.
+ *
+ * Returns a string (that has to be freed by the caller) that contains the
+ * value for key or NULL if the key has not been found.
+ */
+static char *
+vmcoreinfo_read_string(const char *key)
+{
+	int i, j, end;
+	size_t value_length;
+	size_t key_length = strlen(key);
+	char *vmcoreinfo = (char *)nd->vmcoreinfo;
+	char *value = NULL;
+
+	if (!nd->vmcoreinfo)
+		return NULL;
+
+	/* the '+ 1' is the equal sign */
+	for (i = 0; i < (nd->size_vmcoreinfo - key_length + 1); i++) {
+		/*
+		 * We must also check if we're at the beginning of VMCOREINFO
+		 * or the separating newline is there, and of course if we 
+		 * have a equal sign after the key.
+		 */
+		if ((strncmp(vmcoreinfo+i, key, key_length) == 0) &&
+		    (i == 0 || vmcoreinfo[i-1] == '\n') &&
+		    (vmcoreinfo[i+key_length] == '=')) {
+
+			end = -1;
+
+			/* Found -- search for the next newline. */
+			for (j = i + key_length + 1; 
+			     j < nd->size_vmcoreinfo; j++) {
+				if (vmcoreinfo[j] == '\n') {
+					end = j;
+					break;
+				}
+			}
+
+			/* 
+			 * If we didn't find an end, we assume it's the end 
+			 * of VMCOREINFO data. 
+			 */
+			if (end == -1) {
+				/* Point after the end. */
+				end = nd->size_vmcoreinfo + 1;
+			}
+
+			value_length = end - (1+ i + key_length);
+			value = malloc(value_length);
+			if (value)
+				strncpy(value, vmcoreinfo + i + key_length + 1, 
+					value_length);
+			break;
+		}
+	}
+
+	return value;
+}
+
+/*
+ * Reads an integer value from VMCOREINFO.
+ */
+static long
+vmcoreinfo_read_integer(const char *key, long default_value)
+{
+	char *string;
+	long retval = default_value;
+
+	string = vmcoreinfo_read_string(key);
+	if (string) {
+		retval = atol(string);
+		free(string);
+	}
+
+	return retval;
+}
+
+/*
  *  Dump a note section header -- the actual data is defined by netdump
  */
 
@@ -1686,9 +1785,18 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store)
 			if (store)
                         	error(WARNING, 
 				    "unknown Xen n_type: %lx\n\n", note->n_type);
-		} else if (vmcoreinfo)
+		} else if (vmcoreinfo) {
                         netdump_print("(unused)\n");
-                else 
+
+			if (READ_PAGESIZE_FROM_VMCOREINFO() && store) {
+				nd->vmcoreinfo = (char *)nd->elf64 + offset +
+					(sizeof(Elf64_Nhdr) +
+					((note->n_namesz + 3) & ~3));
+				nd->size_vmcoreinfo = note->n_descsz;
+				nd->page_size = (uint)
+					vmcoreinfo_read_integer("PAGESIZE", 0);
+			}
+                } else
                         netdump_print("(?)\n");
                 break;
 
