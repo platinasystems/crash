@@ -293,6 +293,14 @@ nowarn: make_configure
 	@./configure ${CONF_TARGET_FLAG} -n -b
 	@make --no-print-directory gdb_merge
 
+lzo: make_configure
+	@./configure -x lzo ${CONF_TARGET_FLAG} -w -b
+	@make --no-print-directory gdb_merge
+
+snappy: make_configure
+	@./configure -x snappy ${CONF_TARGET_FLAG} -w -b
+	@make --no-print-directory gdb_merge
+
 main.o: ${GENERIC_HFILES} main.c
 	${CC} -c ${CRASH_CFLAGS} main.c ${WARNING_OPTIONS} ${WARNING_ERROR} 
 
@@ -509,7 +517,7 @@ do_tar:
 	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
-VERSION=7.0.3
+VERSION=7.0.5
 RELEASE=0
 
 release: make_configure

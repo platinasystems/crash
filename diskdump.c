@@ -1043,7 +1043,7 @@ cache_page(physaddr_t paddr)
 
 #ifdef SNAPPY
 		ret = snappy_uncompressed_length((char *)dd->compressed_page,
-						 pd.size, &retlen);
+						 pd.size, (size_t *)&retlen);
 		if (ret != SNAPPY_OK) {
 			error(INFO, "%s: uncompress failed: %d\n",
 			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
@@ -1053,7 +1053,7 @@ cache_page(physaddr_t paddr)
 
 		ret = snappy_uncompress((char *)dd->compressed_page, pd.size,
 					(char *)dd->page_cache_hdr[i].pg_bufptr,
-					&retlen);
+					(size_t *)&retlen);
 		if ((ret != SNAPPY_OK) || (retlen != block_size)) {
 			error(INFO, "%s: uncompress failed: %d\n", 
 			      DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
@@ -1558,30 +1558,23 @@ __diskdump_memory_dump(FILE *fp)
 	fprintf(fp, "                tv_sec: %lx\n", dh->timestamp.tv_sec);
 	fprintf(fp, "               tv_usec: %lx\n", dh->timestamp.tv_usec);
 	fprintf(fp, "              status: %x (", dh->status);
-        others = 0;
 	switch (dd->flags & (DISKDUMP_LOCAL|KDUMP_CMPRS_LOCAL))
 	{
         case DISKDUMP_LOCAL:
 		if (dh->status == DUMP_HEADER_COMPLETED)
-			fprintf(fp, "%sDUMP_HEADER_COMPLETED", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_HEADER_COMPLETED");
 		else if (dh->status == DUMP_HEADER_INCOMPLETED)
-			fprintf(fp, "%sDUMP_HEADER_INCOMPLETED", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_HEADER_INCOMPLETED");
 		else if (dh->status == DUMP_HEADER_COMPRESSED)
-			fprintf(fp, "%sDUMP_HEADER_COMPRESSED", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_HEADER_COMPRESSED");
 		break;
 	case KDUMP_CMPRS_LOCAL:
 		if (dh->status & DUMP_DH_COMPRESSED_ZLIB)
-			fprintf(fp, "%sDUMP_DH_COMPRESSED_ZLIB", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_DH_COMPRESSED_ZLIB");
 		if (dh->status & DUMP_DH_COMPRESSED_LZO)
-			fprintf(fp, "%sDUMP_DH_COMPRESSED_LZO", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_DH_COMPRESSED_LZO");
 		if (dh->status & DUMP_DH_COMPRESSED_SNAPPY)
-			fprintf(fp, "%sDUMP_DH_COMPRESSED_SNAPPY", 
-				others++ ? "|" : "");
+			fprintf(fp, "DUMP_DH_COMPRESSED_SNAPPY");
 		break;
 	}
 	fprintf(fp, ")\n");
@@ -1966,7 +1959,7 @@ diskdump_display_regs(int cpu, FILE *ofp)
 	char *user_regs;
 	size_t len;
 
-	if (cpu >= NR_CPUS || dd->nt_prstatus_percpu[cpu] == NULL) {
+	if (!diskdump_get_prstatus_percpu(cpu)) {
 		error(INFO, "registers not collected for cpu %d\n", cpu);
 		return;
 	}
@@ -2048,3 +2041,20 @@ diskdump_display_regs(int cpu, FILE *ofp)
 		);
 	}
 }
+
+void
+dump_registers_for_compressed_kdump(void)
+{
+	int c;
+
+	if (!KDUMP_CMPRS_VALID() || (dd->header->header_version < 4) ||
+	    !(machine_type("X86") || machine_type("X86_64") || machine_type("ARM64")))
+		error(FATAL, "-r option not supported for this dumpfile\n");
+
+	for (c = 0; c < kt->cpus; c++) {
+		fprintf(fp, "%sCPU %d:\n", c ? "\n" : "", c);
+		diskdump_display_regs(c, fp);
+	}
+}
+
+

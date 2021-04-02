@@ -2345,6 +2345,126 @@ get_regs_from_note(char *note, ulong *ip, ulong *sp)
 	return user_regs;
 }
 
+static void
+display_regs_from_elf_notes(int cpu)
+{
+	Elf32_Nhdr *note32;
+	Elf64_Nhdr *note64;
+	size_t len;
+	char *user_regs;
+
+	if (cpu >= nd->num_prstatus_notes) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	if (machine_type("X86_64")) {
+		if (nd->num_prstatus_notes > 1)
+                	note64 = (Elf64_Nhdr *)
+				nd->nt_prstatus_percpu[cpu];
+		else
+                	note64 = (Elf64_Nhdr *)nd->nt_prstatus;
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note64->n_namesz, 4);
+		len = roundup(len + note64->n_descsz, 4);
+		user_regs = ((char *)note64) + len - SIZE(user_regs_struct) - sizeof(long);
+
+		fprintf(fp,
+		    "    RIP: %016llx  RSP: %016llx  RFLAGS: %08llx\n"
+		    "    RAX: %016llx  RBX: %016llx  RCX: %016llx\n"
+		    "    RDX: %016llx  RSI: %016llx  RDI: %016llx\n"
+		    "    RBP: %016llx   R8: %016llx   R9: %016llx\n"
+		    "    R10: %016llx  R11: %016llx  R12: %016llx\n"
+		    "    R13: %016llx  R14: %016llx  R15: %016llx\n"
+		    "    CS: %04x  SS: %04x\n",
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rip)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rsp)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_eflags)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rax)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rbx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rcx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rdx)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rsi)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rdi)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_rbp)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r8)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r9)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r10)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r11)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r12)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r13)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r14)),
+		    ULONGLONG(user_regs + OFFSET(user_regs_struct_r15)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_cs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ss))
+		);
+	} else if (machine_type("X86")) {
+		if (nd->num_prstatus_notes > 1)
+                	note32 = (Elf32_Nhdr *)
+				nd->nt_prstatus_percpu[cpu];
+		else
+                	note32 = (Elf32_Nhdr *)nd->nt_prstatus;
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note32->n_namesz, 4);
+		len = roundup(len + note32->n_descsz, 4);
+		user_regs = ((char *)note32) + len - SIZE(user_regs_struct) - sizeof(long);
+
+		fprintf(fp,
+		    "    EAX: %08x  EBX: %08x  ECX: %08x  EDX: %08x\n"
+		    "    ESP: %08x  EIP: %08x  ESI: %08x  EDI: %08x\n"
+		    "    CS: %04x       DS: %04x       ES: %04x       FS: %04x\n"
+		    "    GS: %04x       SS: %04x\n"
+		    "    EBP: %08x  EFLAGS: %08x\n",
+		    UINT(user_regs + OFFSET(user_regs_struct_eax)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ebx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ecx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_edx)),
+		    UINT(user_regs + OFFSET(user_regs_struct_esp)),
+		    UINT(user_regs + OFFSET(user_regs_struct_eip)),
+		    UINT(user_regs + OFFSET(user_regs_struct_esi)),
+		    UINT(user_regs + OFFSET(user_regs_struct_edi)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_cs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ds)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_es)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_fs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_gs)),
+		    USHORT(user_regs + OFFSET(user_regs_struct_ss)),
+		    UINT(user_regs + OFFSET(user_regs_struct_ebp)),
+		    UINT(user_regs + OFFSET(user_regs_struct_eflags))
+		);
+	} else if (machine_type("ARM64")) {
+		if (nd->num_prstatus_notes > 1)
+                	note64 = (Elf64_Nhdr *)
+				nd->nt_prstatus_percpu[cpu];
+		else
+                	note64 = (Elf64_Nhdr *)nd->nt_prstatus;
+		len = sizeof(Elf64_Nhdr);
+		len = roundup(len + note64->n_namesz, 4);
+		len = roundup(len + note64->n_descsz, 4);
+//		user_regs = ((char *)note64) + len - SIZE(user_regs_struct) - sizeof(long);
+		fprintf(fp, "display_regs_from_elf_notes: ARM64 register dump TBD\n");
+	}
+}
+
+void
+dump_registers_for_elf_dumpfiles(void)
+{
+        int c;
+
+        if (!(machine_type("X86") || machine_type("X86_64") || machine_type("ARM64")))
+                error(FATAL, "-r option not supported for this dumpfile\n");
+
+	if (NETDUMP_DUMPFILE()) {
+                display_regs_from_elf_notes(0);
+		return;
+	}
+
+        for (c = 0; c < kt->cpus; c++) {
+                fprintf(fp, "%sCPU %d:\n", c ? "\n" : "", c);
+                display_regs_from_elf_notes(c);
+        }
+}
+
 struct x86_64_user_regs_struct {
         unsigned long r15,r14,r13,r12,rbp,rbx,r11,r10;
         unsigned long r9,r8,rax,rcx,rdx,rsi,rdi,orig_rax;
@@ -2394,21 +2514,25 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
                         offsetof(struct x86_64_user_regs_struct, rip);
 
                 user_regs = ((char *)note + len) - regs_size - sizeof(long);
+		rsp = ULONG(user_regs + rsp_offset);
+		rip = ULONG(user_regs + rip_offset);
 
-		if (CRASHDEBUG(1))
-			netdump_print("ELF prstatus rsp: %lx rip: %lx\n", 
-                		ULONG(user_regs + rsp_offset),
-                		ULONG(user_regs + rip_offset));
+		if (INSTACK(rsp, bt) || 
+		    in_alternate_stack(bt->tc->processor, rsp)) {
+			if (CRASHDEBUG(1))
+				netdump_print("ELF prstatus rsp: %lx rip: %lx\n", 
+					rsp, rip);
 
-		if (KDUMP_DUMPFILE()) {
-			*rspp = ULONG(user_regs + rsp_offset);
-			*ripp = ULONG(user_regs + rip_offset);
+			if (KDUMP_DUMPFILE()) {
+				*rspp = rsp;
+				*ripp = rip;
 
-			if (*ripp && *rspp)
-				bt->flags |= BT_KDUMP_ELF_REGS;
-		}
+				if (*ripp && *rspp)
+					bt->flags |= BT_KDUMP_ELF_REGS;
+			}
 			
-		bt->machdep = (void *)user_regs;
+			bt->machdep = (void *)user_regs;
+		}
 	}
 
 	if (ELF_NOTES_VALID() && 
@@ -2421,17 +2545,20 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 
 		user_regs = get_regs_from_note((char *)note, &rip, &rsp);
 
-		if (CRASHDEBUG(1))
-			netdump_print("ELF prstatus rsp: %lx rip: %lx\n",
-				rsp, rip);
+		if (INSTACK(rsp, bt) || 
+		    in_alternate_stack(bt->tc->processor, rsp)) {
+			if (CRASHDEBUG(1))
+				netdump_print("ELF prstatus rsp: %lx rip: %lx\n",
+					rsp, rip);
 
-		*rspp = rsp;
-		*ripp = rip;
+			*rspp = rsp;
+			*ripp = rip;
 
-		if (*ripp && *rspp)
-			bt->flags |= BT_KDUMP_ELF_REGS;
+			if (*ripp && *rspp)
+				bt->flags |= BT_KDUMP_ELF_REGS;
 
-		bt->machdep = (void *)user_regs;
+			bt->machdep = (void *)user_regs;
+		}
 	}
 
 no_nt_prstatus_exists:

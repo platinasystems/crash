@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1116,6 +1116,9 @@ non_matching_kernel(void)
                 if (REMOTE_DUMPFILE())
                         fprintf(fp, "%s@%s  (remote dumpfile)\n",
                                 pc->server_memsrc, pc->server);
+		else if (REMOTE_PAUSED())
+			fprintf(fp, "%s %s  (remote paused system)\n",
+				pc->server_memsrc, pc->server);
                 else {
                         if (dumpfile_is_split())
                                 show_split_dumpfiles();
@@ -1994,7 +1997,10 @@ cmd_bt(void)
 			break;
 
 		case 'F':
-			bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
+			if (bt->flags & BT_FULL_SYM_SLAB)
+				bt->flags |= BT_FULL_SYM_SLAB2;
+			else
+				bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
 			break;
 
 		case 'o':
@@ -2408,7 +2414,7 @@ back_trace(struct bt_info *bt)
 		    (BT_KSTACKP|BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL)))
 			fprintf(fp, "(active)\n");
 
-		if (!(bt->flags & (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL)))
+		if (!(bt->flags & (BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_ALL) || REMOTE_PAUSED()))
 			return;
  	}
 
@@ -2486,7 +2492,10 @@ back_trace(struct bt_info *bt)
 		get_xendump_regs(bt, &eip, &esp);
 	else if (SADUMP_DUMPFILE())
 		get_sadump_regs(bt, &eip, &esp);
-        else
+        else if (REMOTE_PAUSED()) {
+		if (!is_task_active(bt->task) || !get_remote_regs(bt, &eip, &esp))
+			machdep->get_stack_frame(bt, &eip, &esp);
+	} else
                 machdep->get_stack_frame(bt, &eip, &esp);
 
 	if (bt->flags & BT_KSTACKP) {
@@ -3554,7 +3563,7 @@ show_module_taint(void)
 		gpgsig_ok = VALID_MEMBER(module_gpgsig_ok) ?
 			INT(modbuf + OFFSET(module_gpgsig_ok)) : 1;
 
-		if (taints || license_gplok || !gpgsig_ok) {
+		if (VALID_MEMBER(module_license_gplok) || taints || !gpgsig_ok) {
 			found++;
 			maxnamelen = strlen(lm->mod_name) > maxnamelen ?
 				strlen(lm->mod_name) : maxnamelen;
@@ -3598,8 +3607,10 @@ show_module_taint(void)
 		gpgsig_ok = VALID_MEMBER(module_gpgsig_ok) ?
 			INT(modbuf + OFFSET(module_gpgsig_ok)) : 1;
 
-		if (!taints && !license_gplok && gpgsig_ok)
-			continue;
+		if (INVALID_MEMBER(module_license_gplok)) {
+			if (!taints && gpgsig_ok)
+				continue;
+		}
 
 		if (tnts_exists && taints) {
 			taintsp = &taints;
@@ -4670,6 +4681,9 @@ display_sys_stats(void)
 	} else {
 		if (REMOTE_DUMPFILE())
                 	fprintf(fp, "%s@%s  (remote dumpfile)", 
+				pc->server_memsrc, pc->server);
+		else if (REMOTE_PAUSED())
+			fprintf(fp, "%s %s  (remote paused system)\n",
 				pc->server_memsrc, pc->server);
 		else {
 			if (dumpfile_is_split())

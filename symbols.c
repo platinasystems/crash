@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -127,7 +127,6 @@ static int show_member_offset(FILE *, struct datatype_member *, char *);
 #define INITIAL_INDENT  (4)
 #define INDENT_INCR     (2)
 
-static int is_typedef(char *);
 static void whatis_datatype(char *, ulong, FILE *);
 static void whatis_variable(struct syment *);
 static void print_struct(char *, ulong);
@@ -3222,7 +3221,7 @@ is_compressed_kernel(char *file, char **tmp)
 	}
 	please_wait_done();
 
-	if (is_bfd_format(tempname)) {
+	if (is_bfd_format(tempname) && is_kernel(tempname)) {
 		*tmp = tempname;
 		return TRUE;
 	}
@@ -6957,7 +6956,7 @@ whatis_variable(struct syment *sp)
 /*
  *  Determines whether the current structure or union member is a typedef.
  */
-static int 
+int 
 is_typedef(char *name)
 {
 	struct datatype_member datatype_member, *dm;
@@ -7643,6 +7642,10 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_tgid));
         fprintf(fp, "         task_struct_namespace: %ld\n",
                 OFFSET(task_struct_namespace));
+        fprintf(fp, "          task_struct_rss_stat: %ld\n",
+                OFFSET(task_struct_rss_stat));
+        fprintf(fp, "           task_rss_stat_count: %ld\n",
+                OFFSET(task_rss_stat_count));
         fprintf(fp, "              task_struct_pids: %ld\n",
                 OFFSET(task_struct_pids));
         fprintf(fp, "          task_struct_last_run: %ld\n",
@@ -8054,6 +8057,10 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(page_first_page));
         fprintf(fp, "                 page_freelist: %ld\n",
                 OFFSET(page_freelist));
+        fprintf(fp, "                    page_s_mem: %ld\n",
+                OFFSET(page_s_mem));
+        fprintf(fp, "                   page_active: %ld\n",
+                OFFSET(page_active));
 
 	fprintf(fp, "        trace_print_flags_mask: %ld\n",
 		OFFSET(trace_print_flags_mask));

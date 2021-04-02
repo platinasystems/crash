@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2013 David Anderson
- * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2014 David Anderson
+ * Copyright (C) 2002-2014 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "7.0.3"
+#define BASELEVEL_REVISION  "7.0.5"
 
 #undef TRUE
 #undef FALSE
@@ -110,7 +110,7 @@
 #define NR_CPUS  (256)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (5120)
+#define NR_CPUS  (8192)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -125,10 +125,10 @@
 #define NR_CPUS  (2048)
 #endif
 #ifdef S390
-#define NR_CPUS  (64)
+#define NR_CPUS  (512)
 #endif
 #ifdef S390X
-#define NR_CPUS  (64)
+#define NR_CPUS  (512)
 #endif
 #ifdef ARM
 #define NR_CPUS  (4)
@@ -254,7 +254,7 @@ struct number_option {
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
 #define REMOTE_DUMPFILE() \
 	   (pc->flags & (REM_NETDUMP|REM_MCLXCD|REM_LKCD|REM_S390D))
-#define REMOTE_MEMSRC()     (REMOTE_ACTIVE() || REMOTE_DUMPFILE())
+#define REMOTE_MEMSRC()     (REMOTE_ACTIVE() || REMOTE_PAUSED() || REMOTE_DUMPFILE())
 #define LKCD_DUMPFILE()     (pc->flags & (LKCD|REM_LKCD))
 #define NETDUMP_DUMPFILE()  (pc->flags & (NETDUMP|REM_NETDUMP))
 #define DISKDUMP_DUMPFILE() (pc->flags & DISKDUMP)
@@ -504,6 +504,8 @@ struct program_context {
 #define GET_LOG       (0x200ULL)
 #define VMCOREINFO    (0x400ULL)
 #define ALLOW_FP      (0x800ULL)
+#define REM_PAUSED_F (0x1000ULL)
+#define REMOTE_PAUSED() (pc->flags2 & REM_PAUSED_F)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -1043,34 +1045,35 @@ extern struct machdep_table *machdep;
 #define MAX_FOREACH_ARGS     (50)
 #define MAX_REGEX_ARGS       (10)
 
-#define FOREACH_CMD          (0x1)
-#define FOREACH_r_FLAG       (0x2)
-#define FOREACH_s_FLAG       (0x4)
-#define FOREACH_S_FLAG       (0x8)
-#define FOREACH_i_FLAG      (0x10)
-#define FOREACH_e_FLAG      (0x20)
-#define FOREACH_g_FLAG      (0x40)
-#define FOREACH_l_FLAG      (0x80)
-#define FOREACH_p_FLAG     (0x100)
-#define FOREACH_t_FLAG     (0x200)
-#define FOREACH_u_FLAG     (0x400)
-#define FOREACH_m_FLAG     (0x800)
-#define FOREACH_v_FLAG    (0x1000)
-#define FOREACH_KERNEL    (0x2000)
-#define FOREACH_USER      (0x4000)
-#define FOREACH_SPECIFIED (0x8000)
-#define FOREACH_ACTIVE   (0x10000)
-#define FOREACH_k_FLAG   (0x20000)
-#define FOREACH_c_FLAG   (0x40000)
-#define FOREACH_f_FLAG   (0x80000)
-#define FOREACH_o_FLAG  (0x100000)
-#define FOREACH_T_FLAG  (0x200000)
-#define FOREACH_F_FLAG  (0x400000)
-#define FOREACH_x_FLAG  (0x800000)
-#define FOREACH_d_FLAG (0x1000000)
-#define FOREACH_STATE  (0x2000000)
-#define FOREACH_a_FLAG (0x4000000)
-#define FOREACH_G_FLAG (0x8000000)
+#define FOREACH_CMD            (0x1)
+#define FOREACH_r_FLAG         (0x2)
+#define FOREACH_s_FLAG         (0x4)
+#define FOREACH_S_FLAG         (0x8)
+#define FOREACH_i_FLAG        (0x10)
+#define FOREACH_e_FLAG        (0x20)
+#define FOREACH_g_FLAG        (0x40)
+#define FOREACH_l_FLAG        (0x80)
+#define FOREACH_p_FLAG       (0x100)
+#define FOREACH_t_FLAG       (0x200)
+#define FOREACH_u_FLAG       (0x400)
+#define FOREACH_m_FLAG       (0x800)
+#define FOREACH_v_FLAG      (0x1000)
+#define FOREACH_KERNEL      (0x2000)
+#define FOREACH_USER        (0x4000)
+#define FOREACH_SPECIFIED   (0x8000)
+#define FOREACH_ACTIVE     (0x10000)
+#define FOREACH_k_FLAG     (0x20000)
+#define FOREACH_c_FLAG     (0x40000)
+#define FOREACH_f_FLAG     (0x80000)
+#define FOREACH_o_FLAG    (0x100000)
+#define FOREACH_T_FLAG    (0x200000)
+#define FOREACH_F_FLAG    (0x400000)
+#define FOREACH_x_FLAG    (0x800000)
+#define FOREACH_d_FLAG   (0x1000000)
+#define FOREACH_STATE    (0x2000000)
+#define FOREACH_a_FLAG   (0x4000000)
+#define FOREACH_G_FLAG   (0x8000000)
+#define FOREACH_F_FLAG2 (0x10000000)
 
 #define FOREACH_PS_EXCLUSIVE \
   (FOREACH_g_FLAG|FOREACH_a_FLAG|FOREACH_t_FLAG|FOREACH_c_FLAG|FOREACH_p_FLAG|FOREACH_l_FLAG|FOREACH_r_FLAG)
@@ -1880,6 +1883,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long page_slab_page;
 	long trace_print_flags_mask;
 	long trace_print_flags_name;
+	long task_struct_rss_stat;
+	long task_rss_stat_count;
+	long page_s_mem;
+	long page_active;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2224,6 +2231,7 @@ struct vm_table {                /* kernel VM-related data */
 #define KMALLOC_COMMON        (0x1000000)
 #define USE_VMAP_AREA         (0x2000000)
 #define PAGEFLAGS             (0x4000000)
+#define SLAB_OVERLOAD_PAGE    (0x8000000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2259,6 +2267,7 @@ struct list_data {             /* generic structure used by do_list() to walk */
 	char **structname;
 	int structname_args;
 	char *header;
+	ulong *list_ptr;
 };
 #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
 #define LIST_START_ENTERED   (VERBOSE << 2)
@@ -2269,6 +2278,7 @@ struct list_data {             /* generic structure used by do_list() to walk */
 #define LIST_STRUCT_RADIX_10 (VERBOSE << 7)
 #define LIST_STRUCT_RADIX_16 (VERBOSE << 8)
 #define LIST_HEAD_REVERSE    (VERBOSE << 9)
+#define LIST_ALLOCATE       (VERBOSE << 10)
 
 struct tree_data {
 	ulong flags;
@@ -4295,6 +4305,8 @@ int hq_open(void);
 int hq_close(void);
 int hq_enter(ulong);
 int hq_entry_exists(ulong);
+int hq_is_open(void);
+int hq_is_inuse(void);
 long get_embedded(void);
 void dump_embedded(char *);
 char *ordinal(ulong, char *);
@@ -4400,6 +4412,7 @@ void dump_union(char *, ulong, unsigned);
 void store_module_symbols_v1(ulong, int);
 void store_module_symbols_v2(ulong, int);
 int is_datatype_command(void);
+int is_typedef(char *);
 int arg_to_datatype(char *, struct datatype_member *, ulong);
 void dump_symbol_table(void);
 void dump_struct_table(ulong);
@@ -4815,6 +4828,8 @@ ulong cpu_map_addr(const char *type);
 #define BT_KDUMP_ELF_REGS   (0x80000000000ULL)
 #define BT_USER_SPACE      (0x100000000000ULL)
 #define BT_KERNEL_SPACE    (0x200000000000ULL)
+#define BT_FULL_SYM_SLAB2  (0x400000000000ULL)
+#define BT_EFRAME_TARGET   (0x800000000000ULL)
 #define BT_SYMBOL_OFFSET   (BT_SYMBOLIC_ARGS)
 
 #define BT_REF_HEXVAL         (0x1)
@@ -5361,6 +5376,7 @@ void get_netdump_regs(struct bt_info *, ulong *, ulong *);
 int is_partial_netdump(void);
 void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
 void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
+void dump_registers_for_elf_dumpfiles(void);
 struct vmcore_data;
 struct vmcore_data *get_kdump_vmcore_data(void);
 int read_kdump(int, void *, int, ulong, physaddr_t);
@@ -5418,6 +5434,7 @@ void map_cpus_to_prstatus_kdump_cmprs(void);
 void diskdump_display_regs(int, FILE *);
 void process_elf32_notes(void *, ulong);
 void process_elf64_notes(void *, ulong);
+void dump_registers_for_compressed_kdump(void);
 
 /*
  * makedumpfile.c
@@ -5525,6 +5542,10 @@ void dump_sockets_workhorse(ulong, ulong, struct reference *);
  *  remote.c
  */
 int is_remote_daemon(char *);
+physaddr_t get_remote_phys_base(physaddr_t, physaddr_t);
+physaddr_t remote_vtop(int, physaddr_t);
+int get_remote_regs(struct bt_info *, ulong *, ulong *);
+physaddr_t get_remote_cr3(int);
 void remote_fd_init(void);
 int get_remote_file(struct remote_file *);
 uint remote_page_size(void);
@@ -5535,7 +5556,7 @@ int remote_memory_used(void);
 void remote_exit(void);
 int remote_execute(void);
 void remote_clear_pipeline(void);
-int remote_memory_read(int, char *, int, physaddr_t);
+int remote_memory_read(int, char *, int, physaddr_t, int);
 
 /*
  *  gnu_binutils.c
