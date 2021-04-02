@@ -1,7 +1,7 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2016 David Anderson
+ * Copyright (C) 2002-2017 David Anderson
  * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -10130,6 +10130,18 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(atomic_t_counter));
 	fprintf(fp, "          percpu_counter_count: %ld\n",
 		OFFSET(percpu_counter_count));
+	fprintf(fp, "             sk_buff_head_next: %ld\n",
+		OFFSET(sk_buff_head_next));
+	fprintf(fp, "             sk_buff_head_qlen: %ld\n",
+		OFFSET(sk_buff_head_qlen));
+	fprintf(fp, "                  sk_buff_next: %ld\n",
+		OFFSET(sk_buff_next));
+	fprintf(fp, "                   sk_buff_len: %ld\n",
+		OFFSET(sk_buff_len));
+	fprintf(fp, "                  sk_buff_data: %ld\n",
+		OFFSET(sk_buff_data));
+	fprintf(fp, "           nlmsghdr_nlmsg_type: %ld\n",
+		OFFSET(nlmsghdr_nlmsg_type));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -10363,6 +10375,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(tnt));
 	fprintf(fp, "                    taint_flag: %ld\n",
 		SIZE(taint_flag));
+	fprintf(fp, "                      nlmsghdr: %ld\n",
+		SIZE(nlmsghdr));
+	fprintf(fp, "           nlmsghdr_nlmsg_type: %ld\n",
+		SIZE(nlmsghdr_nlmsg_type));
+	fprintf(fp, "             sk_buff_head_qlen: %ld\n",
+		SIZE(sk_buff_head_qlen));
+	fprintf(fp, "                   sk_buff_len: %ld\n",
+		SIZE(sk_buff_len));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -10971,6 +10991,11 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 	    if (i == lm->mod_sections) {
 		    fprintf(fp, "?? Section %s not found for symbol %s\n",
 			secname, s1->name);
+		    s1++;
+		    continue;
+	    }
+
+	    if (lm->mod_section_data[i].flags & SEC_FOUND) {
 		    s1++;
 		    continue;
 	    }

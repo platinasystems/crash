@@ -237,7 +237,7 @@ static int vm_area_page_dump(ulong, ulong, ulong, ulong, ulong,
 	struct reference *);
 static void rss_page_types_init(void);
 static int dump_swap_info(ulong, ulong *, ulong *);
-static int get_hugetlb_total_pages(ulong *);
+static int get_hugetlb_total_pages(ulong *, ulong *);
 static void swap_info_init(void);
 static char *get_swapdev(ulong, char *);
 static void fill_swap_info(ulong);
@@ -7427,8 +7427,8 @@ dump_free_pages_zones_v1(struct meminfo *fi)
  *  Callback function for free-list search for a specific page.
  */
 struct free_page_callback_data {
-	physaddr_t searchphys;
-	long block_size;	
+	ulong searchpage;
+	long chunk_size;
 	ulong page;
 	int found;
 };
@@ -7437,13 +7437,12 @@ static int
 free_page_callback(void *page, void *arg)
 {
 	struct free_page_callback_data *cbd = arg;
-	physaddr_t this_phys;
+	ulong first_page, last_page;
 
-	if (!page_to_phys((ulong)page, &this_phys))
-		return FALSE;
+	first_page = (ulong)page;
+	last_page = first_page + (cbd->chunk_size * SIZE(page));	
 
-	if ((cbd->searchphys >= this_phys) && 
-	    (cbd->searchphys < (this_phys + cbd->block_size))) {
+	if ((cbd->searchpage >= first_page) && (cbd->searchpage <= last_page)) {
 		cbd->page = (ulong)page;
 		cbd->found = TRUE;
 		return TRUE;
@@ -7469,6 +7468,7 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 	ulong offset, verbose, value, sum, found; 
 	ulong this_addr;
 	physaddr_t phys, this_phys, searchphys, end_paddr;
+	ulong searchpage;
 	struct free_page_callback_data callback_data;
 	ulong pp;
         ulong zone_mem_map;
@@ -7505,8 +7505,12 @@ dump_free_pages_zones_v2(struct meminfo *fi)
                         error(FATAL, 
 			    "dump_free_pages_zones_v2: no memtype specified\n");
                 }
+		if (!phys_to_page(searchphys, &searchpage)) {
+			error(INFO, "cannot determine page for %lx\n", fi->spec_addr);
+			return;
+		}
 		do_search = TRUE;
-		callback_data.searchphys = searchphys;
+		callback_data.searchpage = searchpage;
 		callback_data.found = FALSE;
         } else {
                 searchphys = 0;
@@ -8052,7 +8056,7 @@ multiple_lists:
 				ld->flags |= (LIST_CALLBACK|CALLBACK_RETURN);
 				ld->callback_func = free_page_callback;
 				ld->callback_data = (void *)callback_data;
-				callback_data->block_size = chunk_size * PAGESIZE();
+				callback_data->chunk_size = chunk_size;
 			}
 			cnt = do_list(ld);
 			if (cnt < 0) {
@@ -8107,7 +8111,8 @@ dump_kmeminfo(void)
 	long committed;
 	ulong overcommit_kbytes = 0;
 	int overcommit_ratio;
-	ulong hugetlb_total_pages;
+	ulong hugetlb_total_pages, hugetlb_total_free_pages = 0;
+	int done_hugetlb_calc = 0; 
 	long nr_file_pages, nr_slab;
 	ulong swapper_space_nrpages;
 	ulong pct;
@@ -8315,6 +8320,22 @@ dump_kmeminfo(void)
 			pages_to_size(freelowmem_pages, buf), pct);
         }
 
+	if (get_hugetlb_total_pages(&hugetlb_total_pages,
+	    &hugetlb_total_free_pages)) {
+		done_hugetlb_calc = 1;
+
+		fprintf(fp, "\n%13s  %7ld  %11s         ----\n", 
+			"TOTAL HUGE", hugetlb_total_pages, 
+			pages_to_size(hugetlb_total_pages, buf));
+		pct = hugetlb_total_free_pages ?
+			(hugetlb_total_free_pages * 100) /
+			hugetlb_total_pages : 0;
+		fprintf(fp, "%13s  %7ld  %11s  %3ld%% of TOTAL HUGE\n", 
+			"HUGE FREE",
+			hugetlb_total_free_pages,
+			pages_to_size(hugetlb_total_free_pages, buf), pct);
+	}
+
         /*
          *  get swap data from dump_swap_info().
          */
@@ -8343,6 +8364,7 @@ dump_kmeminfo(void)
 			    "swap_info[%ld].swap_map at %lx is inaccessible\n",
 				totalused_pages, totalswap_pages);
 	}
+
 	/*
 	 * Show committed memory
 	 */
@@ -8360,7 +8382,7 @@ dump_kmeminfo(void)
 			get_symbol_data("sysctl_overcommit_ratio",
 				sizeof(int), &overcommit_ratio);
 
-			if (!get_hugetlb_total_pages(&hugetlb_total_pages))
+			if (!done_hugetlb_calc)
 				goto bailout;
 
 			allowed = ((totalram_pages - hugetlb_total_pages)
@@ -15289,19 +15311,21 @@ next_physpage(ulonglong paddr, ulonglong *nextpaddr)
 }
 
 static int
-get_hugetlb_total_pages(ulong *nr_total_pages)
+get_hugetlb_total_pages(ulong *nr_total_pages, ulong *nr_total_free_pages)
 {
 	ulong hstate_p, vaddr;
 	int i, len;
 	ulong nr_huge_pages;
+	ulong free_huge_pages;
 	uint horder;
 
-	*nr_total_pages = 0;
+	*nr_total_pages = *nr_total_free_pages = 0;
 	if (kernel_symbol_exists("hstates")) {
 
 		if (INVALID_SIZE(hstate) ||
 		    INVALID_MEMBER(hstate_order) ||
-		    INVALID_MEMBER(hstate_nr_huge_pages))
+		    INVALID_MEMBER(hstate_nr_huge_pages) ||
+		    INVALID_MEMBER(hstate_free_huge_pages))
 			return FALSE;
 
 		len = get_array_length("hstates", NULL, 0);
@@ -15321,7 +15345,12 @@ get_hugetlb_total_pages(ulong *nr_total_pages)
 				KVADDR, &nr_huge_pages, sizeof(ulong),
 				"hstate_nr_huge_pages", FAULT_ON_ERROR);
 
+			readmem(vaddr + OFFSET(hstate_free_huge_pages),
+				KVADDR, &free_huge_pages, sizeof(ulong),
+				"hstate_free_huge_pages", FAULT_ON_ERROR);
+
 			*nr_total_pages += nr_huge_pages * (1 << horder);
+			*nr_total_free_pages += free_huge_pages * (1 << horder);
 		}
 	} else if (kernel_symbol_exists("nr_huge_pages")) {
 		unsigned long hpage_shift = 21;
@@ -15330,8 +15359,12 @@ get_hugetlb_total_pages(ulong *nr_total_pages)
 			hpage_shift = 22;
 		get_symbol_data("nr_huge_pages",
 			sizeof(ulong), &nr_huge_pages);
+		get_symbol_data("free_huge_pages",
+			sizeof(ulong), &free_huge_pages);
 		*nr_total_pages = nr_huge_pages * ((1 << hpage_shift) /
 			machdep->pagesize);
+		*nr_total_free_pages = free_huge_pages *
+			((1 << hpage_shift) / machdep->pagesize);
 	}
 	return TRUE;
 }
