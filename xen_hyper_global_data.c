@@ -74,7 +74,6 @@ struct command_table_entry xen_hyper_command_table[] = {
 	{"eval",    cmd_eval,    help_eval,    0},
 	{"exit",    cmd_quit,    help_exit,    0},
 	{"extend",  cmd_extend,  help_extend,  0},
-	{"foreach", cmd_foreach, help_foreach, 0},
 	{"gdb",     cmd_gdb,     help_gdb,     0},
         {"help",    xen_hyper_cmd_help,     help_help,              0},
 	{"list",    cmd_list,    help__list,   0},

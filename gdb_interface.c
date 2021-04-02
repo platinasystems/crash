@@ -374,6 +374,7 @@ dump_gdb_data(void)
         fprintf(fp, "    prettyprint_arrays: %d\n", prettyprint_arrays);
         fprintf(fp, "   prettyprint_structs: %d\n", prettyprint_structs);
         fprintf(fp, "repeat_count_threshold: %x\n", repeat_count_threshold);
+	fprintf(fp, "    stop_print_at_null: %d\n", stop_print_at_null);
 	fprintf(fp, "             print_max: %d\n", print_max);
         fprintf(fp, "          output_radix: %d\n", output_radix);
         fprintf(fp, "         output_format: ");
@@ -687,6 +688,7 @@ void
 cmd_gdb(void)
 {
         int c;
+	char buf[BUFSIZE];
 
         while ((c = getopt(argcnt, args, "")) != EOF) {
                 switch(c)
@@ -713,14 +715,8 @@ cmd_gdb(void)
 	 *  If the command is not restricted, pass it on.
 	 */
 	if (!is_restricted_command(args[1], FAULT_ON_ERROR)) {
-		if (pc->redirect & (REDIRECT_TO_PIPE|REDIRECT_TO_FILE))
-			pc->orig_line[pc->eoc_index] = NULLCHAR;
-	
-		if (STRNEQ(pc->orig_line, "gdb") && 
-	            whitespace(pc->orig_line[3]))
-			shift_string_left(pc->orig_line, strlen("gdb")+1); 
-	
-		gdb_pass_through(clean_line(pc->orig_line), NULL, 0);
+		concat_args(buf, 1, 0);
+		gdb_pass_through(buf, NULL, 0);
 	}
 }
 

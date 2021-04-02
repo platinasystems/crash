@@ -941,7 +941,7 @@ strip_linefeeds(char *line)
         p = &LASTCHAR(line);
 
         while (*p == '\n')
-                *p = (char)NULL;
+                *p = '\0';
 
         return(line);
 }

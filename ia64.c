@@ -1053,6 +1053,12 @@ ia64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose
 	case KERNEL_VMALLOC_REGION:
 		if (ia64_IS_VMALLOC_ADDR(kvaddr))
 			break;
+		if ((kvaddr < machdep->machspec->kernel_start) &&
+		    (machdep->machspec->kernel_region == 
+		    KERNEL_VMALLOC_REGION)) {
+			*paddr = PADDR_NOT_AVAILABLE;
+			return FALSE;
+		}
                 *paddr = ia64_VTOP(kvaddr);
 		if (verbose)
 			fprintf(fp, "[MAPPED IN TRANSLATION REGISTER]\n");

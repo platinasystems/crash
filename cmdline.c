@@ -1285,8 +1285,10 @@ exec_input_file(void)
 				    "cannot malloc input file command line buffer\n");
 				return;
 			}
+			BZERO(pc->runtime_ifile_cmd, BUFSIZE);
 		}
-		strcpy(pc->runtime_ifile_cmd, pc->orig_line);
+		if (!strlen(pc->runtime_ifile_cmd))
+			strcpy(pc->runtime_ifile_cmd, pc->orig_line);
 		pc->ifile_in_progress = RUNTIME_IFILE;
 	}
 

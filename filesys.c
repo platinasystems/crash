@@ -76,6 +76,7 @@ static struct filesys_table *ft = &filesys_table;
 #define DUMP_FULL_NAME   1
 #define DUMP_INODE_ONLY  2
 #define DUMP_DENTRY_ONLY 4
+#define DUMP_EMPTY_FILE  8
 
 /*
  *  Open the namelist, dumpfile and output devices.
@@ -1755,10 +1756,10 @@ vfs_init(void)
 	MEMBER_OFFSET_INIT(file_f_dentry, "file", "f_dentry");
 	MEMBER_OFFSET_INIT(file_f_vfsmnt, "file", "f_vfsmnt");
 	MEMBER_OFFSET_INIT(file_f_count, "file", "f_count");
+	MEMBER_OFFSET_INIT(path_mnt, "path", "mnt");
+	MEMBER_OFFSET_INIT(path_dentry, "path", "dentry");
 	if (INVALID_MEMBER(file_f_dentry)) {
 		MEMBER_OFFSET_INIT(file_f_path, "file", "f_path");
-		MEMBER_OFFSET_INIT(path_mnt, "path", "mnt");
-		MEMBER_OFFSET_INIT(path_dentry, "path", "dentry");
 		ASSIGN_OFFSET(file_f_dentry) = OFFSET(file_f_path) + OFFSET(path_dentry);
 		ASSIGN_OFFSET(file_f_vfsmnt) = OFFSET(file_f_path) + OFFSET(path_mnt);
 	}
@@ -2071,7 +2072,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 	ulong fd;
 	ulong file;
 	ulong value;
-	int i, j;
+	int i, j, use_path;
 	int header_printed = 0;
 	char root_pathname[BUFSIZE];
 	char pwd_pathname[BUFSIZE];
@@ -2112,12 +2113,23 @@ open_files_dump(ulong task, int flags, struct reference *ref)
                 readmem(fs_struct_addr, KVADDR, fs_struct_buf, SIZE(fs_struct), 
 			"fs_struct buffer", FAULT_ON_ERROR);
 
-		root_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_root));
+		use_path = (MEMBER_TYPE("fs_struct", "root") == TYPE_CODE_STRUCT);
+		if (use_path)
+			root_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_root) +
+				OFFSET(path_dentry));
+		else
+			root_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_root));
 
 		if (root_dentry) {
 			if (VALID_MEMBER(fs_struct_rootmnt)) {
                 		vfsmnt = ULONG(fs_struct_buf +
                         		OFFSET(fs_struct_rootmnt));
+				get_pathname(root_dentry, root_pathname, 
+					BUFSIZE, 1, vfsmnt);
+			} else if (use_path) {
+				vfsmnt = ULONG(fs_struct_buf +
+					OFFSET(fs_struct_root) +
+					OFFSET(path_mnt));
 				get_pathname(root_dentry, root_pathname, 
 					BUFSIZE, 1, vfsmnt);
 			} else {
@@ -2126,7 +2138,11 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 			}
 		}
 
-		pwd_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_pwd));
+		if (use_path)
+			pwd_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_pwd) +
+				OFFSET(path_dentry));
+		else
+			pwd_dentry = ULONG(fs_struct_buf + OFFSET(fs_struct_pwd));
 
 		if (pwd_dentry) {
 			if (VALID_MEMBER(fs_struct_pwdmnt)) {
@@ -2134,6 +2150,13 @@ open_files_dump(ulong task, int flags, struct reference *ref)
                         		OFFSET(fs_struct_pwdmnt));
 				get_pathname(pwd_dentry, pwd_pathname, 
 					BUFSIZE, 1, vfsmnt);
+			} else if (use_path) {
+				vfsmnt = ULONG(fs_struct_buf +
+					OFFSET(fs_struct_pwd) +
+					OFFSET(path_mnt));
+				get_pathname(pwd_dentry, pwd_pathname, 
+					BUFSIZE, 1, vfsmnt);
+
 			} else {
 				get_pathname(pwd_dentry, pwd_pathname, 
 					BUFSIZE, 1, 0);
@@ -2279,7 +2302,7 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 				if (ref && file) {
 					open_tmpfile();
                                         if (file_dump(file, 0, 0, i,
-                                            DUMP_FULL_NAME)) {
+                                            DUMP_FULL_NAME|DUMP_EMPTY_FILE)) {
 						BZERO(buf4, BUFSIZE);
 						rewind(pc->tmpfile);
 						fgets(buf4, BUFSIZE, 
@@ -2297,8 +2320,8 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 						fprintf(fp, files_header);
 						header_printed = 1;
 					}
-					file_dump(file, 0, 0, i,
-						  DUMP_FULL_NAME);
+					file_dump(file, 0, 0, i, 
+						DUMP_FULL_NAME|DUMP_EMPTY_FILE);
 				}
 			}
 			i++;
@@ -2495,16 +2518,60 @@ file_dump(ulong file, ulong dentry, ulong inode, int fd, int flags)
 		dentry = ULONG(file_buf + OFFSET(file_f_dentry));
 	}
 
-	if (!dentry) 
+	if (!dentry) {
+		if (flags & DUMP_EMPTY_FILE) {
+			fprintf(fp, "%3d%s%s%s%s%s%s%s%s%s%s\n",
+				fd,
+				space(MINSPACE),
+				mkstring(buf1, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(file)),
+				space(MINSPACE),
+				mkstring(buf2, VADDR_PRLEN, 
+				CENTER|LONG_HEX|ZERO_FILL, 
+				MKSTR(dentry)),
+				space(MINSPACE),
+				mkstring(buf3, VADDR_PRLEN, 
+				CENTER, 
+				"?"),
+				space(MINSPACE),
+				"?   ",
+				space(MINSPACE),
+				"?");
+			return TRUE;
+		}
 		return FALSE;
+	}
 
 	if (!inode) {
 		dentry_buf = fill_dentry_cache(dentry);
 		inode = ULONG(dentry_buf + OFFSET(dentry_d_inode));
 	}
 
-	if (!inode) 
+	if (!inode) { 
+		if (flags & DUMP_EMPTY_FILE) {
+			fprintf(fp, "%3d%s%s%s%s%s%s%s%s%s%s\n",
+				fd,
+				space(MINSPACE),
+				mkstring(buf1, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(file)),
+				space(MINSPACE),
+				mkstring(buf2, VADDR_PRLEN, 
+				CENTER|RJUST|LONG_HEX, 
+				MKSTR(dentry)),
+				space(MINSPACE),
+				mkstring(buf3, VADDR_PRLEN, 
+				CENTER|LONG_HEX|ZERO_FILL, 
+				MKSTR(inode)),
+				space(MINSPACE),
+				"?   ",
+				space(MINSPACE),
+				"?");
+			return TRUE;
+		}
 		return FALSE;
+	}
 
 	inode_buf = fill_inode_cache(inode);
 
@@ -3177,7 +3244,7 @@ get_live_memory_source(void)
 	char modname1[BUFSIZE];
 	char modname2[BUFSIZE];
 	char *name;
-	int use_module;
+	int use_module, crashbuiltin;
 	struct stat stat1, stat2;
 
 	pc->flags |= DEVMEM;
@@ -3185,7 +3252,7 @@ get_live_memory_source(void)
 		goto live_report;
 
 	pc->live_memsrc = "/dev/mem";
-	use_module = FALSE;
+	use_module = crashbuiltin = FALSE;
 
 	if (file_exists("/dev/mem", &stat1) &&
 	    file_exists(pc->memory_device, &stat2) &&
@@ -3222,6 +3289,10 @@ get_live_memory_source(void)
 		}
 
 		pclose(pipe);
+
+		if (!use_module && file_exists("/dev/crash", &stat1) && 
+		    S_ISCHR(stat1.st_mode))
+			crashbuiltin = TRUE;
 	}
 
 	if (use_module) {
@@ -3230,6 +3301,15 @@ get_live_memory_source(void)
 		pc->readmem = read_memory_device;
 		pc->writemem = write_memory_device;
 		pc->live_memsrc = pc->memory_device;
+	}
+
+	if (crashbuiltin) {
+		pc->flags &= ~DEVMEM;
+		pc->flags |= CRASHBUILTIN;
+		pc->readmem = read_memory_device;
+		pc->writemem = write_memory_device;
+		pc->live_memsrc = pc->memory_device;
+		pc->memory_module = NULL;
 	}
 
 live_report:
@@ -3413,10 +3493,11 @@ create_memory_device(dev_t dev)
 /*
  *  If we're here, the memory driver module is being requested:
  *
- *   1. If the module is not already loaded, insmod it.
- *   2. Determine the misc driver minor device number that it was assigned.
- *   3. Create (or verify) the device file.
- *   4. Then just open it.
+ *   1. If /dev/crash is built into the kernel, just open it.
+ *   2. If the module is not already loaded, insmod it.
+ *   3. Determine the misc driver minor device number that it was assigned.
+ *   4. Create (or verify) the device file.
+ *   5. Then just open it.
  */ 
 
 static int 
@@ -3424,10 +3505,14 @@ memory_driver_init(void)
 {
 	dev_t dev;
 
+	if (pc->flags & CRASHBUILTIN)
+		goto open_device;
+
 	if (!memory_driver_module_loaded(NULL)) {
 	    	if (!insmod_memory_driver_module()) 
 			return FALSE;
-	}
+	} else
+		pc->flags |= MODPRELOAD;
 
 	if (!get_memory_driver_dev(&dev)) 
 		return FALSE;
@@ -3435,6 +3520,7 @@ memory_driver_init(void)
 	if (!create_memory_device(dev)) 
 		return FALSE;
 
+open_device:
 	if ((pc->mfd = open(pc->memory_device, O_RDONLY)) < 0) { 
 		error(INFO, "%s: open: %s\n", pc->memory_device, 
 			strerror(errno));

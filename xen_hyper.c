@@ -71,6 +71,13 @@ xen_hyper_init(void)
 #endif
 
 #if defined(X86) || defined(X86_64)
+	if (symbol_exists("__per_cpu_shift")) {
+		xht->percpu_shift = (int)symbol_value("__per_cpu_shift");
+	} else if (xen_major_version() >= 3 && xen_minor_version() >= 3) {
+		xht->percpu_shift = 13;
+	} else {
+		xht->percpu_shift = 12;
+	}
 	member_offset = MEMBER_OFFSET("cpuinfo_x86", "x86_model_id");
 	buf = GETBUF(XEN_HYPER_SIZE(cpuinfo_x86));	
 	if (xen_hyper_test_pcpu_id(XEN_HYPER_CRASHING_CPU())) {
@@ -146,6 +153,17 @@ xen_hyper_init(void)
 #endif
 	XEN_HYPER_STRUCT_SIZE_INIT(cpu_user_regs, "cpu_user_regs");
 
+	xht->idle_vcpu_size = get_array_length("idle_vcpu", NULL, 0);
+	xht->idle_vcpu_array = (ulong *)malloc(xht->idle_vcpu_size * sizeof(ulong));
+	if (xht->idle_vcpu_array == NULL) {
+		error(FATAL, "cannot malloc idle_vcpu_array space.\n");
+	}
+	if (!readmem(symbol_value("idle_vcpu"), KVADDR, xht->idle_vcpu_array,
+		xht->idle_vcpu_size * sizeof(ulong), "idle_vcpu_array",
+		RETURN_ON_ERROR)) {
+		error(FATAL, "cannot read idle_vcpu array.\n");
+	}
+
 	/*
 	 * Do some initialization.
 	 */
@@ -181,7 +199,13 @@ xen_hyper_domain_init(void)
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_hvm, "domain", "is_hvm");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_privileged, "domain", "is_privileged");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_debugger_attached, "domain", "debugger_attached");
+
+	/*
+	 * Will be removed in Xen 4.4 (hg ae9b223a675d),
+	 * need to check that with XEN_HYPER_VALID_MEMBER() before using
+	 */
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_polling, "domain", "is_polling");
+
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_dying, "domain", "is_dying");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_paused_by_controller, "domain", "is_paused_by_controller");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_is_shutting_down, "domain", "is_shutting_down");
@@ -888,6 +912,7 @@ xen_hyper_refresh_domain_context_space(void)
 	ulong domain, next, dom_xen, dom_io, idle_vcpu;
 	struct xen_hyper_domain_context *dc;
 	struct xen_hyper_domain_context *dom0;
+	int i;
 
 	if ((xhdt->flags & XEN_HYPER_DOMAIN_F_INIT) && !ACTIVE()) {
 		return;
@@ -918,20 +943,25 @@ xen_hyper_refresh_domain_context_space(void)
 	dc++;
 
 	/* restore an idle domain context. */
-	get_symbol_data("idle_vcpu", sizeof(idle_vcpu), &idle_vcpu);
-	if (!readmem(idle_vcpu + MEMBER_OFFSET("vcpu", "domain"),
-		KVADDR, &domain, sizeof(domain), "domain", RETURN_ON_ERROR)) {
-		error(WARNING, "cannot read domain member in vcpu.\n");
+	for (i = 0; i < xht->idle_vcpu_size; i += XEN_HYPER_MAX_VIRT_CPUS) {
+		idle_vcpu = xht->idle_vcpu_array[i];
+		if (idle_vcpu == 0)
+			break;
+		if (!readmem(idle_vcpu + MEMBER_OFFSET("vcpu", "domain"),
+			KVADDR, &domain, sizeof(domain), "domain", RETURN_ON_ERROR)) {
+			error(FATAL, "cannot read domain member in vcpu.\n");
+		}
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "idle_vcpu=%lx, domain=%lx\n", idle_vcpu, domain);
+		}
+		if ((domain_struct = xen_hyper_read_domain(domain)) == NULL) {
+			error(FATAL, "cannot read idle domain.\n");
+		}
+		xen_hyper_store_domain_context(dc, domain, domain_struct);
+		if (i == 0)
+			xhdt->idle_domain = dc;
+		dc++;
 	}
-	if (CRASHDEBUG(1)) {
-		fprintf(fp, "idle_vcpu=%lx, domain=%lx\n", idle_vcpu, domain);
-	}
-	if ((domain_struct = xen_hyper_read_domain(domain)) == NULL) {
-		error(FATAL, "cannot read idle domain.\n");
-	}
-	xen_hyper_store_domain_context(dc, domain, domain_struct);
-	xhdt->idle_domain = dc;
-	dc++;
 
 	/* restore domain contexts from dom0 symbol. */
 	xen_hyper_get_domain_next(XEN_HYPER_DOMAIN_READ_DOM0, &next);
@@ -954,7 +984,7 @@ xen_hyper_get_domains(void)
 {
 	ulong domain, next_in_list;
 	long domain_next_in_list;
-	int i;
+	int i, j;
 
 	get_symbol_data("dom0", sizeof(void *), &domain);
 	domain_next_in_list = MEMBER_OFFSET("domain", "next_in_list");
@@ -967,7 +997,12 @@ xen_hyper_get_domains(void)
 			error(FATAL, "cannot read domain.next_in_list.\n");
 		}
 	}
-	i += 3;		/* for dom_io, dom_xen and idle domain */
+	i += 2;		/* for dom_io, dom_xen */
+	/* for idle domains */
+	for (j = 0; j < xht->idle_vcpu_size; j += XEN_HYPER_MAX_VIRT_CPUS) {
+		if (xht->idle_vcpu_array[j])
+			i++;
+	}
 	return i;
 }
 
@@ -1172,7 +1207,8 @@ xen_hyper_store_domain_context(struct xen_hyper_domain_context *dc,
 			dc->domain_flags |= XEN_HYPER_DOMS_privileged;
 		} else if (*(dp + XEN_HYPER_OFFSET(domain_debugger_attached))) {
 			dc->domain_flags |= XEN_HYPER_DOMS_debugging;
-		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_polling))) {
+		} else if (XEN_HYPER_VALID_MEMBER(domain_is_polling) &&
+				*(dp + XEN_HYPER_OFFSET(domain_is_polling))) {
 			dc->domain_flags |= XEN_HYPER_DOMS_polling;
 		} else if (*(dp + XEN_HYPER_OFFSET(domain_is_paused_by_controller))) {
 			dc->domain_flags |= XEN_HYPER_DOMS_ctrl_pause;
@@ -1746,9 +1782,11 @@ xen_hyper_get_uptime_hyper(void)
 			tmp2 = (ulong)jiffies_64;
 			jiffies_64 = (ulonglong)(tmp2 - tmp1);
 		}
-	} else {
+	} else if (symbol_exists("jiffies")) {
 		get_symbol_data("jiffies", sizeof(long), &jiffies);
 		jiffies_64 = (ulonglong)jiffies;
+	} else {
+		jiffies_64 = 0;	/* hypervisor does not have uptime */
 	}
 
 	return jiffies_64;

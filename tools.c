@@ -1534,13 +1534,19 @@ mkstring(char *s, int size, ulong flags, const char *opt)
 	int right;
 	char buf[BUFSIZE];
 
-	switch (flags & (LONG_DEC|LONG_HEX|INT_HEX|INT_DEC|LONGLONG_HEX)) 
+	switch (flags & (LONG_DEC|LONG_HEX|INT_HEX|INT_DEC|LONGLONG_HEX|ZERO_FILL)) 
 	{
 	case LONG_DEC:
 		sprintf(s, "%lu", (ulong)opt);
 		break;
 	case LONG_HEX:
 		sprintf(s, "%lx", (ulong)opt);
+		break;
+	case (LONG_HEX|ZERO_FILL):
+		if (VADDR_PRLEN == 8)
+			sprintf(s, "%08lx", (ulong)opt);
+		else if (VADDR_PRLEN == 16)
+			sprintf(s, "%016lx", (ulong)opt);
 		break;
 	case INT_DEC:
 		sprintf(s, "%u", (uint)((ulong)opt));
@@ -1673,6 +1679,9 @@ cmd_set(void)
                 switch(c)
 		{
 		case 'c':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
+
 			if (!runtime) {
 				error(INFO, 
 				    "cpu setting not allowed from .%src\n",
@@ -1689,6 +1698,9 @@ cmd_set(void)
 			return;
 
 		case 'p':
+			if (XEN_HYPER_MODE())
+				option_not_supported(c);
+
 			if (!runtime)
 				return;
 
@@ -1723,7 +1735,10 @@ cmd_set(void)
 	}
 
 	if (!args[optind]) {
-		if (runtime)
+		if (XEN_HYPER_MODE())
+			error(INFO, 
+			    "requires an option with the Xen hypervisor\n");
+		else if (runtime)
 			show_context(CURRENT_CONTEXT());
 		return;
 	}
@@ -2059,6 +2074,28 @@ cmd_set(void)
 				fprintf(fp, "print_max: %d\n", print_max);
 			return;
 
+                } else if (STREQ(args[optind], "null-stop")) {
+			optind++;
+			if (args[optind]) {
+				if (STREQ(args[optind], "on"))
+					stop_print_at_null = 1;
+				else if (STREQ(args[optind], "off"))
+					stop_print_at_null = 0;
+				else if (IS_A_NUMBER(args[optind])) {
+					value = stol(args[optind],
+						FAULT_ON_ERROR, NULL);
+					if (value)
+						stop_print_at_null = 1;
+					else
+						stop_print_at_null = 0;
+					} else
+						goto invalid_set_command;
+			}
+			if (runtime)
+				fprintf(fp, "null-stop: %s\n", 
+					stop_print_at_null ? "on" : "off");
+			return;
+
                 } else if (STREQ(args[optind], "dumpfile")) {
 			optind++;
                         if (!runtime && args[optind]) {
@@ -2144,6 +2181,8 @@ cmd_set(void)
 					"on" : "off");
 			return;
 
+		} else if (XEN_HYPER_MODE()) {
+			error(FATAL, "invalid argument for the Xen hypervisor\n");
 		} else if (runtime) {
 			ulong pid, task;
 
@@ -2229,6 +2268,7 @@ show_options(void)
 	fprintf(fp, "      dumpfile: %s\n", pc->dumpfile);
 	fprintf(fp, "        unwind: %s\n", kt->flags & DWARF_UNWIND ? "on" : "off");
 	fprintf(fp, " zero_excluded: %s\n", *diskdump_flags & ZERO_EXCLUDED ? "on" : "off");
+	fprintf(fp, "     null-stop: %s\n", stop_print_at_null ? "on" : "off");
 }
 
 
@@ -4548,13 +4588,15 @@ machine_type_mismatch(char *file, char *e_machine, char *alt, ulong query)
 void
 command_not_supported()
 {
-	error(FATAL, "command not supported on this architecture or kernel\n");
+	error(FATAL, 
+	    "command not supported or applicable on this architecture or kernel\n");
 }
 
 void
 option_not_supported(int c)
 {
-	error(FATAL, "-%c option not supported on this architecture or kernel\n", 
+	error(FATAL, 
+	    "-%c option not supported or applicable on this architecture or kernel\n", 
 		(char)c);
 }
 

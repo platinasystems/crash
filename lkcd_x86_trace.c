@@ -510,6 +510,8 @@ struct framesize_mods {
 		COMPILER_VERSION_EQUAL, GCC(2,96,0), 0, 0, 48 },
 	{ "default_idle", NULL, 
 		COMPILER_VERSION_START, GCC(2,96,0), 0, -4, 0 },
+	{ "hidinput_hid_event", NULL, 
+		COMPILER_VERSION_START, GCC(4,1,2), 0, 0, 28 },
  	{ NULL, NULL, 0, 0, 0, 0, 0 },
 };
 
@@ -1423,7 +1425,9 @@ find_trace(
 		if (XEN_HYPER_MODE()) {
 			func_name = kl_funcname(pc);
 			if (STREQ(func_name, "idle_loop") || STREQ(func_name, "hypercall")
+				|| STREQ(func_name, "process_softirqs")
 				|| STREQ(func_name, "tracing_off")
+				|| STREQ(func_name, "page_fault")
 				|| STREQ(func_name, "handle_exception")) {
 				UPDATE_FRAME(func_name, pc, 0, sp, bp, asp, 0, 0, bp - sp, 0);
 				return(trace->nframes);
@@ -2440,12 +2444,14 @@ handle_trace_error(struct bt_info *bt, int nframes, FILE *ofp)
         bt->flags |= BT_TEXT_SYMBOLS_PRINT|BT_ERROR_MASK;
         back_trace(bt);
 
-        bt->flags = BT_EFRAME_COUNT;
-        if ((cnt = machdep->eframe_search(bt))) {
-		error(INFO, "possible exception frame%s:\n", 
-			cnt > 1 ? "s" : "");
-		bt->flags &= ~(ulonglong)BT_EFRAME_COUNT;
-        	machdep->eframe_search(bt); 
+	if (!XEN_HYPER_MODE()) {
+		bt->flags = BT_EFRAME_COUNT;
+		if ((cnt = machdep->eframe_search(bt))) {
+			error(INFO, "possible exception frame%s:\n", 
+				cnt > 1 ? "s" : "");
+			bt->flags &= ~(ulonglong)BT_EFRAME_COUNT;
+			machdep->eframe_search(bt); 
+		}
 	}
 }
 

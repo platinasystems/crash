@@ -134,9 +134,8 @@ typedef uint32_t	Elf_Word;
 #endif
 
 #if defined(X86) || defined(X86_64)
-#define XEN_HYPER_PERCPU_SHIFT 12
 #define xen_hyper_per_cpu(var, cpu)  \
-	((ulong)(var) + (((ulong)(cpu))<<XEN_HYPER_PERCPU_SHIFT))
+	((ulong)(var) + (((ulong)(cpu))<<xht->percpu_shift))
 #elif defined(IA64)
 #define xen_hyper_per_cpu(var, cpu)  \
 	((xht->flags & XEN_HYPER_SMP) ? \
@@ -167,6 +166,7 @@ typedef uint32_t	Elf_Word;
 /* Prepared domain ID. */
 #define XEN_HYPER_DOMID_IO		(0x7FF1U)
 #define XEN_HYPER_DOMID_XEN		(0x7FF2U)
+#define XEN_HYPER_DOMID_IDLE		(0x7FFFU)
 
 /* Domain flags (domain_flags). */
  /* Is this domain privileged? */
@@ -404,6 +404,9 @@ struct xen_hyper_table {
 	ulong *cpumask;
 	uint *cpu_idxs;
 	ulong *__per_cpu_offset;
+	int percpu_shift;
+	int idle_vcpu_size;
+	ulong *idle_vcpu_array;
 };
 
 struct xen_hyper_dumpinfo_context {

@@ -93,8 +93,10 @@
 
 #define HIST_BLKSIZE  (4096)
 
-#define STREQ(A, B)      (A && B && (strcmp((char *)(A), (char *)(B)) == 0))
-#define STRNEQ(A, B)     (A && B && \
+static inline int string_exists(char *s) { return (s ? TRUE : FALSE); }
+#define STREQ(A, B)      (string_exists((char *)A) && string_exists((char *)B) && \
+	(strcmp((char *)(A), (char *)(B)) == 0))
+#define STRNEQ(A, B)     (string_exists((char *)A) && string_exists((char *)B) && \
         (strncmp((char *)(A), (char *)(B), strlen((char *)(B))) == 0))
 #define BZERO(S, N)      (memset(S, NULLCHAR, N))
 #define BCOPY(S, D, C)   (memcpy(D, S, C))
@@ -185,10 +187,11 @@ struct number_option {
 #define IFILE_ERROR   (0x400000000000000ULL)
 #define KERNTYPES     (0x800000000000000ULL)
 #define MINIMAL_MODE (0x1000000000000000ULL)
+#define CRASHBUILTIN (0x2000000000000000ULL)
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
-#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP)
+#define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN)
 #define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP)
 #define REMOTE()            (pc->flags & REMOTE_DAEMON)
 #define REMOTE_ACTIVE()     (pc->flags & REM_LIVE_SYSTEM) 
@@ -2069,7 +2072,8 @@ struct load_module {
 #define TIF_SIGPENDING  (2)
 
 // CONFIG_X86_PAE 
-#define _SECTION_SIZE_BITS_PAE	30
+#define _SECTION_SIZE_BITS_PAE_ORIG	30
+#define _SECTION_SIZE_BITS_PAE_2_6_26	29
 #define _MAX_PHYSMEM_BITS_PAE	36
 
 // !CONFIG_X86_PAE   
@@ -2773,6 +2777,7 @@ struct efi_memory_desc_t {
 #define INT_DEC      (0x20)
 #define INT_HEX      (0x40)
 #define LONGLONG_HEX (0x80)
+#define ZERO_FILL   (0x100)
 
 #define INIT_TIME (1)
 #define RUN_TIME  (2)
@@ -3623,7 +3628,7 @@ void display_sys_stats(void);
 char *get_uptime(char *, ulonglong *);
 void clone_bt_info(struct bt_info *, struct bt_info *, struct task_context *);
 void dump_kernel_table(int);
-void dump_bt_info(struct bt_info *);
+void dump_bt_info(struct bt_info *, char *where);
 void dump_log(int);
 void set_cpu(int);
 void clear_machdep_cache(void);
@@ -4118,6 +4123,8 @@ void xen_kdump_p2m_mfn(char *);
 int is_sadump_xen(void);
 void set_xen_phys_start(char *);
 ulong xen_phys_start(void);
+int xen_major_version(void);
+int xen_minor_version(void);
 
 /*
  *  diskdump.c
@@ -4508,6 +4515,7 @@ extern int prettyprint_structs;
 extern int prettyprint_arrays;
 extern int repeat_count_threshold;
 extern unsigned int print_max;
+extern int stop_print_at_null;
 
 /*
  *  gdb/utils.c
