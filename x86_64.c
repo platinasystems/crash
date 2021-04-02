@@ -1262,6 +1262,11 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 		if (CRASHDEBUG(2) && (bt->flags & BT_CHECK_CALLER))
 			fprintf(ofp, "< disable BT_CHECK_CALLER for %s >\n", 
 				bt->call_target);
+		if (bt->flags & BT_CHECK_CALLER) {
+			if (CRASHDEBUG(2))
+			    	fprintf(ofp, "< set BT_NO_CHECK_CALLER >\n");
+			bt->flags |= BT_NO_CHECK_CALLER;
+		}
 		bt->flags &= ~(ulonglong)BT_CHECK_CALLER;
 	}
 
@@ -1371,6 +1376,8 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	ulong irq_eframe;
 	struct bt_info bt_local, *bt;
 	struct machine_specific *ms;
+	ulong last_process_stack_eframe;
+	ulong user_mode_eframe;
 
 	bt = &bt_local;
 	BCOPY(bt_in, bt, sizeof(struct bt_info));
@@ -1378,6 +1385,7 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 	level = 0;
 	done = FALSE;
 	irq_eframe = 0;
+	last_process_stack_eframe = 0;
 	bt->call_target = NULL;
 	rsp = bt->stkptr;
 	if (!rsp) {
@@ -1459,6 +1467,7 @@ in_exception_stack:
 	                {
 	                case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
+				i += SIZE(pt_regs)/sizeof(ulong);
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
 	                        break;
@@ -1540,6 +1549,7 @@ in_exception_stack:
                         {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
+				i += SIZE(pt_regs)/sizeof(ulong);
                         case BACKTRACE_ENTRY_DISPLAYED:
                                 level++;
                                 break;
@@ -1698,7 +1708,9 @@ in_exception_stack:
 		switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
 		{
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
+			last_process_stack_eframe = rsp + 8;
 			rsp += SIZE(pt_regs);
+			i += SIZE(pt_regs)/sizeof(ulong);
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
 			break;
@@ -1711,10 +1723,13 @@ in_exception_stack:
         }
 
         if (!irq_eframe && !is_kernel_thread(bt->tc->task) &&
-            (GET_STACKBASE(bt->tc->task) == bt->stackbase))
-                x86_64_exception_frame(EFRAME_PRINT, 0, bt->stackbuf +
-                        (bt->stacktop - bt->stackbase) - SIZE(pt_regs),
-                        bt, ofp);
+            (GET_STACKBASE(bt->tc->task) == bt->stackbase)) {
+		user_mode_eframe = bt->stacktop - SIZE(pt_regs);
+		if (last_process_stack_eframe < user_mode_eframe)
+                	x86_64_exception_frame(EFRAME_PRINT, 0, bt->stackbuf +
+                        	(bt->stacktop - bt->stackbase) - SIZE(pt_regs),
+                        	bt, ofp);
+	}
 
         if (bt->flags & BT_TEXT_SYMBOLS) {
         	if (BT_REFERENCE_FOUND(bt)) {
@@ -1742,11 +1757,11 @@ is_direct_call_target(struct bt_info *bt)
 {
 	int i;
 
-	if (!bt->call_target)
+	if (!bt->call_target || (bt->flags & BT_NO_CHECK_CALLER))
 		return FALSE;
 
 	for (i = 0; direct_call_targets[i]; i++) {
-		if (STREQ(direct_call_targets[i], bt->call_target))
+		if (STREQ(direct_call_targets[i], bt->call_target)) 
 			return TRUE;
 	}
 
@@ -2011,6 +2026,12 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
         if ((cs == 0x10) && kvaddr) {
                 if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
 		    (rsp == (kvaddr + SIZE(pt_regs) + 8)))
+                        return TRUE;
+	}
+
+        if ((cs == 0x10) && kvaddr) {
+                if (is_kernel_text(rip) && IS_KVADDR(rsp) &&
+		    (rsp == (kvaddr + SIZE(pt_regs))))
                         return TRUE;
 	}
 
