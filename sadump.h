@@ -41,6 +41,8 @@ typedef struct {
 	uint8_t data4[8];
 } efi_guid_t;
 
+#define SADUMP_EFI_GUID_TEXT_REPR_LEN 36
+
 struct sadump_part_header {
 #define SADUMP_SIGNATURE1	0x75646173
 #define SADUMP_SIGNATURE2	0x0000706d

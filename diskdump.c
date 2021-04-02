@@ -40,11 +40,13 @@ struct diskdump_data {
 	struct disk_dump_sub_header	*sub_header;
 	struct kdump_sub_header		*sub_header_kdump;
 
+	unsigned long long	max_mapnr;	/* 64bit max_mapnr */
+
 	size_t	data_offset;
 	int	block_size;
 	int	block_shift;
 	char	*bitmap;
-	int	bitmap_len;
+	off_t	bitmap_len;
 	char	*dumpable_bitmap;
 	int	byte, bit;
 	char	*compressed_page;	/* copy of compressed page data */
@@ -170,9 +172,9 @@ add_diskdump_data(char* name)
 	dd->filename = name;
 
 	if (CRASHDEBUG(1))
-		fprintf(fp, "%s: start_pfn=%lu, end_pfn=%lu\n", name,
-			dd->sub_header_kdump->start_pfn,
-			dd->sub_header_kdump->end_pfn);
+		fprintf(fp, "%s: start_pfn=%llu, end_pfn=%llu\n", name,
+			dd->sub_header_kdump->start_pfn_64,
+			dd->sub_header_kdump->end_pfn_64);
 }
 
 static void 
@@ -199,13 +201,13 @@ get_bit(char *map, int byte, int bit)
 }
 
 static inline int 
-page_is_ram(unsigned int nr)
+page_is_ram(unsigned long nr)
 {
 	return get_bit(dd->bitmap, nr >> 3, nr & 7);
 }
 
 static inline int 
-page_is_dumpable(unsigned int nr)
+page_is_dumpable(unsigned long nr)
 {
 	return dd->dumpable_bitmap[nr>>3] & (1 << (nr & 7));
 }
@@ -214,7 +216,7 @@ static inline int
 dump_is_partial(const struct disk_dump_header *header)
 {
 	return header->bitmap_blocks >=
-	    divideup(divideup(header->max_mapnr, 8), dd->block_size) * 2;
+	    divideup(divideup(dd->max_mapnr, 8), dd->block_size) * 2;
 }
 
 static int 
@@ -321,6 +323,9 @@ x86_process_elf_notes(void *note_ptr, unsigned long size_note)
  * [40]    unsigned long   size_note;          /  header_version 4 and later  /
  * [44]    off_t           offset_eraseinfo;   /  header_version 5 and later  /
  * [52]    unsigned long   size_eraseinfo;     /  header_version 5 and later  /
+ * [56]    unsigned long long   start_pfn_64;  /  header_version 6 and later  /
+ * [64]    unsigned long long   end_pfn_64;    /  header_version 6 and later  /
+ * [72]    unsigned long long   max_mapnr_64;  /  header_version 6 and later  /
  * };
  * 
  * But when compiled on an ARM processor, each 64-bit "off_t" would be pushed
@@ -337,7 +342,10 @@ x86_process_elf_notes(void *note_ptr, unsigned long size_note)
  * [40]    off_t           offset_note;        /  header_version 4 and later  /
  * [48]    unsigned long   size_note;          /  header_version 4 and later  /
  * [56]    off_t           offset_eraseinfo;   /  header_version 5 and later  /
- * [62]    unsigned long   size_eraseinfo;     /  header_version 5 and later  /
+ * [64]    unsigned long   size_eraseinfo;     /  header_version 5 and later  /
+ * [72]    unsigned long long   start_pfn_64;  /  header_version 6 and later  /
+ * [80]    unsigned long long   end_pfn_64;    /  header_version 6 and later  /
+ * [88]    unsigned long long   max_mapnr_64;  /  header_version 6 and later  /
  * };
  * 
  */
@@ -357,6 +365,10 @@ struct kdump_sub_header_ARM_target {
 	int 		pad3;	
         off_t           offset_eraseinfo;   /* header_version 5 and later */
         unsigned long   size_eraseinfo;     /* header_version 5 and later */
+	int		pad4;
+	unsigned long long start_pfn_64;    /* header_version 6 and later */
+	unsigned long long end_pfn_64;      /* header_version 6 and later */
+	unsigned long long max_mapnr_64;    /* header_version 6 and later */
 };
 
 static void
@@ -380,6 +392,15 @@ arm_kdump_header_adjust(int header_version)
 		kdsh->offset_eraseinfo = kdsh_ARM_target->offset_eraseinfo;
 		kdsh->size_eraseinfo = kdsh_ARM_target->size_eraseinfo;
 	}
+	if (header_version >= 6) {
+		kdsh->start_pfn_64 = kdsh_ARM_target->start_pfn_64;
+		kdsh->end_pfn_64 = kdsh_ARM_target->end_pfn_64;
+		kdsh->max_mapnr_64 = kdsh_ARM_target->max_mapnr_64;
+	} else {
+		kdsh->start_pfn_64 = kdsh_ARM_target->start_pfn;
+		kdsh->end_pfn_64 = kdsh_ARM_target->end_pfn;
+		kdsh->max_mapnr_64 = dd->max_mapnr;
+	}
 }
 #endif  /* __i386__ && ARM */
 
@@ -390,7 +411,10 @@ read_dump_header(char *file)
 	struct disk_dump_sub_header *sub_header = NULL;
 	struct kdump_sub_header *sub_header_kdump = NULL;
 	size_t size;
-	int bitmap_len;
+	off_t bitmap_len;
+	char *bufptr;
+	size_t len;
+	ssize_t bytes_read;
 	int block_size = (int)sysconf(_SC_PAGESIZE);
 	off_t offset;
 	const off_t failed = (off_t)-1;
@@ -516,6 +540,13 @@ restart:
 			}
 		}
 		dd->sub_header = sub_header;
+
+		/* the 64bit max_mapnr only exists in sub-header of compressed
+		 * kdump file, if it's not a compressed kdump file, we have to
+		 * use the old 32bit max_mapnr in dumpfile header.
+		 * max_mapnr may be truncated here.
+		 */
+		dd->max_mapnr = header->max_mapnr;
 	} else if (KDUMP_CMPRS_VALID()) {
 		if ((sub_header_kdump = malloc(block_size)) == NULL)
 			error(FATAL, "compressed kdump: cannot malloc sub_header_kdump buffer\n");
@@ -540,7 +571,19 @@ restart:
 #if defined(__i386__) && defined(ARM)
 		arm_kdump_header_adjust(header->header_version);
 #endif
+		/* use 64bit max_mapnr in compressed kdump file sub-header */
+		if (header->header_version >= 6)
+			dd->max_mapnr = dd->sub_header_kdump->max_mapnr_64;
+		else {
+			dd->sub_header_kdump->start_pfn_64
+				= dd->sub_header_kdump->start_pfn;
+			dd->sub_header_kdump->end_pfn_64
+				= dd->sub_header_kdump->end_pfn;
+		}
 	}
+
+	if (header->header_version < 6)
+		dd->max_mapnr = header->max_mapnr;
 
 	/* read memory bitmap */
 	bitmap_len = block_size * header->bitmap_blocks;
@@ -571,10 +614,18 @@ restart:
 				DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
 			goto err;
 		}
-		if (read(dd->dfd, dd->bitmap, bitmap_len) < bitmap_len) {
-			error(INFO, "%s: cannot read memory bitmap\n",
-				DISKDUMP_VALID() ? "diskdump" : "compressed kdump");
-			goto err;
+		bufptr = dd->bitmap;
+		len = bitmap_len;
+		while (len) {
+			bytes_read = read(dd->dfd, bufptr, len);
+			if (bytes_read  < 0) {
+				error(INFO, "%s: cannot read memory bitmap\n",
+					DISKDUMP_VALID() ? "diskdump"
+					: "compressed kdump");
+				goto err;
+			}
+			len -= bytes_read;
+			bufptr += bytes_read;
 		}
 	}
 
@@ -679,13 +730,13 @@ restart:
 	}
 
 	if (!is_split) {
-		max_sect_len = divideup(header->max_mapnr, BITMAP_SECT_LEN);
+		max_sect_len = divideup(dd->max_mapnr, BITMAP_SECT_LEN);
 		pfn = 0;
 		dd->filename = file;
 	}
 	else {
-		ulong start = sub_header_kdump->start_pfn;
-		ulong end = sub_header_kdump->end_pfn;
+		unsigned long long start = sub_header_kdump->start_pfn_64;
+		unsigned long long end = sub_header_kdump->end_pfn_64;
 		max_sect_len = divideup(end - start + 1, BITMAP_SECT_LEN);
 		pfn = start;
 	}
@@ -727,8 +778,9 @@ pfn_to_pos(ulong pfn)
 	ulong p1, p2;
 
 	if (KDUMP_SPLIT()) {
-		p1 = pfn - dd->sub_header_kdump->start_pfn;
-		p2 = round(p1, BITMAP_SECT_LEN) + dd->sub_header_kdump->start_pfn;
+		p1 = pfn - dd->sub_header_kdump->start_pfn_64;
+		p2 = round(p1, BITMAP_SECT_LEN)
+			+ dd->sub_header_kdump->start_pfn_64;
 	}
 	else {
 		p1 = pfn; 
@@ -1034,12 +1086,12 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	if (KDUMP_SPLIT()) {
 		/* Find proper dd */
 		int i;
-		unsigned long start_pfn;
-		unsigned long end_pfn;
+		unsigned long long start_pfn;
+		unsigned long long end_pfn;
 
 		for (i=0; i<num_dumpfiles; i++) {
-			start_pfn = dd_list[i]->sub_header_kdump->start_pfn;
-			end_pfn = dd_list[i]->sub_header_kdump->end_pfn;
+			start_pfn = dd_list[i]->sub_header_kdump->start_pfn_64;
+			end_pfn = dd_list[i]->sub_header_kdump->end_pfn_64;
 			if ((pfn >= start_pfn) && (pfn <= end_pfn))	{
 				dd = dd_list[i];
 				break;
@@ -1058,14 +1110,14 @@ read_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	curpaddr = paddr & ~((physaddr_t)(dd->block_size-1));
 	page_offset = paddr & ((physaddr_t)(dd->block_size-1));
 
-	if ((pfn >= dd->header->max_mapnr) || !page_is_ram(pfn)) {
+	if ((pfn >= dd->max_mapnr) || !page_is_ram(pfn)) {
 		if (CRASHDEBUG(8)) {
 			fprintf(fp, "read_diskdump: SEEK_ERROR: "
 			    "paddr/pfn: %llx/%lx ",
 				(ulonglong)paddr, pfn);
-			if (pfn >= dd->header->max_mapnr)
-				fprintf(fp, "max_mapnr: %x\n",
-					dd->header->max_mapnr);
+			if (pfn >= dd->max_mapnr)
+				fprintf(fp, "max_mapnr: %llx\n",
+					dd->max_mapnr);
 			else
 				fprintf(fp, "!page_is_ram\n");
 		}
@@ -1507,12 +1559,31 @@ __diskdump_memory_dump(FILE *fp)
 	fprintf(fp, "               tv_usec: %lx\n", dh->timestamp.tv_usec);
 	fprintf(fp, "              status: %x (", dh->status);
         others = 0;
-        if (dh->status & DUMP_HEADER_COMPLETED)
-                fprintf(fp, "%sDUMP_HEADER_COMPLETED", others++ ? "|" : "");
-        if (dh->status & DUMP_HEADER_INCOMPLETED)
-                fprintf(fp, "%sDUMP_HEADER_INCOMPLETED", others++ ? "|" : "");
-        if (dh->status & DUMP_HEADER_COMPRESSED)
-                fprintf(fp, "%sDUMP_HEADER_COMPRESSED", others++ ? "|" : "");
+	switch (dd->flags & (DISKDUMP_LOCAL|KDUMP_CMPRS_LOCAL))
+	{
+        case DISKDUMP_LOCAL:
+		if (dh->status == DUMP_HEADER_COMPLETED)
+			fprintf(fp, "%sDUMP_HEADER_COMPLETED", 
+				others++ ? "|" : "");
+		else if (dh->status == DUMP_HEADER_INCOMPLETED)
+			fprintf(fp, "%sDUMP_HEADER_INCOMPLETED", 
+				others++ ? "|" : "");
+		else if (dh->status == DUMP_HEADER_COMPRESSED)
+			fprintf(fp, "%sDUMP_HEADER_COMPRESSED", 
+				others++ ? "|" : "");
+		break;
+	case KDUMP_CMPRS_LOCAL:
+		if (dh->status & DUMP_DH_COMPRESSED_ZLIB)
+			fprintf(fp, "%sDUMP_DH_COMPRESSED_ZLIB", 
+				others++ ? "|" : "");
+		if (dh->status & DUMP_DH_COMPRESSED_LZO)
+			fprintf(fp, "%sDUMP_DH_COMPRESSED_LZO", 
+				others++ ? "|" : "");
+		if (dh->status & DUMP_DH_COMPRESSED_SNAPPY)
+			fprintf(fp, "%sDUMP_DH_COMPRESSED_SNAPPY", 
+				others++ ? "|" : "");
+		break;
+	}
 	fprintf(fp, ")\n");
 	fprintf(fp, "          block_size: %d\n", dh->block_size);
 	fprintf(fp, "        sub_hdr_size: %d\n", dh->sub_hdr_size);
@@ -1662,6 +1733,23 @@ __diskdump_memory_dump(FILE *fp)
 				dump_eraseinfo(fp);
 			}
 		}
+		if (dh->header_version >= 6) {
+			fprintf(fp, "        start_pfn_64: ");
+			if (KDUMP_SPLIT())
+				fprintf(fp, "%lld (0x%llx)\n",
+					kdsh->start_pfn_64, kdsh->start_pfn_64);
+			else
+				fprintf(fp, "(unused)\n");
+			fprintf(fp, "          end_pfn_64: ");
+			if (KDUMP_SPLIT())
+				fprintf(fp, "%lld (0x%llx)\n",
+					kdsh->end_pfn_64, kdsh->end_pfn_64);
+			else
+				fprintf(fp, "(unused)\n");
+
+			fprintf(fp, "        max_mapnr_64: %llu (0x%llx)\n",
+				kdsh->max_mapnr_64, kdsh->max_mapnr_64);
+		}
 		fprintf(fp, "\n");
 	} else
         	fprintf(fp, "(n/a)\n\n");
@@ -1670,7 +1758,8 @@ __diskdump_memory_dump(FILE *fp)
 	fprintf(fp, "        block_size: %d\n", dd->block_size);
 	fprintf(fp, "       block_shift: %d\n", dd->block_shift);
 	fprintf(fp, "            bitmap: %lx\n", (ulong)dd->bitmap);
-	fprintf(fp, "        bitmap_len: %d\n", dd->bitmap_len);
+	fprintf(fp, "        bitmap_len: %lld\n", (ulonglong)dd->bitmap_len);
+	fprintf(fp, "         max_mapnr: %lld (0x%llx)\n", dd->max_mapnr, dd->max_mapnr);
 	fprintf(fp, "   dumpable_bitmap: %lx\n", (ulong)dd->dumpable_bitmap);
 	fprintf(fp, "              byte: %d\n", dd->byte);
 	fprintf(fp, "               bit: %d\n", dd->bit);

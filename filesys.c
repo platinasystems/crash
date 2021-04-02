@@ -727,8 +727,10 @@ get_proc_version(void)
                 return FALSE;
 
         if (fread(&kt->proc_version, sizeof(char), 
-	    	BUFSIZE-1, version) <= 0) 
+	    	BUFSIZE-1, version) <= 0) {
+		fclose(version);
                 return FALSE;
+	}
         
         fclose(version);
 

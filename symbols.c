@@ -72,7 +72,10 @@ struct elf_common;
 static void Elf32_Sym_to_common(Elf32_Sym *, struct elf_common *); 
 static void Elf64_Sym_to_common(Elf64_Sym *, struct elf_common *); 
 static void cmd_datatype_common(ulong);
-static int display_per_cpu_info(struct syment *);
+static void do_datatype_addr(struct datatype_member *, ulong, int,
+			     ulong, char **, int);
+static void process_gdb_output(char *, unsigned, const char *, int);
+static int display_per_cpu_info(struct syment *, int, char *);
 static struct load_module *get_module_percpu_sym_owner(struct syment *);
 static int is_percpu_symbol(struct syment *);
 static void dump_percpu_symbols(struct load_module *);
@@ -116,6 +119,8 @@ static int show_member_offset(FILE *, struct datatype_member *, char *);
 #define IN_STRUCT      (0x40000)
 #define DATATYPE_QUERY (0x80000)
 #define ANON_MEMBER_QUERY (0x100000)
+#define SHOW_RAW_DATA     (0x200000)
+#define DEREF_POINTERS    (0x400000)
 
 #define INTEGER_TYPE    (UINT8|INT8|UINT16|INT16|UINT32|INT32|UINT64|INT64)
 
@@ -132,6 +137,7 @@ static void dump_datatype_flags(ulong, FILE *);
 static long anon_member_offset(char *, char *);
 static int gdb_whatis(char *);
 static void do_datatype_declaration(struct datatype_member *, ulong);
+static int member_to_datatype(char *, struct datatype_member *, ulong);
 
 #define DEBUGINFO_ERROR_MESSAGE1 \
 "the use of a System.map file requires that the accompanying namelist\nargument is a kernel file built with the -g CFLAG.  The namelist argument\nsupplied in this case is a debuginfo file, which must be accompanied by the\nkernel file from which it was derived.\n"
@@ -5704,13 +5710,13 @@ dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
 static void 
 cmd_datatype_common(ulong flags)
 {
-	int i, c;
+	int c;
 	ulong addr, aflag;
+	char *cpuspec;
+	ulong *cpus;
 	struct syment *sp;
-	int rawdata;
-	long len;
 	ulong list_head_offset;
-	int count, pflag;
+	int count;
 	int argc_members;
 	int optind_save;
 	unsigned int radix, restore_radix;
@@ -5721,19 +5727,19 @@ cmd_datatype_common(ulong flags)
 
         dm = &datatype_member;
 	count = 0xdeadbeef;
-	rawdata = 0;
 	aflag = addr = 0;
         list_head_offset = 0;
         argc_members = 0;
 	radix = restore_radix = 0;
 	separator = members = NULL;
-	pflag = 0;
+	cpuspec = NULL;
+	cpus = NULL;
 
         while ((c = getopt(argcnt, args, "pxdhfuc:rvol:")) != EOF) {
                 switch (c)
 		{
 		case 'p':
-			pflag++;
+			flags |= DEREF_POINTERS;
 			break;
 
 		case 'd':
@@ -5756,7 +5762,7 @@ cmd_datatype_common(ulong flags)
 			break;
 
 		case 'r':
-			rawdata = 1;
+			flags |= SHOW_RAW_DATA;
 			break;
 
 		case 'v':
@@ -5816,11 +5822,22 @@ cmd_datatype_common(ulong flags)
 		if (aflag && (count != 0xdeadbeef))
 			error(FATAL, "too many arguments!\n");
 
+		if (!aflag) {
+			cpuspec = strchr(args[optind], ':');
+			if (cpuspec)
+				*cpuspec++ = NULLCHAR;
+		}
+
 		if (clean_arg() && IS_A_NUMBER(args[optind])) { 
 			if (aflag) 
 				count = stol(args[optind], 
 					FAULT_ON_ERROR, NULL);
-			else {
+			else if (cpuspec) {
+				if (pc->curcmd_flags & MEMTYPE_FILEADDR)
+					error(FATAL, "-f option cannot be used with percpu\n");
+				addr = htol(args[optind], FAULT_ON_ERROR, NULL);
+				aflag++;
+			} else {
 				if (pc->curcmd_flags & MEMTYPE_FILEADDR)
 					pc->curcmd_private = stoll(args[optind], 
 						FAULT_ON_ERROR, NULL);
@@ -5835,6 +5852,12 @@ cmd_datatype_common(ulong flags)
 				aflag++;
 			}
 		} else if ((sp = symbol_search(args[optind]))) {
+			if (cpuspec && !is_percpu_symbol(sp)) {
+				error(WARNING,
+				      "%s is not percpu; cpuspec ignored.\n",
+				      sp->name);
+				cpuspec = NULL;
+			}
 	                addr = sp->value;
 			aflag++;
 	        } else {
@@ -5846,6 +5869,14 @@ cmd_datatype_common(ulong flags)
 		}
 	}
 
+	if (cpuspec) {
+		cpus = get_cpumask_buf();
+		if (STREQ(cpuspec, ""))
+			SET_BIT(cpus, CURRENT_CONTEXT()->processor);
+		else
+			make_cpumask(cpuspec, cpus, FAULT_ON_ERROR, NULL);
+	}
+
 	optind = optind_save;
 
 	if (count == 0xdeadbeef)
@@ -5853,7 +5884,7 @@ cmd_datatype_common(ulong flags)
 	else if (!aflag)
 		error(FATAL, "no kernel virtual address argument entered\n");
 
-	if (pflag && !aflag)
+	if ((flags & DEREF_POINTERS) && !aflag)
 		error(FATAL, "-p option requires address argument\n");
 
 	if (list_head_offset)
@@ -5878,6 +5909,15 @@ cmd_datatype_common(ulong flags)
 		DATATYPE_QUERY|ANON_MEMBER_QUERY|RETURN_ON_ERROR) < 1))
 		error(FATAL, "invalid data structure reference: %s\n", structname);
 
+	if (! (flags & (STRUCT_REQUEST|UNION_REQUEST)) ) {
+		flags |= dm->type;
+		if (!(flags & (UNION_REQUEST|STRUCT_REQUEST)))
+			error(FATAL, "invalid argument");
+	} else if ( (flags &(STRUCT_REQUEST|UNION_REQUEST)) != dm->type) {
+		error(FATAL, "data type mismatch: %s is not a %s\n",
+		      dm->name, flags & UNION_REQUEST ? "union" : "struct");
+	}
+
         if ((argc_members > 1) && !aflag) {
                 error(INFO, flags & SHOW_OFFSET ? 
 		    "-o option not valid with multiple member format\n" :
@@ -5891,7 +5931,52 @@ cmd_datatype_common(ulong flags)
 		error(FATAL, 
 		    "-o option not valid with multiple member format\n");
 
-	len = dm->size;
+	set_temporary_radix(radix, &restore_radix);
+
+	/*
+	 *  No address was passed -- dump the structure/member declaration.
+	 */
+	if (!aflag) {
+		if (argc_members &&
+		    !member_to_datatype(memberlist[0], dm,
+					ANON_MEMBER_QUERY))
+			error(FATAL, "invalid data structure reference: %s.%s\n",
+			      dm->name, memberlist[0]);
+		do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
+	} else if (cpus) {
+		for (c = 0; c < kt->cpus; c++) {
+			ulong cpuaddr;
+
+			if (!NUM_IN_BITMAP(cpus, c))
+				continue;
+
+			cpuaddr = addr + kt->__per_cpu_offset[c];
+			fprintf(fp, "[%d]: %lx\n", c, cpuaddr);
+			do_datatype_addr(dm, cpuaddr , count,
+					 flags, memberlist, argc_members);
+		}
+	} else
+		do_datatype_addr(dm, addr, count, flags,
+				 memberlist, argc_members);
+
+	restore_current_radix(restore_radix);
+
+freebuf:
+        if (argc_members) {
+                FREEBUF(structname);
+                FREEBUF(members);
+	}
+
+	if (cpus)
+		FREEBUF(cpus);
+}
+
+static void
+do_datatype_addr(struct datatype_member *dm, ulong addr, int count,
+		 ulong flags, char **memberlist, int argc_members)
+{
+	int i, c;
+	long len = dm->size;
 
 	if (count < 0) {
 		addr -= len * abs(count);
@@ -5908,83 +5993,44 @@ cmd_datatype_common(ulong flags)
 		i = 0;
         	do {
                 	if (argc_members) {
-                        	*separator = '.';
-                        	strcpy(separator+1, memberlist[i]);
-			}
-
-			switch (arg_to_datatype(structname, dm,
-				ANON_MEMBER_QUERY|RETURN_ON_ERROR))
-			{
-			case 0: error(FATAL, "invalid data structure reference: %s\n", 
-					structname);
-				break;
-			case 1: break;
-			case 2: if (rawdata)
+				if (!member_to_datatype(memberlist[i], dm,
+							ANON_MEMBER_QUERY))
+					error(FATAL, "invalid data structure reference: %s.%s\n",
+					      dm->name, memberlist[i]);
+				if (flags & SHOW_RAW_DATA)
         				error(FATAL, 
-					    "member-specific output not allowed with -r\n");
-				break;
+					      "member-specific output not allowed with -r\n");
 			}
-
-			if (!(dm->flags & TYPEDEF)) {
-				if (flags &(STRUCT_REQUEST|UNION_REQUEST) ) {
-					if ((flags & (STRUCT_REQUEST|UNION_REQUEST)) != dm->type) 
-						goto freebuf;
-				} else
-					flags |= dm->type;
-			}
-
-			/* 
-	 		 *  No address was passed -- dump the structure/member declaration.
-	 		 */
-			if (!aflag || (aflag && (flags & SHOW_OFFSET))) {
-				if (aflag)
-					dm->vaddr = addr;
-				set_temporary_radix(radix, &restore_radix);
-				do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
-				restore_current_radix(restore_radix);
-				goto freebuf;
-			}
-
-			if (!(flags & (UNION_REQUEST|STRUCT_REQUEST)))
-				error(FATAL, "invalid argument");
 
 			/*
-		 	 *  Display data.
+		 	 *  Display member addresses or data
 		 	 */
-			if (rawdata)
+			if (flags & SHOW_OFFSET) {
+				dm->vaddr = addr;
+				do_datatype_declaration(dm, flags | (dm->flags & TYPEDEF));
+			} else if (flags & SHOW_RAW_DATA)
 				raw_data_dump(addr, len, flags & STRUCT_VERBOSE);
-			else if (pflag && !dm->member) {
-				set_temporary_radix(radix, &restore_radix);
+			else if ((flags & DEREF_POINTERS) && !dm->member) {
 				print_struct_with_dereference(addr, dm, flags);
-				restore_current_radix(restore_radix);
                 	} else {
 	                        if (dm->member)
 	                                open_tmpfile();
 	
-				set_temporary_radix(radix, &restore_radix);
-
 				if (flags & UNION_REQUEST)
 					print_union(dm->name, addr);
 				else if (flags & STRUCT_REQUEST)
 					print_struct(dm->name, addr);
 
 				if (dm->member) {
-					if (!(pflag && 
+					if (!((flags & DEREF_POINTERS) &&
 				    	    dereference_pointer(addr, dm, flags)))
 						parse_for_member(dm, PARSE_FOR_DATA);
 					close_tmpfile();
 				}
 
-				restore_current_radix(restore_radix);
                 	}
 		} while (++i < argc_members);
         }
-
-freebuf:
-        if (argc_members) {
-                FREEBUF(structname);
-                FREEBUF(members);
-	}
 }
 
 
@@ -6108,13 +6154,7 @@ arg_to_datatype(char *s, struct datatype_member *dm, ulong flags)
 	if (!both) 
 		return 1;
 
-	dm->member = p1+1;
-
-	if ((dm->member_offset = MEMBER_OFFSET(dm->name, dm->member)) >= 0)
-		return 2;
-
-	if ((flags & ANON_MEMBER_QUERY) &&
-	    ((dm->member_offset = ANON_MEMBER_OFFSET(dm->name, dm->member)) >= 0))
+	if (member_to_datatype(p1 + 1, dm, flags))
 		return 2;
 
 datatype_member_fatal:
@@ -6135,6 +6175,21 @@ datatype_member_fatal:
 	}
 
        	return (error(FATAL, "invalid argument: %s\n", s));
+}
+
+static int
+member_to_datatype(char *s, struct datatype_member *dm, ulong flags)
+{
+	dm->member = s;
+
+	if ((dm->member_offset = MEMBER_OFFSET(dm->name, s)) >= 0)
+		return TRUE;
+
+	if ((flags & ANON_MEMBER_QUERY) &&
+	    ((dm->member_offset = ANON_MEMBER_OFFSET(dm->name, s)) >= 0))
+		return TRUE;
+
+	return FALSE;
 }
 
 /*
@@ -6388,13 +6443,12 @@ cmd_p(void)
 {
         int c;
 	struct syment *sp, *percpu_sp;
-	unsigned radix, restore_radix;
-	int leader, do_load_module_filter, success;
+	unsigned radix;
+	int do_load_module_filter;
 	char buf1[BUFSIZE]; 
-	char buf2[BUFSIZE]; 
-	char *p1;
+	char *cpuspec;
 
-	leader = do_load_module_filter = radix = restore_radix = 0;
+	do_load_module_filter = radix = 0;
 
         while ((c = getopt(argcnt, args, "dhxu")) != EOF) {
                 switch(c)
@@ -6427,33 +6481,57 @@ cmd_p(void)
         if (argerrs || !args[optind])
                 cmd_usage(pc->curcmd, SYNOPSIS);
 
+	cpuspec = strrchr(args[optind], ':');
+	if (cpuspec)
+		*cpuspec++ = NULLCHAR;
+
+	sp = NULL;
 	if ((sp = symbol_search(args[optind])) && !args[optind+1]) {
 		if ((percpu_sp = per_cpu_symbol_search(args[optind])) &&
-		    display_per_cpu_info(percpu_sp))
+		    display_per_cpu_info(percpu_sp, radix, cpuspec))
 			return;
-		sprintf(buf2, "%s = ", args[optind]);
-		leader = strlen(buf2);
 		if (module_symbol(sp->value, NULL, NULL, NULL, *gdb_output_radix))
 			do_load_module_filter = TRUE;
 	} else if ((percpu_sp = per_cpu_symbol_search(args[optind])) &&
-		   display_per_cpu_info(percpu_sp))
+		   display_per_cpu_info(percpu_sp, radix, cpuspec))
 		return;
 	else if (st->flags & LOAD_MODULE_SYMS)
 		do_load_module_filter = TRUE;
+
+	if (cpuspec) {
+		if (sp)
+			error(WARNING, "%s is not percpu; cpuspec ignored.\n",
+			      sp->name);
+		else
+			/* maybe a valid C expression (e.g. ':') */
+			*(cpuspec-1) = ':';
+	}
+
+	process_gdb_output(concat_args(buf1, 0, TRUE), radix,
+			   sp ? sp->name : NULL, do_load_module_filter);
+}
+
+static void
+process_gdb_output(char *gdb_request, unsigned radix,
+		   const char *leader, int do_load_module_filter)
+{
+	unsigned restore_radix;
+	int success;
+	char buf1[BUFSIZE]; 
+	char *p1;
 
 	if (leader || do_load_module_filter)
 		open_tmpfile();
 
 	set_temporary_radix(radix, &restore_radix);
 
-       	success = gdb_pass_through(concat_args(buf1, 0, TRUE), NULL, 
-		GNU_RETURN_ON_ERROR);
+       	success = gdb_pass_through(gdb_request, NULL, GNU_RETURN_ON_ERROR);
 
 	if (success && (leader || do_load_module_filter)) {
 		int firstline;
 
 		if (leader) {
-			fprintf(pc->saved_fp, "%s", buf2);
+			fprintf(pc->saved_fp, "%s = ", leader);
 			fflush(pc->saved_fp);
 		}
 
@@ -6482,8 +6560,41 @@ cmd_p(void)
 	restore_current_radix(restore_radix);
 
 	if (!success) 
-		error(FATAL, "gdb request failed: %s\n",
-			concat_args(buf1, 0, TRUE));
+		error(FATAL, "gdb request failed: %s\n", gdb_request);
+}
+
+/*
+ *  Get the type of an expression using gdb's "whatis" command.
+ *  The returned string is dynamically allocated, and it should
+ *  be passed to FREEBUF() when no longer needed.
+ *  Return NULL if the type cannot be determined.
+ */
+static char *
+expr_type_name(const char *expr)
+{
+	char buf[BUFSIZE], *p;
+
+	open_tmpfile();
+	sprintf(buf, "whatis %s", expr);
+	if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+		close_tmpfile();
+		return NULL;
+	}
+
+	rewind(pc->tmpfile);
+	while (fgets(buf, BUFSIZE, pc->tmpfile) && !STRNEQ(buf, "type = "))
+		;
+	p = feof(pc->tmpfile) ? NULL : buf + strlen("type = ");
+	close_tmpfile();
+
+	if (p) {
+		size_t len = strlen(clean_line(p));
+		/* GDB reports unknown types as <...descriptive text...> */
+		if (p[0] == '<' && p[len-1] == '>')
+			return NULL;
+		return strcpy(GETBUF(len + 1), p);
+	}
+	return NULL;
 }
 
 /*
@@ -6491,29 +6602,72 @@ cmd_p(void)
  *  the addresses of each its per-cpu instances.
  */
 static int
-display_per_cpu_info(struct syment *sp)
+display_per_cpu_info(struct syment *sp, int radix, char *cpuspec)
 {
+	ulong *cpus;
 	int c;
 	ulong addr;
 	char buf[BUFSIZE];
+	char leader[sizeof("&per_cpu(") + strlen(sp->name) +
+		    sizeof(", " STR(UINT_MAX) ")")];
+	char *typename;
+	int do_load_module_filter;
 
 	if (((kt->flags & (SMP|PER_CPU_OFF)) != (SMP|PER_CPU_OFF)) ||
 	    (!is_percpu_symbol(sp)) ||
 	    !((sp->type == 'd') || (sp->type == 'D') || (sp->type == 'V')))
 		return FALSE;
 
-	fprintf(fp, "PER-CPU DATA TYPE:\n  ");
-        sprintf(buf, "whatis %s", sp->name);
-        if (!gdb_pass_through(buf, pc->nullfp, GNU_RETURN_ON_ERROR))
-                fprintf(fp, "[undetermined type] %s;\n", sp->name);
-	else
-        	whatis_variable(sp);
+	if (cpuspec) {
+		cpus = get_cpumask_buf();
+		if (STREQ(cpuspec, ""))
+			SET_BIT(cpus, CURRENT_CONTEXT()->processor);
+		else
+			make_cpumask(cpuspec, cpus, FAULT_ON_ERROR, NULL);
+	} else
+		cpus = NULL;
 
-	fprintf(fp, "PER-CPU ADDRESSES:\n");
-	for (c = 0; c < kt->cpus; c++) {
-		addr = sp->value + kt->__per_cpu_offset[c];
-		fprintf(fp, "  [%d]: %lx\n", c, addr);
+	typename = expr_type_name(sp->name);
+
+	if (!cpus) {
+		fprintf(fp, "PER-CPU DATA TYPE:\n  ");
+		if (!typename)
+			fprintf(fp, "[undetermined type] %s;\n", sp->name);
+		else
+			whatis_variable(sp);
+
+		fprintf(fp, "PER-CPU ADDRESSES:\n");
 	}
+
+	do_load_module_filter =
+		module_symbol(sp->value, NULL, NULL, NULL, *gdb_output_radix);
+
+	for (c = 0; c < kt->cpus; c++) {
+		if (cpus && !NUM_IN_BITMAP(cpus, c))
+			continue;
+		addr = sp->value + kt->__per_cpu_offset[c];
+		if (!cpus)
+			fprintf(fp, "  [%d]: %lx\n", c, addr);
+		else if (typename) {
+			snprintf(buf, sizeof buf, "p *(%s*) 0x%lx",
+				 typename, addr);
+			sprintf(leader, "per_cpu(%s, %u)",
+				sp->name, c);
+			process_gdb_output(buf, radix, leader,
+					   do_load_module_filter);
+		} else {
+			snprintf(buf, sizeof buf, "p (void*) 0x%lx", addr);
+			sprintf(leader, "&per_cpu(%s, %u)",
+				sp->name, c);
+			process_gdb_output(buf, radix, leader,
+					   do_load_module_filter);
+		}
+	}
+
+	if (typename)
+		FREEBUF(typename);
+	if (cpus)
+		FREEBUF(cpus);
 
 	return TRUE;
 }
@@ -6859,6 +7013,10 @@ dump_datatype_flags(ulong flags, FILE *ofp)
 		fprintf(ofp, "%sDATATYPE_QUERY", others++ ? "|" : "");
 	if (flags & ANON_MEMBER_QUERY)
 		fprintf(ofp, "%sANON_MEMBER_QUERY", others++ ? "|" : "");
+	if (flags & SHOW_RAW_DATA)
+		fprintf(ofp, "%sSHOW_RAW_DATA", others++ ? "|" : "");
+	if (flags & DEREF_POINTERS)
+		fprintf(ofp, "%sDEREF_POINTERS", others++ ? "|" : "");
 	fprintf(ofp, ")\n");
 }
 
@@ -7890,10 +8048,17 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(page_objects));
         fprintf(fp, "                     page_slab: %ld\n",
                 OFFSET(page_slab));
+        fprintf(fp, "                page_slab_page: %ld\n",
+                OFFSET(page_slab_page));
         fprintf(fp, "               page_first_page: %ld\n",
                 OFFSET(page_first_page));
         fprintf(fp, "                 page_freelist: %ld\n",
                 OFFSET(page_freelist));
+
+	fprintf(fp, "        trace_print_flags_mask: %ld\n",
+		OFFSET(trace_print_flags_mask));
+	fprintf(fp, "        trace_print_flags_name: %ld\n",
+		OFFSET(trace_print_flags_name));
 
         fprintf(fp, "    swap_info_struct_swap_file: %ld\n",
 		OFFSET(swap_info_struct_swap_file));
@@ -9021,6 +9186,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
 	fprintf(fp, "                    page_flags: %ld\n", SIZE(page_flags));
+	fprintf(fp, "             trace_print_flags: %ld\n", SIZE(trace_print_flags));
         fprintf(fp, "              free_area_struct: %ld\n", 
 		SIZE(free_area_struct));
         fprintf(fp, "                     free_area: %ld\n", 

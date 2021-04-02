@@ -1335,6 +1335,8 @@ dump_program_context(void)
 		fprintf(fp, "%sGET_LOG", others++ ? "|" : "");
 	if (pc->flags2 & VMCOREINFO)
 		fprintf(fp, "%sVMCOREINFO", others++ ? "|" : "");
+	if (pc->flags2 & ALLOW_FP)
+		fprintf(fp, "%sALLOW_FP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);

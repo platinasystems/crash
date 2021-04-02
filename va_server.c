@@ -313,6 +313,7 @@ int read_map(char *crash_file)
 	ret = fseek(vas_file_p, (long)0, SEEK_SET);
 	if(ret == -1) {
 		printf("va_server: unable to fseek, err = %d\n", ferror(vas_file_p));
+		free(disk_hdr);
 		return -1;
 	}
 	items = fread((void *)disk_hdr, 1, Page_Size, vas_file_p);

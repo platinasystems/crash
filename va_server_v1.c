@@ -308,6 +308,7 @@ int read_map_v1(int blk_pos)
 	ret = fseek(vas_file_p, (long)(blk_pos*Page_Size), SEEK_SET);
 	if(ret == -1) {
 		console("va_server: unable to fseek, err = %d\n", ferror(vas_file_p));
+		free(disk_hdr);
 		return -1;
 	}
 	items = fread((void *)disk_hdr, 1, Page_Size, vas_file_p);

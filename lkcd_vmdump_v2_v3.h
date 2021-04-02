@@ -84,7 +84,9 @@ typedef struct _dump_header_asm_s {
 	/* the dump registers */
 #ifndef S390
 #ifndef S390X
+#ifndef ARM64
 	struct pt_regs       dha_regs;
+#endif
 #endif
 #endif
 

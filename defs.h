@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "7.0.2"
+#define BASELEVEL_REVISION  "7.0.3"
 
 #undef TRUE
 #undef FALSE
@@ -503,6 +503,7 @@ struct program_context {
 #define QEMU_MEM_DUMP (0x100ULL)
 #define GET_LOG       (0x200ULL)
 #define VMCOREINFO    (0x400ULL)
+#define ALLOW_FP      (0x800ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -1876,6 +1877,9 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_struct_thread_context_fp;
 	long task_struct_thread_context_sp;
 	long task_struct_thread_context_pc;
+	long page_slab_page;
+	long trace_print_flags_mask;
+	long trace_print_flags_name;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2016,6 +2020,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long hrtimer_clock_base;
 	long hrtimer_base;
 	long tnt;
+	long trace_print_flags;
 };
 
 struct array_table {
@@ -2183,6 +2188,13 @@ struct vm_table {                /* kernel VM-related data */
 	int cpu_slab_type;
 	int nr_vm_event_items;
 	char **vm_event_items;
+	int nr_bad_slab_caches;
+	ulong *bad_slab_caches;
+	int nr_pageflags;
+	struct pageflags_data {
+		ulong mask;
+		char *name;
+	} *pageflags_data;
 };
 
 #define NODES                       (0x1)
@@ -2211,6 +2223,7 @@ struct vm_table {                /* kernel VM-related data */
 #define NODELISTS_IS_PTR       (0x800000)
 #define KMALLOC_COMMON        (0x1000000)
 #define USE_VMAP_AREA         (0x2000000)
+#define PAGEFLAGS             (0x4000000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -4321,6 +4334,7 @@ int calculate(char *, ulong *, ulonglong *, ulong);
 int endian_mismatch(char *, char, ulong);
 uint16_t swap16(uint16_t, int);
 uint32_t swap32(uint32_t, int);
+ulong *get_cpumask_buf(void);
 int make_cpumask(char *, ulong *, int, int *);
 size_t strlcpy(char *, char *, size_t);
 struct rb_node *rb_first(struct rb_root *);

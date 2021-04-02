@@ -1453,6 +1453,7 @@ static void ftrace_show(int argc, char *argv[])
 	if ((file = popen(trace_cmd, "r"))) {
 		ret = fread(buf, 1, sizeof(buf), file);
 		buf[ret] = 0;
+		pclose(file);
 	}
 	if (!strstr(buf, "trace-cmd version")) {
 		if (env_trace_cmd)

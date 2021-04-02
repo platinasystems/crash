@@ -134,6 +134,10 @@ static char *error_handle_string(ulong);
 static void dump_mem_map(struct meminfo *);
 static void dump_mem_map_SPARSEMEM(struct meminfo *);
 static void fill_mem_map_cache(ulong, ulong, char *);
+static void page_flags_init(void);
+static int page_flags_init_from_pageflag_names(void);
+static int page_flags_init_from_pageflags_enum(void);
+static int translate_page_flags(char *, ulong);
 static void dump_free_pages(struct meminfo *);
 static int dump_zone_page_usage(void);
 static void dump_multidimensional_free_pages(struct meminfo *);
@@ -613,6 +617,13 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_list3_free_objects, 
 			kmem_cache_node_struct, "free_objects");
 		MEMBER_OFFSET_INIT(kmem_list3_shared, kmem_cache_node_struct, "shared");
+		/*
+		 *  Common to slab/slub
+		 */
+		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
+		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
+
 	} else if (MEMBER_EXISTS("kmem_cache", "cpu_slab") &&
 		STRUCT_EXISTS("kmem_cache_node")) {
 		vt->flags |= KMALLOC_SLUB;
@@ -642,6 +653,7 @@ vm_init(void)
 		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
 		if (INVALID_MEMBER(page_slab))
 			ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab_cache");
+		ANON_MEMBER_OFFSET_INIT(page_slab_page, "page", "slab_page");
 		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
 		ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
 		if (INVALID_MEMBER(kmem_cache_objects)) {
@@ -703,16 +715,16 @@ vm_init(void)
 	}
 
 	if (!kt->kernel_NR_CPUS) {
-		if (ARRAY_LENGTH(kmem_cache_s_cpudata))
+		if (enumerator_value("WORK_CPU_UNBOUND", (long *)&value1))
+			kt->kernel_NR_CPUS = (int)value1;
+		else if ((i = get_array_length("__per_cpu_offset", NULL, 0)))
+			kt->kernel_NR_CPUS = i;
+		else if (ARRAY_LENGTH(kmem_cache_s_cpudata))
 			kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_cpudata);
 		else if (ARRAY_LENGTH(kmem_cache_s_array))
 			kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_array);
 		else if (ARRAY_LENGTH(kmem_cache_cpu_slab))
 			kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_cpu_slab);
-		else if (enumerator_value("WORK_CPU_UNBOUND", (long *)&value1))
-			kt->kernel_NR_CPUS = (int)value1;
-		else if ((i = get_array_length("__per_cpu_offset", NULL, 0)))
-			kt->kernel_NR_CPUS = i;
 	}
 
 	if (CRASHDEBUG(1))
@@ -1025,8 +1037,7 @@ vm_init(void)
 
 	kmem_cache_init();
 
-	PG_reserved_flag_init();
-	PG_slab_flag_init();
+	page_flags_init();
 
 	vt->flags |= VM_INIT;
 }
@@ -4533,15 +4544,37 @@ PG_slab_flag_init(void)
         char buf[BUFSIZE];  /* safe for a page struct */
 
 	/*
-	 *  Set the old defaults in case the search below fails.
+	 *  Set the old defaults in case all else fails.
 	 */
-        if (VALID_MEMBER(page_pte)) {
+	if (enumerator_value("PG_slab", (long *)&flags)) {
+		vt->PG_slab = flags;
+		if (CRASHDEBUG(2))
+			fprintf(fp, "PG_slab (enum): %lx\n", vt->PG_slab);
+	} else if (VALID_MEMBER(page_pte)) {
                 if (THIS_KERNEL_VERSION < LINUX(2,6,0))
                         vt->PG_slab = 10;
                 else if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
                         vt->PG_slab = 7;
-        } else if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
-                vt->PG_slab = 7;
+        } else if (THIS_KERNEL_VERSION >= LINUX(2,6,0)) {
+		vt->PG_slab = 7;
+	} else {
+		if (try_get_symbol_data("vm_area_cachep", sizeof(void *), &vaddr) &&
+            	    phys_to_page((physaddr_t)VTOP(vaddr), &pageptr) &&
+                    readmem(pageptr, KVADDR, buf, SIZE(page),
+		    "vm_area_cachep page", RETURN_ON_ERROR|QUIET)) {
+
+			flags = ULONG(buf + OFFSET(page_flags));
+
+			if ((bit = ffsl(flags))) {
+				vt->PG_slab = bit - 1;
+	
+				if (CRASHDEBUG(2))
+					fprintf(fp,
+			"PG_slab bit: vaddr: %lx page: %lx flags: %lx => %ld\n",
+					vaddr, pageptr, flags, vt->PG_slab);
+			}
+		}
+	}
 
 	if (vt->flags & KMALLOC_SLUB) {
 		/* 
@@ -4561,34 +4594,20 @@ PG_slab_flag_init(void)
 				fprintf(fp, "PG_head_tail_mask: %lx\n", 
 					vt->PG_head_tail_mask);
 		}
-
-		return;
-	}
-
-	if (enumerator_value("PG_slab", (long *)&flags)) {
-		vt->PG_slab = flags;
-	       	if (CRASHDEBUG(2))
-			fprintf(fp, "PG_slab (enum): %lx\n", vt->PG_slab);
-		return;
-	}
-
-       	if (try_get_symbol_data("vm_area_cachep", sizeof(void *), &vaddr) &&
-            phys_to_page((physaddr_t)VTOP(vaddr), &pageptr) &&
-            readmem(pageptr, KVADDR, buf, SIZE(page),
-            "vm_area_cachep page", RETURN_ON_ERROR|QUIET)) {
-
-        	flags = ULONG(buf + OFFSET(page_flags));
-
-	        if ((bit = ffsl(flags))) {
-	                vt->PG_slab = bit - 1;
-	
-	        	if (CRASHDEBUG(2))
-	                	fprintf(fp,
-	                    "PG_slab bit: vaddr: %lx page: %lx flags: %lx => %ld\n",
-	                        vaddr, pageptr, flags, vt->PG_slab);
-	
+	} else {
+		if (enumerator_value("PG_tail", (long *)&flags))
+			vt->PG_head_tail_mask = (1L << flags);
+		else if (enumerator_value("PG_compound", (long *)&flags) &&
+		    enumerator_value("PG_reclaim", (long *)&flags2)) {
+			vt->PG_head_tail_mask = ((1L << flags) | (1L << flags2));
+	       		if (CRASHDEBUG(2))
+				fprintf(fp, "PG_head_tail_mask: %lx (PG_compound|PG_reclaim)\n", 
+					vt->PG_head_tail_mask);
 		}
 	}
+
+	if (!vt->PG_slab)
+		error(INFO, "cannot determine PG_slab bit value\n");	
 }
 
 /*
@@ -5009,7 +5028,10 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 					bufferindex += sprintflag("%sreserved");
 				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
 			} else if (THIS_KERNEL_VERSION > LINUX(2,4,9)) {
-				bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
+				if (vt->flags & PAGEFLAGS)
+					bufferindex += translate_page_flags(outputbuffer+bufferindex, flags);
+				else
+					bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
 			} else {
 	
 		                if ((flags >> v24_PG_locked) & 1)
@@ -5444,7 +5466,10 @@ dump_mem_map(struct meminfo *mi)
 					bufferindex += sprintflag("%sreserved");
 				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
 			} else if (THIS_KERNEL_VERSION > LINUX(2,4,9)) {
-				bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
+				if (vt->flags & PAGEFLAGS)
+					bufferindex += translate_page_flags(outputbuffer+bufferindex, flags);
+				else
+					bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
 			} else {
 	
 		                if ((flags >> v24_PG_locked) & 1)
@@ -5591,6 +5616,196 @@ fill_mem_map_cache(ulong pp, ulong ppend, char *page_cache)
         }
 }
 
+static void
+page_flags_init(void)
+{
+	if (!page_flags_init_from_pageflag_names())
+		page_flags_init_from_pageflags_enum();
+
+	PG_reserved_flag_init();
+	PG_slab_flag_init();
+}
+
+static int
+page_flags_init_from_pageflag_names(void)
+{
+	int i, len;
+	char *buffer, *nameptr;
+	char namebuf[BUFSIZE];
+	ulong mask;
+	void *name;
+
+	MEMBER_OFFSET_INIT(trace_print_flags_mask, "trace_print_flags", "mask");
+	MEMBER_OFFSET_INIT(trace_print_flags_name, "trace_print_flags", "name");
+	STRUCT_SIZE_INIT(trace_print_flags, "trace_print_flags");
+
+	if (INVALID_SIZE(trace_print_flags) ||
+	    INVALID_MEMBER(trace_print_flags_mask) || 
+	    INVALID_MEMBER(trace_print_flags_name) ||
+	    !kernel_symbol_exists("pageflag_names") ||
+	    !(len = get_array_length("pageflag_names", NULL, 0)))
+		return FALSE;
+
+	buffer = GETBUF(SIZE(trace_print_flags) * len);
+
+	if (!readmem(symbol_value("pageflag_names"), KVADDR, buffer,
+	    SIZE(trace_print_flags) * len, "pageflag_names array",
+	    RETURN_ON_ERROR)) {
+		FREEBUF(buffer);
+		return FALSE;
+	}
+
+	if (!(vt->pageflags_data = (struct pageflags_data *)
+	    malloc(sizeof(struct pageflags_data) * len))) {
+		error(INFO, "cannot malloc pageflags_data cache\n");
+		FREEBUF(buffer);
+		return FALSE;
+	}
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "pageflags from pageflag_names: \n");
+
+	for (i = 0; i < len; i++) {
+		mask = ULONG(buffer + (SIZE(trace_print_flags)*i) + 
+			OFFSET(trace_print_flags_mask));		
+		name = VOID_PTR(buffer + (SIZE(trace_print_flags)*i) + 
+			OFFSET(trace_print_flags_name));		
+
+		if ((mask == -1UL) && !name) {   /* Linux 3.5 and earlier */
+			len--;
+			break;
+		}
+
+		if (!read_string((ulong)name, namebuf, BUFSIZE-1)) {
+			error(INFO, "failed to read pageflag_names entry\n",
+				i, name, mask);
+			goto pageflags_fail;
+		}
+
+		if (!(nameptr = (char *)malloc(strlen(namebuf)+1))) {
+			error(INFO, "cannot malloc pageflag_names space\n");
+			goto pageflags_fail;
+		}
+		strcpy(nameptr, namebuf);
+
+		vt->pageflags_data[i].name = nameptr;
+		vt->pageflags_data[i].mask = mask;
+
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "  %08lx %s\n", 
+				vt->pageflags_data[i].mask,
+				vt->pageflags_data[i].name);
+		}
+	}
+
+	FREEBUF(buffer);
+	vt->nr_pageflags = len;
+	vt->flags |= PAGEFLAGS;
+	return TRUE;
+
+pageflags_fail:
+	FREEBUF(buffer);
+	free(vt->pageflags_data);
+	vt->pageflags_data = NULL;
+	return FALSE;
+}
+
+static int
+page_flags_init_from_pageflags_enum(void)
+{
+	int c;
+	int p, len;
+	char *nameptr;
+	char buf[BUFSIZE];
+	char *arglist[MAXARGS];
+
+	if (!(vt->pageflags_data = (struct pageflags_data *)
+	    malloc(sizeof(struct pageflags_data) * 32))) {
+		error(INFO, "cannot malloc pageflags_data cache\n");
+		return FALSE;
+        }
+
+	p = 0;
+	pc->flags2 |= ALLOW_FP;
+	open_tmpfile();
+
+	if (dump_enumerator_list("pageflags")) {
+		rewind(pc->tmpfile);
+		while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+			if (!strstr(buf, " = "))
+				continue;
+
+			c = parse_line(buf, arglist);
+
+			if (strstr(arglist[0], "__NR_PAGEFLAGS")) {
+				len = atoi(arglist[2]);
+				if (!len || (len > 32))
+					goto enum_fail;
+				vt->nr_pageflags = len;
+				break;
+			}
+
+			if (!(nameptr = (char *)malloc(strlen(arglist[0])))) {
+				error(INFO, "cannot malloc pageflags name space\n");
+				goto enum_fail;
+			}
+			strcpy(nameptr, arglist[0] + strlen("PG_"));
+			vt->pageflags_data[p].name = nameptr;
+			vt->pageflags_data[p].mask = 1 << atoi(arglist[2]); 
+
+			p++;
+		}
+	} else 
+		goto enum_fail;
+
+	close_tmpfile();
+	pc->flags2 &= ~ALLOW_FP;
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "pageflags from enum: \n");
+		for (p = 0; p < vt->nr_pageflags; p++)
+			fprintf(fp, "  %08lx %s\n", 
+				vt->pageflags_data[p].mask,
+				vt->pageflags_data[p].name);
+	}
+
+	vt->flags |= PAGEFLAGS;
+	return TRUE;
+
+enum_fail:
+	close_tmpfile();
+	pc->flags2 &= ~ALLOW_FP;
+
+	for (c = 0; c < p; c++)
+		free(vt->pageflags_data[c].name);
+	free(vt->pageflags_data);
+	vt->pageflags_data = NULL;
+	vt->nr_pageflags = 0;
+
+	return FALSE;
+}
+
+static int
+translate_page_flags(char *buffer, ulong flags)
+{
+	char buf[BUFSIZE];
+	int i, others;
+
+	sprintf(buf, "%lx", flags);
+
+	if (flags) {
+		for (i = others = 0; i < vt->nr_pageflags; i++) {
+			if (flags & vt->pageflags_data[i].mask)
+				sprintf(&buf[strlen(buf)], "%s%s",
+					others++ ? "," : " ",
+					vt->pageflags_data[i].name);
+		}
+	}
+	strcat(buf, "\n");
+	strcpy(buffer, buf);
+
+	return(strlen(buf));
+}
 
 /*
  *  dump_page_hash_table() displays the entries in each page_hash_table.
@@ -7240,7 +7455,8 @@ dump_kmeminfo(void)
 		page_cache_size = nr_file_pages - swapper_space_nrpages -
 			buffer_pages;
 		FREEBUF(swapper_space);
-	}
+	} else
+		page_cache_size = 0;
 
 
         pct = (page_cache_size * 100)/totalram_pages;
@@ -8085,7 +8301,9 @@ vaddr_to_kmem_cache(ulong vaddr, char *buf, int verbose)
 		return NULL;
 	}
 
-	if (vt->flags & KMALLOC_SLUB) {
+	if ((vt->flags & KMALLOC_SLUB) ||
+	    ((vt->flags & KMALLOC_COMMON) && 
+	     VALID_MEMBER(page_slab) && VALID_MEMBER(page_first_page))) {
                 readmem(compound_head(page)+OFFSET(page_slab),
                         KVADDR, &cache, sizeof(void *),
                         "page.slab", FAULT_ON_ERROR);
@@ -8136,6 +8354,10 @@ vaddr_to_slab(ulong vaddr)
 
         if (vt->flags & KMALLOC_SLUB)
 		slab = compound_head(page);
+        else if ((vt->flags & KMALLOC_COMMON) && VALID_MEMBER(page_slab_page))
+                readmem(page+OFFSET(page_slab_page),
+                        KVADDR, &slab, sizeof(void *),
+                        "page.slab_page", FAULT_ON_ERROR);
         else if (VALID_MEMBER(page_prev))
                 readmem(page+OFFSET(page_prev),
                         KVADDR, &slab, sizeof(void *),
@@ -8212,7 +8434,7 @@ kmem_cache_init(void)
 		OFFSET(kmem_cache_s_num) : OFFSET(kmem_cache_s_c_num);
 	next_offset = vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2) ?
 		OFFSET(kmem_cache_s_next) : OFFSET(kmem_cache_s_c_nextp);
-        max_cnum = max_limit = max_cpus = cache_count = 0;
+        max_cnum = max_limit = max_cpus = cache_count = tmp2 = 0;
 
 	/*
 	 *  Pre-2.6 versions used the "cache_cache" as the head of the
@@ -8431,6 +8653,43 @@ kmem_cache_downsize(void)
 	FREEBUF(cache_buf);
 }
 
+/*
+ *  Stash a list of presumably-corrupted slab cache addresses.
+ */
+static void
+mark_bad_slab_cache(ulong cache) 
+{
+	size_t sz;
+
+	if (vt->nr_bad_slab_caches) {
+		sz = sizeof(ulong) * (vt->nr_bad_slab_caches + 1);
+		if (!(vt->bad_slab_caches = realloc(vt->bad_slab_caches, sz))) {
+                	error(INFO, "cannot realloc bad_slab_caches array\n");
+			vt->nr_bad_slab_caches = 0;
+			return;
+		}
+	} else {
+		if (!(vt->bad_slab_caches = (ulong *)malloc(sizeof(ulong)))) {
+			error(INFO, "cannot malloc bad_slab_caches array\n");
+			return;
+		}
+	}
+
+	vt->bad_slab_caches[vt->nr_bad_slab_caches++] = cache;
+}
+
+static int
+bad_slab_cache(ulong cache) 
+{
+	int i;
+
+	for (i = 0; i < vt->nr_bad_slab_caches; i++) {
+		if (vt->bad_slab_caches[i] == cache)
+			return TRUE;
+	}
+
+       return FALSE;
+}
 
 /*
  *  Determine the largest cpudata limit for a given cache.
@@ -8526,8 +8785,13 @@ kmem_cache_s_array_nodes:
 	for (i = max_limit = 0; (i < kt->cpus) && cpudata[i]; i++) {
                 if (!readmem(cpudata[i]+OFFSET(array_cache_limit),
                     KVADDR, &limit, sizeof(int),
-                    "array cache limit", RETURN_ON_ERROR))
-			goto bail_out;
+                    "array cache limit", RETURN_ON_ERROR)) {
+			error(INFO, 
+			    "kmem_cache: %lx: invalid array_cache pointer: %lx\n",
+				cache, cpudata[i]);
+			mark_bad_slab_cache(cache);
+			return max_limit;
+		}
 		if (CRASHDEBUG(3))
 			fprintf(fp, "  array limit[%d]: %d\n", i, limit);
                 if (limit > max_limit)
@@ -9232,6 +9496,11 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                         goto next_cache;
                 }
 
+		if (bad_slab_cache(si->cache)) {
+                        fprintf(fp, "%lx %-18s [INVALID/CORRUPTED]\n", si->cache, buf);
+                        goto next_cache;
+		}
+
 		si->curname = buf;
 
 	        readmem(si->cache+OFFSET(kmem_cache_s_objsize),
@@ -9264,7 +9533,7 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                 	"kmem_cache_s num", FAULT_ON_ERROR);
 		si->c_num = (ulong)tmp_val;
 
-		if( vt->flags & PERCPU_KMALLOC_V2_NODES )
+		if (vt->flags & PERCPU_KMALLOC_V2_NODES)
 			do_slab_chain_percpu_v2_nodes(SLAB_GET_COUNTS, si);
 		else
 			do_slab_chain_percpu_v2(SLAB_GET_COUNTS, si);
@@ -10160,22 +10429,22 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 				if (!slab_chains[s])
 					continue;
 
-	        	if (!specified_slab) {
-	                	if (!readmem(slab_chains[s],
-	       	                    KVADDR, &si->slab, sizeof(ulong),
-	               	            "slabs", QUIET|RETURN_ON_ERROR)) {
-                               	        error(INFO,
-	                                        "%s: %s list: bad slab pointer: %lx\n",
-                                                si->curname,
-						slab_chain_name_v2[s],
-                       	                        slab_chains[s]);
-						list_borked = 1;
-						continue;
+				if (!specified_slab) {
+					if (!readmem(slab_chains[s],
+					    KVADDR, &si->slab, sizeof(ulong),
+					    "slabs", QUIET|RETURN_ON_ERROR)) {
+						error(INFO, "%s: %s list: "
+						    "bad slab pointer: %lx\n",
+							si->curname,
+							slab_chain_name_v2[s],
+							slab_chains[s]);
+							list_borked = 1;
+							continue;
 					}
 					last = slab_chains[s];
 				} else
 					last = 0;
-			
+
 				if (si->slab == slab_chains[s])
 					continue;
 				
@@ -11709,6 +11978,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sVM_EVENT", others++ ? "|" : "");\
 	if (vt->flags & PGCNT_ADJ)
 		fprintf(fp, "%sPGCNT_ADJ", others++ ? "|" : "");\
+	if (vt->flags & PAGEFLAGS)
+		fprintf(fp, "%sPAGEFLAGS", others++ ? "|" : "");\
 	if (vt->flags & SWAPINFO_V1)
 		fprintf(fp, "%sSWAPINFO_V1", others++ ? "|" : "");\
 	if (vt->flags & SWAPINFO_V2)
@@ -11747,10 +12018,15 @@ dump_vm_table(int verbose)
 	fprintf(fp, "   kmem_cache_count: %ld\n", vt->kmem_cache_count);
 	fprintf(fp, " kmem_cache_namelen: %d\n", vt->kmem_cache_namelen);
 	fprintf(fp, "kmem_cache_len_nodes: %ld\n", vt->kmem_cache_len_nodes);
-	fprintf(fp, "        PG_reserved: %lx\n", vt->PG_reserved);
-	fprintf(fp, "            PG_slab: %ld (%lx)\n", vt->PG_slab, 
-		(ulong)1 << vt->PG_slab);
-	fprintf(fp, "  PG_head_tail_mask: %lx\n", vt->PG_head_tail_mask);
+	fprintf(fp, " nr_bad_slab_caches: %d\n", vt->nr_bad_slab_caches);
+	if (!vt->nr_bad_slab_caches)
+		fprintf(fp, "    bad_slab_caches: (unused)\n");
+	else {
+		for (i = 0; i < vt->nr_bad_slab_caches; i++) {
+			fprintf(fp, " bad_slab_caches[%d]: %lx\n", 
+				i, vt->bad_slab_caches[i]);
+		}
+	}
 	fprintf(fp, "        paddr_prlen: %d\n", vt->paddr_prlen);
 	fprintf(fp, "           numnodes: %d\n", vt->numnodes);
 	fprintf(fp, "           nr_zones: %d\n", vt->nr_zones);
@@ -11823,6 +12099,21 @@ dump_vm_table(int verbose)
 		"\n" : "(not used)\n");
 	for (i = 0; i < vt->nr_vm_event_items; i++)
 		fprintf(fp, "        [%d] %s\n", i, vt->vm_event_items[i]);
+
+        fprintf(fp, "        PG_reserved: %lx\n", vt->PG_reserved);
+        fprintf(fp, "            PG_slab: %ld (%lx)\n", vt->PG_slab,
+                (ulong)1 << vt->PG_slab);
+        fprintf(fp, "  PG_head_tail_mask: %lx\n", vt->PG_head_tail_mask);
+
+	fprintf(fp, "       nr_pageflags: %d\n", vt->nr_pageflags);
+	fprintf(fp, "     pageflags_data: %s\n",
+		vt->nr_pageflags ? "" : "(not used)");
+	for (i = 0; i < vt->nr_pageflags; i++) {
+		fprintf(fp, "        %s[%d] %08lx: %s\n", 
+			i < 10 ? " " : "", i, 
+			vt->pageflags_data[i].mask,
+			vt->pageflags_data[i].name);
+	}
 
 	dump_vma_cache(VERBOSE);
 }
