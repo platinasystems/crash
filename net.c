@@ -1,8 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1130,9 +1130,12 @@ dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
 			readmem(files_struct_addr + OFFSET(files_struct_fdt), KVADDR,
 				&fdtable_addr, sizeof(void *), "fdtable buffer",
 				FAULT_ON_ERROR);
-		      	readmem(fdtable_addr + OFFSET(fdtable_max_fdset),
-        	         	KVADDR, &max_fdset, sizeof(int),
-				"fdtable_struct max_fdset", FAULT_ON_ERROR);
+			if (VALID_MEMBER(fdtable_max_fdset))
+		      		readmem(fdtable_addr + OFFSET(fdtable_max_fdset),
+        	         		KVADDR, &max_fdset, sizeof(int),
+					"fdtable_struct max_fdset", FAULT_ON_ERROR);
+			else
+				max_fdset = -1;
 		      	readmem(fdtable_addr + OFFSET(fdtable_max_fds),
 	      	            	KVADDR, &max_fds, sizeof(int), "fdtable_struct max_fds",
 	               	    	FAULT_ON_ERROR);
@@ -1194,7 +1197,7 @@ dump_sockets_workhorse(ulong task, ulong flag, struct reference *ref)
     	for (;;) {
 	        unsigned long set;
 	        i = j * __NFDBITS;
-	        if ((i >= max_fdset) || (i >= max_fds))
+	        if (((max_fdset >= 0) && (i >= max_fdset)) || (i >= max_fds))
 	            	break;
 	        set = open_fds.__fds_bits[j++];
 	        while (set) {

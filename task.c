@@ -370,8 +370,11 @@ task_init(void)
 		set_context(NO_TASK, active_pid);
 		tt->this_task = pid_to_task(active_pid);
 	}
-	else
+	else {
+		please_wait("determining panic task");
 		set_context(get_panic_context(), NO_PID);
+		please_wait_done();
+	}
 
 	sort_context_array();
 
@@ -1905,6 +1908,9 @@ fill_stackbuf(struct bt_info *bt)
                 	error(FATAL, "read of stack at %lx failed\n", 
 				bt->stackbase);
 	} 
+
+	if (XEN_HYPER_MODE())
+		return;
 
 	if (!IS_LAST_TASK_READ(bt->task)) {
 		if (bt->stackbase == bt->task) {

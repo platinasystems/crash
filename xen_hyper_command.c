@@ -1,8 +1,11 @@
 /*
  *  xen_hyper_command.c
  *
- *  Portions Copyright (C) 2006 Fujitsu Limited
- *  Portions Copyright (C) 2006 VA Linux Systems Japan K.K.
+ *  Portions Copyright (C) 2006-2007 Fujitsu Limited
+ *  Portions Copyright (C) 2006-2007 VA Linux Systems Japan K.K.
+ *
+ *  Authors: Itsuro Oda <oda@valinux.co.jp>
+ *           Fumihiko Kakuma <kakuma@valinux.co.jp>
  *
  *  This file is part of Xencrash.
  *
@@ -42,23 +45,32 @@ char *xhregt[] = {
 };
 #endif
 
-static void do_xen_hyper_domain(struct domain_args *da);
-static void do_xen_hyper_doms(struct domain_args *da);
-static void show_xen_hyper_doms(struct xen_hyper_domain_context *dc);
-static void do_xen_hyper_dumpinfo(ulong flag, struct dumpinfo_args *ena);
-static void show_xen_hyper_dumpinfo(ulong flag,
-	struct xen_hyper_dumpinfo_context *enc);
-static void do_xen_hyper_pcpus(ulong flag, struct pcpu_args *pca);
-static void show_xen_hyper_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc);
-static void do_xen_hyper_vcpu(struct vcpu_args *vca);
-static void do_xen_hyper_vcpus(struct vcpu_args *vca);
-static void show_xen_hyper_vcpus(struct xen_hyper_vcpu_context *vcc);
+#ifdef IA64
+char *xhregt[] = {
+	"aaa", "bbb",
+	NULL
+};
+#endif
+
+static void xen_hyper_do_domain(struct xen_hyper_cmd_args *da);
+static void xen_hyper_do_doms(struct xen_hyper_cmd_args *da);
+static void xen_hyper_show_doms(struct xen_hyper_domain_context *dc);
+static void xen_hyper_do_dumpinfo(ulong flag, struct xen_hyper_cmd_args *dia);
+static void xen_hyper_show_dumpinfo(ulong flag,
+	struct xen_hyper_dumpinfo_context *dic);
+static void xen_hyper_do_pcpus(ulong flag, struct xen_hyper_cmd_args *pca);
+static void xen_hyper_show_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc);
+static void xen_hyper_do_sched(ulong flag, struct xen_hyper_cmd_args *scha);
+static void xen_hyper_show_sched(ulong flag, struct xen_hyper_sched_context *schc);
+static void xen_hyper_do_vcpu(struct xen_hyper_cmd_args *vca);
+static void xen_hyper_do_vcpus(struct xen_hyper_cmd_args *vca);
+static void xen_hyper_show_vcpus(struct xen_hyper_vcpu_context *vcc);
 static char *xen_hyper_domain_to_type(ulong domain, int *type, char *buf, int verbose);
 static char *xen_hyper_domain_context_to_type(
 	struct xen_hyper_domain_context *dc, int *type, char *buf, int verbose);
 static int xen_hyper_str_to_domain_context(char *string, ulong *value,
 	struct xen_hyper_domain_context **dcp);
-static int xen_hyper_str_to_dumpinfo_context(char *string, ulong *value, struct xen_hyper_dumpinfo_context **encp);
+static int xen_hyper_str_to_dumpinfo_context(char *string, ulong *value, struct xen_hyper_dumpinfo_context **dicp);
 static int xen_hyper_strvcpu_to_vcpu_context(char *string, ulong *value,
 	struct xen_hyper_vcpu_context **vccp);
 static int
@@ -71,14 +83,14 @@ static int xen_hyper_str_to_pcpu_context(char *string, ulong *value,
  *  Display domain struct.
  */
 void
-cmd_xen_hyper_domain(void)
+xen_hyper_cmd_domain(void)
 {
+	struct xen_hyper_cmd_args da;
 	struct xen_hyper_domain_context *dc;
-	struct domain_args da;
 	ulong val;
         int c, cnt, type, bogus;
 
-	BZERO(&da, sizeof(struct domain_args));
+	BZERO(&da, sizeof(struct xen_hyper_cmd_args));
         while ((c = getopt(argcnt, args, "")) != EOF) {
                 switch(c)
                 {
@@ -100,8 +112,8 @@ cmd_xen_hyper_domain(void)
 			case XEN_HYPER_STR_DOMAIN:
 				da.value[cnt] = val;
 				da.type[cnt] = type;
-				da.domain[cnt] = dc->domain;
-				da.dc[cnt] = dc;
+				da.addr[cnt] = dc->domain;
+				da.context[cnt] = dc;
 				cnt++;
 				break;
 			case XEN_HYPER_STR_INVALID:
@@ -120,23 +132,23 @@ cmd_xen_hyper_domain(void)
 		return;
 	}
 	
-	do_xen_hyper_domain(&da);
+	xen_hyper_do_domain(&da);
 }
 
 /*
- *  Do the work requested by cmd_xen_hyper_dom().
+ *  Do the work requested by xen_hyper_cmd_dom().
  */
 static void
-do_xen_hyper_domain(struct domain_args *da)
+xen_hyper_do_domain(struct xen_hyper_cmd_args *da)
 {
 	int i;
 
 	if (da->cnt) {
 		if (da->cnt == 1) {
-			xhdt->last = da->dc[0];
+			xhdt->last = da->context[0];
 		}
 		for (i = 0; i < da->cnt; i++) {
-			dump_struct("domain", da->domain[i], 0);
+			dump_struct("domain", da->addr[i], 0);
 		}
 	} else {
 		dump_struct("domain", xhdt->last->domain, 0);
@@ -147,14 +159,14 @@ do_xen_hyper_domain(struct domain_args *da)
  *  Display domain status.
  */
 void
-cmd_xen_hyper_doms(void)
+xen_hyper_cmd_doms(void)
 {
+	struct xen_hyper_cmd_args da;
 	struct xen_hyper_domain_context *dc;
-	struct domain_args da;
 	ulong val;
         int c, cnt, type, bogus;
 
-	BZERO(&da, sizeof(struct domain_args));
+	BZERO(&da, sizeof(struct xen_hyper_cmd_args));
         while ((c = getopt(argcnt, args, "")) != EOF) {
                 switch(c)
                 {
@@ -176,8 +188,8 @@ cmd_xen_hyper_doms(void)
 			case XEN_HYPER_STR_DOMAIN:
 				da.value[cnt] = val;
 				da.type[cnt] = type;
-				da.domain[cnt] = dc->domain;
-				da.dc[cnt] = dc;
+				da.addr[cnt] = dc->domain;
+				da.context[cnt] = dc;
 				cnt++;
 				break;
 			case XEN_HYPER_STR_INVALID:
@@ -196,14 +208,14 @@ cmd_xen_hyper_doms(void)
 		return;
 	}
 	
-	do_xen_hyper_doms(&da);
+	xen_hyper_do_doms(&da);
 }
 
 /*
- *  Do the work requested by cmd_xen_hyper_doms().
+ *  Do the work requested by xen_hyper_cmd_doms().
  */
 static void
-do_xen_hyper_doms(struct domain_args *da)
+xen_hyper_do_doms(struct xen_hyper_cmd_args *da)
 {
 	struct xen_hyper_domain_context *dca;
 	char buf1[XEN_HYPER_CMD_BUFSIZE];
@@ -214,18 +226,18 @@ do_xen_hyper_doms(struct domain_args *da)
 		mkstring(buf1, VADDR_PRLEN, CENTER|RJUST, "DOMAIN"));
 	if (da->cnt) {
 		for (i = 0; i < da->cnt; i++) {
-			show_xen_hyper_doms(da->dc[i]);
+			xen_hyper_show_doms(da->context[i]);
 		}
 	} else {
-		for (i = 0, dca=xhdt->context_array; i < XEN_HYPER_MAX_DOMAINS();
+		for (i = 0, dca=xhdt->context_array; i < XEN_HYPER_NR_DOMAINS();
 			i++, dca++) {
-			show_xen_hyper_doms(dca);
+			xen_hyper_show_doms(dca);
 		}
 	}
 }
 
 static void
-show_xen_hyper_doms(struct xen_hyper_domain_context *dc)
+xen_hyper_show_doms(struct xen_hyper_domain_context *dc)
 {
 	double mmem, tmem;
 	char *act, *crash;
@@ -287,15 +299,15 @@ show_xen_hyper_doms(struct xen_hyper_domain_context *dc)
  * Display ELF Notes information.
  */
 void
-cmd_xen_hyper_dumpinfo(void)
+xen_hyper_cmd_dumpinfo(void)
 {
-	struct dumpinfo_args ena;
+	struct xen_hyper_cmd_args dia;
 	ulong flag;
 	ulong val;
-	struct xen_hyper_dumpinfo_context *enc;
+	struct xen_hyper_dumpinfo_context *dic;
 	int c, cnt, type, bogus;
 
-	BZERO(&ena, sizeof(struct cmd_args));
+	BZERO(&dia, sizeof(struct xen_hyper_cmd_args));
 	flag= 0;
         while ((c = getopt(argcnt, args, "rt")) != EOF) {
                 switch(c)
@@ -318,14 +330,14 @@ cmd_xen_hyper_dumpinfo(void)
 	cnt = bogus = 0;
         while (args[optind]) {
 		if (IS_A_NUMBER(args[optind])) {
-			type = xen_hyper_str_to_dumpinfo_context(args[optind], &val, &enc);
+			type = xen_hyper_str_to_dumpinfo_context(args[optind], &val, &dic);
 			switch (type)
 			{
 			case XEN_HYPER_STR_PCID:
 			case XEN_HYPER_STR_ADDR:
-				ena.value[cnt] = val;
-				ena.type[cnt] = type;
-				ena.enc[cnt] = enc;
+				dia.value[cnt] = val;
+				dia.type[cnt] = type;
+				dia.context[cnt] = dic;
 				cnt++;
 				break;
 
@@ -341,28 +353,28 @@ cmd_xen_hyper_dumpinfo(void)
 		}
 		optind++;
 	}
-	ena.cnt = cnt;
+	dia.cnt = cnt;
 	if (!cnt && bogus) {
 		return;
 	}
 	
-	do_xen_hyper_dumpinfo(flag, &ena);
+	xen_hyper_do_dumpinfo(flag, &dia);
 }
 
 /*
- * Do the work requested by cmd_xen_hyper_dumpinfo().
+ * Do the work requested by xen_hyper_cmd_dumpinfo().
  */
 static void
-do_xen_hyper_dumpinfo(ulong flag, struct dumpinfo_args *ena)
+xen_hyper_do_dumpinfo(ulong flag, struct xen_hyper_cmd_args *dia)
 {
-	struct xen_hyper_dumpinfo_context *enc;
+	struct xen_hyper_dumpinfo_context *dic;
 	char buf[XEN_HYPER_CMD_BUFSIZE];
 	int i, cnt;
 
-	if (ena->cnt) {
-		cnt = ena->cnt;
+	if (dia->cnt) {
+		cnt = dia->cnt;
 	} else {
-		cnt = XEN_HYPER_MAX_PCPUS();
+		cnt = XEN_HYPER_NR_PCPUS();
 	}
 	for (i = 0; i < cnt; i++) {
 		if (i == 0 || flag & XEN_HYPER_DUMPINFO_REGS ||
@@ -375,17 +387,17 @@ do_xen_hyper_dumpinfo(ulong flag, struct dumpinfo_args *ena)
 			sprintf(&buf[strlen(buf)], "  PID   PPID  PGRP  SID");
 			fprintf(fp, "%s\n", buf);
 		}
-		if (ena->cnt) {
-			enc = ena->enc[i];
+		if (dia->cnt) {
+			dic = dia->context[i];
 		} else {
-			enc = xen_hyper_id_to_dumpinfo_context(xht->cpu_idxs[i]);
+			dic = xen_hyper_id_to_dumpinfo_context(xht->cpu_idxs[i]);
 		}
-		show_xen_hyper_dumpinfo(flag, enc);
+		xen_hyper_show_dumpinfo(flag, dic);
 	}
 }
 
 static void
-show_xen_hyper_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *enc)
+xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 {
 	char buf[XEN_HYPER_CMD_BUFSIZE];
 	char *note_buf;
@@ -394,14 +406,14 @@ show_xen_hyper_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *enc)
 	long tv_sec, tv_usec;
 	int pid, i, regcnt;
 
-	if (!enc->note) {
+	if (!dic || !dic->note) {
 		return;
 	}
 
-	note_buf = enc->ELF_Prstatus_ptr;
-	sprintf(buf, "%5d ", enc->pcpu_id);
+	note_buf = dic->ELF_Prstatus_ptr;
+	sprintf(buf, "%5d ", dic->pcpu_id);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(enc->note));
+		(char *)(dic->note));
 
 	pid = INT(note_buf + XEN_HYPER_OFFSET(ELF_Prstatus_pr_pid));
 	sprintf(&buf[strlen(buf)], " %5d ", pid);
@@ -423,7 +435,7 @@ show_xen_hyper_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *enc)
 
 		addr = (ulong)note_buf +
 			XEN_HYPER_OFFSET(ELF_Prstatus_pr_utime);
-		for (i = 0; i < 4; i++, addr+=XEN_HYPER_SIZE(ELF_Timeval)) {
+		for (i = 0; i < 4; i++, addr += XEN_HYPER_SIZE(ELF_Timeval)) {
 			switch (i)
 			{
 			case 0: 
@@ -448,7 +460,7 @@ show_xen_hyper_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *enc)
 				(char *)(tv_sec));
 			strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-				(char *)(tv_sec));
+				(char *)(tv_usec));
 			fprintf(fp, "%s\n", buf);
 		}
 	}
@@ -474,7 +486,7 @@ show_xen_hyper_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *enc)
  * Dump the Xen conring in chronological order.
  */
 void
-cmd_xen_hyper_log(void)
+xen_hyper_cmd_log(void)
 {
 	int c;
 
@@ -490,11 +502,11 @@ cmd_xen_hyper_log(void)
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
 	
-	dump_xen_hyper_log();
+	xen_hyper_dump_log();
 }
 
 void
-dump_xen_hyper_log(void)
+xen_hyper_dump_log(void)
 {
 	uint conringc, conringp;
 	uint warp, start, len, idx, i;
@@ -543,21 +555,24 @@ wrap_around:
  *  Display physical cpu information.
  */
 void
-cmd_xen_hyper_pcpus(void)
+xen_hyper_cmd_pcpus(void)
 {
+	struct xen_hyper_cmd_args pca;
 	struct xen_hyper_pcpu_context *pcc;
-	struct pcpu_args pca;
 	ulong flag;
 	ulong val;
         int c, cnt, type, bogus;
 
-	BZERO(&pca, sizeof(struct pcpu_args));
+	BZERO(&pca, sizeof(struct xen_hyper_cmd_args));
 	flag= 0;
-        while ((c = getopt(argcnt, args, "r")) != EOF) {
+        while ((c = getopt(argcnt, args, "rt")) != EOF) {
                 switch(c)
                 {
 		case 'r':
 			flag |= XEN_HYPER_PCPUS_REGS;
+			break;
+		case 't':
+			flag |= XEN_HYPER_PCPUS_TSS;
 			break;
                 default:
                         argerrs++;
@@ -577,8 +592,8 @@ cmd_xen_hyper_pcpus(void)
 			case XEN_HYPER_STR_PCPU:
 				pca.value[cnt] = val;
 				pca.type[cnt] = type;
-				pca.pcpu[cnt] = pcc->pcpu;
-				pca.pcc[cnt] = pcc;
+				pca.addr[cnt] = pcc->pcpu;
+				pca.context[cnt] = pcc;
 				cnt++;
 				break;
 			case XEN_HYPER_STR_INVALID:
@@ -597,14 +612,14 @@ cmd_xen_hyper_pcpus(void)
 		return;
 	}
 	
-	do_xen_hyper_pcpus(flag, &pca);
+	xen_hyper_do_pcpus(flag, &pca);
 }
 
 /*
- *  Do the work requested by cmd_xen_hyper_pcpu().
+ *  Do the work requested by xen_hyper_cmd_pcpu().
  */
 static void
-do_xen_hyper_pcpus(ulong flag, struct pcpu_args *pca)
+xen_hyper_do_pcpus(ulong flag, struct xen_hyper_cmd_args *pca)
 {
 	struct xen_hyper_pcpu_context *pcc;
 	uint cpuid;
@@ -612,21 +627,21 @@ do_xen_hyper_pcpus(ulong flag, struct pcpu_args *pca)
 
 	if (pca->cnt) {
 		for (i = 0; i < pca->cnt; i++) {
-			show_xen_hyper_pcpus(flag, pca->pcc[i]);
+			xen_hyper_show_pcpus(flag, pca->context[i]);
 			flag |= XEN_HYPER_PCPUS_1STCALL;
 		}
 	} else {
 		for_cpu_indexes(i, cpuid)
 		{
 			pcc = xen_hyper_id_to_pcpu_context(cpuid);
-			show_xen_hyper_pcpus(flag, pcc);
+			xen_hyper_show_pcpus(flag, pcc);
 			flag |= XEN_HYPER_PCPUS_1STCALL;
 		}
 	}
 }
 
 static void
-show_xen_hyper_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
+xen_hyper_show_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
 {
 	char *act = "  ";
 	char buf[XEN_HYPER_CMD_BUFSIZE];
@@ -634,18 +649,21 @@ show_xen_hyper_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
 	if (!(pcc->pcpu)) {
 		return;
 	}
-	if (xht->crashing_cpu == pcc->processor_id) {
+	if (XEN_HYPER_CRASHING_CPU() == pcc->processor_id) {
 		act = " *";
 	}
-	if ((flag & XEN_HYPER_PCPUS_REGS) ||
-	(!(flag & XEN_HYPER_PCPUS_REGS) && !(flag & XEN_HYPER_PCPUS_1STCALL))) {
-		if ((flag & XEN_HYPER_PCPUS_REGS) && (flag & XEN_HYPER_PCPUS_1STCALL)) {
+	if ((flag & XEN_HYPER_PCPUS_REGS) || (flag & XEN_HYPER_PCPUS_TSS) ||
+	!(flag & XEN_HYPER_PCPUS_1STCALL)) {
+		if (((flag & XEN_HYPER_PCPUS_REGS) || (flag & XEN_HYPER_PCPUS_TSS)) &&
+		(flag & XEN_HYPER_PCPUS_1STCALL)) {
 			fprintf(fp, "\n");
 		}
 		sprintf(buf, "   PCID ");
 		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "PCPU");
 		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "CUR-VCPU");
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "TSS");
 		fprintf(fp, "%s\n", buf);
 	}
 
@@ -654,10 +672,153 @@ show_xen_hyper_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
 		(char *)(pcc->current_vcpu));
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(pcc->init_tss));
 	fprintf(fp, "%s\n", buf);
 	if (flag & XEN_HYPER_PCPUS_REGS) {
 		fprintf(fp, "Register information:\n");
 		dump_struct("cpu_user_regs", pcc->guest_cpu_user_regs, 0);
+	}
+	if (flag & XEN_HYPER_PCPUS_TSS) {
+		fprintf(fp, "init_tss information:\n");
+		dump_struct("tss_struct", pcc->init_tss, 0);
+	}
+}
+
+/*
+ *  Display schedule info.
+ */
+void
+xen_hyper_cmd_sched(void)
+{
+	struct xen_hyper_cmd_args scha;
+	struct xen_hyper_pcpu_context *pcc;
+	ulong flag;
+	ulong val;
+        int c, cnt, type, bogus;
+
+	BZERO(&scha, sizeof(struct xen_hyper_cmd_args));
+	flag = 0;
+        while ((c = getopt(argcnt, args, "v")) != EOF) {
+                switch(c)
+                {
+		case 'v':
+			flag |= XEN_HYPER_SCHED_VERBOSE;
+			break;
+
+                default:
+                        argerrs++;
+                        break;
+                }
+        }
+
+        if (argerrs)
+                cmd_usage(pc->curcmd, SYNOPSIS);
+
+	cnt = bogus = 0;
+        while (args[optind]) {
+		if (IS_A_NUMBER(args[optind])) {
+			type = xen_hyper_str_to_pcpu_context(args[optind], &val, &pcc);
+			switch (type) {
+			case XEN_HYPER_STR_PCID:
+				scha.value[cnt] = val;
+				scha.type[cnt] = type;
+				scha.context[cnt] = &xhscht->sched_context_array[val];
+				cnt++;
+				break;
+			case XEN_HYPER_STR_PCPU:
+			case XEN_HYPER_STR_INVALID:
+				error(INFO, "invalid pcpu id value: %s\n\n",
+					args[optind]);
+				bogus++;
+			}
+		} else {
+			error(FATAL, "invalid address: %s\n",
+				args[optind]);
+		}
+		optind++;
+	}
+	scha.cnt = cnt;
+	if (bogus && !cnt) {
+		return;
+	}
+	
+	xen_hyper_do_sched(flag, &scha);
+}
+
+/*
+ *  Do the work requested by xen_hyper_cmd_pcpu().
+ */
+static void
+xen_hyper_do_sched(ulong flag, struct xen_hyper_cmd_args *scha)
+{
+	struct xen_hyper_sched_context *schc;
+	uint cpuid;
+	int i;
+
+	fprintf(fp, "Scheduler name : %s\n\n", xhscht->name);
+
+	if (scha->cnt) {
+		for (i = 0; i < scha->cnt; i++) {
+			xen_hyper_show_sched(flag, scha->context[i]);
+			flag |= XEN_HYPER_SCHED_1STCALL;
+		}
+	} else {
+		for_cpu_indexes(i, cpuid)
+		{
+			schc = &xhscht->sched_context_array[cpuid];
+			xen_hyper_show_sched(flag, schc);
+			flag |= XEN_HYPER_SCHED_1STCALL;
+		}
+	}
+}
+
+static void
+xen_hyper_show_sched(ulong flag, struct xen_hyper_sched_context *schc)
+{
+	char buf[XEN_HYPER_CMD_BUFSIZE];
+
+	if (!(schc->schedule_data)) {
+		return;
+	}
+	if ((flag & XEN_HYPER_SCHED_VERBOSE) ||
+	!(flag & XEN_HYPER_SCHED_1STCALL)) {
+		if ((flag & XEN_HYPER_SCHED_1STCALL) &&
+		(flag & XEN_HYPER_SCHED_VERBOSE)) {
+			fprintf(fp, "\n");
+		}
+		sprintf(buf, "  CPU  ");
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "SCH-DATA");
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "SCH-PRIV");
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "CUR-VCPU");
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "IDL-VCPU");
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "TICK");
+		fprintf(fp, "%s\n", buf);
+	}
+
+	sprintf(buf, "%5d  ", schc->cpu_id);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(schc->schedule_data));
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(schc->sched_priv));
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(schc->curr));
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(schc->idle));
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		(char *)(schc->tick));
+	fprintf(fp, "%s\n", buf);
+	if (flag & XEN_HYPER_SCHED_VERBOSE) {
+		;
 	}
 }
 
@@ -665,7 +826,7 @@ show_xen_hyper_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
  *  Display general system info.
  */
 void
-cmd_xen_hyper_sys(void)
+xen_hyper_cmd_sys(void)
 {
         int c;
 	ulong sflag;
@@ -693,7 +854,7 @@ cmd_xen_hyper_sys(void)
 			fprintf(fp, "No support argument\n");
 			/* display config info here. */
 		else
-			display_xen_hyper_sys_stats();
+			xen_hyper_display_sys_stats();
 		return;
 	}
 }
@@ -702,7 +863,7 @@ cmd_xen_hyper_sys(void)
  *  Display system stats at init-time or for the sys command.
  */
 void
-display_xen_hyper_sys_stats(void)
+xen_hyper_display_sys_stats(void)
 {
         struct new_utsname *uts;
         char buf1[XEN_HYPER_CMD_BUFSIZE];
@@ -777,18 +938,18 @@ display_xen_hyper_sys_stats(void)
 	}
 
 	XEN_HYPER_PRI(fp, len, "CPUS: ", buf1, flag,
-		(buf1, "%d\n", XEN_HYPER_MAX_PCPUS()));
+		(buf1, "%d\n", XEN_HYPER_NR_PCPUS()));
 	XEN_HYPER_PRI(fp, len, "DOMAINS: ", buf1, flag,
-		(buf1, "%d\n", XEN_HYPER_MAX_DOMAINS()));
+		(buf1, "%d\n", XEN_HYPER_NR_DOMAINS()));
 	/* !!!Display a date here if it can be found. */
 	XEN_HYPER_PRI(fp, len, "UPTIME: ", buf1, flag,
 		(buf1, "%s\n", convert_time(get_uptime_hyper(), buf2)));
 	/* !!!Display a version here if it can be found. */
-	if (uts->machine) {
-		XEN_HYPER_PRI(fp, len, "MACHINE: ", buf1, flag,
-			(buf1, "%s  ", uts->machine));
+	XEN_HYPER_PRI_CONST(fp, len, "MACHINE: ", flag);
+	if (strlen(uts->machine)) {
+		fprintf(fp, "%s  ", uts->machine);
 	} else {
-		XEN_HYPER_PRI_CONST(fp, len, "MACHINE: unknown  ", flag);
+		fprintf(fp, "unknown  ");
 	}
 	if ((mhz = machdep->processor_speed()))
 		fprintf(fp, "(%ld Mhz)\n", mhz);
@@ -804,15 +965,15 @@ display_xen_hyper_sys_stats(void)
  *  Display vcpu struct.
  */
 void
-cmd_xen_hyper_vcpu(void)
+xen_hyper_cmd_vcpu(void)
 {
-	struct vcpu_args vca;
+	struct xen_hyper_cmd_args vca;
 	struct xen_hyper_vcpu_context *vcc;
 	ulong flag;
 	ulong valvc, valdom;
         int c, cnt, type, bogus;
 
-	BZERO(&vca, sizeof(struct vcpu_args));
+	BZERO(&vca, sizeof(struct xen_hyper_cmd_args));
 	flag = 0;
         while ((c = getopt(argcnt, args, "i")) != EOF) {
                 switch(c)
@@ -845,8 +1006,8 @@ cmd_xen_hyper_vcpu(void)
 			case XEN_HYPER_STR_VCPU:
 				vca.value[cnt] = valvc;
 				vca.type[cnt] = type;
-				vca.vcpu[cnt] = vcc->vcpu;
-				vca.vcc[cnt] = vcc;
+				vca.addr[cnt] = vcc->vcpu;
+				vca.context[cnt] = vcc;
 				cnt++;
 				break;
 			case XEN_HYPER_STR_INVALID:
@@ -866,23 +1027,23 @@ cmd_xen_hyper_vcpu(void)
 		return;
 	}
 	
-	do_xen_hyper_vcpu(&vca);
+	xen_hyper_do_vcpu(&vca);
 }
 
 /*
- *  Do the work requested by cmd_xen_hyper_vcpu().
+ *  Do the work requested by xen_hyper_cmd_vcpu().
  */
 static void
-do_xen_hyper_vcpu(struct vcpu_args *vca)
+xen_hyper_do_vcpu(struct xen_hyper_cmd_args *vca)
 {
 	int i;
 
 	if (vca->cnt) {
 		if (vca->cnt == 1) {
-			xhvct->last = vca->vcc[0];
+			xhvct->last = vca->context[0];
 		}
 		for (i = 0; i < vca->cnt; i++) {
-			dump_struct("vcpu", vca->vcpu[i], 0);
+			dump_struct("vcpu", vca->addr[i], 0);
 		}
 	} else {
 		dump_struct("vcpu", xhvct->last->vcpu, 0);
@@ -893,15 +1054,15 @@ do_xen_hyper_vcpu(struct vcpu_args *vca)
  *  Display vcpu status.
  */
 void
-cmd_xen_hyper_vcpus(void)
+xen_hyper_cmd_vcpus(void)
 {
-	struct vcpu_args vca;
+	struct xen_hyper_cmd_args vca;
 	struct xen_hyper_vcpu_context *vcc;
 	ulong flag;
 	ulong valvc, valdom;
         int c, cnt, type, bogus;
 
-	BZERO(&vca, sizeof(struct vcpu_args));
+	BZERO(&vca, sizeof(struct xen_hyper_cmd_args));
 	flag = 0;
         while ((c = getopt(argcnt, args, "i")) != EOF) {
                 switch(c)
@@ -934,8 +1095,8 @@ cmd_xen_hyper_vcpus(void)
 			case XEN_HYPER_STR_VCPU:
 				vca.value[cnt] = valvc;
 				vca.type[cnt] = type;
-				vca.vcpu[cnt] = vcc->vcpu;
-				vca.vcc[cnt] = vcc;
+				vca.addr[cnt] = vcc->vcpu;
+				vca.context[cnt] = vcc;
 				cnt++;
 				break;
 			case XEN_HYPER_STR_INVALID:
@@ -954,14 +1115,14 @@ cmd_xen_hyper_vcpus(void)
 		return;
 	}
 	
-	do_xen_hyper_vcpus(&vca);
+	xen_hyper_do_vcpus(&vca);
 }
 
 /*
- *  Do the work requested by cmd_xen_hyper_vcpus().
+ *  Do the work requested by xen_hyper_cmd_vcpus().
  */
 static void
-do_xen_hyper_vcpus(struct vcpu_args *vca)
+xen_hyper_do_vcpus(struct xen_hyper_cmd_args *vca)
 {
 	struct xen_hyper_vcpu_context_array *vcca;
 	struct xen_hyper_vcpu_context *vcc;
@@ -974,21 +1135,21 @@ do_xen_hyper_vcpus(struct vcpu_args *vca)
 		mkstring(buf2, VADDR_PRLEN, CENTER|RJUST, "DOMAIN"));
 	if (vca->cnt) {
 		for (i = 0; i < vca->cnt; i++) {
-			show_xen_hyper_vcpus(vca->vcc[i]);
+			xen_hyper_show_vcpus(vca->context[i]);
 		}
 	} else {
 		for (i = 0, vcca = xhvct->vcpu_context_arrays;
-			i < XEN_HYPER_MAX_DOMAINS(); i++, vcca++) {
+			i < XEN_HYPER_NR_DOMAINS(); i++, vcca++) {
 			for (j = 0, vcc = vcca->context_array;
 				j < vcca->context_array_valid; j++, vcc++) {
-				show_xen_hyper_vcpus(vcc);
+				xen_hyper_show_vcpus(vcc);
 			}
 		}
 	}
 }
 
 static void
-show_xen_hyper_vcpus(struct xen_hyper_vcpu_context *vcc)
+xen_hyper_show_vcpus(struct xen_hyper_vcpu_context *vcc)
 {
 	int type;
 	char *act, *crash;
@@ -1223,7 +1384,7 @@ xen_hyper_str_to_domain_context(char *string, ulong *value,
  *  Display a vcpu context.
  */
 void
-show_xen_hyper_vcpu_context(struct xen_hyper_vcpu_context *vcc)
+xen_hyper_show_vcpu_context(struct xen_hyper_vcpu_context *vcc)
 {
 	char buf[XEN_HYPER_CMD_BUFSIZE];
 	struct xen_hyper_pcpu_context *pcc;
@@ -1261,7 +1422,7 @@ show_xen_hyper_vcpu_context(struct xen_hyper_vcpu_context *vcc)
 		fprintf(fp, "HARDWARE RESET");
 	} else if (machdep->flags & INIT) {
 		fprintf(fp, "INIT");
-	} else if (is_xen_hyper_vcpu_crash(vcc)) {
+	} else if (xen_hyper_is_vcpu_crash(vcc)) {
 		fprintf(fp, "CRASH");
 	} else {
 		fprintf(fp, "ACTIVE");
@@ -1275,7 +1436,7 @@ show_xen_hyper_vcpu_context(struct xen_hyper_vcpu_context *vcc)
  */
 static int
 xen_hyper_str_to_dumpinfo_context(char *string, ulong *value,
-	struct xen_hyper_dumpinfo_context **encp)
+	struct xen_hyper_dumpinfo_context **dicp)
 {
 	ulong dvalue, hvalue;
 	struct xen_hyper_dumpinfo_context *note_did, *note_hid;
@@ -1326,32 +1487,32 @@ xen_hyper_str_to_dumpinfo_context(char *string, ulong *value,
 	case 2:
 		if (note_did && note_hid) {
 			*value = dvalue;
-			*encp = note_did;
+			*dicp = note_did;
 			type = XEN_HYPER_STR_PCID;
 		}
 		break;
 	case 1:
 		if (note_did) {
 			*value = dvalue;
-			*encp = note_did;
+			*dicp = note_did;
 			type = XEN_HYPER_STR_PCID;
 		}
 
 		if (note_hid) {
 			*value = hvalue;
-			*encp = note_hid;
+			*dicp = note_hid;
 			type = XEN_HYPER_STR_PCID;
 		}
 
 		if (note_dad) {
 			*value = dvalue;
-			*encp = note_dad;
+			*dicp = note_dad;
 			type = XEN_HYPER_STR_ADDR;
 		}
 
 		if (note_had) {
 			*value = hvalue;
-			*encp = note_had;
+			*dicp = note_had;
 			type = XEN_HYPER_STR_ADDR;
 		}
 		break;

@@ -352,12 +352,15 @@ struct program_context {
 	char *curcmd;                   /* currently-executing command */
 	char *lastcmd;                  /* previously-executed command */
 	ulong cmdgencur;		/* current command generation number */
-	ulong cmdgenspec;		/* specified command generation num */
 	ulong curcmd_flags;		/* general purpose per-command flag */
-#define XEN_MACHINE_ADDR  (0x1)
-#define REPEAT            (0x2)
-#define IDLE_TASK_SHOWN   (0x4)
-#define TASK_SPECIFIED    (0x8)
+#define XEN_MACHINE_ADDR    (0x1)
+#define REPEAT              (0x2)
+#define IDLE_TASK_SHOWN     (0x4)
+#define TASK_SPECIFIED      (0x8)
+#define MEMTYPE_UVADDR     (0x10)
+#define MEMTYPE_FILEADDR   (0x20)
+#define HEADER_PRINTED     (0x40)
+	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
 	int sigint_cnt;                 /* number of ignored SIGINTs */
@@ -378,9 +381,6 @@ struct program_context {
         int (*readmem)(int, void *, int, ulong, physaddr_t); /* memory access */
         int (*writemem)(int, void *, int, ulong, physaddr_t);/* memory access */
 };
-
-#define UNIQUE_COMMAND(s) \
-	(STREQ(pc->curcmd, s) && (pc->cmdgencur == pc->cmdgenspec))
 
 #define READMEM  pc->readmem
 
@@ -754,6 +754,7 @@ struct machdep_table {
 #define INIT             (0x4000000)
 #define VM_4_LEVEL       (0x2000000)
 #define MCA              (0x1000000)
+#define PAE               (0x800000)
 
 extern struct machdep_table *machdep;
 
@@ -912,10 +913,14 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_struct_last_run;
 	long task_struct_timestamp;
 	long task_struct_thread_info;
+	long task_struct_nsproxy;
 	long thread_info_task;
 	long thread_info_cpu;
 	long thread_info_previous_esp;
 	long thread_info_flags;
+	long nsproxy_mnt_ns;
+	long mnt_namespace_root;
+	long mnt_namespace_list;
 	long pid_link_pid;
 	long pid_hash_chain;
 	long hlist_node_next;
@@ -1107,6 +1112,9 @@ struct offset_table {                    /* stash of commonly-used offsets */
         long file_f_dentry;
         long file_f_vfsmnt;
         long file_f_count;
+	long file_f_path;
+	long path_mnt;
+	long path_dentry;
         long fs_struct_root;
         long fs_struct_pwd;
         long fs_struct_rootmnt;
@@ -1275,6 +1283,7 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long zone_pages_min;
 	long zone_pages_low;
 	long zone_pages_high;
+	long zone_vm_stat;
         long neighbour_next;
         long neighbour_primary_key;
         long neighbour_ha;
@@ -1841,6 +1850,7 @@ struct load_module {
 #define UVADDR             (0x2)
 #define PHYSADDR           (0x4)
 #define XENMACHADDR        (0x8)
+#define FILEADDR          (0x10)
 #define AMBIGUOUS          (~0)
 
 #define USE_USER_PGD       (UVADDR << 2)
@@ -1930,6 +1940,14 @@ struct load_module {
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x3f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
+#define __swp_type_PAE(entry)      (((entry) >> 32) & 0x1f)
+#define __swp_type_nonPAE(entry)   (((entry) >> 1) & 0x1f)
+#define __swp_offset_PAE(entry)    (((entry) >> 32) >> 5)
+#define __swp_offset_nonPAE(entry) ((entry) >> 8)
+#define __swp_type(entry)          (machdep->flags & PAE ? \
+				    __swp_type_PAE(entry) : __swp_type_nonPAE(entry))
+#define __swp_offset(entry)        (machdep->flags & PAE ? \
+				    __swp_offset_PAE(entry) : __swp_offset_nonPAE(entry))
 
 #define TIF_SIGPENDING  (2)
 
@@ -2075,6 +2093,8 @@ struct load_module {
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x3f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING  (2)
 
@@ -2144,6 +2164,8 @@ struct load_module {
 
 #define SWP_TYPE(entry) (((entry) >> 32) & 0xff)
 #define SWP_OFFSET(entry) ((entry) >> 40)
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING (2)
 
@@ -2177,6 +2199,8 @@ struct load_module {
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING (2)
 
@@ -2364,6 +2388,8 @@ struct efi_memory_desc_t {
 
 #define SWP_TYPE(entry)    (((entry) >> 1) & 0xff)
 #define SWP_OFFSET(entry)  ((entry) >> 9)
+#define __swp_type(entry)    ((entry >> 2) & 0x7f)
+#define __swp_offset(entry)  ((entry << 1) >> 10)
 
 #define TIF_SIGPENDING (1)
 
@@ -2453,6 +2479,8 @@ struct efi_memory_desc_t {
 
 #define SWP_TYPE(entry) (((entry) >> 1) & 0x7f)
 #define SWP_OFFSET(entry) ((entry) >> 8)
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define MSR_PR_LG	14	/* Problem State / Privilege Level */
 				/* Used to find the user or kernel-mode frame*/
@@ -2481,6 +2509,8 @@ struct efi_memory_desc_t {
 #define SWP_TYPE(entry) (((entry) >> 2) & 0x1f)
 #define SWP_OFFSET(entry) ((((entry) >> 11) & 0xfffffffe) | \
                            (((entry) >> 7) & 0x1))
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING (2)
 
@@ -2501,6 +2531,8 @@ struct efi_memory_desc_t {
 #define SWP_TYPE(entry)   (((entry) >> 2) & 0x1f)
 #define SWP_OFFSET(entry) ((((entry) >> 11) & 0xfffffffffffffffe) | \
                            (((entry) >> 7) & 0x1)) 
+#define __swp_type(entry)  SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING (2)
 
@@ -2510,6 +2542,8 @@ struct efi_memory_desc_t {
 
 #define SWP_TYPE(entry)   (error("PLATFORM_SWP_TYPE: TBD\n"))
 #define SWP_OFFSET(entry) (error("PLATFORM_SWP_OFFSET: TBD\n"))
+#define __swp_type(entry)   SWP_TYPE(entry)
+#define __swp_offset(entry) SWP_OFFSET(entry)
 
 #endif /* PLATFORM */
 
@@ -3545,7 +3579,6 @@ void x86_dump_machdep_table(ulong);
 void x86_display_idt_table(void);
 #define display_idt_table() x86_display_idt_table()
 #define KSYMS_START    (0x1)
-#define PAE            (0x2)
 void x86_dump_eframe_common(struct bt_info *bt, ulong *, int);
 char *x86_function_called_by(ulong);
 struct syment *x86_jmp_error_code(ulong);
@@ -3739,6 +3772,8 @@ void ppc_dump_machdep_table(ulong);
 #define display_idt_table() \
         error(FATAL, "-d option is not applicable to PowerPC architecture\n")
 #define KSYMS_START (0x1)
+/* This should match PPC_FEATURE_BOOKE from include/asm-powerpc/cputable.h */
+#define CPU_BOOKE (0x00008000)
 #endif
 
 /*
@@ -3764,6 +3799,7 @@ int ia64_IS_VMALLOC_ADDR(ulong);
 #define display_idt_table() \
 	error(FATAL, "-d option TBD on ia64 architecture\n");
 int ia64_in_init_stack(ulong addr);
+int ia64_in_mca_stack_hyper(ulong addr, struct bt_info *bt);
 
 #define OLD_UNWIND       (0x1)   /* CONFIG_IA64_NEW_UNWIND not turned on */
 #define NEW_UNWIND       (0x2)   /* CONFIG_IA64_NEW_UNWIND turned on */
@@ -4330,7 +4366,7 @@ extern int gdb_main(int, char **);
 extern int have_partial_symbols(void); 
 extern int have_full_symbols(void);
 
-#if defined(X86) || defined(X86_64)
+#if defined(X86) || defined(X86_64) || defined(IA64)
 #define XEN_HYPERVISOR_ARCH 
 #endif
 

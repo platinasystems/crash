@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -153,6 +153,8 @@ static int next_online_node(int);
 static ulong next_online_pgdat(int);
 static int vm_stat_init(void);
 static int dump_vm_stat(char *, long *);
+static int generic_read_dumpfile(ulonglong, void *, long, char *, ulong);
+static int generic_write_dumpfile(ulonglong, void *, long, char *, ulong);
 
 /*
  *  Memory display modes specific to this file.
@@ -657,8 +659,17 @@ vm_init(void)
                 	vt->dump_free_pages = dump_free_pages_zones_v1;
 
 		} else if (VALID_STRUCT(zone)) {
-                        MEMBER_OFFSET_INIT(zone_free_pages, 
-				"zone", "free_pages");
+			MEMBER_OFFSET_INIT(zone_vm_stat, "zone", "vm_stat");
+			MEMBER_OFFSET_INIT(zone_free_pages, "zone", "free_pages");
+			if (INVALID_MEMBER(zone_free_pages) && 
+			    VALID_MEMBER(zone_vm_stat)) {
+				long nr_free_pages = 0;
+				if (!enumerator_value("NR_FREE_PAGES", &nr_free_pages))
+					error(WARNING, 
+					    "cannot determine NR_FREE_PAGES enumerator\n");
+				ASSIGN_OFFSET(zone_free_pages) = OFFSET(zone_vm_stat) + 
+					(nr_free_pages * sizeof(long));
+			}
                         MEMBER_OFFSET_INIT(zone_free_area,
                                 "zone", "free_area");
                         MEMBER_OFFSET_INIT(zone_zone_pgdat,
@@ -771,7 +782,7 @@ cmd_rd(void)
 	memtype = KVADDR;
 	count = -1;
 
-        while ((c = getopt(argcnt, args, "xme:pudDuso:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "xme:pfudDuso:81:3:6:")) != EOF) {
                 switch(c)
 		{
 		case '8':
@@ -834,12 +845,12 @@ cmd_rd(void)
 			break;
 
 		case 'p':
-			memtype &= ~(UVADDR|KVADDR|XENMACHADDR);
+			memtype &= ~(UVADDR|KVADDR|XENMACHADDR|FILEADDR);
 			memtype = PHYSADDR;
 			break;
 
 		case 'u':
-			memtype &= ~(KVADDR|PHYSADDR|XENMACHADDR);
+			memtype &= ~(KVADDR|PHYSADDR|XENMACHADDR|FILEADDR);
 			memtype = UVADDR;
 			break;
 
@@ -856,8 +867,16 @@ cmd_rd(void)
 		case 'm':
                 	if (!(kt->flags & ARCH_XEN))
                         	error(FATAL, "-m option only applies to xen architecture\n");
-			memtype &= ~(UVADDR|KVADDR);
+			memtype &= ~(UVADDR|KVADDR|FILEADDR);
 			memtype = XENMACHADDR;
+			break;
+
+		case 'f':
+			if (!pc->dumpfile)
+				error(FATAL, 
+					"-f option requires a dumpfile\n");
+			memtype &= ~(KVADDR|UVADDR|PHYSADDR|XENMACHADDR);
+			memtype = FILEADDR;
 			break;
 
 		case 'x':
@@ -1001,6 +1020,9 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 		break;
 	case XENMACHADDR:
 		addrtype = "XENMACHADDR";
+		break;
+	case FILEADDR:
+		addrtype = "FILEADDR";
 		break;
 	}
 
@@ -1239,7 +1261,7 @@ cmd_wr(void)
 	size = sizeof(void*);
 	addr_entered = value_entered = FALSE;
 
-        while ((c = getopt(argcnt, args, "ukp81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "fukp81:3:6:")) != EOF) {
                 switch(c)
 		{
 		case '8':
@@ -1274,15 +1296,31 @@ cmd_wr(void)
 			break;
 
 		case 'p':
+			memtype &= ~(UVADDR|KVADDR|FILEADDR);
 			memtype = PHYSADDR;
 			break;
 
 		case 'u':
+			memtype &= ~(PHYSADDR|KVADDR|FILEADDR);
 			memtype = UVADDR;
 			break;
 
 		case 'k':
+			memtype &= ~(PHYSADDR|UVADDR|FILEADDR);
 			memtype = KVADDR;
+			break;
+
+		case 'f':   
+			/*  
+			 *  Unsupported, but can be forcibly implemented
+			 *  by removing the DUMPFILE() check above and
+		 	 *  recompiling.
+			 */
+			if (!pc->dumpfile)
+				error(FATAL, 
+					"-f option requires a dumpfile\n");
+			memtype &= ~(PHYSADDR|UVADDR|KVADDR);
+			memtype = FILEADDR;
 			break;
 
 		default:
@@ -1363,6 +1401,9 @@ cmd_wr(void)
 	case PHYSADDR:
 		break;
 
+	case FILEADDR:
+		break;
+
 	case AMBIGUOUS:	
 		error(INFO, 
 		    "ambiguous address: %llx  (requires -p, -u or -k)\n",
@@ -1410,6 +1451,8 @@ void
 raw_data_dump(ulong addr, long count, int symbolic)
 {
 	long wordcnt;
+	ulonglong address;
+	int memtype;
 
 	switch (sizeof(long))
 	{
@@ -1429,9 +1472,20 @@ raw_data_dump(ulong addr, long count, int symbolic)
 		break;
 	}
 
-	display_memory(addr, wordcnt, 
+	if (pc->curcmd_flags & MEMTYPE_FILEADDR) {
+		address = pc->curcmd_private;
+		memtype = FILEADDR;
+	} else if (pc->curcmd_flags & MEMTYPE_UVADDR) {
+		address = (ulonglong)addr;
+		memtype = UVADDR;
+	} else {
+		address = (ulonglong)addr;
+		memtype = KVADDR;
+	}
+
+	display_memory(address, wordcnt, 
  	    HEXADECIMAL|DISPLAY_DEFAULT|(symbolic ? SYMBOLIC : ASCII_ENDLINE),
-		KVADDR);
+		memtype);
 }
 
 /*
@@ -1452,7 +1506,7 @@ accessible(ulong kva)
  *  is appropriate:
  *
  *         addr  a user, kernel or physical memory address.
- *      memtype  addr type: UVADDR, KVADDR or PHYSADDR. 
+ *      memtype  addr type: UVADDR, KVADDR, PHYSADDR, XENMACHADDR or FILEADDR 
  *       buffer  supplied buffer to read the data into.
  *         size  number of bytes to read.
  *         type  string describing the request -- helpful when the read fails.
@@ -1528,6 +1582,9 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
         case PHYSADDR:
 	case XENMACHADDR:
                 break;
+
+	case FILEADDR:
+		return generic_read_dumpfile(addr, buffer, size, type, error_handle);
         }
 
         while (size > 0) {
@@ -1874,6 +1931,9 @@ char *memtype_string(int memtype, int debug)
 	case XENMACHADDR:
 		sprintf(membuf, debug ? "XENMACHADDR" : "xen machine");
 		break;
+	case FILEADDR:
+		sprintf(membuf, debug ? "FILEADDR" : "dumpfile");
+		break;
 	default:
 		if (debug)
 			sprintf(membuf, "0x%x (?)", memtype);
@@ -1969,6 +2029,10 @@ writemem(ulonglong addr, int memtype, void *buffer, long size,
 
         case PHYSADDR:
                 break;
+
+
+	case FILEADDR:
+		return generic_write_dumpfile(addr, buffer, size, type, error_handle);
         }
 
         while (size > 0) {
@@ -2063,6 +2127,77 @@ read_dev_kmem(ulong vaddr, char *bufptr, long cnt)
 		readcnt = 0;
 
 	return readcnt;
+}
+
+/*
+ *  Generic dumpfile read/write functions to handle FILEADDR 
+ *  memtype arguments to readmem() and writemem().  These are
+ *  not to be confused with pc->readmem/writemem plug-ins.
+ */
+static int 
+generic_read_dumpfile(ulonglong addr, void *buffer, long size, char *type, 
+	ulong error_handle)
+{
+	int fd;
+	int retval;
+
+	retval = TRUE;
+
+	if (!pc->dumpfile)
+		error(FATAL, "command requires a dumpfile\n");
+
+	if ((fd = open(pc->dumpfile, O_RDONLY)) < 0)
+		error(FATAL, "%s: %s\n", pc->dumpfile,
+			strerror(errno));
+
+	if (lseek(fd, addr, SEEK_SET) == -1) {
+		if (PRINT_ERROR_MESSAGE)
+                	error(INFO, SEEK_ERRMSG, 
+				memtype_string(FILEADDR, 0), addr, type);
+		retval = FALSE;
+	} else if (read(fd, buffer, size) != size) {
+		if (PRINT_ERROR_MESSAGE)
+			error(INFO, READ_ERRMSG, 
+				memtype_string(FILEADDR, 0), addr, type);
+		retval = FALSE;
+	}
+
+	close(fd);
+
+	return retval;
+}
+
+static int 
+generic_write_dumpfile(ulonglong addr, void *buffer, long size, char *type, 
+	ulong error_handle)
+{
+	int fd;
+	int retval;
+
+	retval = TRUE;
+
+	if (!pc->dumpfile)
+		error(FATAL, "command requires a dumpfile\n");
+
+	if ((fd = open(pc->dumpfile, O_WRONLY)) < 0)
+		error(FATAL, "%s: %s\n", pc->dumpfile,
+			strerror(errno));
+
+	if (lseek(fd, addr, SEEK_SET) == -1) {
+		if (PRINT_ERROR_MESSAGE)
+                	error(INFO, SEEK_ERRMSG, 
+				memtype_string(FILEADDR, 0), addr, type);
+		retval = FALSE;
+	} else if (write(fd, buffer, size) != size) {
+		if (PRINT_ERROR_MESSAGE)
+			error(INFO, WRITE_ERRMSG, 
+				memtype_string(FILEADDR, 0), addr, type);
+		retval = FALSE;
+	}
+
+	close(fd);
+
+	return retval;
 }
 
 /*
@@ -2972,7 +3107,8 @@ vm_area_page_dump(ulong vma,
 
 			if (DO_REF_SEARCH(ref)) { 
 				if (VM_REF_CHECK_DECVAL(ref, 
-				    SWP_OFFSET(paddr))) {
+				    THIS_KERNEL_VERSION >= LINUX(2,6,0) ?
+				    __swp_offset(paddr) : SWP_OFFSET(paddr))) {
 					if (DO_REF_DISPLAY(ref))
 						display = TRUE;
 					else {
@@ -3340,8 +3476,6 @@ cmd_kmem(void)
                 if (pflag) {
 			meminfo.spec_addr = value[i];
 			meminfo.flags = ADDRESS_SPECIFIED;
-                        if (meminfo.calls++)
-                        	fprintf(fp, "\n");
                         dump_mem_map(&meminfo);
                         pflag++;
                 }
@@ -3390,8 +3524,6 @@ cmd_kmem(void)
                 if (vflag) {
 			meminfo.spec_addr = value[i];
 			meminfo.flags = ADDRESS_SPECIFIED; 
-			if (meminfo.calls++)
-				fprintf(fp, "\n");
                         dump_vmlist(&meminfo);
                         vflag++;
                 }
@@ -3747,7 +3879,15 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 		 *  to the section with that page 
 		 */
 		if (mi->flags & ADDRESS_SPECIFIED) {        
-			ulong pfn = mi->spec_addr >> PAGESHIFT();
+			ulong pfn;
+			physaddr_t tmp;
+
+			if (pg_spec) {
+				if (!page_to_phys(mi->spec_addr, &tmp))
+					return;
+				pfn = tmp >> PAGESHIFT();
+			} else
+				pfn = mi->spec_addr >> PAGESHIFT();
 			section_nr = pfn_to_section_nr(pfn);
 		}
 
@@ -3768,8 +3908,10 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 		}
 
 		if (print_hdr) {
-			fprintf(fp, "%s", hdr);
+			if (!(pc->curcmd_flags & HEADER_PRINTED))
+				fprintf(fp, "%s", hdr);
 			print_hdr = FALSE;
+			pc->curcmd_flags |= HEADER_PRINTED;
 		}
 
 		pp = section_mem_map_addr(section);
@@ -4209,8 +4351,10 @@ dump_mem_map(struct meminfo *mi)
 
 	for (n = 0; n < vt->numnodes; n++) {
 		if (print_hdr) {
-			fprintf(fp, "%s%s", n ? "\n" : "", hdr);
+			if (!(pc->curcmd_flags & HEADER_PRINTED))
+				fprintf(fp, "%s%s", n ? "\n" : "", hdr);
 			print_hdr = FALSE;
+			pc->curcmd_flags |= HEADER_PRINTED;
 		}
 
 		nt = &vt->node_table[n];
@@ -6293,7 +6437,7 @@ dump_vmlist(struct meminfo *vi)
 	count = 0;
 
 	while (next) {
-		if ((next == vmlist) && 
+		if (!(pc->curcmd_flags & HEADER_PRINTED) && (next == vmlist) && 
 		    !(vi->flags & (GET_HIGHEST|GET_PHYS_TO_VMALLOC|
 		      GET_VMLIST_COUNT|GET_VMLIST))) {
 			fprintf(fp, "%s  ", 
@@ -6302,6 +6446,7 @@ dump_vmlist(struct meminfo *vi)
 			fprintf(fp, "%s    SIZE\n",
 			    mkstring(buf, (VADDR_PRLEN * 2) + strlen(" - "),
 				CENTER|LJUST, "ADDRESS RANGE"));
+			pc->curcmd_flags |= HEADER_PRINTED;
 		}
 
                 readmem(next+OFFSET(vm_struct_addr), KVADDR, 
@@ -9910,6 +10055,33 @@ is_page_ptr(ulong addr, physaddr_t *phys)
         ulong ppstart, ppend;
 	struct node_table *nt;
 	ulong pgnum, node_size;
+	ulong nr, sec_addr;
+	ulong nr_mem_sections;
+	ulong coded_mem_map, mem_map, end_mem_map;
+	physaddr_t section_paddr;
+
+	if (IS_SPARSEMEM()) {
+		nr_mem_sections = NR_MEM_SECTIONS();
+	        for (nr = 0; nr <= nr_mem_sections ; nr++) {
+	                if ((sec_addr = valid_section_nr(nr))) {
+	                        coded_mem_map = section_mem_map_addr(sec_addr);
+	                        mem_map = sparse_decode_mem_map(coded_mem_map, nr);
+				end_mem_map = mem_map + (PAGES_PER_SECTION() * SIZE(page));
+
+				if ((addr >= mem_map) && (addr < end_mem_map)) { 
+	        			if ((addr - mem_map) % SIZE(page))
+						return FALSE;
+					if (phys) {
+						section_paddr = PTOB(section_nr_to_pfn(nr));
+						pgnum = (addr - mem_map) / SIZE(page);
+						*phys = section_paddr + (pgnum * PAGESIZE());
+					} 
+					return TRUE;
+				}
+	                }
+	        }
+		return FALSE;
+	}
 
 	for (n = 0; n < vt->numnodes; n++) {
 		nt = &vt->node_table[n];
@@ -10932,8 +11104,12 @@ swap_location(ulonglong pte, char *buf)
         if (!pte)
                 return NULL;
 
-	sprintf(buf, "%s  OFFSET: %lld", 
-		get_swapdev(SWP_TYPE(pte), swapdev), SWP_OFFSET(pte));
+	if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+		sprintf(buf, "%s  OFFSET: %lld", 
+			get_swapdev(__swp_type(pte), swapdev), __swp_offset(pte));
+	else
+		sprintf(buf, "%s  OFFSET: %llx", 
+			get_swapdev(SWP_TYPE(pte), swapdev), SWP_OFFSET(pte));
 
         return buf;
 }

@@ -51,6 +51,9 @@ static struct line_number_hook ppc_line_number_hooks[];
 void
 ppc_init(int when)
 {
+	uint cpu_features;
+	ulong cur_cpu_spec;
+
 	switch (when)
 	{
 	case PRE_SYMTAB:
@@ -140,6 +143,16 @@ ppc_init(int when)
 			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
 				machdep->hz = 1000;
 		}
+		if (symbol_exists("cur_cpu_spec")) {
+			get_symbol_data("cur_cpu_spec", sizeof(void *), &cur_cpu_spec);
+			readmem(cur_cpu_spec + MEMBER_OFFSET("cpu_spec", "cpu_user_features"), 
+				KVADDR, &cpu_features, sizeof(uint), "cpu user features",
+				FAULT_ON_ERROR);
+			if (cpu_features & CPU_BOOKE)
+				machdep->flags |= CPU_BOOKE;
+		}
+		else
+			machdep->flags |= CPU_BOOKE;
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		break;
@@ -285,7 +298,11 @@ ppc_uvtop(struct task_context *tc, ulong vaddr, physaddr_t *paddr, int verbose)
 
 	page_middle = (ulong *)pgd_pte;
 
-	page_table = page_middle + (BTOP(vaddr) & (PTRS_PER_PTE - 1));
+	if (machdep->flags & CPU_BOOKE)
+		page_table = page_middle + (BTOP(vaddr) & (PTRS_PER_PTE - 1));
+	else
+		page_table = ((page_middle & machdep->pagemask) + machdep->kvbase) +
+			(BTOP(vaddr) & (PTRS_PER_PTE-1));
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n",(ulong)page_middle, 
@@ -369,7 +386,11 @@ ppc_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 
 	page_middle = (ulong *)pgd_pte;
 
-	page_table = page_middle + (BTOP(kvaddr) & (PTRS_PER_PTE-1));
+	if (machdep->flags & CPU_BOOKE)
+		page_table = page_middle + (BTOP(kvaddr) & (PTRS_PER_PTE - 1));
+	else
+		page_table = ((page_middle & machdep->pagemask) + machdep->kvbase) +
+			(BTOP(kvaddr) & (PTRS_PER_PTE-1));
 
 	if (verbose)
 		fprintf(fp, "  PMD: %lx => %lx\n", (ulong)page_middle, 

@@ -1,8 +1,11 @@
 /*
  *  xen_hyper_defs.h
  *
- *  Portions Copyright (C) 2006 Fujitsu Limited
- *  Portions Copyright (C) 2006 VA Linux Systems Japan K.K.
+ *  Portions Copyright (C) 2006-2007 Fujitsu Limited
+ *  Portions Copyright (C) 2006-2007 VA Linux Systems Japan K.K.
+ *
+ *  Authors: Itsuro Oda <oda@valinux.co.jp>
+ *           Fumihiko Kakuma <kakuma@valinux.co.jp>
  *
  *  This file is part of Xencrash.
  *
@@ -63,15 +66,32 @@
 #define PAGE_OFFSET_XEN_HYPER DIRECTMAP_VIRT_START
 #endif
 
+#ifdef IA64
+#define HYPERVISOR_VIRT_START (0xe800000000000000)
+#define HYPERVISOR_VIRT_END   (0xf800000000000000)
+#define DEFAULT_SHAREDINFO_ADDR (0xf100000000000000)
+#define PERCPU_PAGE_SIZE      65536
+#define PERCPU_ADDR	      (DEFAULT_SHAREDINFO_ADDR - PERCPU_PAGE_SIZE)
+#define DIRECTMAP_VIRT_START  (0xf000000000000000)
+#define DIRECTMAP_VIRT_END    PERCPU_ADDR
+
+#define PERCPU_VIRT_ADDR(vaddr) \
+    (((vaddr) >= PERCPU_ADDR) && ((vaddr) < PERCPU_ADDR + PERCPU_PAGE_SIZE))
+
+#undef IA64_RBS_OFFSET
+#define IA64_RBS_OFFSET   ((XEN_HYPER_SIZE(vcpu) + 15) & ~15)
+
+#endif /* IA64 */
+
 #define DIRECTMAP_VIRT_ADDR(vaddr) \
     (((vaddr) >= DIRECTMAP_VIRT_START) && ((vaddr) < DIRECTMAP_VIRT_END))
 
 typedef uint16_t	domid_t;
 typedef uint32_t	Elf_Word;
 
-/* NOTE kakuma:
- * The following defines are temporary version for elf note format
- * which is used only in crash.
+/*
+ * NOTE kakuma: The following defines are temporary version for
+ * elf note format which is used only in crash.
  */
 #define XEN_HYPER_ELF_NOTE_V1	1
 #define XEN_HYPER_ELF_NOTE_V2	2
@@ -98,10 +118,16 @@ typedef uint32_t	Elf_Word;
 #define XEN_HYPER_MAX_VIRT_CPUS  (1)
 #endif
 
+#if defined(X86) || defined(X86_64)
 #define XEN_HYPER_PERCPU_SHIFT 12
 #define xen_hyper_per_cpu(var, cpu)  \
-	((ulong)var + (((ulong)(cpu))<<XEN_HYPER_PERCPU_SHIFT))
+	((ulong)(var) + (((ulong)(cpu))<<XEN_HYPER_PERCPU_SHIFT))
+#elif defined(IA64)
+#define xen_hyper_per_cpu(var, cpu)  \
+	((ulong)(var) + (xht->__per_cpu_offset[cpu]))
+#endif
 
+#if defined(X86) || defined(X86_64)
 #define XEN_HYPER_STACK_ORDER 2
 #if 0
 #define XEN_HYPER_STACK_SIZE (machdep->pagesize << XEN_HYPER_STACK_ORDER)
@@ -109,6 +135,7 @@ typedef uint32_t	Elf_Word;
 #define XEN_HYPER_GET_CPU_INFO(sp) \
 	((sp & ~(STACKSIZE()-1)) | \
 	(STACKSIZE() - XEN_HYPER_SIZE(cpu_info)))
+#endif
 
 #define XEN_HYPER_CONRING_SIZE 16384
 
@@ -202,7 +229,20 @@ typedef uint32_t	Elf_Word;
 #define XEN_HYPER_RUNSTATE_ERROR        ((int)(-1))
 
 /*
- * Programs constant
+ * PCPU
+ */
+#define XEN_HYPER_TSS_IST_MAX	7
+
+/*
+ * Scheduler
+ */
+#define XEN_SCHEDULER_SEDF	4
+#define XEN_SCHEDULER_CREDIT	5
+
+#define XEN_HYPER_OPT_SCHED_SIZE 10
+
+/*
+ * Constants for function
  */
 #define XEN_HYPER_CMD_BUFSIZE (1024)
 
@@ -238,57 +278,16 @@ typedef uint32_t	Elf_Word;
 #define XEN_HYPER_ELF_NOTE_FILL_T_XEN_REGS	(4)
 
 /*
- * command interface structs
+ * Command interface structs
  */
 #define XEN_HYPER_MAX_ARGS 100
 
-struct cmd_args {
+struct xen_hyper_cmd_args {
 	int cnt;
 	ulong value[XEN_HYPER_MAX_ARGS];
 	int type[XEN_HYPER_MAX_ARGS];
 	ulong addr[XEN_HYPER_MAX_ARGS];
-};
-
-/*
- * Domain command
- */
-#define XEN_HYPER_MAX_DOMS_ARGS XEN_HYPER_MAX_ARGS
-
-struct domain_args {
-	int cnt;
-	ulong value[XEN_HYPER_MAX_DOMS_ARGS];
-	int type[XEN_HYPER_MAX_DOMS_ARGS];
-	ulong domain[XEN_HYPER_MAX_DOMS_ARGS];
-	struct xen_hyper_domain_context *dc[XEN_HYPER_MAX_DOMS_ARGS];
-};
-
-/*
- * Virtual cpu command
- */
-#define XEN_HYPER_MAX_VCPUS_ARGS XEN_HYPER_MAX_ARGS
-#define XEN_HYPER_VCPUS_ID (0x1)
-
-struct vcpu_args {
-	int cnt;
-	ulong value[XEN_HYPER_MAX_VCPUS_ARGS];
-	ulong type[XEN_HYPER_MAX_VCPUS_ARGS];
-	ulong vcpu[XEN_HYPER_MAX_VCPUS_ARGS];
-	struct xen_hyper_vcpu_context *vcc[XEN_HYPER_MAX_VCPUS_ARGS];
-};
-
-/*
- * Physical cpu command
- */
-#define XEN_HYPER_MAX_PCPUS_ARGS XEN_HYPER_MAX_ARGS
-#define XEN_HYPER_PCPUS_1STCALL (0x1)
-#define XEN_HYPER_PCPUS_REGS (0x2)
-
-struct pcpu_args {
-	int cnt;
-	ulong value[XEN_HYPER_MAX_PCPUS_ARGS];
-	int type[XEN_HYPER_MAX_PCPUS_ARGS];
-	ulong pcpu[XEN_HYPER_MAX_PCPUS_ARGS];
-	struct xen_hyper_pcpu_context *pcc[XEN_HYPER_MAX_PCPUS_ARGS];
+	void *context[XEN_HYPER_MAX_ARGS];
 };
 
 /*
@@ -298,12 +297,32 @@ struct pcpu_args {
 #define XEN_HYPER_DUMPINFO_TIME (0x1)
 #define XEN_HYPER_DUMPINFO_REGS (0x2)
 
-struct dumpinfo_args {
-	int cnt;
-	ulong value[XEN_HYPER_MAX_ARGS];
-	int type[XEN_HYPER_MAX_ARGS];
-	struct xen_hyper_dumpinfo_context *enc[XEN_HYPER_MAX_ARGS];
-};
+/*
+ * Domain command
+ */
+#define XEN_HYPER_MAX_DOMS_ARGS XEN_HYPER_MAX_ARGS
+
+/*
+ * Physical cpu command
+ */
+#define XEN_HYPER_MAX_PCPUS_ARGS XEN_HYPER_MAX_ARGS
+#define XEN_HYPER_PCPUS_1STCALL (0x1)
+#define XEN_HYPER_PCPUS_REGS (0x2)
+#define XEN_HYPER_PCPUS_TSS (0x4)
+
+/*
+ * Schedule command
+ */
+#define XEN_HYPER_MAX_SCHED_ARGS XEN_HYPER_MAX_ARGS
+#define XEN_HYPER_SCHED_1STCALL (0x1)
+#define XEN_HYPER_SCHED_VERBOSE (0x2)
+
+/*
+ * Virtual cpu command
+ */
+#define XEN_HYPER_MAX_VCPUS_ARGS XEN_HYPER_MAX_ARGS
+#define XEN_HYPER_VCPUS_ID (0x1)
+
 
 /*
  * table structs
@@ -316,9 +335,10 @@ struct xen_hyper_table {
 	ulong flags;
 	ulong stext;
 	ulong etext;
+	ulong cpu_data_address;
 	struct new_utsname utsname;
 	uint cpu_curr;
-	uint max_cpus;			/* max cpu in system max */
+	uint max_cpus;			/* max cpu in system */
 	int cores;			/* number of cpu core */
 	int pcpus;			/* number of physical cpu */
 	int vcpus;			/* number of virtual cpu */
@@ -326,8 +346,10 @@ struct xen_hyper_table {
 	int crashing_cpu;
 	struct xen_hyper_vcpu_context *crashing_vcc;
 	ulong max_page;
+	ulong total_pages;
 	ulong *cpumask;
 	uint *cpu_idxs;
+	ulong *__per_cpu_offset;
 };
 
 struct xen_hyper_dumpinfo_context {
@@ -431,10 +453,18 @@ struct xen_hyper_vcpu_table {
 
 /* pcpu */
 struct xen_hyper_pcpu_context {
+	/* pcpu info */
 	ulong pcpu;			/* pcpu address */
 	uint processor_id;
 	ulong guest_cpu_user_regs;
 	ulong current_vcpu;
+	/* tss_struct info */
+	ulong init_tss;
+	union {
+		uint32_t esp0;
+		uint64_t rsp0;	
+	} sp;
+	uint64_t ist[XEN_HYPER_TSS_IST_MAX];	/* This is valid on x86_64 */
 };
 
 struct xen_hyper_pcpu_table {
@@ -444,9 +474,22 @@ struct xen_hyper_pcpu_table {
 };
 
 /* scheduler */
+struct xen_hyper_sched_context {
+	uint cpu_id;
+	ulong schedule_data;
+	ulong curr;
+	ulong idle;
+	ulong sched_priv;
+	ulong tick;
+};
+
 struct xen_hyper_sched_table {
-	int type;
-	char opt_sched[10];
+	char *name;
+	char opt_sched[XEN_HYPER_OPT_SCHED_SIZE];
+	uint sched_id;
+	ulong scheduler;
+	char *scheduler_struct;
+	struct xen_hyper_sched_context *sched_context_array;
 };
 
 struct syment;
@@ -464,6 +507,7 @@ struct xen_hyper_size_table {
 	long cpu_time;
 	long cpu_user_regs;
 	long cpumask_t;
+	long cpuinfo_ia64;
 	long cpuinfo_x86;
 	long crash_note_t;			/* elf note v2, v3 */
 	long crash_note_core_t;			/* elf note v2, v3 */
@@ -474,6 +518,7 @@ struct xen_hyper_size_table {
 	long crash_xen_info_t;			/* elf note v3 */
 	long domain;
 	long note_buf_t;			/* elf note v1 */
+	long schedule_data;
 	long scheduler;
 	long timer;
 	long tss_struct;
@@ -510,6 +555,9 @@ struct xen_hyper_offset_table {
 	long cpu_time_stime_master_stamp;
 	long cpu_time_tsc_scale;
 	long cpu_time_calibration_timer;
+	/* cpuinfo_ia64 */
+	long cpuinfo_ia64_proc_freq;
+	long cpuinfo_ia64_vendor;
 	/* crash_note_t */
 	long crash_note_t_core;			/* elf note v2, v3 */
 	long crash_note_t_xen;			/* elf note v2 */
@@ -540,6 +588,28 @@ struct xen_hyper_offset_table {
 	long domain_domain_flags;
 	long domain_evtchn;
 	long domain_vcpu;
+	/* schedule_data */
+	long schedule_data_schedule_lock;
+	long schedule_data_curr;
+	long schedule_data_idle;
+	long schedule_data_sched_priv;
+	long schedule_data_s_timer;
+	long schedule_data_tick;
+	/* scheduler */
+	long scheduler_name;
+	long scheduler_opt_name;
+	long scheduler_sched_id;
+	long scheduler_init;
+	long scheduler_tick;
+	long scheduler_init_vcpu;
+	long scheduler_destroy_domain;
+	long scheduler_sleep;
+	long scheduler_wake;
+	long scheduler_set_affinity;
+	long scheduler_do_schedule;
+	long scheduler_adjust;
+	long scheduler_dump_settings;
+	long scheduler_dump_cpu_state;
 	/* timer */
 	long timer_expires;
 	long timer_cpu;
@@ -550,6 +620,7 @@ struct xen_hyper_offset_table {
 	/* tss */
 	long tss_struct_rsp0;
 	long tss_struct_esp0;
+	long tss_struct_ist;
 	/* vcpu */
 	long vcpu_vcpu_id;
 	long vcpu_processor;
@@ -569,6 +640,9 @@ struct xen_hyper_offset_table {
 	long vcpu_nmi_addr;
 	long vcpu_vcpu_dirty_cpumask;
 	long vcpu_arch;
+#ifdef IA64
+	long vcpu_thread_ksp;
+#endif
 	/* vcpu_runstate_info */
 	long vcpu_runstate_info_state;
 	long vcpu_runstate_info_state_entry_time;
@@ -597,6 +671,7 @@ struct xen_hyper_offset_table {
  * System
  */
 #define XEN_HYPER_MAX_CPUS() (xht->max_cpus)
+#define XEN_HYPER_CRASHING_CPU() (xht->crashing_cpu)
 
 /*
  * Dump information
@@ -611,24 +686,26 @@ struct xen_hyper_offset_table {
  */
 #define XEN_HYPER_DOMAIN_F_INIT 0x1
 
-#define XEN_HYPER_MAX_DOMAINS() (xht->domains)
+#define XEN_HYPER_NR_DOMAINS() (xht->domains)
 #define XEN_HYPER_RUNNING_DOMAINS() (xhdt->running_domains)
 
 /*
  * Phisycal CPU
  */
-#define XEN_HYPER_MAX_PCPUS() (xht->pcpus)
+#define XEN_HYPER_NR_PCPUS() (xht->pcpus)
 #define for_cpu_indexes(i, cpuid)		\
 	for (i = 0, cpuid = xht->cpu_idxs[i];	\
-	i < XEN_HYPER_MAX_PCPUS();		\
+	i < XEN_HYPER_NR_PCPUS();		\
 	cpuid = xht->cpu_idxs[++i])
+#define XEN_HYPER_CURR_VCPU(pcpuid) \
+	(xen_hyper_get_active_vcpu_from_pcpuid(pcpuid))
 
 /*
  * VCPU
  */
 #define XEN_HYPER_VCPU_F_INIT 0x1
 
-#define XEN_HYPER_MAX_VCPUS(domain_context) (domain_context->vcpu_cnt)
+#define XEN_HYPER_NR_VCPUS_IN_DOM(domain_context) (domain_context->vcpu_cnt)
 #define XEN_HYPER_VCPU_LAST_CONTEXT()	(xhvct->last)
 
 /*
@@ -665,14 +742,15 @@ extern struct task_context fake_tc;
 /*
  * Xen Hyper command help
  */
-extern char *help_xen_hyper_domain[];
-extern char *help_xen_hyper_doms[];
-extern char *help_xen_hyper_dumpinfo[];
-extern char *help_xen_hyper_log[];
-extern char *help_xen_hyper_pcpus[];
-extern char *help_xen_hyper_sys[];
-extern char *help_xen_hyper_vcpu[];
-extern char *help_xen_hyper_vcpus[];
+extern char *xen_hyper_help_domain[];
+extern char *xen_hyper_help_doms[];
+extern char *xen_hyper_help_dumpinfo[];
+extern char *xen_hyper_help_log[];
+extern char *xen_hyper_help_pcpus[];
+extern char *xen_hyper_help_sched[];
+extern char *xen_hyper_help_sys[];
+extern char *xen_hyper_help_vcpu[];
+extern char *xen_hyper_help_vcpus[];
 
 /*
  * Prototype
@@ -682,8 +760,15 @@ ulonglong get_uptime_hyper(void);
 /*
  * x86
  */
-int x86_get_smp_cpus_hyper(void);
-uint64_t x86_memory_size_hyper(void);
+int xen_hyper_x86_get_smp_cpus(void);
+uint64_t xen_hyper_x86_memory_size(void);
+
+/*
+ * IA64
+ */
+int xen_hyper_ia64_get_smp_cpus(void);
+uint64_t xen_hyper_ia64_memory_size(void);
+ulong xen_hyper_ia64_processor_speed(void);
 
 /*
  * Xen Hyper
@@ -692,6 +777,7 @@ void xen_hyper_init(void);
 void xen_hyper_domain_init(void);
 void xen_hyper_vcpu_init(void);
 void xen_hyper_dumpinfo_init(void);
+void xen_hyper_misc_init(void);
 void xen_hyper_post_init(void);
 struct xen_hyper_dumpinfo_context *xen_hyper_id_to_dumpinfo_context(uint id);
 struct xen_hyper_dumpinfo_context *xen_hyper_note_to_dumpinfo_context(ulong note);
@@ -740,38 +826,48 @@ void xen_hyper_alloc_vcpu_context_space(struct xen_hyper_vcpu_context_array *vcc
 int xen_hyper_vcpu_state(struct xen_hyper_vcpu_context *vcc);
 
 /* pcpu */
-void x86_xen_hyper_pcpu_init(void);
+#if defined(X86) || defined(X86_64)
+void xen_hyper_x86_pcpu_init(void);
+#elif defined(IA64)
+void xen_hyper_ia64_pcpu_init(void);
+#endif
 struct xen_hyper_pcpu_context *xen_hyper_id_to_pcpu_context(uint id);
 struct xen_hyper_pcpu_context *xen_hyper_pcpu_to_pcpu_context(ulong pcpu);
 struct xen_hyper_pcpu_context *xen_hyper_store_pcpu_context(struct xen_hyper_pcpu_context *pcc,
 	ulong pcpu, char *pcp);
+struct xen_hyper_pcpu_context *xen_hyper_store_pcpu_context_tss(struct xen_hyper_pcpu_context *pcc,
+	ulong init_tss, char *tss);
 char *xen_hyper_read_pcpu(ulong pcpu);
 char *xen_hyper_fill_pcpu_struct(ulong pcpu, char *pcpu_struct);
 void xen_hyper_alloc_pcpu_context_space(int pcpus);
 
 /* others */
-char *xen_hyper_fill_cpu_data_x86(int idx, char *cpuinfo_x86);
-int is_xen_hyper_vcpu_crash(struct xen_hyper_vcpu_context *vcc);
-void print_pcpu_header_hyper(FILE *out, int pcpu, int newline);
+char *xen_hyper_x86_fill_cpu_data(int idx, char *cpuinfo_x86);
+char *xen_hyper_ia64_fill_cpu_data(int idx, char *cpuinfo_ia64);
+int xen_hyper_is_vcpu_crash(struct xen_hyper_vcpu_context *vcc);
+void xen_hyper_print_bt_header(FILE *out, ulong pcpu, int newline);
+ulong xen_hyper_get_active_vcpu_from_pcpuid(ulong pcpu);
+ulong xen_hyper_pcpu_to_active_vcpu(ulong pcpu);
 void xen_hyper_get_cpu_info(void);
 int xen_hyper_test_pcpu_id(uint pcpu_id);
 
 /*
  * Xen Hyper command
  */
-void cmd_xen_hyper_help(void);
-void cmd_xen_hyper_domain(void);
-void cmd_xen_hyper_doms(void);
-void cmd_xen_hyper_dumpinfo(void);
-void cmd_xen_hyper_log(void);
-void dump_xen_hyper_log(void);
-void cmd_xen_hyper_pcpus(void);
-void cmd_xen_hyper_sys(void);
-void cmd_xen_hyper_vcpu(void);
-void cmd_xen_hyper_vcpus(void);
-void display_xen_hyper_sys_stats(void);
+void xen_hyper_cmd_help(void);
+void xen_hyper_cmd_domain(void);
+void xen_hyper_cmd_doms(void);
+void xen_hyper_cmd_dumpinfo(void);
+void xen_hyper_cmd_log(void);
+void xen_hyper_dump_log(void);
+void xen_hyper_cmd_pcpus(void);
+void xen_hyper_cmd_sched(void);
+void xen_hyper_cmd_sys(void);
+void xen_hyper_cmd_vcpu(void);
+void xen_hyper_cmd_vcpus(void);
+void xen_hyper_display_sys_stats(void);
 
-void show_xen_hyper_vcpu_context(struct xen_hyper_vcpu_context *vcc);
+void xen_hyper_show_vcpu_context(struct xen_hyper_vcpu_context *vcc);
 char *xen_hyper_domain_state_string(struct xen_hyper_domain_context *dc,
 	char *buf, int verbose);
 char *xen_hyper_vcpu_state_string(struct xen_hyper_vcpu_context *vcc,

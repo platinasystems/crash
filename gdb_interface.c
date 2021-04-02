@@ -1,8 +1,8 @@
 /* gdb_interface.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -637,6 +637,7 @@ static char *prohibited_list[] = {
 	"clear", "disable", "enable", "condition", "ignore", "frame", 
 	"select-frame", "f", "up", "down", "catch", "tcatch", "return",
 	"file", "exec-file", "core-file", "symbol-file", "load", "si", "ni", 
+	"shell", 
 	NULL  /* must be last */
 };
 
@@ -740,8 +741,10 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 	if (pc->cur_req->flags & GNU_NO_READMEM)
 		return TRUE;
 
-	if (UNIQUE_COMMAND("dis"))
+	if (pc->curcmd_flags & MEMTYPE_UVADDR)
 		memtype = UVADDR;
+	else if (pc->curcmd_flags & MEMTYPE_FILEADDR)
+		memtype = FILEADDR;
 	else if (!IS_KVADDR(addr)) {
 		if (STREQ(pc->curcmd, "gdb") && 
 		    STRNEQ(pc->cur_req->buf, "x/")) {
@@ -758,12 +761,11 @@ gdb_readmem_callback(ulong addr, void *buf, int len, int write)
 	if (CRASHDEBUG(1))
 		console("gdb_readmem_callback[%d]: %lx %d\n", 
 			memtype, addr, len);
-	
-#ifdef OLDWAY
-	return(readmem(addr, KVADDR, buf, len, 
-		"gdb_readmem_callback", RETURN_ON_ERROR));
-#endif
 
+	if (memtype == FILEADDR)
+		return(readmem(pc->curcmd_private, memtype, buf, len,
+                	"gdb_readmem_callback", RETURN_ON_ERROR));
+	
 	switch (len)
 	{
 	case SIZEOF_8BIT:

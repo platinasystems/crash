@@ -425,10 +425,7 @@ main_loop(void)
 #ifdef XEN_HYPERVISOR_ARCH
 			machdep_init(POST_GDB);
 			xen_hyper_init();
-			xhmachdep->pcpu_init();
-			xen_hyper_domain_init();
-			xen_hyper_vcpu_init();
-			xen_hyper_post_init();
+			machdep_init(POST_INIT);
 #else
         		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
@@ -455,8 +452,8 @@ main_loop(void)
         if (!(pc->flags & SILENT) && !(pc->flags & RUNTIME)) {
 		if (XEN_HYPER_MODE()) {
 #ifdef XEN_HYPERVISOR_ARCH
-			display_xen_hyper_sys_stats();
-			show_xen_hyper_vcpu_context(XEN_HYPER_VCPU_LAST_CONTEXT());
+			xen_hyper_display_sys_stats();
+			xen_hyper_show_vcpu_context(XEN_HYPER_VCPU_LAST_CONTEXT());
 #else
         		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
@@ -722,7 +719,6 @@ setup_environment(int argc, char **argv)
 	machdep->verify_paddr = generic_verify_paddr;
 	pc->redhat_debug_loc = DEFAULT_REDHAT_DEBUG_LOCATION;
 	pc->cmdgencur = 0;
-	pc->cmdgenspec = ~pc->cmdgencur;
 	pc->cmd_table = linux_command_table;
 
 	/*
@@ -1140,7 +1136,6 @@ dump_program_context(void)
 		gdb_command_string(pc->last_gdb_cmd, buf, FALSE));
 	fprintf(fp, "          cur_req: %lx\n", (ulong)pc->cur_req);
 	fprintf(fp, "        cmdgencur: %ld\n", pc->cmdgencur); 
-	fprintf(fp, "       cmdgenspec: %ld\n", pc->cmdgenspec); 
 	fprintf(fp, "     curcmd_flags: %lx (", pc->curcmd_flags);
 	others = 0;
         if (pc->curcmd_flags & XEN_MACHINE_ADDR)
@@ -1151,7 +1146,14 @@ dump_program_context(void)
 		fprintf(fp, "%sIDLE_TASK_SHOWN", others ? "|" : "");
         if (pc->curcmd_flags & TASK_SPECIFIED)
 		fprintf(fp, "%sTASK_SPECIFIED", others ? "|" : "");
+        if (pc->curcmd_flags & MEMTYPE_UVADDR)
+		fprintf(fp, "%sMEMTYPE_UVADDR", others ? "|" : "");
+        if (pc->curcmd_flags & MEMTYPE_FILEADDR)
+		fprintf(fp, "%sMEMTYPE_FILEADDR", others ? "|" : "");
+        if (pc->curcmd_flags & HEADER_PRINTED)
+		fprintf(fp, "%sHEADER_PRINTED", others ? "|" : "");
 	fprintf(fp, ")\n");
+	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);
 	fprintf(fp, "        sigaction: %lx\n", (ulong)&pc->sigaction);
 	fprintf(fp, "    gdb_sigaction: %lx\n", (ulong)&pc->gdb_sigaction);

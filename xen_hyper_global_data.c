@@ -1,8 +1,11 @@
 /*
  *  xen_hyper_global_data.c
  *
- *  Portions Copyright (C) 2006 Fujitsu Limited
- *  Portions Copyright (C) 2006 VA Linux Systems Japan K.K.
+ *  Portions Copyright (C) 2006-2007 Fujitsu Limited
+ *  Portions Copyright (C) 2006-2007 VA Linux Systems Japan K.K.
+ *
+ *  Authors: Itsuro Oda <oda@valinux.co.jp>
+ *           Fumihiko Kakuma <kakuma@valinux.co.jp>
  *
  *  This file is part of Xencrash.
  *
@@ -63,32 +66,35 @@ struct command_table_entry xen_hyper_command_table[] = {
         {"ascii",   cmd_ascii,   help_ascii,   0},
         {"bt",      cmd_bt,      help_bt,      0},
 	{"dis",     cmd_dis,     help_dis,     0},
-	{"domain",  cmd_xen_hyper_domain,   help_xen_hyper_domain,  REFRESH_TASK_TABLE},
-	{"doms",    cmd_xen_hyper_doms,     help_xen_hyper_doms,    REFRESH_TASK_TABLE},
-	{"dumpinfo",cmd_xen_hyper_dumpinfo, help_xen_hyper_dumpinfo,0},
+	{"domain",  xen_hyper_cmd_domain,   xen_hyper_help_domain,  REFRESH_TASK_TABLE},
+	{"doms",    xen_hyper_cmd_doms,     xen_hyper_help_doms,    REFRESH_TASK_TABLE},
+#if defined(X86) || defined(X86_64)
+	{"dumpinfo",xen_hyper_cmd_dumpinfo, xen_hyper_help_dumpinfo,0},
+#endif
 	{"eval",    cmd_eval,    help_eval,    0},
 	{"exit",    cmd_quit,    help_exit,    0},
 	{"extend",  cmd_extend,  help_extend,  0},
 	{"foreach", cmd_foreach, help_foreach, 0},
 	{"gdb",     cmd_gdb,     help_gdb,     0},
-        {"help",    cmd_xen_hyper_help,     help_help,              0},
+        {"help",    xen_hyper_cmd_help,     help_help,              0},
 	{"list",    cmd_list,    help__list,   0},
-	{"log",     cmd_xen_hyper_log,      help_xen_hyper_log,     0},
+	{"log",     xen_hyper_cmd_log,      xen_hyper_help_log,     0},
 	{"p",       cmd_p,       help_p,       0},
-	{"pcpus",   cmd_xen_hyper_pcpus,    help_xen_hyper_pcpus,   0},
+	{"pcpus",   xen_hyper_cmd_pcpus,    xen_hyper_help_pcpus,   0},
         {"pte",     cmd_pte,     help_pte,     0},
         {"q",       cmd_quit,    help_quit,    0},
         {"rd",      cmd_rd,      help_rd,      0},
 	{"repeat",  cmd_repeat,  help_repeat,  0},
+	{"sched",   xen_hyper_cmd_sched,    xen_hyper_help_sched,   0},
         {"search",  cmd_search,  help_search,  0},
         {"set",     cmd_set,     help_set,     0},
         {"struct",  cmd_struct,  help_struct,  0},
         {"sym",     cmd_sym,     help_sym,     0},
-        {"sys",     cmd_xen_hyper_sys,      help_xen_hyper_sys,     0},
+        {"sys",     xen_hyper_cmd_sys,      xen_hyper_help_sys,     0},
 	{"test",    cmd_test,    NULL,         HIDDEN_COMMAND},
 	{"union",   cmd_union,   help_union,   0},
-	{"vcpu",    cmd_xen_hyper_vcpu,     help_xen_hyper_vcpu,    REFRESH_TASK_TABLE},
-	{"vcpus",   cmd_xen_hyper_vcpus,    help_xen_hyper_vcpus,   REFRESH_TASK_TABLE},
+	{"vcpu",    xen_hyper_cmd_vcpu,     xen_hyper_help_vcpu,    REFRESH_TASK_TABLE},
+	{"vcpus",   xen_hyper_cmd_vcpus,    xen_hyper_help_vcpus,   REFRESH_TASK_TABLE},
 	{"whatis",  cmd_whatis,  help_whatis,  0},
 	{"wr",      cmd_wr,      help_wr,      0},
 	{(char *)NULL}
@@ -104,7 +110,7 @@ struct xen_hyper_size_table xen_hyper_size_table = { 0 };
  * help data
  */
 
-char *help_xen_hyper_domain[] = {
+char *xen_hyper_help_domain[] = {
 "domain",
 "display contents of domain struct",
 "[domain-id | domainp] ...",
@@ -114,7 +120,7 @@ char *help_xen_hyper_domain[] = {
 NULL               
 };
 
-char *help_xen_hyper_doms[] = {
+char *xen_hyper_help_doms[] = {
 "doms",
 "display domain status information",
 "[domain-id | domainp] ...",
@@ -148,7 +154,7 @@ char *help_xen_hyper_doms[] = {
 NULL               
 };
 
-char *help_xen_hyper_dumpinfo[] = {
+char *xen_hyper_help_dumpinfo[] = {
 "dumpinfo",
 "display Xen dump information",
 "[-t | -r] [pcpu-id | enotep] ...",
@@ -160,22 +166,57 @@ char *help_xen_hyper_dumpinfo[] = {
 NULL               
 };
 
-char *help_xen_hyper_log[] = {
+char *xen_hyper_help_log[] = {
 "log",
 "dump system message buffer",
+" ",
 "  This command dumps the xen conring contents in chronological order." ,
+"  ",
+"EXAMPLES",
+"  Dump the Xen message buffer:\n",
+"    %s> log",
+"     __  __            _____  ___                     _        _     _",
+"     \\ \\/ /___ _ __   |___ / / _ \\    _   _ _ __  ___| |_ __ _| |__ | | ___",
+"      \\  // _ \\ '_ \\    |_ \\| | | |__| | | | '_ \\/ __| __/ _` | '_ \\| |/ _ \\",
+"      /  \\  __/ | | |  ___) | |_| |__| |_| | | | \\__ \\ || (_| | |_) | |  __/",
+"     /_/\\_\\___|_| |_| |____(_)___/    \\__,_|_| |_|___/\\__\\__,_|_.__/|_|\\___|",
+"    ",
+"     http://www.cl.cam.ac.uk/netos/xen",
+"     University of Cambridge Computer Laboratory",
+"    ",
+"     Xen version 3.0-unstable (damm@) (gcc version 3.4.6 (Gentoo 3.4.6-r1, ssp-3.4.5-1.0,",
+"     pie-8.7.9)) Wed Dec  6 17:34:32 JST 2006",
+"     Latest ChangeSet: unavailable",
+"    ",
+"    (XEN) Console output is synchronous.",
+"    (XEN) Command line: 12733-i386-pae/xen.gz console=com1 sync_console conswitch=bb com1",
+"    =115200,8n1,0x3f8 dom0_mem=480000 crashkernel=64M@32M",
+"    (XEN) Physical RAM map:",
+"    (XEN)  0000000000000000 - 0000000000098000 (usable)",
+"    (XEN)  0000000000098000 - 00000000000a0000 (reserved)",
+"    (XEN)  00000000000f0000 - 0000000000100000 (reserved)",
+"    (XEN)  0000000000100000 - 000000003f7f0000 (usable)",
+"    (XEN)  000000003f7f0000 - 000000003f7f3000 (ACPI NVS)",
+"    (XEN)  000000003f7f3000 - 000000003f800000 (ACPI data)",
+"    (XEN)  00000000e0000000 - 00000000f0000000 (reserved)",
+"    (XEN)  00000000fec00000 - 0000000100000000 (reserved)",
+"    (XEN) Kdump: 64MB (65536kB) at 0x2000000",
+"    (XEN) System RAM: 1015MB (1039904kB)",
+"    (XEN) ACPI: RSDP (v000 XPC                                   ) @ 0x000f9250",
+"    ...",
 NULL               
 };
 
-char *help_xen_hyper_pcpus[] = {
+char *xen_hyper_help_pcpus[] = {
 "pcpus",
 "display physical cpu information",
-"[-r] [pcpu-id | pcpup] ...",
+"[-r][-t] [pcpu-id | pcpup] ...",
 "  This command displays physical cpu information for selected, or all, cpus" ,
 "       pcpu-id  a physical cpu id.",
 "         pcpup  a physical cpu pointer.",
 "      cur-vcpu  a current virtual cpu pointer.",
 "            -r  display register information.",
+"            -t  display init_tss information.",
 " ",
 "  The crashing physical cpu will be highlighted by an aster ",
 "  (\"*\") preceding its information.",
@@ -186,10 +227,101 @@ char *help_xen_hyper_pcpus[] = {
 "          0 ff1a3fb4 ffbf9080",
 "     *    1 ff1dbfb4 ffbf8080",
 "    %s>",
+" ",
+"  Show the physical cpu status of all with register information:\n",
+"    %s> pcpus -r",
+"       PCID   PCPU   CUR-VCPU",
+"     *    0 ff1b7fb4 ffbef080",
+"    Register information:",
+"    struct cpu_user_regs {",
+"      ebx = 0x0,",
+"      ecx = 0xdcf4bed8,",
+"      edx = 0xc0326887,",
+"      esi = 0x63,",
+"      edi = 0x0,",
+"      ebp = 0xdcf4bee0,",
+"      eax = 0x25,",
+"      error_code = 0x6,",
+"      entry_vector = 0xe,",
+"      eip = 0xc01014a7,",
+"      cs = 0x61,",
+"      saved_upcall_mask = 0x0,",
+"      _pad0 = 0x0,",
+"      eflags = 0x202,",
+"      esp = 0xdcf4bed0,",
+"      ss = 0x69,",
+"      _pad1 = 0x0,",
+"      es = 0x7b,",
+"      _pad2 = 0x0,",
+"      ds = 0x7b,",
+"      _pad3 = 0x0,",
+"      fs = 0x0,",
+"      _pad4 = 0x0,",
+"      gs = 0x0,",
+"      _pad5 = 0x0",
+"    }",
+" ",
+"  Show the physical cpu status of all with init_tss information:\n",
+"    %s> pcpus -t",
+"       PCID   PCPU   CUR-VCPU",
+"     *    0 ff1b7fb4 ffbef080",
+"    init_tss information:",
+"    struct tss_struct {",
+"      back_link = 0x0,",
+"      __blh = 0x0,",
+"      esp0 = 0xff1b7fe8,",
+"      ss0 = 0xe010,",
+"      __ss0h = 0x0,",
+"      esp1 = 0xdcf4bff8,",
+"      ss1 = 0x69,",
+"      __ss1h = 0x0,",
+"      esp2 = 0x0,",
+"      ss2 = 0x0,",
+"      __ss2h = 0x0,",
+"      __cr3 = 0x0,",
+"      eip = 0x0,",
+"      eflags = 0x0,",
+"      eax = 0x0,",
+"      ecx = 0x0,",
+"      edx = 0x0,",
+"      ebx = 0x0,",
+"      esp = 0x0,",
+"      ebp = 0x0,",
+"      esi = 0x0,",
+"      edi = 0x0,",
+"      es = 0x0,",
+"      __esh = 0x0,",
+"      cs = 0x0,",
+"      __csh = 0x0,",
+"      ss = 0x0,",
+"      __ssh = 0x0,",
+"      ds = 0x0,",
+"      __dsh = 0x0,",
+"      fs = 0x0,",
+"      __fsh = 0x0,",
+"      gs = 0x0,",
+"      __gsh = 0x0,",
+"      ldt = 0x0,",
+"      __ldth = 0x0,",
+"      trace = 0x0,",
+"      bitmap = 0x8000,",
+"      __cacheline_filler = \"\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\\000\"",
+"    }",
 NULL               
 };
 
-char *help_xen_hyper_sys[] = {
+char *xen_hyper_help_sched[] = {
+"pcpus",
+"display scheduler information",
+"[-r][-t] [pcpu-id] ...",
+"  This command displays scheduler information for selected, or all, cpus" ,
+"       pcpu-id  a physical cpu id.",
+"            -v  display verbosely scheduler information.",
+" ",
+NULL               
+};
+
+char *xen_hyper_help_sys[] = {
 "sys",
 "system data",
 "[-c [name|number]] config",
@@ -208,7 +340,7 @@ char *help_xen_hyper_sys[] = {
 NULL               
 };
 
-char *help_xen_hyper_vcpu[] = {
+char *xen_hyper_help_vcpu[] = {
 "vcpu",
 "display contents of vcpu struct",
 "[vcpup] ...",
@@ -218,7 +350,7 @@ char *help_xen_hyper_vcpu[] = {
 NULL               
 };
 
-char *help_xen_hyper_vcpus[] = {
+char *xen_hyper_help_vcpus[] = {
 "vcpus",
 "display vcpu status information",
 "[-i domain-id vcpu-id | vcpup] ...",
