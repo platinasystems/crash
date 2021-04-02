@@ -219,11 +219,19 @@ xen_hyper_do_doms(struct xen_hyper_cmd_args *da)
 {
 	struct xen_hyper_domain_context *dca;
 	char buf1[XEN_HYPER_CMD_BUFSIZE];
+	char buf2[XEN_HYPER_CMD_BUFSIZE];
 	int i;
 
-	fprintf(fp,
-		"   DID  %s ST T %%MMEM %%TMEM VCPU\n",
-		mkstring(buf1, VADDR_PRLEN, CENTER|RJUST, "DOMAIN"));
+	sprintf(buf1, "   DID  %s ST T ",
+		mkstring(buf2, VADDR_PRLEN, CENTER|RJUST, "DOMAIN"));
+	mkstring(&buf1[strlen(buf1)], INT_PRLEN, CENTER|RJUST, "MAXPAGE");
+	strncat(buf1, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
+	mkstring(&buf1[strlen(buf1)], INT_PRLEN, CENTER|RJUST, "TOTPAGE");
+	strncat(buf1, " VCPU ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
+	mkstring(&buf1[strlen(buf1)], VADDR_PRLEN, CENTER|RJUST, "SHARED_I");
+	strncat(buf1, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
+	mkstring(&buf1[strlen(buf1)], LONG_PRLEN, CENTER|RJUST, "P2M_MFN");
+	fprintf(fp, "%s\n", buf1);
 	if (da->cnt) {
 		for (i = 0; i < da->cnt; i++) {
 			xen_hyper_show_doms(da->context[i]);
@@ -239,11 +247,16 @@ xen_hyper_do_doms(struct xen_hyper_cmd_args *da)
 static void
 xen_hyper_show_doms(struct xen_hyper_domain_context *dc)
 {
-	double mmem, tmem;
 	char *act, *crash;
 	uint cpuid;
 	int type, i, j;
 	struct xen_hyper_pcpu_context *pcc;
+#if defined(X86) || defined(X86_64)
+	char *shared_info;
+#elif defined(IA64)
+	char *domain_struct;
+	ulong pgd;
+#endif
 	char buf1[XEN_HYPER_CMD_BUFSIZE];
 	char buf2[XEN_HYPER_CMD_BUFSIZE];
 
@@ -251,6 +264,21 @@ xen_hyper_show_doms(struct xen_hyper_domain_context *dc)
 		return;
 	}
 
+#if defined(X86) || defined(X86_64)
+	shared_info = GETBUF(XEN_HYPER_SIZE(shared_info));
+	if (dc->shared_info) {
+		if (!readmem(dc->shared_info, KVADDR, shared_info,
+			XEN_HYPER_SIZE(shared_info), "fill_shared_info_struct",
+			ACTIVE() ? (RETURN_ON_ERROR|QUIET) : RETURN_ON_ERROR)) {
+			error(WARNING, "cannot fill shared_info struct.\n");
+			BZERO(shared_info, XEN_HYPER_SIZE(shared_info));
+		}
+	}
+#elif defined(IA64)
+	if ((domain_struct = xen_hyper_read_domain(dc->domain)) == NULL) {
+		error(FATAL, "cannot read domain.\n");
+	}
+#endif
 	act = NULL;
 	for_cpu_indexes(i, cpuid)
 	{
@@ -269,14 +297,6 @@ xen_hyper_show_doms(struct xen_hyper_domain_context *dc)
 	} else {
 		crash = " ";
 	}
-	if (dc->max_pages == -1) {
-		mmem = 100;
-	} else {
-		mmem = (double)(dc->max_pages) /
-			(double)(xht->max_page) * (double)100;
-	}
-	tmem = (double)(dc->tot_pages) /
-		(double)(xht->max_page) * (double)100;
 	sprintf(buf1, "%s%s%5d ", act, crash, dc->domain_id);
 	mkstring(&buf1[strlen(buf1)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST, (char *)(dc->domain));
 	strncat(buf1, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
@@ -284,15 +304,40 @@ xen_hyper_show_doms(struct xen_hyper_domain_context *dc)
 		xen_hyper_domain_state_string(dc, buf2, !VERBOSE));
 	sprintf(&buf1[strlen(buf1)], "%s ",
 		xen_hyper_domain_context_to_type(dc, &type, buf2, !VERBOSE));
-
-	sprintf(buf2, "%3.1f", mmem);
-	mkstring(&buf1[strlen(buf1)], 5, RJUST, buf2);
+	mkstring(&buf1[strlen(buf1)], INT_PRLEN, CENTER|INT_HEX|RJUST,
+		MKSTR((long)(dc->max_pages)));
 	strncat(buf1, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
+	mkstring(&buf1[strlen(buf1)], INT_PRLEN, CENTER|INT_HEX|RJUST,
+		MKSTR((long)(dc->tot_pages)));
+	sprintf(&buf1[strlen(buf1)], " %3d  ", dc->vcpu_cnt);
+	mkstring(&buf1[strlen(buf1)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		MKSTR(dc->shared_info));
+	strncat(buf1, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf1)-1);
+#if defined(X86) || defined(X86_64)
+	if (dc->shared_info) {
+		mkstring(&buf1[strlen(buf1)], LONG_PRLEN, CENTER|LONG_HEX|RJUST,
+			MKSTR(ULONG(shared_info +
+				XEN_HYPER_OFFSET(shared_info_arch) +
+				XEN_HYPER_OFFSET(arch_shared_info_pfn_to_mfn_frame_list_list)))
+		);
+	} else {
+		mkstring(&buf1[strlen(buf1)], LONG_PRLEN, CENTER|RJUST, "----");
+	}
+	FREEBUF(shared_info);
+#elif defined(IA64)
+	pgd = ULONG(domain_struct + XEN_HYPER_OFFSET(domain_arch) +
+		XEN_HYPER_OFFSET(arch_domain_mm) +
+		XEN_HYPER_OFFSET(mm_struct_pgd));
+	if (pgd) {
+		mkstring(&buf1[strlen(buf1)], LONG_PRLEN,
+			CENTER|LONG_HEX|RJUST,
+			MKSTR((pgd - DIRECTMAP_VIRT_START) >> machdep->pageshift));
+	} else {
+		mkstring(&buf1[strlen(buf1)], LONG_PRLEN, CENTER|RJUST, "----");
+	}
+#endif
 
-	sprintf(buf2, "%3.1f", tmem);
-	mkstring(&buf1[strlen(buf1)], 5, RJUST, buf2);
-
-	fprintf(fp, "%s %3d\n", buf1, dc->vcpu_cnt);
+	fprintf(fp, "%s\n", buf1);
 }
 
 /*
@@ -413,7 +458,7 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 	note_buf = dic->ELF_Prstatus_ptr;
 	sprintf(buf, "%5d ", dic->pcpu_id);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(dic->note));
+		MKSTR(dic->note));
 
 	pid = INT(note_buf + XEN_HYPER_OFFSET(ELF_Prstatus_pr_pid));
 	sprintf(&buf[strlen(buf)], " %5d ", pid);
@@ -456,11 +501,11 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 			tv_usec = LONG(addr +
 				XEN_HYPER_OFFSET(ELF_Timeval_tv_sec) +
 				XEN_HYPER_OFFSET(ELF_Timeval_tv_usec));
-			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-				(char *)(tv_sec));
+			mkstring(&buf[strlen(buf)], LONG_PRLEN, CENTER|LONG_HEX|RJUST,
+				MKSTR(tv_sec));
 			strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
-			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-				(char *)(tv_usec));
+			mkstring(&buf[strlen(buf)], LONG_PRLEN, CENTER|LONG_HEX|RJUST,
+				MKSTR(tv_usec));
 			fprintf(fp, "%s\n", buf);
 		}
 	}
@@ -477,7 +522,7 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 			}
 			fprintf(fp, "  %s = ", xhregt[i]);
 			fprintf(fp, "0x%s\n",
-				mkstring(buf, VADDR_PRLEN, LONG_HEX|LJUST, (char *)(*regs)));
+				mkstring(buf, LONG_PRLEN, LONG_HEX|LJUST, MKSTR(*regs)));
 		}
 	}
 }
@@ -668,13 +713,13 @@ xen_hyper_show_pcpus(ulong flag, struct xen_hyper_pcpu_context *pcc)
 	}
 
 	sprintf(buf, "%s%5d ", act, pcc->processor_id);
-	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST, (char *)(pcc->pcpu));
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST, MKSTR(pcc->pcpu));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(pcc->current_vcpu));
+		MKSTR(pcc->current_vcpu));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(pcc->init_tss));
+		MKSTR(pcc->init_tss));
 	fprintf(fp, "%s\n", buf);
 	if (flag & XEN_HYPER_PCPUS_REGS) {
 		fprintf(fp, "Register information:\n");
@@ -796,26 +841,30 @@ xen_hyper_show_sched(ulong flag, struct xen_hyper_sched_context *schc)
 		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "CUR-VCPU");
 		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "IDL-VCPU");
-		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
-		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "TICK");
+		if (XEN_HYPER_VALID_MEMBER(schedule_data_tick)) {
+			strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+			mkstring(&buf[strlen(buf)], LONG_PRLEN, CENTER|RJUST, "TICK");
+		}
 		fprintf(fp, "%s\n", buf);
 	}
 
 	sprintf(buf, "%5d  ", schc->cpu_id);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(schc->schedule_data));
+		MKSTR(schc->schedule_data));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(schc->sched_priv));
+		MKSTR(schc->sched_priv));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(schc->curr));
+		MKSTR(schc->curr));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(schc->idle));
-	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
-	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(schc->tick));
+		MKSTR(schc->idle));
+	if (XEN_HYPER_VALID_MEMBER(schedule_data_tick)) {
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], LONG_PRLEN, CENTER|LONG_HEX|RJUST,
+			MKSTR(schc->tick));
+	}
 	fprintf(fp, "%s\n", buf);
 	if (flag & XEN_HYPER_SCHED_VERBOSE) {
 		;
@@ -943,7 +992,7 @@ xen_hyper_display_sys_stats(void)
 		(buf1, "%d\n", XEN_HYPER_NR_DOMAINS()));
 	/* !!!Display a date here if it can be found. */
 	XEN_HYPER_PRI(fp, len, "UPTIME: ", buf1, flag,
-		(buf1, "%s\n", convert_time(get_uptime_hyper(), buf2)));
+		(buf1, "%s\n", convert_time(xen_hyper_get_uptime_hyper(), buf2)));
 	/* !!!Display a version here if it can be found. */
 	XEN_HYPER_PRI_CONST(fp, len, "MACHINE: ", flag);
 	if (strlen(uts->machine)) {
@@ -1176,7 +1225,7 @@ xen_hyper_show_vcpus(struct xen_hyper_vcpu_context *vcc)
 	}
 	sprintf(buf, "%s%s%5d %5d ", act, crash, vcc->vcpu_id, vcc->processor);
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(vcc->vcpu));
+		MKSTR(vcc->vcpu));
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
 	xen_hyper_vcpu_state_string(vcc, &buf[strlen(buf)], !VERBOSE);
 	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
@@ -1187,7 +1236,7 @@ xen_hyper_show_vcpus(struct xen_hyper_vcpu_context *vcc)
 		sprintf(&buf[strlen(buf)], " %5d ", domid);
 	}
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
-		(char *)(vcc->domain));
+		MKSTR(vcc->domain));
 	fprintf(fp, "%s\n", buf);
 }
 
@@ -1277,6 +1326,12 @@ xen_hyper_domain_context_to_type(struct xen_hyper_domain_context *dc, int *type,
 	if (!dc) {
 		*type = XEN_HYPER_DOMAIN_TYPE_INVALID;
 		return NULL;
+	} else if (dc->domain_id == XEN_HYPER_DOMID_IO) {
+		*type = XEN_HYPER_DOMAIN_TYPE_IO;
+		sprintf(buf, verbose ? "dom_io" : "O");
+	} else if (dc->domain_id == XEN_HYPER_DOMID_XEN) {
+		*type = XEN_HYPER_DOMAIN_TYPE_XEN;
+		sprintf(buf, verbose ? "dom_xen" : "X");
 	} else if (dc == xhdt->idle_domain) {
 		*type = XEN_HYPER_DOMAIN_TYPE_IDLE;
 		sprintf(buf, verbose ? "idle domain" : "I");
@@ -1285,7 +1340,7 @@ xen_hyper_domain_context_to_type(struct xen_hyper_domain_context *dc, int *type,
 		sprintf(buf, verbose ? "domain 0" : "0");
 	} else {
 		*type = XEN_HYPER_DOMAIN_TYPE_GUEST;
-		sprintf(buf, verbose ? "guest domain" : "G");
+		sprintf(buf, verbose ? "domain U" : "U");
 	}
 	return buf;
 }

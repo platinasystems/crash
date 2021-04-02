@@ -170,6 +170,26 @@ xen_hyper_domain_init(void)
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_domain_flags, "domain", "domain_flags");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_evtchn, "domain", "evtchn");
 	XEN_HYPER_MEMBER_OFFSET_INIT(domain_vcpu, "domain", "vcpu");
+	XEN_HYPER_MEMBER_OFFSET_INIT(domain_arch, "domain", "arch");
+
+	XEN_HYPER_STRUCT_SIZE_INIT(arch_shared_info, "arch_shared_info");
+	XEN_HYPER_MEMBER_OFFSET_INIT(arch_shared_info_max_pfn, "arch_shared_info", "max_pfn");
+	XEN_HYPER_MEMBER_OFFSET_INIT(arch_shared_info_pfn_to_mfn_frame_list_list, "arch_shared_info", "pfn_to_mfn_frame_list_list");
+	XEN_HYPER_MEMBER_OFFSET_INIT(arch_shared_info_nmi_reason, "arch_shared_info", "nmi_reason");
+
+	XEN_HYPER_STRUCT_SIZE_INIT(shared_info, "shared_info");
+	XEN_HYPER_MEMBER_OFFSET_INIT(shared_info_vcpu_info, "shared_info", "vcpu_info");
+	XEN_HYPER_MEMBER_OFFSET_INIT(shared_info_evtchn_pending, "shared_info", "evtchn_pending");
+	XEN_HYPER_MEMBER_OFFSET_INIT(shared_info_evtchn_mask, "shared_info", "evtchn_mask");
+	XEN_HYPER_MEMBER_OFFSET_INIT(shared_info_arch, "shared_info", "arch");
+
+	XEN_HYPER_STRUCT_SIZE_INIT(arch_domain, "arch_domain");
+#ifdef IA64
+	XEN_HYPER_MEMBER_OFFSET_INIT(arch_domain_mm, "arch_domain", "mm");
+
+	XEN_HYPER_STRUCT_SIZE_INIT(mm_struct, "mm_struct");
+	XEN_HYPER_MEMBER_OFFSET_INIT(mm_struct_pgd, "mm_struct", "pgd");
+#endif
 
 	if((xhdt->domain_struct = malloc(XEN_HYPER_SIZE(domain))) == NULL) {
 		error(FATAL, "cannot malloc domain struct space.\n");
@@ -453,7 +473,8 @@ xen_hyper_schedule_init(void)
 		schc->idle = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_idle));
 		schc->sched_priv =
 			ULONG(buf + XEN_HYPER_OFFSET(schedule_data_sched_priv));
-		schc->tick = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_tick));
+		if (XEN_HYPER_VALID_MEMBER(schedule_data_tick))
+			schc->tick = ULONG(buf + XEN_HYPER_OFFSET(schedule_data_tick));
 	}
 	FREEBUF(buf);
 }
@@ -751,7 +772,7 @@ void
 xen_hyper_refresh_domain_context_space(void)
 {
 	char *domain_struct;
-	ulong domain, next, idle_vcpu;
+	ulong domain, next, dom_xen, dom_io, idle_vcpu;
 	struct xen_hyper_domain_context *dc;
 	struct xen_hyper_domain_context *dom0;
 
@@ -764,6 +785,25 @@ xen_hyper_refresh_domain_context_space(void)
 	xen_hyper_alloc_domain_context_space(XEN_HYPER_NR_DOMAINS());
 
 	dc = xhdt->context_array;
+
+	/* restore an dom_io context. */
+	get_symbol_data("dom_io", sizeof(dom_io), &dom_io);
+	if ((domain_struct = xen_hyper_read_domain(dom_io)) == NULL) {
+		error(FATAL, "cannot read dom_io.\n");
+	}
+	xen_hyper_store_domain_context(dc, dom_io, domain_struct);
+	xhdt->dom_io = dc;
+	dc++;
+
+	/* restore an dom_xen context. */
+	get_symbol_data("dom_xen", sizeof(dom_xen), &dom_xen);
+	if ((domain_struct = xen_hyper_read_domain(dom_xen)) == NULL) {
+		error(FATAL, "cannot read dom_xen.\n");
+	}
+	xen_hyper_store_domain_context(dc, dom_xen, domain_struct);
+	xhdt->dom_xen = dc;
+	dc++;
+
 	/* restore an idle domain context. */
 	get_symbol_data("idle_vcpu", sizeof(idle_vcpu), &idle_vcpu);
 	if (!readmem(idle_vcpu + MEMBER_OFFSET("vcpu", "domain"),
@@ -814,7 +854,7 @@ xen_hyper_get_domains(void)
 			error(FATAL, "cannot read domain.next_in_list.\n");
 		}
 	}
-	i++;					/* for idle domain */
+	i += 3;		/* for dom_io, dom_xen and idle domain */
 	return i;
 }
 
@@ -1009,7 +1049,10 @@ xen_hyper_store_domain_context(struct xen_hyper_domain_context *dc,
 	dc->shared_info = ULONG(dp + XEN_HYPER_OFFSET(domain_shared_info));
 	dc->sched_priv = ULONG(dp + XEN_HYPER_OFFSET(domain_sched_priv));
 	dc->next_in_list = ULONG(dp + XEN_HYPER_OFFSET(domain_next_in_list));
-	dc->domain_flags = ULONG(dp + XEN_HYPER_OFFSET(domain_domain_flags));
+	if (XEN_HYPER_VALID_MEMBER(domain_domain_flags))
+		dc->domain_flags = ULONG(dp + XEN_HYPER_OFFSET(domain_domain_flags));
+	else
+		dc->domain_flags = XEN_HYPER_DOMF_ERROR;
 	dc->evtchn = ULONG(dp + XEN_HYPER_OFFSET(domain_evtchn));
 	for (i = 0; i < XEN_HYPER_MAX_VIRT_CPUS; i++) {
 		dc->vcpu[i] = ULONG(dp + XEN_HYPER_OFFSET(domain_vcpu) + i*sizeof(void *));
@@ -1231,7 +1274,8 @@ xen_hyper_store_vcpu_context(struct xen_hyper_vcpu_context *vcc,
 	vcc->vcpu_info = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_vcpu_info));
 	vcc->domain = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_domain));
 	vcc->next_in_list = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_next_in_list));
-	vcc->sleep_tick = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_sleep_tick));
+	if (XEN_HYPER_VALID_MEMBER(vcpu_sleep_tick))
+		vcc->sleep_tick = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_sleep_tick));
 	vcc->sched_priv = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_sched_priv));
 	vcc->state = INT(vcp + XEN_HYPER_OFFSET(vcpu_runstate) +
 		XEN_HYPER_OFFSET(vcpu_runstate_info_state));
@@ -1239,7 +1283,10 @@ xen_hyper_store_vcpu_context(struct xen_hyper_vcpu_context *vcc,
 		XEN_HYPER_OFFSET(vcpu_runstate) +
 		XEN_HYPER_OFFSET(vcpu_runstate_info_state_entry_time));
 	vcc->runstate_guest = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_runstate_guest));
-	vcc->vcpu_flags = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_vcpu_flags));
+	if (XEN_HYPER_VALID_MEMBER(vcpu_vcpu_flags))
+		vcc->vcpu_flags = ULONG(vcp + XEN_HYPER_OFFSET(vcpu_vcpu_flags));
+	else
+		vcc->vcpu_flags = XEN_HYPER_VCPUF_ERROR;
 	return vcc;
 }
 
@@ -1299,8 +1346,8 @@ xen_hyper_alloc_vcpu_context_arrays_space(int domains)
 			error(FATAL, "cannot malloc context arrays (%d domains).",
 				domains);
 		}
-		xhvct->vcpu_context_arrays_cnt = domains;
 		BZERO(xhvct->vcpu_context_arrays, domains * sizeof(struct xen_hyper_vcpu_context_array));
+		xhvct->vcpu_context_arrays_cnt = domains;
 	} else if (domains > xhvct->vcpu_context_arrays_cnt) {
 		if (!(xhvct->vcpu_context_arrays =
 			realloc(xhvct->vcpu_context_arrays,
@@ -1321,7 +1368,13 @@ xen_hyper_alloc_vcpu_context_arrays_space(int domains)
 void
 xen_hyper_alloc_vcpu_context_space(struct xen_hyper_vcpu_context_array *vcca, int vcpus)
 {
-	if (vcca->context_array == NULL) {
+	if (!vcpus) {
+		if (vcca->context_array != NULL) {
+			free(vcca->context_array);
+			vcca->context_array = NULL;
+		}
+		vcca->context_array_cnt = vcpus;
+	} else if (vcca->context_array == NULL) {
 		if (!(vcca->context_array =
 			malloc(vcpus * sizeof(struct xen_hyper_vcpu_context)))) {
 			error(FATAL, "cannot malloc context array (%d vcpus).",
@@ -1542,7 +1595,7 @@ xen_hyper_test_pcpu_id(uint pcpu_id)
  *  Calculate and return the uptime.
  */
 ulonglong
-get_uptime_hyper(void)
+xen_hyper_get_uptime_hyper(void)
 {
 	ulong jiffies, tmp1, tmp2;
 	ulonglong jiffies_64, wrapped;
@@ -1645,7 +1698,8 @@ xen_hyper_x86_memory_size(void)
 		"total_pages", RETURN_ON_ERROR)) {
 		error(WARNING, "cannot read total_pages.\n");
 	}
-	machdep->memsize = (uint64_t)(xht->total_pages) * (uint64_t)(machdep->pagesize);
+	xht->sys_pages = xht->total_pages;
+	machdep->memsize = (uint64_t)(xht->sys_pages) * (uint64_t)(machdep->pagesize);
 	return machdep->memsize;
 }
 
@@ -1683,7 +1737,7 @@ xen_hyper_ia64_processor_speed(void)
 
 	if (!xht->cpu_data_address ||
 	    !XEN_HYPER_VALID_STRUCT(cpuinfo_ia64) ||
-	    !XEN_HYPER_VALID_MEMBER(cpuinfo_ia64_proc_freq))
+	    XEN_HYPER_INVALID_MEMBER(cpuinfo_ia64_proc_freq))
 		return (machdep->mhz = mhz);
 
         readmem(xen_hyper_per_cpu(xht->cpu_data_address, xht->cpu_idxs[0]) + 

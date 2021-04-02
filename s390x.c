@@ -572,10 +572,11 @@ s390x_has_cpu(unsigned long task)
 		/* Linux 2.6 */
 		unsigned long runqueue_addr, runqueue_offset;
 		unsigned long cpu_offset, per_cpu_offset_addr, running_task;
-		char runqueue[4096];
+		char *runqueue;
 		int cpu;
 
 		cpu = s390x_cpu_of_task(task);
+		runqueue = GETBUF(SIZE(runqueue));
 
 		runqueue_offset=symbol_value("per_cpu__runqueues");
 		per_cpu_offset_addr=symbol_value("__per_cpu_offset");
@@ -583,10 +584,10 @@ s390x_has_cpu(unsigned long task)
 			&cpu_offset, sizeof(long),"per_cpu_offset",
 			FAULT_ON_ERROR);
 		runqueue_addr=runqueue_offset + cpu_offset;
-		readmem(runqueue_addr,KVADDR,&runqueue,sizeof(runqueue),
+		readmem(runqueue_addr,KVADDR,runqueue,SIZE(runqueue),
 			"runqueue", FAULT_ON_ERROR);
-		running_task = *((unsigned long*)&runqueue[MEMBER_OFFSET(
-				"runqueue", "curr")]);
+		running_task = ULONG(runqueue + OFFSET(runqueue_curr));
+		FREEBUF(runqueue);
 		if(running_task == task)
 			return TRUE; 
 		else

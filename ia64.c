@@ -3981,7 +3981,8 @@ ia64_is_kvaddr_hyper(ulong addr)
 static int
 ia64_kvtop_hyper(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 {
-	unsigned long virt_percpu_start, phys_percpu_start;
+	ulong virt_percpu_start, phys_percpu_start;
+	ulong addr, dirp, entry;
 
 	if (!IS_KVADDR(kvaddr))
 		return FALSE;
@@ -3994,9 +3995,37 @@ ia64_kvtop_hyper(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int v
 	} else if (DIRECTMAP_VIRT_ADDR(kvaddr)) {
 		*paddr = kvaddr - DIRECTMAP_VIRT_START;
 		return TRUE;
+	} else if (!FRAME_TABLE_VIRT_ADDR(kvaddr)) {
+		return FALSE;
 	}
 
-	return FALSE;
+	/* frametable virtual address */
+	addr = kvaddr - VIRT_FRAME_TABLE_ADDR;
+
+	dirp = symbol_value("frametable_pg_dir");
+	dirp += ((addr >> PGDIR_SHIFT_3L) & (PTRS_PER_PGD - 1)) * sizeof(ulong);
+	readmem(dirp, KVADDR, &entry, sizeof(ulong), 
+		"frametable_pg_dir", FAULT_ON_ERROR);
+
+	dirp = entry & _PFN_MASK;
+	if (!dirp)
+		return FALSE;
+	dirp += ((addr >> PMD_SHIFT) & (PTRS_PER_PMD - 1)) * sizeof(ulong);
+	readmem(dirp, PHYSADDR, &entry, sizeof(ulong), 
+		"frametable pmd", FAULT_ON_ERROR);
+
+	dirp = entry & _PFN_MASK;
+	if (!dirp)
+		return FALSE;
+	dirp += ((addr >> PAGESHIFT()) & (PTRS_PER_PTE - 1)) * sizeof(ulong);
+	readmem(dirp, PHYSADDR, &entry, sizeof(ulong), 
+		"frametable pte", FAULT_ON_ERROR);
+
+	if (!(entry & _PAGE_P))
+		return FALSE;
+
+	*paddr = (entry & _PFN_MASK) + (kvaddr & (PAGESIZE() - 1));
+	return TRUE;
 }
 
 static void
