@@ -73,6 +73,7 @@ static void dump_variable_length_record_log(int);
 static void hypervisor_init(void);
 static void dump_log_legacy(void);
 static void dump_variable_length_record(void);
+static int is_kpatch(void);
 
 
 /*
@@ -795,9 +796,10 @@ cpu_maps_init(void)
 		ulong cpu_flag;
 		char *name;
 	} mapinfo[] = {
-		{ POSSIBLE, "possible" },
-		{ PRESENT, "present" },
-		{ ONLINE, "online" },
+		{ POSSIBLE_MAP, "possible" },
+		{ PRESENT_MAP, "present" },
+		{ ONLINE_MAP, "online" },
+		{ ACTIVE_MAP, "active" },
 	};
 
 	if ((len = STRUCT_SIZE("cpumask_t")) < 0)
@@ -864,26 +866,33 @@ in_cpu_map(int map, int cpu)
 
 	switch (map)
 	{
-	case POSSIBLE:
+	case POSSIBLE_MAP:
 		if (!cpu_map_addr("possible")) {
 			error(INFO, "cpu_possible_map does not exist\n");
 			return FALSE;
 		}
-		return (kt->cpu_flags[cpu] & POSSIBLE);
+		return (kt->cpu_flags[cpu] & POSSIBLE_MAP);
 
-	case PRESENT:
+	case PRESENT_MAP:
 		if (!cpu_map_addr("present")) {
 			error(INFO, "cpu_present_map does not exist\n");
 			return FALSE;
 		}
-		return (kt->cpu_flags[cpu] & PRESENT);
+		return (kt->cpu_flags[cpu] & PRESENT_MAP);
 
-	case ONLINE:
+	case ONLINE_MAP:
 		if (!cpu_map_addr("online")) {
 			error(INFO, "cpu_online_map does not exist\n");
 			return FALSE;
 		}
-		return (kt->cpu_flags[cpu] & ONLINE);
+		return (kt->cpu_flags[cpu] & ONLINE_MAP);
+
+	case ACTIVE_MAP:
+		if (!cpu_map_addr("active")) {
+			error(INFO, "cpu_active_map does not exist\n");
+			return FALSE;
+		}
+		return (kt->cpu_flags[cpu] & ACTIVE_MAP);
 	}
 
 	return FALSE;
@@ -1970,17 +1979,19 @@ void
 cmd_bt(void)
 {
 	int i, c;
-	ulong value;
+	ulong value, *cpus;
         struct task_context *tc;
-	int count, subsequent, active;
+	int subsequent, active, choose_cpu;
 	struct stack_hook hook;
 	struct bt_info bt_info, bt_setup, *bt;
 	struct reference reference;
 	char *refptr;
-	ulong tgid;
+	ulong tgid, task;
+	char arg_buf[BUFSIZE];
 
 	tc = NULL;
-	subsequent = active = count = 0;
+	cpus = NULL;
+	subsequent = active = choose_cpu = 0;
 	hook.eip = hook.esp = 0;
 	refptr = 0;
 	bt = &bt_info;
@@ -1989,7 +2000,7 @@ cmd_bt(void)
 	if (kt->flags & USE_OLD_BT)
 		bt->flags |= BT_OLD_BACK_TRACE;
 
-        while ((c = getopt(argcnt, args, "D:fFI:S:aloreEgstTdxR:O")) != EOF) {
+        while ((c = getopt(argcnt, args, "D:fFI:S:c:aloreEgstTdxR:O")) != EOF) {
                 switch (c)
 		{
 		case 'f':
@@ -2132,6 +2143,18 @@ cmd_bt(void)
 				    "invalid stack address for this task: 0\n");
 			break;
 
+		case 'c':
+			if (choose_cpu) {
+				error(INFO, "only one -c option allowed\n");
+				argerrs++;
+			} else {
+				choose_cpu = 1;
+				BZERO(arg_buf, BUFSIZE);
+				strncpy(arg_buf, optarg, strlen(optarg));
+				cpus = get_cpumask_buf();
+			}
+			break;
+
 		case 'a':
 			active++;
 			break;
@@ -2221,6 +2244,30 @@ cmd_bt(void)
 #else
 		error(FATAL, XEN_HYPERVISOR_NOT_SUPPORTED);
 #endif
+	}
+
+	if (choose_cpu) {
+		if (LIVE())
+			error(FATAL, 
+			    "-c option not supported on a live system or live dump\n");
+
+		if (bt->flags & BT_THREAD_GROUP)
+			error(FATAL, 
+			    "-c option cannot be used with the -g option\n");
+
+		make_cpumask(arg_buf, cpus, FAULT_ON_ERROR, NULL);
+
+		for (i = 0; i < kt->cpus; i++) {
+			if (NUM_IN_BITMAP(cpus, i)) {
+				if ((task = get_active_task(i)))
+					tc = task_to_context(task);
+				else
+					error(FATAL, "cannot determine active task on cpu %ld\n", i);
+				DO_TASK_BACKTRACE();
+			}
+		}
+		FREEBUF(cpus);
+		return;
 	}
 
 	if (active) {
@@ -4592,6 +4639,21 @@ cmd_sys(void)
         } while (args[optind]);
 }
 
+static int
+is_kpatch(void)
+{
+	int i;
+	struct load_module *lm;
+
+	for (i = 0; i < st->mods_installed; i++) {
+		lm = &st->load_modules[i];
+		if (STREQ("kpatch", lm->mod_name))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
 /*
  *  Display system stats at init-time or for the sys command.
  */
@@ -4635,14 +4697,16 @@ display_sys_stats(void)
 		}
 	} else {
         	if (pc->system_map) {
-                	fprintf(fp, "  SYSTEM MAP: %s\n", pc->system_map);
+                	fprintf(fp, "  SYSTEM MAP: %s%s\n", pc->system_map,
+				is_kpatch() ? "  [KPATCH]" : "");
 			fprintf(fp, "DEBUG KERNEL: %s %s\n", 
 					pc->namelist_orig ?
 					pc->namelist_orig : pc->namelist,
 					debug_kernel_version(pc->namelist));
 		} else
-			fprintf(fp, "      KERNEL: %s\n", pc->namelist_orig ? 
-				pc->namelist_orig : pc->namelist);
+			fprintf(fp, "      KERNEL: %s%s\n", pc->namelist_orig ? 
+				pc->namelist_orig : pc->namelist,
+				is_kpatch() ? "  [KPATCH]" : "");
 	}
 
 	if (pc->debuginfo_file) { 
@@ -4778,7 +4842,8 @@ debug_kernel_version(char *namelist)
 
 	argc = 0;
         while (fgets(buf, BUFSIZE-1, pipe)) {
-                if (!strstr(buf, "Linux version 2."))
+                if (!strstr(buf, "Linux version 2.") &&
+		    !strstr(buf, "Linux version 3."))
                         continue;
 
 		argc = parse_line(buf, arglist); 
@@ -5147,6 +5212,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sRELOC_AUTO", others++ ? "|" : "");
 	if (kt->flags2 & KASLR)
 		fprintf(fp, "%sKASLR", others++ ? "|" : "");
+	if (kt->flags2 & KASLR_CHECK)
+		fprintf(fp, "%sKASLR_CHECK", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
         fprintf(fp, "         stext: %lx\n", kt->stext);
@@ -5282,7 +5349,7 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "       cpu_possible_map: ");
 	if (cpu_map_addr("possible")) {
 		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & POSSIBLE)
+			if (kt->cpu_flags[i] & POSSIBLE_MAP)
 				fprintf(fp, "%d ", i);
 		}
 		fprintf(fp, "\n");
@@ -5291,7 +5358,7 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "        cpu_present_map: ");
 	if (cpu_map_addr("present")) {
 		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & PRESENT)
+			if (kt->cpu_flags[i] & PRESENT_MAP)
 				fprintf(fp, "%d ", i);
 		}
 		fprintf(fp, "\n");
@@ -5300,12 +5367,22 @@ dump_kernel_table(int verbose)
 	fprintf(fp, "         cpu_online_map: ");
 	if (cpu_map_addr("online")) {
 		for (i = 0; i < nr_cpus; i++) {
-			if (kt->cpu_flags[i] & ONLINE)
+			if (kt->cpu_flags[i] & ONLINE_MAP)
 				fprintf(fp, "%d ", i);
 		}
 		fprintf(fp, "\n");
 	} else
 		fprintf(fp, "(does not exist)\n");
+	fprintf(fp, "         cpu_active_map: ");
+	if (cpu_map_addr("active")) {
+		for (i = 0; i < nr_cpus; i++) {
+			if (kt->cpu_flags[i] & ACTIVE_MAP)
+				fprintf(fp, "%d ", i);
+		}
+		fprintf(fp, "\n");
+	} else
+		fprintf(fp, "(does not exist)\n");
+
 no_cpu_flags:
 	fprintf(fp, "    vmcoreinfo: \n");
 	fprintf(fp, "      log_buf_SYMBOL: %lx\n", kt->vmcoreinfo.log_buf_SYMBOL);
@@ -7934,6 +8011,40 @@ get_highest_cpu_online()
 }
 
 /*
+ *  If it exists, return the number of cpus in the cpu_active_map.
+ */
+int
+get_cpus_active()
+{
+	int i, len, active;
+	char *buf;
+	ulong *maskptr, addr;
+
+	if (!(addr = cpu_map_addr("active")))
+		return 0;
+
+	len = cpu_map_size("active");
+	buf = GETBUF(len);
+
+	active = 0;
+
+	if (readmem(addr, KVADDR, buf, len,
+		"cpu_active_map", RETURN_ON_ERROR)) {
+
+		maskptr = (ulong *)buf;
+		for (i = 0; i < (len/sizeof(ulong)); i++, maskptr++)
+			active += count_bits_long(*maskptr);
+
+		if (CRASHDEBUG(1))
+			error(INFO, "get_cpus_active: active: %d\n", active);
+	}
+
+	FREEBUF(buf);
+
+	return active;
+}
+
+/*
  *  If it exists, return the number of cpus in the cpu_present_map.
  */
 int
@@ -8881,7 +8992,7 @@ hypervisor_init(void)
  *  data alone without the vmlinux file.
  */
 void
-get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *))
+get_log_from_vmcoreinfo(char *file)
 {
 	char *string;
 	char buf[BUFSIZE];
@@ -8894,7 +9005,7 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 	vmc->log_SIZE = vmc->log_ts_nsec_OFFSET = vmc->log_len_OFFSET =
 	vmc->log_text_len_OFFSET = vmc->log_dict_len_OFFSET = -1;
 
-	if ((string = vmcoreinfo_read_string("OSRELEASE"))) {
+	if ((string = pc->read_vmcoreinfo("OSRELEASE"))) {
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OSRELEASE: %s\n", string);
 		strcpy(buf, string);
@@ -8923,7 +9034,7 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 	} else
 		error(FATAL, "VMCOREINFO: cannot determine kernel version\n");
 
-	if ((string = vmcoreinfo_read_string("PAGESIZE"))) {
+	if ((string = pc->read_vmcoreinfo("PAGESIZE"))) {
 		machdep->pagesize = atoi(string);
 		machdep->pageoffset = machdep->pagesize - 1;
 		if (CRASHDEBUG(1))
@@ -8932,120 +9043,120 @@ get_log_from_vmcoreinfo(char *file, char *(*vmcoreinfo_read_string)(const char *
 	} else
 		error(FATAL, "VMCOREINFO: cannot determine page size\n");
 
-	if ((string = vmcoreinfo_read_string("SYMBOL(log_buf)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(log_buf)"))) {
 		vmc->log_buf_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(log_buf): %lx\n", 
 				vmc->log_buf_SYMBOL);
 		free(string);
 	}
-	if ((string = vmcoreinfo_read_string("SYMBOL(log_end)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(log_end)"))) {
 		vmc->log_end_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(log_end): %lx\n", 
 				vmc->log_end_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(log_buf_len)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(log_buf_len)"))) {
 		vmc->log_buf_len_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(log_buf_len): %lx\n", 
 				vmc->log_buf_len_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(logged_chars)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(logged_chars)"))) {
 		vmc->logged_chars_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(logged_chars): %lx\n", 
 				vmc->logged_chars_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(log_first_idx)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(log_first_idx)"))) {
 		vmc->log_first_idx_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(log_first_idx): %lx\n", 
 				vmc->log_first_idx_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(log_next_idx)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(log_next_idx)"))) {
 		vmc->log_next_idx_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(log_next_idx): %lx\n", 
 				vmc->log_next_idx_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(phys_base)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(phys_base)"))) {
 		vmc->phys_base_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(phys_base): %lx\n", 
 				vmc->phys_base_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("SYMBOL(_stext)"))) {
+	if ((string = pc->read_vmcoreinfo("SYMBOL(_stext)"))) {
 		vmc->_stext_SYMBOL = htol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SYMBOL(_stext): %lx\n", 
 				vmc->_stext_SYMBOL);
 		free(string);
 	} 
-	if ((string = vmcoreinfo_read_string("OFFSET(log.ts_nsec)"))) {
+	if ((string = pc->read_vmcoreinfo("OFFSET(log.ts_nsec)"))) {
 		vmc->log_ts_nsec_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(log.ts_nsec): %ld\n", 
 				vmc->log_ts_nsec_OFFSET);
 		free(string);
-	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.ts_nsec)"))) {
+	} else if ((string = pc->read_vmcoreinfo("OFFSET(printk_log.ts_nsec)"))) {
 		vmc->log_ts_nsec_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(printk_log.ts_nsec): %ld\n", 
 				vmc->log_ts_nsec_OFFSET);
 		free(string);
 	}
-	if ((string = vmcoreinfo_read_string("OFFSET(log.len)"))) {
+	if ((string = pc->read_vmcoreinfo("OFFSET(log.len)"))) {
 		vmc->log_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(log.len): %ld\n", 
 				vmc->log_len_OFFSET);
 		free(string);
-	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.len)"))) {
+	} else if ((string = pc->read_vmcoreinfo("OFFSET(printk_log.len)"))) {
 		vmc->log_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(printk_log.len): %ld\n", 
 				vmc->log_len_OFFSET);
 		free(string);
 	}
-	if ((string = vmcoreinfo_read_string("OFFSET(log.text_len)"))) {
+	if ((string = pc->read_vmcoreinfo("OFFSET(log.text_len)"))) {
 		vmc->log_text_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(log.text_len): %ld\n", 
 				vmc->log_text_len_OFFSET);
 		free(string);
-	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.text_len)"))) {
+	} else if ((string = pc->read_vmcoreinfo("OFFSET(printk_log.text_len)"))) {
 		vmc->log_text_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(printk_log.text_len): %ld\n", 
 				vmc->log_text_len_OFFSET);
 		free(string);
 	}
-	if ((string = vmcoreinfo_read_string("OFFSET(log.dict_len)"))) {
+	if ((string = pc->read_vmcoreinfo("OFFSET(log.dict_len)"))) {
 		vmc->log_dict_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(log.dict_len): %ld\n", 
 				vmc->log_dict_len_OFFSET);
 		free(string);
-	} else if ((string = vmcoreinfo_read_string("OFFSET(printk_log.dict_len)"))) {
+	} else if ((string = pc->read_vmcoreinfo("OFFSET(printk_log.dict_len)"))) {
 		vmc->log_dict_len_OFFSET = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "OFFSET(printk_log.dict_len): %ld\n", 
 				vmc->log_dict_len_OFFSET);
 		free(string);
 	}
-	if ((string = vmcoreinfo_read_string("SIZE(log)"))) {
+	if ((string = pc->read_vmcoreinfo("SIZE(log)"))) {
 		vmc->log_SIZE = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SIZE(log): %ld\n", vmc->log_SIZE);
 		free(string);
-	} else if ((string = vmcoreinfo_read_string("SIZE(printk_log)"))) {
+	} else if ((string = pc->read_vmcoreinfo("SIZE(printk_log)"))) {
 		vmc->log_SIZE = dtol(string, RETURN_ON_ERROR, NULL);
 		if (CRASHDEBUG(1))
 			fprintf(fp, "SIZE(printk_log): %ld\n", vmc->log_SIZE);

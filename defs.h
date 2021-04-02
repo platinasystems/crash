@@ -59,8 +59,6 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "7.0.6"
-
 #undef TRUE
 #undef FALSE
 
@@ -131,7 +129,7 @@
 #define NR_CPUS  (512)
 #endif
 #ifdef ARM
-#define NR_CPUS  (4)
+#define NR_CPUS  (32)
 #endif
 #ifdef ARM64
 #define NR_CPUS  (4096)   /* TBD */
@@ -514,6 +512,7 @@ struct program_context {
 	void *cmd_cleanup_arg;          /* optional cleanup function argument */
 	ulong scope;			/* optional text context address */
 	ulong nr_hash_queues;		/* hash queue head count */
+	char *(*read_vmcoreinfo)(const char *);
 };
 
 #define READMEM  pc->readmem
@@ -607,6 +606,7 @@ struct new_utsname {
 /* flags2 */
 #define RELOC_AUTO                  (0x1ULL)
 #define KASLR                       (0x2ULL)
+#define KASLR_CHECK                 (0x4ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
@@ -656,6 +656,10 @@ struct kernel_table {                   /* kernel data */
 #define PRESENT   (0x2)
 #define ONLINE    (0x4)
 #define NMI       (0x8)
+#define POSSIBLE_MAP (POSSIBLE)
+#define PRESENT_MAP   (PRESENT)
+#define ONLINE_MAP     (ONLINE)
+#define ACTIVE_MAP       (0x10)
 	int BUG_bytes;
 	ulong xen_flags;
 #define WRITABLE_PAGE_TABLES    (0x1)
@@ -1082,7 +1086,7 @@ extern struct machdep_table *machdep;
 #define FOREACH_F_FLAG2 (0x10000000)
 
 #define FOREACH_PS_EXCLUSIVE \
-  (FOREACH_g_FLAG|FOREACH_a_FLAG|FOREACH_t_FLAG|FOREACH_c_FLAG|FOREACH_p_FLAG|FOREACH_l_FLAG|FOREACH_r_FLAG)
+  (FOREACH_g_FLAG|FOREACH_a_FLAG|FOREACH_t_FLAG|FOREACH_c_FLAG|FOREACH_p_FLAG|FOREACH_l_FLAG|FOREACH_r_FLAG|FOREACH_m_FLAG)
 
 struct foreach_data {
 	ulong flags;
@@ -1893,6 +1897,12 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_rss_stat_count;
 	long page_s_mem;
 	long page_active;
+	long hstate_nr_huge_pages;
+	long hstate_free_huge_pages;
+	long hstate_name;
+	long cgroup_kn;
+	long kernfs_node_name;
+	long kernfs_node_parent;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2429,6 +2439,7 @@ struct symbol_table_data {
 	ulong dwarf_debug_frame_size;
 	ulong first_section_start;
 	ulong last_section_end;
+	ulong _stext_vmlinux;
 };
 
 /* flags for st */
@@ -2636,6 +2647,80 @@ struct load_module {
 #define _SECTION_SIZE_BITS	28
 #define _MAX_PHYSMEM_BITS	32
 
+/*add for LPAE*/
+typedef unsigned long long u64;
+typedef signed int         s32;
+typedef u64 pgd_t;
+typedef u64 pmd_t;
+typedef u64 pte_t;
+
+#define PMDSIZE()		(PAGESIZE())
+#define LPAE_PGDIR_SHIFT	(30)
+#define LPAE_PMDIR_SHIFT	(21)
+
+#define LPAE_PGD_OFFSET(vaddr)  ((vaddr) >> LPAE_PGDIR_SHIFT)
+#define LPAE_PMD_OFFSET(vaddr)  (((vaddr) >> LPAE_PMDIR_SHIFT) & \
+				((1<<(LPAE_PGDIR_SHIFT-LPAE_PMDIR_SHIFT))-1))
+
+#define _SECTION_SIZE_BITS_LPAE	28
+#define _MAX_PHYSMEM_BITS_LPAE	36
+
+/*
+ * #define PTRS_PER_PTE            512
+ * #define PTRS_PER_PMD            512
+ * #define PTRS_PER_PGD            4
+ *
+ */
+
+#define LPAE_PGDIR_SIZE()	32
+#define LPAE_PGDIR_OFFSET(X)	(((ulong)(X)) & (LPAE_PGDIR_SIZE() - 1))
+
+#define LPAE_PMDIR_SIZE()	4096
+#define LPAE_PMDIR_OFFSET(X)	(((ulong)(X)) & (LPAE_PMDIR_SIZE() - 1))
+
+#define LPAE_PTEDIR_SIZE()	4096
+#define LPAE_PTEDIR_OFFSET(X)	(((ulong)(X)) & (LPAE_PTEDIR_SIZE() - 1))
+
+/*section size for LPAE is 2MiB*/
+#define LPAE_SECTION_PAGE_MASK	(~((MEGABYTES(2))-1))
+
+#define _PHYSICAL_MASK_LPAE         ((1ULL << _MAX_PHYSMEM_BITS_LPAE) - 1)
+#define PAGE_BASE_MASK    ((u64)((s32)machdep->pagemask & _PHYSICAL_MASK_LPAE))
+#define LPAE_PAGEBASE(X)                (((ulonglong)(X)) & PAGE_BASE_MASK)
+
+#define LPAE_VTOP(X) \
+	((unsigned long long)(unsigned long)(X) - \
+			(machdep->kvbase) + (machdep->machspec->phys_base))
+
+#define IS_LAST_PGD_READ_LPAE(pgd)     ((pgd) == \
+					machdep->machspec->last_pgd_read_lpae)
+#define IS_LAST_PMD_READ_LPAE(pmd)     ((pmd) == \
+					machdep->machspec->last_pmd_read_lpae)
+#define IS_LAST_PTBL_READ_LPAE(ptbl)   ((ptbl) == \
+					machdep->machspec->last_ptbl_read_lpae)
+
+#define FILL_PGD_LPAE(PGD, TYPE, SIZE)			                    \
+	if (!IS_LAST_PGD_READ_LPAE(PGD)) {                                  \
+		readmem((ulonglong)(PGD), TYPE, machdep->pgd,               \
+			SIZE, "pmd page", FAULT_ON_ERROR);                   \
+		machdep->machspec->last_pgd_read_lpae \
+						= (ulonglong)(PGD);        \
+	}
+#define FILL_PMD_LPAE(PMD, TYPE, SIZE)			                    \
+	if (!IS_LAST_PMD_READ_LPAE(PMD)) {                                  \
+		readmem((ulonglong)(PMD), TYPE, machdep->pmd,               \
+			SIZE, "pmd page", FAULT_ON_ERROR);                  \
+		machdep->machspec->last_pmd_read_lpae \
+						= (ulonglong)(PMD);        \
+	}
+
+#define FILL_PTBL_LPAE(PTBL, TYPE, SIZE)		          	    \
+	if (!IS_LAST_PTBL_READ_LPAE(PTBL)) {                                \
+		readmem((ulonglong)(PTBL), TYPE, machdep->ptbl,              \
+			SIZE, "page table", FAULT_ON_ERROR);                 \
+		machdep->machspec->last_ptbl_read_lpae \
+						= (ulonglong)(PTBL); 	    \
+	}
 #endif  /* ARM */
 
 #ifndef EM_AARCH64
@@ -4070,8 +4155,10 @@ extern long _ZOMBIE_;
 #define PS_GROUP       (0x4000)
 #define PS_BY_REGEX    (0x8000)
 #define PS_NO_HEADER  (0x10000)
+#define PS_MSECS      (0x20000)
+#define PS_SUMMARY    (0x40000)
 
-#define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT)
+#define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT|PS_MSECS|PS_SUMMARY)
 
 #define MAX_PS_ARGS    (100)   /* maximum command-line specific requests */
 
@@ -4086,6 +4173,7 @@ struct psinfo {
 		regex_t regex;
 	} regex_data[MAX_PS_ARGS];
 	int regexs;
+	ulong *cpus;
 };
 
 #define IS_A_NUMBER(X)      (decimal(X, 0) || hexadecimal(X, 0))
@@ -4792,12 +4880,13 @@ void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
 int get_cpus_online(void);
+int get_cpus_active(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
 int get_highest_cpu_online(void);
 int get_highest_cpu_present(void);
 int get_cpus_to_display(void);
-void get_log_from_vmcoreinfo(char *file, char *(*)(const char *));
+void get_log_from_vmcoreinfo(char *file);
 int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
@@ -4964,6 +5053,9 @@ struct machine_specific {
 	ulong kernel_text_end;
 	ulong exception_text_start;
 	ulong exception_text_end;
+	ulonglong last_pgd_read_lpae;
+	ulonglong last_pmd_read_lpae;
+	ulonglong last_ptbl_read_lpae;
 	struct arm_pt_regs *crash_task_regs;
 	int unwind_index_prel31;
 };
@@ -5115,6 +5207,7 @@ struct machine_specific {
 #define VM_XEN_RHEL4 (0x100)
 #define FRAMEPOINTER (0x200)
 #define GART_REGION  (0x400)
+#define NESTED_NMI   (0x800)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 

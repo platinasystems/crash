@@ -119,7 +119,7 @@ map_cpus_to_prstatus_kdump_cmprs(void)
 	nrcpus = (kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS);
 
 	for (i = 0, j = 0; i < nrcpus; i++) {
-		if (in_cpu_map(ONLINE, i)) {
+		if (in_cpu_map(ONLINE_MAP, i)) {
 			dd->nt_prstatus_percpu[i] = nt_ptr[j++];
 			dd->num_prstatus_notes = 
 				MAX(dd->num_prstatus_notes, i+1);
@@ -806,7 +806,6 @@ int
 is_diskdump(char *file)
 {
 	int sz, i;
-	char *tmpstring;
 
 	if (!open_dump_file(file) || !read_dump_header(file))
 		return FALSE;
@@ -839,21 +838,13 @@ is_diskdump(char *file)
 	dd->flags |= SNAPPY_SUPPORTED;
 #endif
 
+	pc->read_vmcoreinfo = vmcoreinfo_read_string;
+
 	if ((pc->flags2 & GET_LOG) && KDUMP_CMPRS_VALID()) {
 		pc->dfd = dd->dfd;
 		pc->readmem = read_diskdump;
 		pc->flags |= DISKDUMP;
-		get_log_from_vmcoreinfo(file, vmcoreinfo_read_string);
-	}
-
-	/*
-	 * We may need the _stext_SYMBOL from the vmcore_info to adjust for
-	 * kaslr and we may not have gotten it elsewhere.
-	 */
-	if ((tmpstring = vmcoreinfo_read_string("SYMBOL(_stext)"))) {
-		kt->vmcoreinfo._stext_SYMBOL = htol(tmpstring, 
-			RETURN_ON_ERROR, NULL);
-		free(tmpstring);
+		get_log_from_vmcoreinfo(file);
 	}
 
 	return TRUE;
@@ -1202,7 +1193,7 @@ get_diskdump_panic_task(void)
 		if (kernel_symbol_exists("crashing_cpu") &&
 		    cpu_map_addr("online")) {
 			get_symbol_data("crashing_cpu", sizeof(int), &i);
-			if ((i >= 0) && in_cpu_map(ONLINE, i)) {
+			if ((i >= 0) && in_cpu_map(ONLINE_MAP, i)) {
 				if (CRASHDEBUG(1))
 					error(INFO, "get_diskdump_panic_task: "
 					    "active_set[%d]: %lx\n", 
