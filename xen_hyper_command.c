@@ -429,7 +429,17 @@ xen_hyper_do_dumpinfo(ulong flag, struct xen_hyper_cmd_args *dia)
 			}
 			sprintf(buf, " PCID ");
 			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "ENOTE");
-			sprintf(&buf[strlen(buf)], "  PID   PPID  PGRP  SID");
+//			sprintf(&buf[strlen(buf)], "  PID   PPID  PGRP  SID");
+			strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "CORE");
+			if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V2) {
+				strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+				mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "XEN_CORE");
+			}
+			if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V3) {
+				strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+				mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "XEN_INFO");
+			}
 			fprintf(fp, "%s\n", buf);
 		}
 		if (dia->cnt) {
@@ -449,7 +459,7 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 	ulong addr;
 	ulong *regs;
 	long tv_sec, tv_usec;
-	int pid, i, regcnt;
+	int i, regcnt;
 
 	if (!dic || !dic->note) {
 		return;
@@ -460,6 +470,7 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
 		MKSTR(dic->note));
 
+#if 0
 	pid = INT(note_buf + XEN_HYPER_OFFSET(ELF_Prstatus_pr_pid));
 	sprintf(&buf[strlen(buf)], " %5d ", pid);
 	pid = INT(note_buf + XEN_HYPER_OFFSET(ELF_Prstatus_pr_ppid));
@@ -468,6 +479,24 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 	sprintf(&buf[strlen(buf)], "%5d ", pid);
 	pid = INT(note_buf + XEN_HYPER_OFFSET(ELF_Prstatus_pr_sid));
 	sprintf(&buf[strlen(buf)], "%5d", pid);
+#endif
+	strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+	mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		MKSTR(dic->note));
+	if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V2) {
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+		MKSTR(dic->note + xhdit->core_size));
+	}
+	if (xhdit->note_ver >= XEN_HYPER_ELF_NOTE_V3) {
+		strncat(buf, " ", XEN_HYPER_CMD_BUFSIZE-strlen(buf)-1);
+		if (xhdit->xen_info_cpu == dic->pcpu_id)
+			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|LONG_HEX|RJUST,
+			MKSTR(dic->note + xhdit->core_size + xhdit->xen_core_size));
+		else
+			mkstring(&buf[strlen(buf)], VADDR_PRLEN, CENTER|RJUST, "--");
+
+	}
 
 	fprintf(fp, "%s\n", buf);
 
@@ -515,7 +544,8 @@ xen_hyper_show_dumpinfo(ulong flag, struct xen_hyper_dumpinfo_context *dic)
 		addr = (ulong)note_buf +
 			XEN_HYPER_OFFSET(ELF_Prstatus_pr_reg);
 		regs = (ulong *)addr;
-		fprintf(fp, "Register information:\n");
+		fprintf(fp, "Register information(%lx):\n",
+			dic->note + xhdit->core_offset + XEN_HYPER_OFFSET(ELF_Prstatus_pr_reg));
 		for (i = 0; i < regcnt; i++, regs++) {
 			if (xhregt[i] == NULL) {
 				break;
@@ -1256,18 +1286,34 @@ xen_hyper_domain_state_string(struct xen_hyper_domain_context *dc,
 
 	if (stat == XEN_HYPER_DOMF_ERROR) {
 		sprintf(buf, verbose ? "(unknown)" : "??");
-	} else if (stat & XEN_HYPER_DOMF_shutdown) {
-		sprintf(buf, verbose ? "DOMAIN_SHUTDOWN" : "SH");
-	} else if (stat & XEN_HYPER_DOMF_dying) {
-		sprintf(buf, verbose ? "DOMAIN_DYING" : "DY");
-	} else if (stat & XEN_HYPER_DOMF_ctrl_pause) {
-		sprintf(buf, verbose ? "DOMAIN_CTRL_PAUSE" : "CP");
-	} else if (stat & XEN_HYPER_DOMF_polling) {
-		sprintf(buf, verbose ? "DOMAIN_POLLING" : "PO");
-	} else if (stat & XEN_HYPER_DOMF_paused) {
-		sprintf(buf, verbose ? "DOMAIN_PAUSED" : "PA");
+	} else if (XEN_HYPER_VALID_MEMBER(domain_domain_flags)) {
+		if (stat & XEN_HYPER_DOMF_shutdown) {
+			sprintf(buf, verbose ? "DOMAIN_SHUTDOWN" : "SF");
+		} else if (stat & XEN_HYPER_DOMF_dying) {
+			sprintf(buf, verbose ? "DOMAIN_DYING" : "DY");
+		} else if (stat & XEN_HYPER_DOMF_ctrl_pause) {
+			sprintf(buf, verbose ? "DOMAIN_CTRL_PAUSE" : "CP");
+		} else if (stat & XEN_HYPER_DOMF_polling) {
+			sprintf(buf, verbose ? "DOMAIN_POLLING" : "PO");
+		} else if (stat & XEN_HYPER_DOMF_paused) {
+			sprintf(buf, verbose ? "DOMAIN_PAUSED" : "PA");
+		} else {
+			sprintf(buf, verbose ? "DOMAIN_RUNNING" : "RU");
+		}
 	} else {
-		sprintf(buf, verbose ? "DOMAIN_RUNNING" : "RU");
+		if (stat & XEN_HYPER_DOMS_shutdown) {
+			sprintf(buf, verbose ? "DOMAIN_SHUTDOWN" : "SF");
+		} else if (stat & XEN_HYPER_DOMS_shuttingdown) {
+			sprintf(buf, verbose ? "DOMAIN_SHUTTINGDOWN" : "SH");
+		} else if (stat & XEN_HYPER_DOMS_dying) {
+			sprintf(buf, verbose ? "DOMAIN_DYING" : "DY");
+		} else if (stat & XEN_HYPER_DOMS_ctrl_pause) {
+			sprintf(buf, verbose ? "DOMAIN_CTRL_PAUSE" : "CP");
+		} else if (stat & XEN_HYPER_DOMS_polling) {
+			sprintf(buf, verbose ? "DOMAIN_POLLING" : "PO");
+		} else {
+			sprintf(buf, verbose ? "DOMAIN_RUNNING" : "RU");
+		}
 	}
 
 	return buf;

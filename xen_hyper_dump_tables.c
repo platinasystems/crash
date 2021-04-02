@@ -262,13 +262,13 @@ xen_hyper_dump_xen_hyper_dumpinfo_table(int verbose)
 				sizeof(struct xen_hyper_dumpinfo_context) *
 				XEN_HYPER_MAX_CPUS(), sizeof(long));
 	}
-	XEN_HYPER_PRI_CONST(fp, len, "context_xen_core: ", flag|XEN_HYPER_PRI_LF);
-	XEN_HYPER_PRI(fp, len, "note: ", buf, flag,
-		(buf, "%lx\n", xhdit->context_xen_core.note));
-	XEN_HYPER_PRI(fp, len, "pcpu_id: ", buf, flag,
-		(buf, "%u\n", xhdit->context_xen_core.pcpu_id));
-	XEN_HYPER_PRI(fp, len, "crash_xen_core_ptr: ", buf, flag,
-		(buf, "%p\n", xhdit->context_xen_core.crash_xen_core_ptr));
+	XEN_HYPER_PRI(fp, len, "context_xen_core_array: ", buf, flag,
+		(buf, "%p\n", xhdit->context_xen_core_array));
+	if (verbose && xhdit->context_xen_core_array) {
+		xen_hyper_dump_mem((long *)xhdit->context_xen_core_array,
+				sizeof(struct xen_hyper_dumpinfo_context_xen_core) *
+				XEN_HYPER_MAX_CPUS(), sizeof(long));
+	}
 	XEN_HYPER_PRI_CONST(fp, len, "context_xen_info: ", flag|XEN_HYPER_PRI_LF);
 	XEN_HYPER_PRI(fp, len, "note: ", buf, flag,
 		(buf, "%lx\n", xhdit->context_xen_info.note));
@@ -283,12 +283,13 @@ xen_hyper_dump_xen_hyper_dumpinfo_table(int verbose)
 				xhdit->core_size * XEN_HYPER_NR_PCPUS(),
 				sizeof(long));
 	}
-	XEN_HYPER_PRI(fp, len, "crash_note_xen_core_ptr: ", buf, flag,
-		(buf, "%p\n", xhdit->crash_note_xen_core_ptr));
-	if (verbose && xhdit->crash_note_xen_core_ptr) {
+	XEN_HYPER_PRI(fp, len, "crash_note_xen_core_array: ", buf, flag,
+		(buf, "%p\n", xhdit->crash_note_xen_core_array));
+	if (verbose && xhdit->crash_note_xen_core_array) {
 		xen_hyper_dump_mem(
-				xhdit->crash_note_xen_core_ptr,
-				xhdit->xen_core_size, sizeof(long));
+				xhdit->crash_note_xen_core_array,
+				xhdit->xen_core_size * XEN_HYPER_NR_PCPUS(),
+				sizeof(long));
 	}
 	XEN_HYPER_PRI(fp, len, "crash_note_xen_info_ptr: ", buf, flag,
 		(buf, "%p\n", xhdit->crash_note_xen_info_ptr));
@@ -297,6 +298,8 @@ xen_hyper_dump_xen_hyper_dumpinfo_table(int verbose)
 				xhdit->crash_note_xen_info_ptr,
 				xhdit->xen_info_size, sizeof(long));
 	}
+	XEN_HYPER_PRI(fp, len, "xen_info_cpu: ", buf, flag,
+		(buf, "%u\n", xhdit->xen_info_cpu));
 	XEN_HYPER_PRI(fp, len, "note_size: ", buf, flag,
 		(buf, "%u\n", xhdit->note_size));
 	XEN_HYPER_PRI(fp, len, "core_offset: ", buf, flag,
@@ -320,13 +323,52 @@ static void
 xen_hyper_dump_xen_hyper_domain_table(int verbose)
 {
 	char buf[XEN_HYPER_CMD_BUFSIZE];
-	int len, flag;
+	struct xen_hyper_domain_context *dcca;
+	int len, flag, i;
 
 	len = 22;
 	flag = XEN_HYPER_PRI_R;
 
 	XEN_HYPER_PRI(fp, len, "context_array: ", buf, flag,
 		(buf, "%p\n", xhdt->context_array));
+	if (verbose) {
+		char buf1[XEN_HYPER_CMD_BUFSIZE];
+		int j;
+		for (i = 0, dcca = xhdt->context_array;
+		i < xhdt->context_array_cnt; i++, dcca++) {
+			snprintf(buf, XEN_HYPER_CMD_BUFSIZE, "context_array[%d]: ", i);
+			XEN_HYPER_PRI_CONST(fp, len, buf, flag|XEN_HYPER_PRI_LF);
+			XEN_HYPER_PRI(fp, len, "domain: ", buf, flag,
+				(buf, "%lx\n", dcca->domain));
+			XEN_HYPER_PRI(fp, len, "domain_id: ", buf, flag,
+				(buf, "%d\n", dcca->domain_id));
+			XEN_HYPER_PRI(fp, len, "tot_pages: ", buf, flag,
+				(buf, "%x\n", dcca->tot_pages));
+			XEN_HYPER_PRI(fp, len, "max_pages: ", buf, flag,
+				(buf, "%x\n", dcca->max_pages));
+			XEN_HYPER_PRI(fp, len, "xenheap_pages: ", buf, flag,
+				(buf, "%x\n", dcca->xenheap_pages));
+			XEN_HYPER_PRI(fp, len, "shared_info: ", buf, flag,
+				(buf, "%lx\n", dcca->shared_info));
+			XEN_HYPER_PRI(fp, len, "sched_priv: ", buf, flag,
+				(buf, "%lx\n", dcca->sched_priv));
+			XEN_HYPER_PRI(fp, len, "next_in_list: ", buf, flag,
+				(buf, "%lx\n", dcca->next_in_list));
+			XEN_HYPER_PRI(fp, len, "domain_flags: ", buf, flag,
+				(buf, "%lx\n", dcca->domain_flags));
+			XEN_HYPER_PRI(fp, len, "evtchn: ", buf, flag,
+				(buf, "%lx\n", dcca->evtchn));
+			XEN_HYPER_PRI(fp, len, "vcpu_cnt: ", buf, flag,
+				(buf, "%d\n", dcca->vcpu_cnt));
+			for (j = 0; j < XEN_HYPER_MAX_VIRT_CPUS; j++) {
+				snprintf(buf1, XEN_HYPER_CMD_BUFSIZE, "vcpu[%d]: ", j);
+				XEN_HYPER_PRI(fp, len, buf1, buf, flag,
+					(buf, "%lx\n", dcca->vcpu[j]));
+			}
+			XEN_HYPER_PRI(fp, len, "vcpu_context_array: ", buf, flag,
+				(buf, "%p\n", dcca->vcpu_context_array));
+		}
+	}
 	XEN_HYPER_PRI(fp, len, "context_array_cnt: ", buf, flag,
 		(buf, "%d\n", xhdt->context_array_cnt));
 	XEN_HYPER_PRI(fp, len, "running_domains: ", buf, flag,
@@ -365,6 +407,57 @@ xen_hyper_dump_xen_hyper_vcpu_table(int verbose)
 		(buf, "%p\n", xhvct->vcpu_context_arrays));
 	XEN_HYPER_PRI(fp, len, "vcpu_context_arrays_cnt: ", buf, flag,
 		(buf, "%d\n", xhvct->vcpu_context_arrays_cnt));
+	if (verbose) {
+		struct xen_hyper_vcpu_context_array *vcca;
+		struct xen_hyper_vcpu_context *vca;
+		int i, j;
+
+		for (i = 0, vcca = xhvct->vcpu_context_arrays;
+		i < xhvct->vcpu_context_arrays_cnt; i++, vcca++) {
+			snprintf(buf, XEN_HYPER_CMD_BUFSIZE, "vcpu_context_arrays[%d]: ", i);
+			XEN_HYPER_PRI_CONST(fp, len, buf, flag|XEN_HYPER_PRI_LF);
+			if (vcca->context_array) {
+				XEN_HYPER_PRI(fp, len, "context_array: ", buf, flag,
+					(buf, "%p\n", vcca->context_array));
+			} else {
+				XEN_HYPER_PRI(fp, len, "context_array: ", buf, flag,
+					(buf, "NULL\n"));
+			}
+			XEN_HYPER_PRI(fp, len, "context_array_cnt: ", buf, flag,
+				(buf, "%d\n", vcca->context_array_cnt));
+			XEN_HYPER_PRI(fp, len, "context_array_valid: ", buf, flag,
+				(buf, "%d\n", vcca->context_array_valid));
+			for (j = 0, vca = vcca->context_array;
+			j < vcca->context_array_cnt; j++, vca++) {
+				snprintf(buf, XEN_HYPER_CMD_BUFSIZE, "context_array[%d]: ", j);
+				XEN_HYPER_PRI_CONST(fp, len, buf, flag|XEN_HYPER_PRI_LF);
+				XEN_HYPER_PRI(fp, len, "vcpu: ", buf, flag,
+					(buf, "%lx\n", vca->vcpu));
+				XEN_HYPER_PRI(fp, len, "vcpu_id: ", buf, flag,
+					(buf, "%d\n", vca->vcpu_id));
+				XEN_HYPER_PRI(fp, len, "processor: ", buf, flag,
+					(buf, "%d\n", vca->processor));
+				XEN_HYPER_PRI(fp, len, "vcpu_info: ", buf, flag,
+					(buf, "%lx\n", vca->vcpu_info));
+				XEN_HYPER_PRI(fp, len, "domain: ", buf, flag,
+					(buf, "%lx\n", vca->domain));
+				XEN_HYPER_PRI(fp, len, "next_in_list: ", buf, flag,
+					(buf, "%lx\n", vca->next_in_list));
+				XEN_HYPER_PRI(fp, len, "sleep_tick: ", buf, flag,
+					(buf, "%lx\n", vca->sleep_tick));
+				XEN_HYPER_PRI(fp, len, "sched_priv: ", buf, flag,
+					(buf, "%lx\n", vca->sched_priv));
+				XEN_HYPER_PRI(fp, len, "state: ", buf, flag,
+					(buf, "%d\n", vca->state));
+				XEN_HYPER_PRI(fp, len, "state_entry_time: ", buf, flag,
+					(buf, "%llux\n", (unsigned long long)(vca->state_entry_time)));
+				XEN_HYPER_PRI(fp, len, "runstate_guest: ", buf, flag,
+					(buf, "%lx\n", vca->runstate_guest));
+				XEN_HYPER_PRI(fp, len, "vcpu_flags: ", buf, flag,
+					(buf, "%lx\n", vca->vcpu_flags));
+			}
+		}
+	}
 	XEN_HYPER_PRI(fp, len, "idle_vcpu: ", buf, flag,
 		(buf, "%lx\n", xhvct->idle_vcpu));
 	XEN_HYPER_PRI(fp, len, "idle_vcpu_context_array: ", buf, flag,
@@ -673,11 +766,29 @@ xen_hyper_dump_xen_hyper_offset_table(char *spec, ulong makestruct)
 	XEN_HYPER_PRI(fp, len, "domain_next_in_list: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_next_in_list));
 	XEN_HYPER_PRI(fp, len, "domain_domain_flags: ", buf, flag,
-		(buf, "%ld\n", xen_hyper_offset_table.domain_domain_flags));
+		(buf, "%lx\n", xen_hyper_offset_table.domain_domain_flags));
 	XEN_HYPER_PRI(fp, len, "domain_evtchn: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_evtchn));
+	XEN_HYPER_PRI(fp, len, "domain_is_hvm: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_hvm));
+	XEN_HYPER_PRI(fp, len, "domain_is_privileged: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_privileged));
+	XEN_HYPER_PRI(fp, len, "domain_debugger_attached: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_debugger_attached));
+	XEN_HYPER_PRI(fp, len, "domain_is_polling: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_polling));
+	XEN_HYPER_PRI(fp, len, "domain_is_dying: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_dying));
+	XEN_HYPER_PRI(fp, len, "domain_is_paused_by_controller: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_paused_by_controller));
+	XEN_HYPER_PRI(fp, len, "domain_is_shutting_down: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_shutting_down));
+	XEN_HYPER_PRI(fp, len, "domain_is_shut_down: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_is_shut_down));
 	XEN_HYPER_PRI(fp, len, "domain_vcpu: ", buf, flag,
 		(buf, "%ld\n", xen_hyper_offset_table.domain_vcpu));
+	XEN_HYPER_PRI(fp, len, "domain_arch: ", buf, flag,
+		(buf, "%ld\n", xen_hyper_offset_table.domain_arch));
 
 #ifdef IA64
 	XEN_HYPER_PRI(fp, len, "mm_struct_pgd: ", buf, flag,

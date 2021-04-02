@@ -64,7 +64,7 @@ fix_lkcd_address(ulonglong addr)
 
     for (i = 0; i < lkcd->fix_addr_num; i++) {
 	if ( (addr >=lkcd->fix_addr[i].task) && 
-		(addr <= lkcd->fix_addr[i].task + STACKSIZE())){
+		(addr < lkcd->fix_addr[i].task + STACKSIZE())){
 
 	    offset = addr - lkcd->fix_addr[i].task;
 	    addr = lkcd->fix_addr[i].saddr + offset;

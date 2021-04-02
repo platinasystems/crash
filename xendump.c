@@ -1272,6 +1272,7 @@ xc_core_mfn_to_page(ulong mfn, char *pgbuf)
 	int i, b, idx, done;
 	ulong tmp[MAX_BATCH_SIZE];
 	off_t offset;
+	size_t size;
 	uint nr_pages;
 
 	if (xd->flags & XC_CORE_ELF)
@@ -1289,9 +1290,8 @@ xc_core_mfn_to_page(ulong mfn, char *pgbuf)
 
         for (b = 0, idx = -1, done = FALSE; 
 	     !done && (b < nr_pages); b += MAX_BATCH_SIZE) {
-
-                if (read(xd->xfd, tmp, sizeof(ulong) * MAX_BATCH_SIZE) != 
-		    (MAX_BATCH_SIZE * sizeof(ulong))) {
+		size = sizeof(ulong) * MIN(MAX_BATCH_SIZE, nr_pages - b);
+                if (read(xd->xfd, tmp, size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return NULL;
 		}
@@ -1354,7 +1354,6 @@ xc_core_elf_mfn_to_page(ulong mfn, char *pgbuf)
 	struct xen_dumpcore_p2m p2m_batch[MAX_BATCH_SIZE];
 
         offset = xd->xc_core.header.xch_index_offset;
-	size = sizeof(struct xen_dumpcore_p2m) * MAX_BATCH_SIZE;
 	nr_pages = xd->xc_core.header.xch_nr_pages;
 
         if (lseek(xd->xfd, offset, SEEK_SET) == -1)
@@ -1362,7 +1361,8 @@ xc_core_elf_mfn_to_page(ulong mfn, char *pgbuf)
 
         for (b = 0, idx = -1, done = FALSE; 
 	     !done && (b < nr_pages); b += MAX_BATCH_SIZE) {
-
+		size = sizeof(struct xen_dumpcore_p2m) *
+			MIN(MAX_BATCH_SIZE, nr_pages - b);
                 if (read(xd->xfd, &p2m_batch[0], size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return NULL;
@@ -1422,6 +1422,7 @@ xc_core_mfn_to_page_index(ulong mfn)
         int i, b;
         ulong tmp[MAX_BATCH_SIZE];
 	uint nr_pages;
+	size_t size;
 
 	if (xd->flags & XC_CORE_ELF)
 		return xc_core_elf_mfn_to_page_index(mfn);
@@ -1437,9 +1438,8 @@ xc_core_mfn_to_page_index(ulong mfn)
                 nr_pages *= 2;
 
         for (b = 0; b < nr_pages; b += MAX_BATCH_SIZE) {
-
-                if (read(xd->xfd, tmp, sizeof(ulong) * MAX_BATCH_SIZE) != 
-		    (MAX_BATCH_SIZE * sizeof(ulong))) {
+		size = sizeof(ulong) * MIN(MAX_BATCH_SIZE, nr_pages - b);
+                if (read(xd->xfd, tmp, size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return MFN_NOT_FOUND;
 		}
@@ -1475,14 +1475,14 @@ xc_core_elf_mfn_to_page_index(ulong mfn)
         struct xen_dumpcore_p2m p2m_batch[MAX_BATCH_SIZE];
 
         offset = xd->xc_core.header.xch_index_offset;
-        size = sizeof(struct xen_dumpcore_p2m) * MAX_BATCH_SIZE;
 	nr_pages = xd->xc_core.header.xch_nr_pages;
 
         if (lseek(xd->xfd, offset, SEEK_SET) == -1)
                 error(FATAL, "cannot lseek to page index\n");
 
         for (b = 0; b < nr_pages; b += MAX_BATCH_SIZE) {
-
+		size = sizeof(struct xen_dumpcore_p2m) *
+			MIN(MAX_BATCH_SIZE, nr_pages - b);
                 if (read(xd->xfd, &p2m_batch[0], size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return MFN_NOT_FOUND;
@@ -1518,6 +1518,7 @@ xc_core_mfns(ulong arg, FILE *ofp)
 	uint nr_pages;
         ulong tmp[MAX_BATCH_SIZE];
         ulonglong tmp64[MAX_BATCH_SIZE];
+	size_t size;
 
         if (lseek(xd->xfd, (off_t)xd->xc_core.header.xch_index_offset,
             SEEK_SET) == -1) {
@@ -1563,8 +1564,9 @@ check_next_4:
 		nr_pages = xd->xc_core.header.xch_nr_pages;
 
 	        for (b = 0; b < nr_pages; b += MAX_BATCH_SIZE) {
-	                if (read(xd->xfd, tmp, sizeof(ulong) * MAX_BATCH_SIZE) !=
-	                    (MAX_BATCH_SIZE * sizeof(ulong))) {
+			size = sizeof(ulong) *
+				MIN(MAX_BATCH_SIZE, nr_pages - b);
+	                if (read(xd->xfd, tmp, size) != size) {
 	                        error(INFO, "cannot read index page %d\n", b);
 	                        return FALSE;
 	                }
@@ -1595,8 +1597,9 @@ show_64bit_mfns:
 		nr_pages = xd->xc_core.header.xch_nr_pages;
 
 	        for (b = 0; b < nr_pages; b += MAX_BATCH_SIZE) {
-	                if (read(xd->xfd, tmp64, sizeof(ulonglong) * MAX_BATCH_SIZE) !=
-	                    (MAX_BATCH_SIZE * sizeof(ulonglong))) {
+			size = sizeof(ulonglong) *
+				MIN(MAX_BATCH_SIZE, nr_pages - b);
+			if (read(xd->xfd, tmp64, size) != size) {
 	                        error(INFO, "cannot read index page %d\n", b);
 	                        return FALSE;
 	                }
@@ -1715,7 +1718,6 @@ xc_core_elf_pfn_to_page_index(ulong pfn)
         struct xen_dumpcore_p2m p2m_batch[MAX_BATCH_SIZE];
 
         offset = xd->xc_core.header.xch_index_offset;
-        size = sizeof(struct xen_dumpcore_p2m) * MAX_BATCH_SIZE;
 	nr_pages = xd->xc_core.header.xch_nr_pages;
 
 	/*
@@ -1744,7 +1746,8 @@ xc_core_elf_pfn_to_page_index(ulong pfn)
                 error(FATAL, "cannot lseek to page index\n");
 
         for (b = start_index; b < nr_pages; b += MAX_BATCH_SIZE) {
-
+		size = sizeof(struct xen_dumpcore_p2m) *
+			MIN(MAX_BATCH_SIZE, nr_pages - b);
                 if (read(xd->xfd, &p2m_batch[0], size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return PFN_NOT_FOUND;
@@ -1844,7 +1847,6 @@ xc_core_elf_pfn_valid(ulong pfn)
         uint64_t pfn_batch[MAX_BATCH_SIZE];
 
         offset = xd->xc_core.header.xch_index_offset;
-        size = sizeof(uint64_t) * MAX_BATCH_SIZE;
 	nr_pages = xd->xc_core.header.xch_nr_pages;
 
 	/*
@@ -1873,7 +1875,7 @@ xc_core_elf_pfn_valid(ulong pfn)
                 error(FATAL, "cannot lseek to page index\n");
 
         for (b = start_index; b < nr_pages; b += MAX_BATCH_SIZE) {
-
+		size = sizeof(uint64_t) * MIN(MAX_BATCH_SIZE, nr_pages - b);
                 if (read(xd->xfd, &pfn_batch[0], size) != size) {
                         error(INFO, "cannot read index page %d\n", b);
 			return PFN_NOT_FOUND;
@@ -2023,7 +2025,7 @@ xc_core_elf_verify(char *buf)
 
 		case EM_X86_64:
 			if ((elf64->e_ident[EI_DATA] == ELFDATA2LSB) &&
-				machine_type("X86_64"))
+				(machine_type("X86_64") || machine_type("X86")))
 				break;
 			else
 				goto bailout;

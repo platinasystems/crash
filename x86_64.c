@@ -3427,6 +3427,14 @@ next_stack:
 	     i < (bt->stacktop - bt->stackbase)/sizeof(ulong); i++, up++) {
                 sym = closest_symbol(*up);
 		if (XEN_CORE_DUMPFILE()) {
+			if (STREQ(sym, "crash_kexec")) {
+				sp = x86_64_function_called_by((*up)-5);
+				if (sp && STREQ(sp->name, "machine_kexec")) {
+					*rip = *up;
+					*rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+					return;
+				}
+			}
 			if (STREQ(sym, "xen_machine_kexec")) {
                        		*rip = *up;
                        		*rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
@@ -3439,6 +3447,14 @@ next_stack:
 		    STREQ(sym, "crash_kexec") ||
 		    STREQ(sym, "machine_kexec") ||
 		    STREQ(sym, "try_crashdump")) {
+			if (STREQ(sym, "crash_kexec")) {
+				sp = x86_64_function_called_by((*up)-5);
+				if (sp && STREQ(sp->name, "machine_kexec")) {
+					*rip = *up;
+					*rsp = bt->stackbase + ((char *)(up) - bt->stackbuf);
+					return;
+				}
+			}
 			/*
 			 *  Use second instance of crash_kexec if it exists.
 			 */
@@ -5417,7 +5433,7 @@ x86_64_init_hyper(int when)
 	case POST_GDB:
 		XEN_HYPER_STRUCT_SIZE_INIT(cpuinfo_x86, "cpuinfo_x86");
 		XEN_HYPER_STRUCT_SIZE_INIT(tss_struct, "tss_struct");
-		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_rsp0, "tss_struct", "rsp0");
+		XEN_HYPER_ASSIGN_OFFSET(tss_struct_rsp0) = MEMBER_OFFSET("tss_struct", "__blh") + sizeof(short unsigned int);
 		XEN_HYPER_MEMBER_OFFSET_INIT(tss_struct_ist, "tss_struct", "ist");
 		if (symbol_exists("cpu_data")) {
 			xht->cpu_data_address = symbol_value("cpu_data");

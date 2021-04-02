@@ -6768,6 +6768,25 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "             unwind_table_name: %ld\n",
 		OFFSET(unwind_table_name));
 
+	fprintf(fp, "                        rq_cfs: %ld\n",
+		OFFSET(rq_cfs));
+	fprintf(fp, "                         rq_rt: %ld\n",
+		OFFSET(rq_rt));
+	fprintf(fp, "                 rq_nr_running: %ld\n",
+		OFFSET(rq_nr_running));
+	fprintf(fp, "                task_struct_se: %ld\n",
+		OFFSET(task_struct_se));
+	fprintf(fp, "         sched_entity_run_node: %ld\n",
+		OFFSET(sched_entity_run_node));
+	fprintf(fp, "             cfs_rq_nr_running: %ld\n",
+		OFFSET(cfs_rq_nr_running));
+	fprintf(fp, "            cfs_rq_rb_leftmost: %ld\n",
+		OFFSET(cfs_rq_rb_leftmost));
+	fprintf(fp, "         cfs_rq_tasks_timeline: %ld\n",
+		OFFSET(cfs_rq_tasks_timeline));
+	fprintf(fp, "                  rt_rq_active: %ld\n",
+		OFFSET(rt_rq_active));
+
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
         fprintf(fp, "              free_area_struct: %ld\n", 
@@ -7697,19 +7716,33 @@ static int
 add_symbol_file(struct load_module *lm)
 {
         struct gnu_request request, *req;
-	char buf[BUFSIZE];
+        char buf[BUFSIZE];
+        int i, len;
+        char *secname;
+
+	for (i = len = 0; i < lm->mod_sections; i++)
+	{
+		secname = lm->mod_section_data[i].name;
+		if ((lm->mod_section_data[i].flags & SEC_FOUND) &&
+		    !STREQ(secname, ".text")) {
+			sprintf(buf, " -s %s 0x%lx", secname, 
+				lm->mod_section_data[i].offset + lm->mod_base);
+			len += strlen(buf);
+		}
+	}
 
 	req = &request;
 	BZERO(req, sizeof(struct gnu_request));
         req->command = GNU_ADD_SYMBOL_FILE;
 	req->addr = (ulong)lm;
-	req->buf = buf;
+	req->buf = GETBUF(len+BUFSIZE);
 	if (!CRASHDEBUG(1))
 		req->fp = pc->nullfp;
 
 	st->flags |= ADD_SYMBOL_FILE;
-	gdb_interface(req); 
+	gdb_interface(req);
 	st->flags &= ~ADD_SYMBOL_FILE;
+	FREEBUF(req->buf);
 
 	sprintf(buf, "set complaints 0");
 	gdb_pass_through(buf, NULL, 0);
