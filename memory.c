@@ -68,7 +68,8 @@ struct meminfo {           /* general purpose memory information structure */
 static char *memtype_string(int, int);
 static char *error_handle_string(ulong);
 static void dump_mem_map(struct meminfo *);
-static void fill_mem_map_cache(ulong, char *);
+static void dump_mem_map_SPARSEMEM(struct meminfo *);
+static void fill_mem_map_cache(ulong, ulong, char *);
 static void dump_free_pages(struct meminfo *);
 static int dump_zone_page_usage(void);
 static void dump_multidimensional_free_pages(struct meminfo *);
@@ -137,6 +138,7 @@ static void PG_reserved_flag_init(void);
 static void PG_slab_flag_init(void);
 static ulong nr_blockdev_pages(void);
 void sparse_mem_init(void);
+void dump_mem_sections(void);
 void list_mem_sections(void);
 ulong sparse_decode_mem_map(ulong, ulong);
 char *read_mem_section(ulong);
@@ -146,6 +148,11 @@ int section_has_mem_map(ulong);
 ulong section_mem_map_addr(ulong);
 ulong valid_section_nr(ulong);
 ulong pfn_to_map(ulong);
+static int get_nodes_online(void);
+static int next_online_node(int);
+static ulong next_online_pgdat(int);
+static int vm_stat_init(void);
+static int dump_vm_stat(char *, long *);
 
 /*
  *  Memory display modes specific to this file.
@@ -566,10 +573,17 @@ vm_init(void)
 		if (symbol_exists("pgdat_list") && !IS_SPARSEMEM()) 
 			vt->flags |= NODES;
 
+		/*
+		 *  Determine the number of nodes the best way possible,
+		 *  starting with a default of 1.
+		 */
+		vt->numnodes = 1;
+
 		if (symbol_exists("numnodes"))
 			get_symbol_data("numnodes", sizeof(int), &vt->numnodes);
-		else 
-			vt->numnodes = 1;
+
+		if ((vt->numnodes = get_nodes_online()))
+			vt->flags |= NODES_ONLINE;
 
 		MEMBER_OFFSET_INIT(pglist_data_node_zones, 
 			"pglist_data", "node_zones");
@@ -3170,7 +3184,7 @@ cmd_kmem(void)
 	int i;
 	int c;
 	int sflag, Sflag, pflag, fflag, Fflag, vflag; 
-	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag;
+	int nflag, cflag, Cflag, iflag, lflag, Lflag, Pflag, Vflag;
 	struct meminfo meminfo;
 	ulonglong value[MAXARGS];
 	char buf[BUFSIZE];
@@ -3179,13 +3193,17 @@ cmd_kmem(void)
 
 	spec_addr = 0;
         sflag =	Sflag = pflag = fflag = Fflag = Pflag = 0;
-	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = 0;
+	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = Vflag = 0;
 	BZERO(&meminfo, sizeof(struct meminfo));
 	BZERO(&value[0], sizeof(ulonglong)*MAXARGS);
 
-        while ((c = getopt(argcnt, args, "I:sSFfpvcCinl:L:P")) != EOF) {
+        while ((c = getopt(argcnt, args, "I:sSFfpvcCinl:L:PV")) != EOF) {
                 switch(c)
 		{
+		case 'V':
+			Vflag = 1;
+			break;
+
 		case 'n':
 			nflag = 1;
 			break;
@@ -3277,7 +3295,7 @@ cmd_kmem(void)
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
-        if ((sflag + Sflag + pflag + fflag + Fflag + 
+        if ((sflag + Sflag + pflag + fflag + Fflag + Vflag +
             vflag + Cflag + cflag + iflag + lflag + Lflag) > 1) {
 		error(INFO, "only one flag allowed!\n");
 		cmd_usage(pc->curcmd, SYNOPSIS);
@@ -3399,7 +3417,7 @@ cmd_kmem(void)
                 /* 
                  * no value arguments allowed! 
                  */
-                if (nflag || iflag || Fflag || Cflag || Lflag) {
+                if (nflag || iflag || Fflag || Cflag || Lflag || Vflag) {
 			error(INFO, 
 			    "no address arguments allowed with this option\n");
                         cmd_usage(pc->curcmd, SYNOPSIS);
@@ -3476,7 +3494,10 @@ cmd_kmem(void)
 		dump_page_lists(&meminfo);
 	}
 
-	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + 
+	if (Vflag == 1)
+		dump_vm_stat(NULL, NULL);
+
+	if (!(sflag + Sflag + pflag + fflag + Fflag + vflag + Vflag +
               cflag + Cflag + iflag + nflag + lflag + Lflag + meminfo.calls))
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
@@ -3601,10 +3622,9 @@ PG_slab_flag_init(void)
 #define PGMM_CACHED (512)
 
 static void
-dump_mem_map(struct meminfo *mi)
+dump_mem_map_SPARSEMEM(struct meminfo *mi)
 {
 	ulong i;
-	long node;
 	long total_pages;
 	int others, page_not_mapped, phys_not_mapped, page_mapping;
 	ulong pp, ppend;
@@ -3616,7 +3636,6 @@ dump_mem_map(struct meminfo *mi)
 	uint count;
 	int print_hdr, pg_spec, phys_spec, done;
 	int v22;
-	struct node_table *nt;
 	char hdr[BUFSIZE];
 	char buf0[BUFSIZE];
 	char buf1[BUFSIZE];
@@ -3625,7 +3644,7 @@ dump_mem_map(struct meminfo *mi)
 	char buf4[BUFSIZE];
 	char *page_cache;
 	char *pcache;
-	ulong section, section_nr, nr_mem_sections, node_or_section_size;
+	ulong section, section_nr, nr_mem_sections, section_size;
 
 	v22 = VALID_MEMBER(page_inode);  /* page.inode vs. page.mapping */
 
@@ -3713,31 +3732,26 @@ dump_mem_map(struct meminfo *mi)
 	done = FALSE;
 	total_pages = 0;
 
-	if (IS_SPARSEMEM())
-		nr_mem_sections = NR_MEM_SECTIONS();
-	else
-		nr_mem_sections = 1;
+	nr_mem_sections = NR_MEM_SECTIONS();
 
 	/* 
 	 *  Iterate over all possible sections
 	 */
-	node = 0;
         for (section_nr = 0; section_nr < nr_mem_sections ; section_nr++) {
 
 		if (CRASHDEBUG(2)) 
-			printf("section_nr = %ld\n", section_nr);
+			fprintf(fp, "section_nr = %ld\n", section_nr);
 
 		/* 
 		 *  If we are looking up a specific address, jump directly
 		 *  to the section with that page 
 		 */
-		if (IS_SPARSEMEM() && (mi->flags & ADDRESS_SPECIFIED)) {        
+		if (mi->flags & ADDRESS_SPECIFIED) {        
 			ulong pfn = mi->spec_addr >> PAGESHIFT();
 			section_nr = pfn_to_section_nr(pfn);
 		}
 
-                if (IS_SPARSEMEM() && 
-		    !(section = valid_section_nr(section_nr))) {
+                if (!(section = valid_section_nr(section_nr))) {
 #ifdef NOTDEF
                         break;    /* On a real sparsemem system we need to check
 				   * every section as gaps may exist.  But this
@@ -3748,32 +3762,22 @@ dump_mem_map(struct meminfo *mi)
 				   * this loop.
 				   */
 #endif
+			if (mi->flags & ADDRESS_SPECIFIED)
+				break;
 			continue;
 		}
 
 		if (print_hdr) {
-			fprintf(fp, "%s%s", node ? "\n" : "", hdr);
+			fprintf(fp, "%s", hdr);
 			print_hdr = FALSE;
 		}
 
-next_node:
-		if (IS_SPARSEMEM()) {
-			pp = section_mem_map_addr(section);
-			pp = sparse_decode_mem_map(pp, section_nr);
-			phys = section_nr * PAGES_PER_SECTION() * PAGESIZE();
-			node_or_section_size = PAGES_PER_SECTION();
-		} else {
-			nt = &vt->node_table[node];
-			total_pages += nt->size;
-			pp = nt->mem_map;
-			phys = nt->start_paddr;
-			if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
-				node_or_section_size = vt->max_mapnr;
-			else
-				node_or_section_size = nt->size;
-		}
+		pp = section_mem_map_addr(section);
+		pp = sparse_decode_mem_map(pp, section_nr);
+		phys = section_nr * PAGES_PER_SECTION() * PAGESIZE();
+		section_size = PAGES_PER_SECTION();
 
-		for (i = 0; i < node_or_section_size; 
+		for (i = 0; i < section_size; 
 		     i++, pp += SIZE(page), phys += PAGESIZE()) {
 
 			if ((i % PGMM_CACHED) == 0) {
@@ -3790,7 +3794,7 @@ next_node:
 					continue;
 				}  
 
-				fill_mem_map_cache(pp, page_cache);
+				fill_mem_map_cache(pp, ppend, page_cache);
 			}
 
 			pcache = page_cache + ((i%PGMM_CACHED) * SIZE(page));
@@ -4051,11 +4055,451 @@ next_node:
 
 		if (done)
 			break;
+	}
 
-		node++;
+	switch (mi->flags)
+	{
+	case GET_TOTALRAM_PAGES:
+		mi->retval = total_pages - reserved;
+		break;
 
-		if ((node < vt->numnodes) && !IS_SPARSEMEM())
-			goto next_node;
+	case GET_SHARED_PAGES:
+		mi->retval = shared;
+		break;
+
+	case GET_BUFFERS_PAGES:
+		mi->retval = buffers;
+		break;
+
+	case GET_SLAB_PAGES:
+		mi->retval = slabs;
+		break;
+
+	case GET_ALL:
+		mi->get_totalram = total_pages - reserved;
+		mi->get_shared = shared;
+		mi->get_buffers = buffers;
+        	mi->get_slabs = slabs;
+		break;
+
+	case ADDRESS_SPECIFIED:
+		mi->retval = done;
+		break; 
+	}
+
+	FREEBUF(page_cache);
+}
+
+static void
+dump_mem_map(struct meminfo *mi)
+{
+	long i, n;
+	long total_pages;
+	int others, page_not_mapped, phys_not_mapped, page_mapping;
+	ulong pp, ppend;
+	physaddr_t phys, physend;
+	ulong tmp, reserved, shared, slabs;
+        ulong PG_reserved_flag;
+	long buffers;
+	ulong inode, offset, flags, mapping, index;
+	ulong node_size;
+	uint count;
+	int print_hdr, pg_spec, phys_spec, done;
+	int v22;
+	struct node_table *nt;
+	char hdr[BUFSIZE];
+	char buf0[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+	char *page_cache;
+	char *pcache;
+
+	if (IS_SPARSEMEM()) {
+		dump_mem_map_SPARSEMEM(mi);
+		return;
+	}
+
+	v22 = VALID_MEMBER(page_inode);  /* page.inode vs. page.mapping */
+
+        if (v22) {
+		sprintf(hdr, "%s%s%s%s%s%s%s%sCNT FLAGS\n",
+		    mkstring(buf1, VADDR_PRLEN, CENTER, "PAGE"), 
+		    space(MINSPACE),               
+                    mkstring(buf2, MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			RJUST, "PHYSICAL"),		    
+		    space(MINSPACE),               
+		    mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, "INODE"), 
+		    space(MINSPACE),               
+		    mkstring(buf4, 8, CENTER|LJUST, "OFFSET"),
+		    space(MINSPACE-1));
+        } else {
+		sprintf(hdr, "%s%s%s%s%s%s%sCNT FLAGS\n",
+		    mkstring(buf1, VADDR_PRLEN, CENTER, "PAGE"), 
+		    space(MINSPACE),             
+                    mkstring(buf2, MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+                        RJUST, "PHYSICAL"),
+		    space(MINSPACE),             
+		    mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, "MAPPING"),
+		    space(MINSPACE),               
+		    mkstring(buf4, 8, CENTER|RJUST, "INDEX"));
+        }
+
+	pg_spec = phys_spec = print_hdr = FALSE;
+	
+	switch (mi->flags)
+	{
+	case ADDRESS_SPECIFIED: 
+		switch (mi->memtype)
+		{
+		case KVADDR:
+                        if (is_page_ptr(mi->spec_addr, NULL))
+                                pg_spec = TRUE;
+                        else {
+                                if (kvtop(NULL, mi->spec_addr, &phys, 0)) {
+                                        mi->spec_addr = phys;
+                                        phys_spec = TRUE;
+                                }
+                                else
+                                        return;
+                        }
+			break;
+		case PHYSADDR:
+			phys_spec = TRUE;
+			break;
+		default:
+			error(FATAL, "dump_mem_map: no memtype specified\n");
+			break;
+		}
+		print_hdr = TRUE;
+		break;
+
+	case GET_ALL:
+		shared = 0;
+                reserved = 0;
+		buffers = 0;
+		slabs = 0;
+		break;
+
+	case GET_SHARED_PAGES:
+		shared = 0;
+		break;
+
+	case GET_TOTALRAM_PAGES:
+                reserved = 0;
+		break;
+
+	case GET_BUFFERS_PAGES:
+		buffers = 0;
+		break;
+
+	case GET_SLAB_PAGES:
+		slabs = 0;
+		break;
+
+	default:
+		print_hdr = TRUE;
+		break;
+	}
+
+	page_cache = GETBUF(SIZE(page) * PGMM_CACHED);
+	done = FALSE;
+	total_pages = 0;
+
+	for (n = 0; n < vt->numnodes; n++) {
+		if (print_hdr) {
+			fprintf(fp, "%s%s", n ? "\n" : "", hdr);
+			print_hdr = FALSE;
+		}
+
+		nt = &vt->node_table[n];
+		total_pages += nt->size;
+		pp = nt->mem_map;
+		phys = nt->start_paddr;
+		if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
+			node_size = vt->max_mapnr;
+		else
+			node_size = nt->size;
+
+		for (i = 0; i < node_size; 
+		     i++, pp += SIZE(page), phys += PAGESIZE()) {
+
+			if ((i % PGMM_CACHED) == 0) {
+				ppend = pp + ((PGMM_CACHED-1) * SIZE(page));
+				physend = phys + ((PGMM_CACHED-1) * PAGESIZE());
+
+				if ((pg_spec && (mi->spec_addr > ppend)) ||
+			            (phys_spec && 
+				    (PHYSPAGEBASE(mi->spec_addr) > physend))) {
+					i += (PGMM_CACHED-1);
+					pp = ppend;
+					phys = physend;
+					continue;
+				}  
+
+				fill_mem_map_cache(pp, ppend, page_cache);
+			}
+
+			pcache = page_cache + ((i%PGMM_CACHED) * SIZE(page));
+
+			if (received_SIGINT())
+				restart(0);
+	
+			if ((pg_spec && (pp == mi->spec_addr)) || 
+			   (phys_spec && (phys == PHYSPAGEBASE(mi->spec_addr))))
+				done = TRUE;
+
+			if (!done && (pg_spec || phys_spec))
+				continue;
+			
+			flags = ULONG(pcache + OFFSET(page_flags));
+			count = UINT(pcache + OFFSET(page_count));
+
+	                switch (mi->flags)
+			{
+			case GET_ALL:
+			case GET_BUFFERS_PAGES:
+				if (VALID_MEMBER(page_buffers)) {
+					tmp = ULONG(pcache + 
+						OFFSET(page_buffers));
+					if (tmp)
+						buffers++;
+				} else if (THIS_KERNEL_VERSION >= LINUX(2,6,0)) {
+	                                if ((flags >> v26_PG_private) & 1) 
+						buffers++;
+				} else
+					error(FATAL, 
+			       "cannot determine whether pages have buffers\n");
+
+				if (mi->flags != GET_ALL)
+					continue;
+
+				/* FALLTHROUGH */
+
+			case GET_SLAB_PAGES:
+				if (v22) {
+	                                if ((flags >> v22_PG_Slab) & 1) 
+						slabs++;
+				} else if (vt->PG_slab) {
+	                                if ((flags >> vt->PG_slab) & 1) 
+						slabs++;
+				} else {
+	                                if ((flags >> v24_PG_slab) & 1) 
+						slabs++;
+				}
+				if (mi->flags != GET_ALL)
+					continue;
+
+				/* FALLTHROUGH */
+
+			case GET_SHARED_PAGES:
+			case GET_TOTALRAM_PAGES:
+                                if (vt->PG_reserved)
+					PG_reserved_flag = vt->PG_reserved;
+				else
+                                        PG_reserved_flag = v22 ?
+                                                1 << v22_PG_reserved :
+                                                1 << v24_PG_reserved;
+
+	                        if (flags & PG_reserved_flag) {
+	                                reserved++;
+				} else {
+					if (count > 1)
+						shared++;
+				}
+	                        continue;
+	                }
+	
+			page_mapping = VALID_MEMBER(page_mapping);
+
+			if (v22) {
+				inode = ULONG(pcache + OFFSET(page_inode));
+				offset = ULONG(pcache + OFFSET(page_offset));
+			} else if (page_mapping) {
+				mapping = ULONG(pcache + 
+					OFFSET(page_mapping));
+				index = ULONG(pcache + OFFSET(page_index));
+			}
+	
+			page_not_mapped = phys_not_mapped = FALSE;
+
+			if (v22) {
+				fprintf(fp, "%lx%s%s%s%s%s%8lx %2d%s",
+					pp,
+					space(MINSPACE),
+                    			mkstring(buf1, MAX(PADDR_PRLEN, 
+					    strlen("PHYSICAL")), 
+					    RJUST|LONGLONG_HEX, MKSTR(&phys)),
+					space(MINSPACE),
+				        mkstring(buf2, VADDR_PRLEN, 
+						RJUST|LONG_HEX, MKSTR(inode)),
+					space(MINSPACE),
+					offset,
+					count,
+					space(MINSPACE));
+			} else {
+				if ((vt->flags & V_MEM_MAP)) {
+				    	if (!machdep->verify_paddr(phys)) 
+						phys_not_mapped = TRUE;
+					if (!kvtop(NULL, pp, NULL, 0))
+						page_not_mapped = TRUE;
+				}
+				if (page_not_mapped)
+                                fprintf(fp, "%s%s%s%s%s%s%s %2s ", 
+					mkstring(buf0, VADDR_PRLEN, 
+					LJUST|LONG_HEX, MKSTR(pp)),
+                                       	space(MINSPACE),
+                                       	mkstring(buf1, MAX(PADDR_PRLEN,
+                                        strlen("PHYSICAL")),
+                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
+                                        space(MINSPACE),
+					mkstring(buf3, VADDR_PRLEN, 
+					CENTER|RJUST, " "),
+                                        space(MINSPACE),
+					mkstring(buf4, 8, CENTER|RJUST, " "),
+                                        " ");
+				else if (!page_mapping)
+                                fprintf(fp, "%s%s%s%s%s%s%s %2d ",
+                                        mkstring(buf0, VADDR_PRLEN,
+                                        LJUST|LONG_HEX, MKSTR(pp)),
+                                        space(MINSPACE),
+                                        mkstring(buf1, MAX(PADDR_PRLEN,
+                                        strlen("PHYSICAL")),
+                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
+                                        space(MINSPACE),
+                                        mkstring(buf3, VADDR_PRLEN, 
+                                        CENTER|RJUST, "-------"),
+                                        space(MINSPACE),
+                                        mkstring(buf4, 8, CENTER|RJUST, "-----"),
+                                        count);
+				else
+                                fprintf(fp, "%s%s%s%s%s%s%8ld %2d ",
+					mkstring(buf0, VADDR_PRLEN, 
+					LJUST|LONG_HEX, MKSTR(pp)),
+                                       	space(MINSPACE),
+                                       	mkstring(buf1, MAX(PADDR_PRLEN,
+                                        strlen("PHYSICAL")),
+                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
+                                        space(MINSPACE),
+                                        mkstring(buf2, VADDR_PRLEN,
+                                        RJUST|LONG_HEX, MKSTR(mapping)),
+                                        space(MINSPACE),
+                                        index,
+                                        count);
+			}
+	
+			others = 0;
+	
+			if (v22) {
+		                if ((flags >> v22_PG_DMA) & 1)
+		                        fprintf(fp, "%sDMA", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_locked) & 1)
+					fprintf(fp, "%slocked", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_error) & 1)
+					fprintf(fp, "%serror", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_referenced) & 1)
+					fprintf(fp, "%sreferenced", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_dirty) & 1)
+					fprintf(fp, "%sdirty", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_uptodate) & 1)
+					fprintf(fp, "%suptodate", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_free_after) & 1)
+					fprintf(fp, "%sfree_after", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_decr_after) & 1)
+					fprintf(fp, "%sdecr_after", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_swap_unlock_after) & 1)
+					fprintf(fp, "%sswap_unlock_after", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_Slab) & 1)
+					fprintf(fp, "%sslab", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_swap_cache) & 1)
+					fprintf(fp, "%sswap_cache", 
+						others++ ? "," : "");
+				if ((flags >> v22_PG_skip) & 1)
+					fprintf(fp, "%sskip", 
+						others++ ? "," : "");
+	                        if ((flags >> v22_PG_reserved) & 1)
+	                                fprintf(fp, "%sreserved", 
+						others++ ? "," : "");
+				fprintf(fp, "\n");
+			} else if (THIS_KERNEL_VERSION > LINUX(2,4,9)) {
+				fprintf(fp, "%lx\n", flags);
+			} else {
+	
+		                if ((flags >> v24_PG_locked) & 1)
+		                        fprintf(fp, "%slocked", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_error) & 1)
+					fprintf(fp, "%serror", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_referenced) & 1)
+					fprintf(fp, "%sreferenced", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_uptodate) & 1)
+					fprintf(fp, "%suptodate", 
+						others++ ? "," : "");
+                                if ((flags >> v24_PG_dirty) & 1)
+                                        fprintf(fp, "%sdirty",
+                                                others++ ? "," : "");
+				if ((flags >> v24_PG_decr_after) & 1)
+					fprintf(fp, "%sdecr_after", 
+						others++ ? "," : "");
+                                if ((flags >> v24_PG_active) & 1)
+                                        fprintf(fp, "%sactive",
+                                                others++ ? "," : "");
+                                if ((flags >> v24_PG_inactive_dirty) & 1)
+                                        fprintf(fp, "%sinactive_dirty",
+                                                others++ ? "," : "");
+				if ((flags >> v24_PG_slab) & 1)
+					fprintf(fp, "%sslab", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_swap_cache) & 1)
+					fprintf(fp, "%sswap_cache", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_skip) & 1)
+					fprintf(fp, "%sskip", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_inactive_clean) & 1)
+					fprintf(fp, "%sinactive_clean", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_highmem) & 1)
+					fprintf(fp, "%shighmem", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_checked) & 1)
+					fprintf(fp, "%schecked", 
+						others++ ? "," : "");
+				if ((flags >> v24_PG_bigpage) & 1)
+					fprintf(fp, "%sbigpage", 
+						others++ ? "," : "");
+                                if ((flags >> v24_PG_arch_1) & 1)
+                                        fprintf(fp, "%sarch_1",
+                                                others++ ? "," : "");
+				if ((flags >> v24_PG_reserved) & 1)
+					fprintf(fp, "%sreserved", 
+						others++ ? "," : "");
+				if (phys_not_mapped)
+					fprintf(fp, "%s[NOT MAPPED]", 
+						others++ ? " " : "");
+
+				fprintf(fp, "\n");
+			}
+	
+			if (done)
+				break;
+		}
+
+		if (done)
+			break;
 	}
 
 	switch (mi->flags)
@@ -4099,7 +4543,7 @@ next_node:
  *  that are currently mapped, leaving the unmapped ones just zeroed out.
  */
 static void
-fill_mem_map_cache(ulong pp, char *page_cache)
+fill_mem_map_cache(ulong pp, ulong ppend, char *page_cache)
 {
 	long size, cnt;
 	ulong addr;
@@ -4132,7 +4576,7 @@ fill_mem_map_cache(ulong pp, char *page_cache)
 		if (!readmem(addr, KVADDR, bufptr, size,
                     "virtual page struct cache", RETURN_ON_ERROR|QUIET)) {
 			BZERO(bufptr, size);
-			if (!(vt->flags & V_MEM_MAP))
+			if (!(vt->flags & V_MEM_MAP) && ((addr+size) < ppend)) 
 				error(WARNING, 
 		                   "mem_map[] from %lx to %lx not accessible\n",
 					addr, addr+size);
@@ -5050,7 +5494,8 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 	int order, errflag, do_search;
 	ulong offset, verbose, value, sum, found; 
 	ulong this_addr;
-	physaddr_t this_phys, searchphys;
+	physaddr_t phys, this_phys, searchphys;
+	ulong pp;
         ulong zone_mem_map;
         ulong zone_start_paddr;
 	ulong zone_start_pfn;
@@ -5108,7 +5553,6 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 		node_zones = nt->pgdat + OFFSET(pglist_data_node_zones);
 
 		for (i = 0; i < vt->nr_zones; i++) {
-	
 			if (fi->flags == GET_FREE_PAGES) {
 	                	readmem(node_zones+
 					OFFSET(zone_free_pages), 
@@ -5180,14 +5624,33 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 	
 	                fprintf(fp, "%6ld  ", value);
 	
-                        readmem(node_zones+OFFSET(zone_zone_mem_map),
-                                KVADDR, &zone_mem_map, sizeof(ulong),
-                                "node_zones zone_mem_map", FAULT_ON_ERROR);
+			if (VALID_MEMBER(zone_zone_mem_map)) {
+                        	readmem(node_zones+OFFSET(zone_zone_mem_map),
+                                	KVADDR, &zone_mem_map, sizeof(ulong),
+                                	"node_zones zone_mem_map", FAULT_ON_ERROR);
+			}
 
 			readmem(node_zones+ OFFSET(zone_zone_start_pfn),
                                 KVADDR, &zone_start_pfn, sizeof(ulong),
                                 "node_zones zone_start_pfn", FAULT_ON_ERROR);
                         zone_start_paddr = PTOB(zone_start_pfn);
+
+			if (!VALID_MEMBER(zone_zone_mem_map)) {
+				if (IS_SPARSEMEM()) {
+					zone_mem_map = 0;
+					if (size) {
+						phys = PTOB(zone_start_pfn);
+                                        	if (phys_to_page(phys, &pp))
+                                                	zone_mem_map = pp;
+					}
+				} else if (vt->flags & FLATMEM) {
+					zone_mem_map = 0;
+					if (size)
+						zone_mem_map = nt->mem_map +
+							(zone_start_pfn * SIZE(page));
+				} else
+					error(FATAL, "\ncannot determine zone mem_map: TBD\n");
+			}
 
                         if (zone_mem_map) 
                         	zone_start_mapnr = 
@@ -5535,6 +5998,8 @@ dump_kmeminfo(void)
         ulong freehighmem_pages;
         ulong totallowmem_pages;
         ulong freelowmem_pages;
+	long nr_file_pages, nr_slab;
+	ulong swapper_space_nrpages;
 	ulong pct;
 	ulong value1, value2;
 	uint tmp;
@@ -5555,6 +6020,14 @@ dump_kmeminfo(void)
 	shared_pages = meminfo.get_shared;
 	get_buffers = meminfo.get_buffers;
 	get_slabs = meminfo.get_slabs;
+
+	/*
+	 *  If vm_stat array exists, override page search info.
+	 */
+	if (vm_stat_init()) {
+		if (dump_vm_stat("NR_SLAB", &nr_slab))
+			get_slabs = nr_slab;
+	}
 
 	fprintf(fp, kmeminfo_hdr);
 	/*
@@ -5631,12 +6104,26 @@ dump_kmeminfo(void)
         	} else
                 	get_symbol_data("page_cache_size", sizeof(long),
                         	&page_cache_size);
+		page_cache_size -= subtract_buffer_pages;
 	} else if (symbol_exists("nr_pagecache")) {
                	get_symbol_data("nr_pagecache", sizeof(int), &tmp);
                	page_cache_size = (long)tmp;
+		page_cache_size -= subtract_buffer_pages;
+	} else if (dump_vm_stat("NR_FILE_PAGES", &nr_file_pages)) {
+		char *swapper_space = GETBUF(SIZE(address_space));
+		
+                if (!readmem(symbol_value("swapper_space"), KVADDR, swapper_space,
+                    SIZE(address_space), "swapper_space", RETURN_ON_ERROR))
+			swapper_space_nrpages = 0;
+		else
+			swapper_space_nrpages = ULONG(swapper_space + 
+				OFFSET(address_space_nrpages));
+			
+		page_cache_size = nr_file_pages - swapper_space_nrpages -
+			buffer_pages;
+		FREEBUF(swapper_space);
 	}
 
-	page_cache_size -= subtract_buffer_pages;
 
         pct = (page_cache_size * 100)/totalram_pages;
         fprintf(fp, "%10s  %7ld  %11s  %3ld%% of TOTAL MEM\n", 
@@ -9584,12 +10071,15 @@ dump_vm_table(int verbose)
 	int i;
 	struct node_table *nt;
 	int others;
+	ulong *up;
 
 	others = 0;
 	fprintf(fp, "              flags: %lx  %s(", 
 		vt->flags, count_bits_long(vt->flags) > 4 ? "\n " : "");
 	if (vt->flags & NODES)
 		fprintf(fp, "%sNODES", others++ ? "|" : "");
+	if (vt->flags & NODES_ONLINE)
+		fprintf(fp, "%sNODES_ONLINE", others++ ? "|" : "");
 	if (vt->flags & ZONES)
 		fprintf(fp, "%sZONES", others++ ? "|" : "");
 	if (vt->flags & PERCPU_KMALLOC_V1)
@@ -9616,6 +10106,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sKMEM_CACHE_DELAY", others++ ? "|" : "");\
 	if (vt->flags & PERCPU_KMALLOC_V2_NODES)
 		fprintf(fp, "%sPERCPU_KMALLOC_V2_NODES", others++ ? "|" : "");\
+	if (vt->flags & VM_STAT)
+		fprintf(fp, "%sVM_STAT", others++ ? "|" : "");\
 
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
@@ -9655,12 +10147,12 @@ dump_vm_table(int verbose)
 	for (i = 0; i < vt->numnodes; i++) {
 		nt = &vt->node_table[i];
 		fprintf(fp, "      node_table[%d]: \n", i);
-		fprintf(fp, "                 id: %d\n", nt->node_id);
-		fprintf(fp, "              pgdat: %lx\n", nt->pgdat);
-		fprintf(fp, "               size: %ld\n", nt->size);
-		fprintf(fp, "            mem_map: %lx\n", nt->mem_map);
-		fprintf(fp, "        start_paddr: %llx\n", nt->start_paddr);
-		fprintf(fp, "        start_mapnr: %ld\n", nt->start_mapnr);
+		fprintf(fp, "                   id: %d\n", nt->node_id);
+		fprintf(fp, "                pgdat: %lx\n", nt->pgdat);
+		fprintf(fp, "                 size: %ld\n", nt->size);
+		fprintf(fp, "              mem_map: %lx\n", nt->mem_map);
+		fprintf(fp, "          start_paddr: %llx\n", nt->start_paddr);
+		fprintf(fp, "          start_mapnr: %ld\n", nt->start_mapnr);
 	}
 
 	fprintf(fp, "    dump_free_pages: ");
@@ -9692,6 +10184,23 @@ dump_vm_table(int verbose)
 	fprintf(fp, "   swap_info_struct: %lx\n", (ulong)vt->swap_info_struct);
 	fprintf(fp, "            mem_sec: %lx\n", (ulong)vt->mem_sec);
 	fprintf(fp, "       ZONE_HIGHMEM: %d\n", vt->ZONE_HIGHMEM);
+	fprintf(fp, "node_online_map_len: %d\n", vt->node_online_map_len);
+	if (vt->node_online_map_len) {
+		fprintf(fp, "    node_online_map: ");
+		up = (ulong *)vt->node_online_map;
+		for (i = 0; i < vt->node_online_map_len; i++) {
+			fprintf(fp, "%s%lx", i ? ", " : "[", *up);
+			up++;
+		}
+		fprintf(fp, "]\n");
+	} else {
+		fprintf(fp, "    node_online_map: (unused)\n");
+	}
+	fprintf(fp, "   nr_vm_stat_items: %d\n", vt->nr_vm_stat_items);
+	fprintf(fp, "      vm_stat_items: %s", (vt->flags & VM_STAT) ?
+		"\n" : "(not used)\n");
+	for (i = 0; i < vt->nr_vm_stat_items; i++)
+		fprintf(fp, "        [%d] %s\n", i, vt->vm_stat_items[i]);
 
 	dump_vma_cache(VERBOSE);
 }
@@ -10608,7 +11117,7 @@ static void
 dump_memory_nodes(int initialize)
 {
 	int i, j;
-	int n, id, flen, slen, badaddr;
+	int n, id, node, flen, slen, badaddr;
 	ulong node_mem_map;
         ulong node_start_paddr;
 	ulong node_start_pfn;
@@ -10616,6 +11125,8 @@ dump_memory_nodes(int initialize)
 	ulong node_spanned_pages;
         ulong free_pages, zone_size, node_size, cum_zone_size;
 	ulong zone_start_paddr, zone_start_mapnr, zone_mem_map;
+	physaddr_t phys;
+	ulong pp;
 	ulong zone_start_pfn;
 	ulong bdata;
 	ulong pgdat;
@@ -10628,12 +11139,7 @@ dump_memory_nodes(int initialize)
 	char buf5[BUFSIZE];
 	struct node_table *nt;
 
-	if (IS_SPARSEMEM() && !initialize) {
-		error(INFO,"Per node memory data is not available for this kernel\n");
-		return;
-	}
-
-        if (!(vt->flags & NODES) && initialize) {
+	if (!(vt->flags & (NODES|NODES_ONLINE)) && initialize) {
 		nt = &vt->node_table[0];
 		nt->node_id = 0;
 		if (symbol_exists("contig_page_data"))
@@ -10644,12 +11150,40 @@ dump_memory_nodes(int initialize)
 		nt->mem_map = vt->mem_map;
 		nt->start_paddr = 0;
 		nt->start_mapnr = 0;
+                if (CRASHDEBUG(1)) {
+                        fprintf(fp, "node_table[%d]: \n", 0);
+                        fprintf(fp, "             id: %d\n", nt->node_id);
+                        fprintf(fp, "          pgdat: %lx\n", nt->pgdat);
+                        fprintf(fp, "           size: %ld\n", nt->size);
+                        fprintf(fp, "        mem_map: %lx\n", nt->mem_map);
+                        fprintf(fp, "    start_paddr: %llx\n", nt->start_paddr);
+                        fprintf(fp, "    start_mapnr: %ld\n", nt->start_mapnr);
+                }
 		return;
 	}
 
-	if (initialize)
-		get_symbol_data("pgdat_list", sizeof(void *), &pgdat);
-	else
+	if (initialize) {
+		/*
+		 *  This order may have to change based upon architecture...
+		 */
+		if (symbol_exists("pgdat_list") && 
+		    (VALID_MEMBER(pglist_data_node_next) || 
+		     VALID_MEMBER(pglist_data_pgdat_next))) {
+                        get_symbol_data("pgdat_list", sizeof(void *), &pgdat);
+			vt->flags &= ~NODES_ONLINE;
+		} else if (vt->flags & NODES_ONLINE) {
+			if ((node = next_online_node(0)) < 0) {
+				error(WARNING, 
+				   "cannot determine first node from node_online_map\n\n");
+				return;
+			} 
+			if (!(pgdat = next_online_pgdat(node))) { 
+				error(WARNING, 
+				   "cannot determine pgdat list for this kernel/architecture\n\n");
+				return;
+			}
+		} 
+	} else
 		pgdat = vt->node_table[0].pgdat;
 
 	for (n = 0, badaddr = FALSE; pgdat; n++) {
@@ -10680,6 +11214,11 @@ dump_memory_nodes(int initialize)
 				"pglist node_start_pfn", FAULT_ON_ERROR);
 				node_start_mapnr = node_start_pfn;
 				node_start_paddr = PTOB(node_start_pfn);
+			if (badaddr && IS_SPARSEMEM()) {
+				phys = PTOB(node_start_pfn);
+                                if (phys_to_page(phys, &pp))
+                                	node_mem_map = pp;
+			}
 		} else error(INFO, 
 			"cannot determine zone starting physical address\n");
 
@@ -10712,6 +11251,16 @@ dump_memory_nodes(int initialize)
 			nt->mem_map = node_mem_map;
 			nt->start_paddr = node_start_paddr;
 			nt->start_mapnr = node_start_mapnr;
+
+			if (CRASHDEBUG(1)) {
+                		fprintf(fp, "node_table[%d]: \n", n);
+                		fprintf(fp, "             id: %d\n", nt->node_id);
+                		fprintf(fp, "          pgdat: %lx\n", nt->pgdat);
+                		fprintf(fp, "           size: %ld\n", nt->size);
+                		fprintf(fp, "        mem_map: %lx\n", nt->mem_map);
+                		fprintf(fp, "    start_paddr: %llx\n", nt->start_paddr);
+                		fprintf(fp, "    start_mapnr: %ld\n", nt->start_mapnr);
+			}
 		}
 
 		if (!initialize) {
@@ -10771,7 +11320,7 @@ dump_memory_nodes(int initialize)
 		cum_zone_size = 0;
 		for (i = 0; i < vt->nr_zones; i++) {
 			if (CRASHDEBUG(7))
-				fprintf(fp, "zone at %lx\n", node_zones);
+				fprintf(fp, "zone %d at %lx\n", i, node_zones);
 
 			if (VALID_MEMBER(zone_struct_size))
                 		readmem(node_zones+OFFSET(zone_struct_size), 
@@ -10788,6 +11337,7 @@ dump_memory_nodes(int initialize)
                         		"zone spanned_pages", FAULT_ON_ERROR);
 			} else error(FATAL, 
 			    "zone_struct has neither size nor memsize field\n");
+
                 	readmem(node_zones+ 
 				OFFSET_OPTION(zone_struct_free_pages,
 				zone_free_pages), KVADDR, &free_pages, 
@@ -10831,7 +11381,16 @@ dump_memory_nodes(int initialize)
                                         "node_zones zone_start_pfn",
                                         FAULT_ON_ERROR);
 				zone_start_paddr = PTOB(zone_start_pfn);
-				if (!(vt->flags & NODES) && 
+
+				if (IS_SPARSEMEM()) {
+					zone_mem_map = 0;
+					zone_start_mapnr = 0;
+					if (zone_size) {
+						phys = PTOB(zone_start_pfn);
+						zone_start_mapnr = phys/PAGESIZE();
+					}
+
+				} else if (!(vt->flags & NODES) && 
 				    INVALID_MEMBER(zone_zone_mem_map)) {
 					readmem(pgdat+OFFSET(pglist_data_node_mem_map),
                                     	    KVADDR, &zone_mem_map, sizeof(void *),
@@ -10844,14 +11403,23 @@ dump_memory_nodes(int initialize)
                                         sizeof(ulong),
                                         "node_zones zone_mem_map",
                                         FAULT_ON_ERROR);
+
 				if (zone_mem_map)
 					zone_start_mapnr = 
 				    	    (zone_mem_map - node_mem_map) / 
 					    SIZE(page);
-				else
+				else if (!IS_SPARSEMEM())
 					zone_start_mapnr = 0;
 			}
-			if (!(vt->flags & NODES) && 
+
+			if (IS_SPARSEMEM()) {
+				zone_mem_map = 0;
+				if (zone_size) {
+					phys = PTOB(zone_start_pfn);
+					if (phys_to_page(phys, &pp))
+						zone_mem_map = pp;
+				}
+			} else if (!(vt->flags & NODES) && 
 			    INVALID_MEMBER(zone_struct_zone_mem_map) &&
 			    INVALID_MEMBER(zone_zone_mem_map)) {
                 		readmem(pgdat+OFFSET(pglist_data_node_mem_map),
@@ -10885,12 +11453,22 @@ dump_memory_nodes(int initialize)
 			node_zones += SIZE_OPTION(zone_struct, zone);
 		}
 
-		if (initialize)
-			readmem(pgdat + OFFSET_OPTION(pglist_data_node_next,
-				pglist_data_pgdat_next), KVADDR,
-				&pgdat, sizeof(void *), "pglist_data node_next",
-				FAULT_ON_ERROR);
-		else {
+		if (initialize) {
+			if (vt->flags & NODES_ONLINE) {
+				if ((node = next_online_node(node+1)) < 0)
+					pgdat = 0;
+                        	else if (!(pgdat = next_online_pgdat(node))) {
+                                	error(WARNING,
+                   "cannot determine pgdat list for this kernel/architecture (node %d)\n\n", 
+						node);
+					pgdat = 0;
+                        	}
+			} else 
+				readmem(pgdat + OFFSET_OPTION(pglist_data_node_next,
+					pglist_data_pgdat_next), KVADDR,
+					&pgdat, sizeof(void *), "pglist_data node_next",
+					FAULT_ON_ERROR);
+		} else {
 			if ((n+1) < vt->numnodes)
 				pgdat = vt->node_table[n+1].pgdat;
 			else
@@ -10900,6 +11478,9 @@ dump_memory_nodes(int initialize)
 
 	if (n != vt->numnodes)
 		error(FATAL, "numnodes out of sync with pgdat_list?\n");
+
+	if (!initialize && IS_SPARSEMEM())
+		dump_mem_sections();
 }
 
 /*
@@ -11374,16 +11955,65 @@ ulong
 pfn_to_map(ulong pfn)
 {
 	ulong section, page_offset;
+	ulong section_nr;
+	ulong coded_mem_map, mem_map;
 
-	section = pfn_to_section_nr(pfn);
+	section_nr = pfn_to_section_nr(pfn);
+	if (!(section = valid_section_nr(section_nr))) 
+		return 0;
 
 	if (section_has_mem_map(section)) {
-		page_offset = pfn - section_nr_to_pfn(section);
-		return (section_mem_map_addr(section) + 
-			(page_offset * PAGESIZE()));
+		page_offset = pfn - section_nr_to_pfn(section_nr);
+		coded_mem_map = section_mem_map_addr(section);
+		mem_map = sparse_decode_mem_map(coded_mem_map, section_nr) +
+			(page_offset * SIZE(page));
+		return mem_map;
 	}
 
 	return 0;
+}
+
+void 
+dump_mem_sections(void)
+{
+	ulong nr,addr;
+	ulong nr_mem_sections;
+	ulong coded_mem_map, mem_map, pfn;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+
+	nr_mem_sections = NR_MEM_SECTIONS();
+
+	fprintf(fp, "\n");
+	pad_line(fp, BITS32() ? 59 : 67, '-');
+        fprintf(fp, "\n\nNR  %s  %s  %s  PFN\n",
+                mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SECTION"),
+                mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "CODED_MEM_MAP"),
+                mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "MEM_MAP"));
+
+	for (nr = 0; nr <= nr_mem_sections ; nr++) {
+		if ((addr = valid_section_nr(nr))) {
+			coded_mem_map = section_mem_map_addr(addr);
+			mem_map = sparse_decode_mem_map(coded_mem_map,nr);
+			pfn = section_nr_to_pfn(nr);
+
+        		fprintf(fp, "%2ld  %s  %s  %s  %s\n",
+                		nr,
+                		mkstring(buf1, VADDR_PRLEN,
+                        	CENTER|LONG_HEX, MKSTR(addr)),
+                		mkstring(buf2, VADDR_PRLEN,
+                        	CENTER|LONG_HEX|RJUST, MKSTR(coded_mem_map)),
+                		mkstring(buf3, VADDR_PRLEN,
+                        	CENTER|LONG_HEX|RJUST, MKSTR(mem_map)),
+				pc->output_radix == 10 ?
+                		mkstring(buf4, VADDR_PRLEN,
+                        	LONG_DEC|LJUST, MKSTR(pfn)) :
+                		mkstring(buf4, VADDR_PRLEN,
+                        	LONG_HEX|LJUST, MKSTR(pfn)));
+		}
+	}
 }
 
 void 
@@ -11405,4 +12035,294 @@ list_mem_sections(void)
 				sparse_decode_mem_map(coded_mem_map,nr));
 		}
 	}
+}
+
+/*
+ *  For kernels containing the node_online_map, return
+ *  the number of node bits set.
+ */
+static int
+get_nodes_online(void)
+{
+	int i, len, online;
+	struct gnu_request req;
+	ulong *maskptr;
+
+	if (!symbol_exists("node_online_map")) 
+		return 0;
+
+	len = get_symbol_type("node_online_map", NULL, &req) == TYPE_CODE_UNDEF ?
+		sizeof(ulong) : req.length;
+
+       	if (!(vt->node_online_map = (ulong *)malloc(len)))
+       		error(FATAL, "cannot malloc node_online_map\n");
+
+       	if (!readmem(symbol_value("node_online_map"), KVADDR, 
+	    (void *)&vt->node_online_map[0], len, "node_online_map", 
+	    QUIET|RETURN_ON_ERROR))
+		error(FATAL, "cannot read node_online_map\n");
+
+	vt->node_online_map_len = len/sizeof(ulong);
+
+	online = 0;
+
+	maskptr = (ulong *)vt->node_online_map;
+	for (i = 0; i < vt->node_online_map_len; i++, maskptr++)
+		online += count_bits_long(*maskptr);
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "node_online_map: [");
+		for (i = 0; i < vt->node_online_map_len; i++)
+			fprintf(fp, "%s%lx", i ? ", " : "",  vt->node_online_map[i]);
+		fprintf(fp, "] -> nodes online: %d\n", online);
+	}
+
+	return online;
+}
+
+/*
+ *  Return the next node index, with "first" being the first acceptable node.
+ */
+static int
+next_online_node(int first)
+{
+	int i, j, node;
+	ulong mask, *maskptr;
+
+	if ((first/BITS_PER_LONG) >= vt->node_online_map_len) {
+		error(INFO, "next_online_node: %d is too large!\n", first);
+		return -1;
+	}
+
+	maskptr = (ulong *)vt->node_online_map;
+	for (i = node = 0; i <  vt->node_online_map_len; i++, maskptr++) {
+		mask = *maskptr;
+        	for (j = 0; j < BITS_PER_LONG; j++, node++) {
+                	if (mask & 1) {
+				if (node >= first)
+					return node;
+			}
+               	 	mask >>= 1;
+        	}
+	}
+
+	return -1;
+}
+
+/*
+ *  Modify appropriately for architecture/kernel nuances.
+ */
+static ulong
+next_online_pgdat(int node)
+{
+        char buf[BUFSIZE];
+	ulong pgdat;
+
+	/*
+  	 *  Default -- look for type: struct pglist_data node_data[]
+	 */
+	if (get_symbol_type("node_data", NULL, NULL) != TYPE_CODE_ARRAY)
+		goto pgdat2;
+
+        open_tmpfile();
+        sprintf(buf, "whatis node_data");
+        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+                close_tmpfile();
+		goto pgdat2;
+        }
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (STRNEQ(buf, "type = "))
+                        break;
+        }
+        close_tmpfile();
+
+	if ((!strstr(buf, "struct pglist_data *") &&
+	     !strstr(buf, "pg_data_t *")) ||
+	    (count_chars(buf, '[') != 1) ||
+	    (count_chars(buf, ']') != 1))
+		goto pgdat2;
+
+	if (!readmem(symbol_value("node_data") + (node * sizeof(void *)), 
+	    KVADDR, &pgdat, sizeof(void *), "node_data", RETURN_ON_ERROR) ||
+	    !IS_KVADDR(pgdat))
+		goto pgdat2;
+
+	return pgdat;
+
+pgdat2:
+	if (get_symbol_type("pgdat_list", NULL, NULL) != TYPE_CODE_ARRAY)
+		goto pgdat3;
+
+        open_tmpfile();
+        sprintf(buf, "whatis pgdat_list");
+        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+                close_tmpfile();
+		goto pgdat3;
+        }
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (STRNEQ(buf, "type = "))
+                        break;
+        }
+        close_tmpfile();
+
+	if ((!strstr(buf, "struct pglist_data *") &&
+	     !strstr(buf, "pg_data_t *")) ||
+	    (count_chars(buf, '[') != 1) ||
+	    (count_chars(buf, ']') != 1))
+		goto pgdat3;
+
+	if (!readmem(symbol_value("pgdat_list") + (node * sizeof(void *)), 
+	    KVADDR, &pgdat, sizeof(void *), "pgdat_list", RETURN_ON_ERROR) ||
+	    !IS_KVADDR(pgdat))
+		goto pgdat3;
+
+	return pgdat;
+
+pgdat3:
+	if (symbol_exists("contig_page_data") && (node == 0))
+		return symbol_value("contig_page_data");
+
+	return 0;
+}
+
+/*
+ *  Make the vm_stat[] array contents easily accessible.
+ */
+static int
+vm_stat_init(void)
+{
+        char buf[BUFSIZE];
+        char *arglist[MAXARGS];
+	int i, c, stringlen, total;
+        struct gnu_request *req;
+	char *start;
+
+	if (vt->flags & VM_STAT)
+		return TRUE;
+
+	if ((vt->nr_vm_stat_items == -1) || !symbol_exists("vm_stat"))
+		goto bailout;
+
+        /*
+         *  look for type: type = atomic_long_t []
+         */
+        if (!symbol_exists("vm_stat") || 
+	    get_symbol_type("vm_stat", NULL, NULL) != TYPE_CODE_ARRAY)
+		goto bailout;
+
+        open_tmpfile();
+        sprintf(buf, "whatis vm_stat");
+        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
+                close_tmpfile();
+		goto bailout;
+        }
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (STRNEQ(buf, "type = "))
+                        break;
+        }
+        close_tmpfile();
+
+        if (!strstr(buf, "atomic_long_t") ||
+            (count_chars(buf, '[') != 1) ||
+            (count_chars(buf, ']') != 1))
+                goto bailout;
+
+        open_tmpfile();
+        req = (struct gnu_request *)GETBUF(sizeof(struct gnu_request));
+        req->command = GNU_GET_DATATYPE;
+        req->name = "zone_stat_item";
+        req->flags = GNU_PRINT_ENUMERATORS;
+        gdb_interface(req);
+        FREEBUF(req);
+
+	stringlen = 1;
+
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "{") || strstr(buf, "}"))
+			continue;
+		clean_line(buf);
+		c = parse_line(buf, arglist);
+		if (STREQ(arglist[0], "NR_VM_ZONE_STAT_ITEMS")) {
+			vt->nr_vm_stat_items = atoi(arglist[2]);
+			break;
+		} else
+			stringlen += strlen(arglist[0]);
+        }
+
+	total = stringlen + vt->nr_vm_stat_items + 
+		(sizeof(void *) * vt->nr_vm_stat_items);
+        if (!(vt->vm_stat_items = (char **)malloc(total))) {
+		close_tmpfile();
+                error(FATAL, "cannot malloc vm_area_struct cache\n");
+	}
+
+	start = (char *)&vt->vm_stat_items[vt->nr_vm_stat_items];
+
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "{") || strstr(buf, "}"))
+                        continue;
+		c = parse_line(buf, arglist);
+		i = atoi(arglist[2]);
+		if (i < vt->nr_vm_stat_items) {
+			vt->vm_stat_items[i] = start;
+			strcpy(start, arglist[0]);
+			start += strlen(arglist[0]) + 1;
+		}
+        }
+	close_tmpfile();
+
+	vt->flags |= VM_STAT;
+	return TRUE;
+
+bailout:
+	vt->nr_vm_stat_items = -1;
+	return FALSE;
+}
+
+/*
+ *  Either dump all vm_stat entries, or return the value of
+ *  the specified vm_stat item.
+ */
+static int
+dump_vm_stat(char *item, long *retval)
+{
+	char *buf;
+	ulong *vp;
+	int i;
+
+	if (!vm_stat_init()) {
+		if (!item)
+			error(FATAL, 
+			    "vm_stat not available in this kernel\n");
+		return FALSE;
+	}
+
+	buf = GETBUF(sizeof(ulong) * vt->nr_vm_stat_items);
+
+	readmem(symbol_value("vm_stat"), KVADDR, buf, 
+	    sizeof(ulong) * vt->nr_vm_stat_items, 
+	    "vm_stat", FAULT_ON_ERROR);
+
+
+	if (!item) {
+		vp = (ulong *)buf;
+		for (i = 0; i < vt->nr_vm_stat_items; i++)
+			fprintf(fp, "%20s: %ld\n", vt->vm_stat_items[i], vp[i]);
+		return TRUE;
+	}
+
+	vp = (ulong *)buf;
+	for (i = 0; i < vt->nr_vm_stat_items; i++) {
+		if (STREQ(vt->vm_stat_items[i], item)) {
+			*retval = vp[i];
+			return TRUE;
+		}
+	}
+
+	return FALSE;
 }

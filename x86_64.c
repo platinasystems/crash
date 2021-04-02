@@ -60,6 +60,7 @@ static void x86_64_display_cpu_data(void);
 static void x86_64_display_memmap(void);
 static void x86_64_dump_line_number(ulong);
 static struct line_number_hook x86_64_line_number_hooks[];
+static void x86_64_calc_phys_base(void);
 static int x86_64_is_module_addr(ulong);
 static int x86_64_is_kvaddr(ulong);
 static int x86_64_is_uvaddr(ulong, struct task_context *);
@@ -199,6 +200,7 @@ x86_64_init(int when)
 		machdep->get_xendump_regs = x86_64_get_xendump_regs;
 		machdep->xen_kdump_p2m_create = x86_64_xen_kdump_p2m_create;
 		machdep->xendump_panic_task = x86_64_xendump_panic_task;
+		x86_64_calc_phys_base();
 		break;
 
 	case POST_GDB:
@@ -292,6 +294,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sNO_TSS", others++ ? "|" : "");
 	if (machdep->flags & SCHED_TEXT)
 		fprintf(fp, "%sSCHED_TEXT", others++ ? "|" : "");
+	if (machdep->flags & PHYS_BASE)
+		fprintf(fp, "%sPHYS_BASE", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -368,6 +372,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "              vmalloc_end: %016lx\n", (ulong)ms->vmalloc_end);
 	fprintf(fp, "            modules_vaddr: %016lx\n", (ulong)ms->modules_vaddr);
 	fprintf(fp, "              modules_end: %016lx\n", (ulong)ms->modules_end);
+	fprintf(fp, "                phys_base: %lx\n", (ulong)ms->phys_base);
 	fprintf(fp, "                     pml4: %lx\n", (ulong)ms->pml4);
 	fprintf(fp, "           last_pml4_read: %lx\n", (ulong)ms->last_pml4_read);
 	if (ms->upml) {
@@ -734,7 +739,7 @@ x86_64_init_kernel_pgd(void)
 ulong x86_64_VTOP(ulong vaddr) 
 {
 	if (vaddr >= __START_KERNEL_map)
-		return ((vaddr) - (ulong)__START_KERNEL_map);
+		return ((vaddr) - (ulong)__START_KERNEL_map + machdep->machspec->phys_base);
 	else
 		return ((vaddr) - PAGE_OFFSET);
 }
@@ -3368,6 +3373,10 @@ x86_64_compiler_warning_stub(void)
  *
  *   --machdep vm=orig 
  *   --machdep vm=2.6.11
+ *  
+ *  Force the phys_base address via:
+ *
+ *   --machdep phys_base=<address>
  */
 
 void
@@ -3377,7 +3386,9 @@ parse_cmdline_arg(void)
 	char *p;
 	char buf[BUFSIZE];
 	char *arglist[MAXARGS];
+	int megabytes;
 	int lines = 0;
+	ulong value;
 
 	if (!strstr(machdep->cmdline_arg, "=")) {
 		error(WARNING, "ignoring --machdep option: %s\n\n",
@@ -3411,7 +3422,33 @@ parse_cmdline_arg(void)
 					continue;
 				}
 			}
-		}
+		} else if (STRNEQ(arglist[i], "phys_base=")) {
+			megabytes = FALSE;
+			if ((LASTCHAR(arglist[i]) == 'm') || 
+			    (LASTCHAR(arglist[i]) == 'M')) {
+				LASTCHAR(arglist[i]) = NULLCHAR;
+				megabytes = TRUE;
+			}
+                        p = arglist[i] + strlen("phys_base=");
+                        if (strlen(p)) {
+				if (megabytes) {
+                                	value = dtol(p, RETURN_ON_ERROR|QUIET,
+                                        	&errflag);
+				} else
+                                	value = htol(p, RETURN_ON_ERROR|QUIET,
+                                        	&errflag);
+                                if (!errflag) {
+					if (megabytes)
+						value = MEGABYTES(value);
+                                        machdep->machspec->phys_base = value;
+                                        error(NOTE,
+                                            "setting phys_base to: 0x%lx\n\n",
+                                                machdep->machspec->phys_base);
+					machdep->flags |= PHYS_BASE;
+                                        continue;
+                                }
+                        }
+                }
 
 		error(WARNING, "ignoring --machdep option: %s\n", arglist[i]);
 		lines++;
@@ -3455,6 +3492,100 @@ x86_64_clear_machdep_cache(void)
 }
 
 #include "netdump.h"
+
+/*
+ *  Determine the physical address base for relocatable kernels.
+ */
+static void
+x86_64_calc_phys_base(void)
+{
+	int i;
+	FILE *iomem;
+	char buf[BUFSIZE];
+	char *p1;
+	ulong text_start, kernel_code_start;
+	int errflag;
+	struct vmcore_data *vd;
+	Elf64_Phdr *phdr;
+
+	if (machdep->flags & PHYS_BASE)     /* --machdep override */
+		return;
+
+	machdep->machspec->phys_base = 0;   /* default/traditional */
+
+	if (!symbol_exists("phys_base"))
+		return;
+
+	if (!symbol_exists("_text"))
+		return;
+	else
+		text_start = symbol_value("_text");
+
+	if (ACTIVE()) {
+	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
+	                return;
+	
+		errflag = 1;
+	        while (fgets(buf, BUFSIZE, iomem)) {
+			if (strstr(buf, ": Kernel code")) {
+				clean_line(buf);
+				errflag = 0;
+				break;
+			}
+		}
+	        fclose(iomem);
+	
+		if (errflag)
+			return;
+	
+		if (!(p1 = strstr(buf, "-")))
+			return;
+		else
+			*p1 = NULLCHAR;
+	
+		errflag = 0;
+		kernel_code_start = htol(buf, RETURN_ON_ERROR|QUIET, &errflag);
+	        if (errflag)
+			return;
+	
+		machdep->machspec->phys_base = kernel_code_start -
+			(text_start - __START_KERNEL_map);
+	
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "_text: %lx  ", text_start);
+			fprintf(fp, "Kernel code: %lx -> ", kernel_code_start);
+			fprintf(fp, "phys_base: %lx\n\n", 
+				machdep->machspec->phys_base);
+		}
+
+		return;
+	}
+
+	/*
+	 *  Get relocation value from whatever dumpfile format is being used.
+	 */
+	if ((vd = get_kdump_vmcore_data())) {
+                for (i = 0; i < vd->num_pt_load_segments; i++) {
+			phdr = vd->load64 + i;
+			if ((phdr->p_vaddr >= __START_KERNEL_map) &&
+			    !(IS_VMALLOC_ADDR(phdr->p_vaddr))) {
+
+				machdep->machspec->phys_base = phdr->p_paddr - 
+				    (phdr->p_vaddr & ~(__START_KERNEL_map));
+
+				if (CRASHDEBUG(1)) {
+					fprintf(fp, "p_vaddr: %lx p_paddr: %lx -> ",
+						phdr->p_vaddr, phdr->p_paddr);
+					fprintf(fp, "phys_base: %lx\n\n", 
+						machdep->machspec->phys_base);
+				}
+				break;
+			}
+		}
+
+		return;
+	}
+}
 
 /*
  *  From the xen vmcore, create an index of mfns for each page that makes

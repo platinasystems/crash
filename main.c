@@ -59,7 +59,7 @@ main(int argc, char **argv)
 	 */
 	opterr = 0;
 	optind = 0;
-	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tfp:",
+	while((c = getopt_long(argc, argv, "LgH:h:e:i:sSvc:d:tfp:m:",
        		long_options, &option_index)) != -1) {
 		switch (c)
 		{
@@ -214,6 +214,10 @@ main(int argc, char **argv)
 
 		case 'p':
 			force_page_size(optarg);
+			break;
+
+		case 'm':
+			machdep->cmdline_arg = optarg;
 			break;
 
 		default:

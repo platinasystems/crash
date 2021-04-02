@@ -1547,6 +1547,10 @@ struct vm_table {                /* kernel VM-related data */
         ulong vma_cache_fills;
 	void *mem_sec;
 	int ZONE_HIGHMEM;
+	ulong *node_online_map;
+	int node_online_map_len;
+	int nr_vm_stat_items;
+	char **vm_stat_items;
 };
 
 #define NODES                       (0x1)
@@ -1563,6 +1567,8 @@ struct vm_table {                /* kernel VM-related data */
 #define SPARSEMEM_EX		  (0x800)
 #define PERCPU_KMALLOC_V2_NODES  (0x1000)
 #define KMEM_CACHE_DELAY         (0x2000)
+#define NODES_ONLINE             (0x4000)
+#define VM_STAT                  (0x8000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -1907,7 +1913,7 @@ struct load_module {
 #define MODULES_VADDR   (machdep->machspec->modules_vaddr)
 #define MODULES_END     (machdep->machspec->modules_end)
 
-#define __START_KERNEL_map    0xffffffff80000000
+#define __START_KERNEL_map    0xffffffff80000000UL
 #define MODULES_LEN     (MODULES_END - MODULES_VADDR)
 
 #define USERSPACE_TOP_ORIG         0x0000008000000000
@@ -2479,6 +2485,7 @@ struct efi_memory_desc_t {
 #define UNUSED   (-1)
 
 #define BITS_PER_BYTE (8)
+#define BITS_PER_LONG (BITS_PER_BYTE * sizeof(long))
 
 /*
  *  precision lengths for fprintf
@@ -3523,6 +3530,7 @@ struct machine_specific {
 	ulong vmalloc_end;
 	ulong modules_vaddr;
 	ulong modules_end;
+	ulong phys_base;
         char *pml4;
 	char *upml;
 	ulong last_upml_read;
@@ -3539,6 +3547,7 @@ struct machine_specific {
 #define VM_XEN        (0x10)
 #define NO_TSS        (0x20)
 #define SCHED_TEXT    (0x40)
+#define PHYS_BASE     (0x80)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
 #endif
@@ -3768,7 +3777,8 @@ void get_netdump_regs(struct bt_info *, ulong *, ulong *);
 int is_partial_netdump(void);
 void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
 void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
-
+struct vmcore_data;
+struct vmcore_data *get_kdump_vmcore_data(void);
 int read_kdump(int, void *, int, ulong, physaddr_t);
 int write_kdump(int, void *, int, ulong, physaddr_t);
 int is_kdump(char *, ulong);
