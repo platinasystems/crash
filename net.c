@@ -1,8 +1,8 @@
 /* net.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -284,7 +284,7 @@ cmd_net(void)
 	int c;
 	ulong sflag;
 	ulong value;
-	in_addr_t in_addr;
+	struct in_addr in_addr;
 	struct reference reference, *ref;
 
 	if (!(net->flags & NETDEV_INIT)) 
@@ -311,9 +311,8 @@ cmd_net(void)
 
 		case 'n':
 			value = stol(optarg, FAULT_ON_ERROR, NULL);
-			in_addr = (in_addr_t)value;
-			fprintf(fp, "%s\n",
-			    inet_ntoa(*((struct in_addr *)&(in_addr))));
+			in_addr.s_addr = (in_addr_t)value;
+			fprintf(fp, "%s\n", inet_ntoa(in_addr));
 			return;
 
 		case 's':
@@ -589,6 +588,7 @@ print_neighbour_q(ulong addr, int key_len)
 	uint	ipaddr;			/* hold ipaddr (aka primary_key) */
 	struct devinfo dinfo;
 	unsigned char state;		/* state of ARP entry */
+	struct in_addr in_addr;
 
 	ha_size = (i = ARRAY_LENGTH(neighbour_ha)) ?
 		i : get_array_length("neighbour.ha", NULL, sizeof(char));
@@ -610,7 +610,8 @@ print_neighbour_q(ulong addr, int key_len)
 			&state, sizeof(state), "neighbour nud_state", 
 			FAULT_ON_ERROR);
 
-		fprintf(fp, "%-16s", inet_ntoa(*((struct in_addr *)&ipaddr)));
+		in_addr.s_addr = ipaddr;
+		fprintf(fp, "%-16s", inet_ntoa(in_addr));
 
 		switch (dinfo.dev_type) {
 		case ARPHRD_ETHER:
@@ -783,11 +784,13 @@ get_sock_info(ulong sock, char *buf)
 	uint16_t u6_addr16_src[8];
 	uint16_t u6_addr16_dest[8];
 	char buf2[BUFSIZE];
+	struct in_addr in_addr;
 	int len;
 
 	BZERO(buf, BUFSIZE);
 	BZERO(buf2, BUFSIZE);
 	sockbuf = inet_sockbuf = NULL;
+	rcv_saddr = daddr = 0;
 	dport = sport = 0;
 	family = type = 0;
 	ipv6_pinfo = 0;
@@ -908,24 +911,28 @@ get_sock_info(ulong sock, char *buf)
            
 	if (family == AF_INET) {
 		if (BITS32()) {
+			in_addr.s_addr = rcv_saddr;
 			sprintf(&buf[strlen(buf)], "%*s-%-*d%s",
 				BYTES_IP_ADDR,
-				inet_ntoa(*((struct in_addr *)&rcv_saddr)),
+				inet_ntoa(in_addr),
 				BYTES_PORT_NUM,
 				ntohs(sport),
 				space(1));
+			in_addr.s_addr = daddr;
 			sprintf(&buf[strlen(buf)], "%*s-%-*d%s",
 				BYTES_IP_ADDR,
-				inet_ntoa(*((struct in_addr *)&daddr)), 
+				inet_ntoa(in_addr), 
 				BYTES_PORT_NUM,
 				ntohs(dport),
 				space(1));
 		} else {
+			in_addr.s_addr = rcv_saddr;
 	                sprintf(&buf[strlen(buf)], " %s-%d ",
-	                        inet_ntoa(*((struct in_addr *)&rcv_saddr)),
+	                        inet_ntoa(in_addr),
 	                        ntohs(sport));
+			in_addr.s_addr = daddr;
 	                sprintf(&buf[strlen(buf)], "%s-%d",
-	                        inet_ntoa(*((struct in_addr *)&daddr)),
+	                        inet_ntoa(in_addr),
 	                        ntohs(dport));
 		}
 	}

@@ -64,6 +64,7 @@ struct qemu_device {
 	struct qemu_device	*prev;
 	uint32_t		section_id;
 	uint32_t		instance_id;
+	uint32_t		version_id;
 };
 
 struct qemu_device_ram {
@@ -122,6 +123,21 @@ struct qemu_x86_kvm {
 	uint64_t		int_bitmap[4];
 	uint64_t		tsc;
 	uint32_t		mp_state;
+	uint32_t		exception_injected;
+	uint8_t			soft_interrupt;
+	uint8_t			nmi_injected;
+	uint8_t			nmi_pending;
+	uint8_t			has_error_code;
+	uint32_t		sipi_vector;
+	uint64_t		system_time_msr;
+	uint64_t		wall_clock_msr;
+};
+
+struct qemu_x86_mce {
+	uint64_t		mcg_cap;
+	uint64_t		mcg_status;
+	uint64_t		mcg_ctl;
+	uint64_t		mce_banks[10 * 4];
 };
 
 struct qemu_device_x86 {
@@ -129,7 +145,6 @@ struct qemu_device_x86 {
 
 	uint32_t		halted;
 	uint32_t		irq;
-	uint32_t		version_id;
 
 	uint64_t		regs[16];
 	uint64_t		eip;
@@ -171,10 +186,12 @@ struct qemu_device_x86 {
 	uint64_t		pat;
 	uint32_t		smbase;
 	struct qemu_x86_svm	svm;
-	uint64_t		fixed_mtrr[12];
+	uint64_t		fixed_mtrr[11];
 	uint64_t		deftype_mtrr;
 	struct qemu_x86_vmtrr	variable_mtrr[8];
 	struct qemu_x86_kvm	kvm;
+	struct qemu_x86_mce	mce;
+	uint64_t		tsc_aux;
 };
 
 struct qemu_timer {
@@ -184,7 +201,8 @@ struct qemu_timer {
 };
 
 struct qemu_device *device_alloc (struct qemu_device_list *, size_t,
-				  struct qemu_device_vtbl *, uint32_t, uint32_t);
+				  struct qemu_device_vtbl *, uint32_t,
+				  uint32_t, uint32_t);
 void device_free (struct qemu_device *);
 void device_list_free (struct qemu_device_list *);
 struct qemu_device *device_find (struct qemu_device_list *, uint32_t);

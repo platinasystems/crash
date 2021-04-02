@@ -1346,6 +1346,8 @@ dump_program_context(void)
 		fprintf(fp, "%sIRQ_IN_USE", others ? "|" : "");
         if (pc->curcmd_flags & MODULE_TREE)
 		fprintf(fp, "%sMODULE_TREE", others ? "|" : "");
+        if (pc->curcmd_flags & IGNORE_ERRORS)
+		fprintf(fp, "%sIGNORE_ERRORS", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "       sigint_cnt: %d\n", pc->sigint_cnt);

@@ -4836,7 +4836,7 @@ cmd_foreach(void)
 	BZERO(&foreach_data, sizeof(struct foreach_data));
 	fd = &foreach_data;
 
-        while ((c = getopt(argcnt, args, "R:vomlgersStTpukcf")) != EOF) {
+        while ((c = getopt(argcnt, args, "R:vomlgersStTpukcfF")) != EOF) {
                 switch(c)
 		{
 		case 'R':
@@ -4905,6 +4905,10 @@ cmd_foreach(void)
 
 		case 'f':
 			fd->flags |= FOREACH_f_FLAG;
+			break;
+
+		case 'F':
+			fd->flags |= FOREACH_F_FLAG;
 			break;
 
 		default:
@@ -5323,6 +5327,8 @@ foreach(struct foreach_data *fd)
                                         bt->flags |= BT_LINE_NUMBERS;
                                 if (fd->flags & FOREACH_f_FLAG) 
                                         bt->flags |= BT_FULL;
+                                if (fd->flags & FOREACH_F_FLAG) 
+                                        bt->flags |= (BT_FULL|BT_FULL_SYM_SLAB);
 				if (fd->reference)
 					bt->ref = ref;
 				back_trace(bt); 

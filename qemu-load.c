@@ -28,19 +28,22 @@
 
 struct qemu_device *
 device_alloc (struct qemu_device_list *dl, size_t sz,
-	      struct qemu_device_vtbl *vtbl, uint32_t section_id, uint32_t instance_id)
+	     struct qemu_device_vtbl *vtbl,
+             uint32_t section_id, uint32_t instance_id, uint32_t version_id)
 {
 	struct qemu_device *d = calloc (1, sz);
 	d->vtbl = vtbl;
 	d->list = dl;
 	d->section_id = section_id;
 	d->instance_id = instance_id;
+	d->version_id = version_id;
 
 	if (!dl->head)
 		dl->head = dl->tail = d;
 	else {
 		dl->tail->next = d;
 		d->prev = dl->tail;
+		dl->tail = d;
 	}
 	return d;
 }
@@ -264,8 +267,63 @@ ram_init_load (struct qemu_device_list *dl,
 	assert (version_id == 3);
 	kvm->mapinfo.ram_version_id = version_id;
 	return device_alloc (dl, sizeof (struct qemu_device_ram),
-			     &ram, section_id, instance_id);
+			     &ram, section_id, instance_id, version_id);
 }
+
+
+#define BLK_MIG_FLAG_EOS 2
+
+static uint32_t
+block_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
+{
+	uint64_t header;
+
+	header = get_be64 (fp);
+	assert (header == BLK_MIG_FLAG_EOS);
+	return 0;
+}
+
+static struct qemu_device *
+block_init_load (struct qemu_device_list *dl,
+		 uint32_t section_id, uint32_t instance_id,
+		 uint32_t version_id, bool live, FILE *fp)
+{
+	static struct qemu_device_vtbl block = {
+		"block",
+		block_load, 
+		NULL
+	};
+
+	return device_alloc (dl, sizeof (struct qemu_device),
+			     &block, section_id, instance_id, version_id);
+}
+
+/* RHEL5 marker.  */
+
+static uint32_t
+rhel5_marker_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
+{
+	return 0;
+}
+
+static struct qemu_device *
+rhel5_marker_init_load (struct qemu_device_list *dl,
+		      uint32_t section_id, uint32_t instance_id,
+		      uint32_t version_id, bool live, FILE *fp)
+{
+	static struct qemu_device_vtbl rhel5_marker = {
+		"__rhel5",
+		rhel5_marker_load, 
+		NULL
+	};
+
+	assert (!live);
+	return device_alloc (dl, sizeof (struct qemu_device),
+			     &rhel5_marker, section_id, instance_id,
+			     version_id);
+}
+
+
 
 /* cpu_common loader.  */
 
@@ -297,7 +355,7 @@ cpu_common_init_load (struct qemu_device_list *dl,
 
 	assert (!live);
 	return device_alloc (dl, sizeof (struct qemu_device_cpu_common),
-			     &cpu_common, section_id, instance_id);
+			     &cpu_common, section_id, instance_id, version_id);
 }
 
 
@@ -335,10 +393,25 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 	struct qemu_device_x86 *dx86 = (struct qemu_device_x86 *)d;
 	uint32_t qemu_hflags = 0, qemu_hflags2 = 0;
 	int nregs = size == 32 ? 8 : 16;
-	uint32_t version_id = dx86->version_id;
+	uint32_t version_id = dx86->dev_base.version_id;
+	uint32_t rhel5_version_id;
 	int i;
 
+	struct qemu_device *drhel5;
 	struct qemu_device_cpu_common *dcpu;
+
+	drhel5 = device_find_instance (d->list, "__rhel5", 0);
+	if (drhel5 || (version_id >= 7 && version_id <= 9)) {
+		rhel5_version_id = version_id;
+		version_id = 7;
+	} else {
+		rhel5_version_id = 0;
+	       	version_id = dx86->dev_base.version_id;
+	}
+
+	dprintf("cpu_load: rhel5_version_id: %d (effective) version_id: %d\n",
+		rhel5_version_id, version_id);
+
 	dcpu = (struct qemu_device_cpu_common *)
 		device_find_instance (d->list, "cpu_common", d->instance_id);
 	if (dcpu) {
@@ -417,22 +490,22 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 	if (version_id < 6)
 		dx86->halted = get_be32 (fp);
 
-        dx86->svm.hsave = get_be64 (fp);
-        dx86->svm.vmcb = get_be64 (fp);
-        dx86->svm.tsc_offset = get_be64 (fp);
-        dx86->svm.in_vmm = qemu_hflags	& (1 << 21);
-        dx86->svm.guest_if_mask = qemu_hflags2 & (1 << 1);
-        dx86->svm.guest_intr_masking = qemu_hflags2 & (1 << 3);
-        dx86->svm.intercept_mask = get_be64 (fp);
-        dx86->svm.cr_read_mask = get_be16 (fp);
-        dx86->svm.cr_write_mask = get_be16 (fp);
-        dx86->svm.dr_read_mask = get_be16 (fp);
-        dx86->svm.dr_write_mask = get_be16 (fp);
-        dx86->svm.exception_intercept_mask = get_be32 (fp);
-        dx86->cr8 = getc (fp);
+	dx86->svm.hsave = get_be64 (fp);
+	dx86->svm.vmcb = get_be64 (fp);
+	dx86->svm.tsc_offset = get_be64 (fp);
+	dx86->svm.in_vmm = qemu_hflags	& (1 << 21);
+	dx86->svm.guest_if_mask = qemu_hflags2 & (1 << 1);
+	dx86->svm.guest_intr_masking = qemu_hflags2 & (1 << 3);
+	dx86->svm.intercept_mask = get_be64 (fp);
+	dx86->svm.cr_read_mask = get_be16 (fp);
+	dx86->svm.cr_write_mask = get_be16 (fp);
+	dx86->svm.dr_read_mask = get_be16 (fp);
+	dx86->svm.dr_write_mask = get_be16 (fp);
+	dx86->svm.exception_intercept_mask = get_be32 (fp);
+	dx86->cr8 = getc (fp);
 
 	if (version_id >= 8) {
-		for (i = 0; i < 12; i++)
+		for (i = 0; i < 11; i++)
 			dx86->fixed_mtrr[i] = get_be64 (fp);
 		dx86->deftype_mtrr = get_be64 (fp);
 		for (i = 0; i < 8; i++) {
@@ -445,7 +518,7 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 	 * Furthermore, it changed format in v9.  */
 	if (version_id >= 9) {
 		int32_t pending_irq = (int32_t) get_be32 (fp);
-		if (pending_irq >= 0)
+		if (pending_irq >= 0 && pending_irq <= 255)
 			dx86->kvm.int_bitmap[pending_irq / 64] |=
 				(uint64_t)1 << (pending_irq & 63);
 
@@ -460,6 +533,36 @@ cpu_load (struct qemu_device *d, FILE *fp, int size)
 		if (version_id >= 5)
 			dx86->kvm.mp_state = get_be32 (fp);
 	}
+
+	if (version_id >= 11) {
+		dx86->kvm.exception_injected = get_be32 (fp);
+	}
+	if (rhel5_version_id >= 8) {
+		dx86->kvm.system_time_msr = get_be64 (fp);
+		dx86->kvm.wall_clock_msr = get_be64 (fp);
+	}
+	if (version_id >= 11 || rhel5_version_id >= 9) {
+		dx86->kvm.soft_interrupt = getc (fp);
+		dx86->kvm.nmi_injected = getc (fp);
+		dx86->kvm.nmi_pending = getc (fp);
+		dx86->kvm.has_error_code = getc (fp);
+		dx86->kvm.sipi_vector = get_be32 (fp);
+	}
+
+	if (version_id >= 10) {
+		dx86->mce.mcg_cap = get_be64 (fp);
+		dx86->mce.mcg_status = get_be64 (fp);
+		dx86->mce.mcg_ctl = get_be64 (fp);
+		for (i = 0; i < 10 * 4; i++)
+			dx86->mce.mce_banks[i] = get_be64 (fp);
+	}
+
+	if (version_id >= 11) {
+		dx86->tsc_aux = get_be64 (fp);
+		dx86->kvm.system_time_msr = get_be64 (fp);
+		dx86->kvm.wall_clock_msr = get_be64 (fp);
+	}
+
 	return QEMU_FEATURE_CPU;
 }
 
@@ -472,7 +575,7 @@ cpu_load_32 (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
 static struct qemu_device *
 cpu_init_load_32 (struct qemu_device_list *dl,
 		  uint32_t section_id, uint32_t instance_id,
-	          uint32_t version_id, bool live, FILE *fp)
+		  uint32_t version_id, bool live, FILE *fp)
 {
 	struct qemu_device_x86 *dx86;
 	static struct qemu_device_vtbl cpu = {
@@ -487,8 +590,7 @@ cpu_init_load_32 (struct qemu_device_list *dl,
 	kvm->mapinfo.cpu_version_id = version_id;
 	dx86 = (struct qemu_device_x86 *)
 		device_alloc (dl, sizeof (struct qemu_device_x86),
-			      &cpu, section_id, instance_id);
-	dx86->version_id = version_id;
+			      &cpu, section_id, instance_id, version_id);
 	return (struct qemu_device *) dx86;
 }
 
@@ -501,7 +603,7 @@ cpu_load_64 (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
 static struct qemu_device *
 cpu_init_load_64 (struct qemu_device_list *dl,
 		  uint32_t section_id, uint32_t instance_id,
-	          uint32_t version_id, bool live, FILE *fp)
+		  uint32_t version_id, bool live, FILE *fp)
 {
 	struct qemu_device_x86 *dx86;
 	static struct qemu_device_vtbl cpu = {
@@ -516,10 +618,42 @@ cpu_init_load_64 (struct qemu_device_list *dl,
 	kvm->mapinfo.cpu_version_id = version_id;
 	dx86 = (struct qemu_device_x86 *)
 		device_alloc (dl, sizeof (struct qemu_device_x86),
-			      &cpu, section_id, instance_id);
-	dx86->version_id = version_id;
+			      &cpu, section_id, instance_id, version_id);
 	return (struct qemu_device *) dx86;
 }
+
+
+/* IOAPIC loader.  */
+
+static uint32_t
+apic_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
+{
+	switch (d->version_id) {
+	case 1: fseek (fp, 173, SEEK_CUR); break;
+	case 2:
+	case 3: fseek (fp, 181, SEEK_CUR); break;
+	}
+
+	return 0;
+}
+
+static struct qemu_device *
+apic_init_load (struct qemu_device_list *dl,
+		       uint32_t section_id, uint32_t instance_id,
+		       uint32_t version_id, bool live, FILE *fp)
+{
+	static struct qemu_device_vtbl apic = {
+		"apic",
+		apic_load, 
+		NULL
+	};
+
+	assert (!live);
+	return device_alloc (dl, sizeof (struct qemu_device),
+			     &apic, section_id, instance_id, version_id);
+}
+
+
 
 /* timer loader.  */
 
@@ -543,7 +677,33 @@ timer_init_load (struct qemu_device_list *dl,
 
 	assert (!live);
 	return device_alloc (dl, sizeof (struct qemu_device),
-			     &timer, section_id, instance_id);
+			     &timer, section_id, instance_id, version_id);
+}
+
+
+/* kvmclock loader.  */
+
+static uint32_t
+kvmclock_load (struct qemu_device *d, FILE *fp, enum qemu_save_section sec)
+{
+	fseek (fp, 8, SEEK_CUR);
+	return QEMU_FEATURE_KVM;
+}
+
+static struct qemu_device *
+kvmclock_init_load (struct qemu_device_list *dl,
+		       uint32_t section_id, uint32_t instance_id,
+		       uint32_t version_id, bool live, FILE *fp)
+{
+	static struct qemu_device_vtbl kvmclock = {
+		"kvmclock",
+		kvmclock_load, 
+		NULL
+	};
+
+	assert (!live);
+	return device_alloc (dl, sizeof (struct qemu_device),
+			     &kvmclock, section_id, instance_id, version_id);
 }
 
 
@@ -569,28 +729,36 @@ kvm_tpr_opt_init_load (struct qemu_device_list *dl,
 
 	assert (!live);
 	return device_alloc (dl, sizeof (struct qemu_device),
-			     &kvm_tpr_opt, section_id, instance_id);
+			     &kvm_tpr_opt, section_id, instance_id, version_id);
 }
 
 
 /* Putting it together.  */
 
 const struct qemu_device_loader devices_x86_64[] = {
+	{ "__rhel5", rhel5_marker_init_load },
 	{ "cpu_common", cpu_common_init_load },
 	{ "kvm-tpr-opt", kvm_tpr_opt_init_load },
+	{ "kvmclock", kvmclock_init_load },
 	{ "cpu", cpu_init_load_64 },
+	{ "apic", apic_init_load },
+	{ "block", block_init_load },
 	{ "ram", ram_init_load },
 	{ "timer", timer_init_load },
-	{ NULL }
+	{ NULL, NULL }
 };
 
 const struct qemu_device_loader devices_x86_32[] = {
+	{ "__rhel5", rhel5_marker_init_load },
 	{ "cpu_common", cpu_common_init_load },
 	{ "kvm-tpr-opt", kvm_tpr_opt_init_load },
+	{ "kvmclock", kvmclock_init_load },
 	{ "cpu", cpu_init_load_32 },
+	{ "apic", apic_init_load },
+	{ "block", block_init_load },
 	{ "ram", ram_init_load },
 	{ "timer", timer_init_load },
-	{ NULL }
+	{ NULL, NULL }
 };
 
 

@@ -127,6 +127,7 @@ kl_funcname(kaddr_t pc)
 {
         struct syment *sp;
 	char *buf, *name;
+	struct load_module *lm;
 
 	if ((sp = value_search(pc, NULL))) {
 		if (STREQ(sp->name, "_stext") &&
@@ -159,6 +160,9 @@ kl_funcname(kaddr_t pc)
 		}
 	}
 
+	if ((lm = init_module_function(pc))) 
+		return ("init_module");
+ 
        	return NULL;
 }
 
@@ -166,6 +170,7 @@ static kaddr_t
 kl_funcaddr(kaddr_t pc)
 {
 	struct syment *sp;
+	struct load_module *lm;
 
         if ((sp = value_search(pc, NULL))) {
                 switch (sp->type)
@@ -182,16 +187,33 @@ kl_funcaddr(kaddr_t pc)
                 if (is_kernel_text(pc))
                         return sp->value;
         }
+
+	if ((lm = init_module_function(pc)))
+		return lm->mod_init_module_ptr;
+
         return((kaddr_t)NULL);
 }
+
+static struct syment init_module_syment = {
+	.name = "init_module",
+	.type = 't',
+};
 
 static syment_t *
 kl_lkup_symaddr(kaddr_t addr)
 {
         struct syment *sp;
+	struct load_module *lm;
 
-        sp = value_search(addr, NULL); 
-	return sp;
+        if ((sp = value_search(addr, NULL)))
+		return sp;
+
+	if ((lm = init_module_function(addr))) {
+		init_module_syment.value = lm->mod_init_module_ptr;
+		return &init_module_syment;
+	}
+
+	return NULL;
 }
 
 static k_error_t
@@ -600,7 +622,7 @@ static int
 dump_framesize_cache(FILE *ofp, struct framesize_cache *fcp)
 {
         int i, count;
-        struct syment *sp;
+        struct syment *sp, *spm;
 	ulong offset;
 	int once;
 
@@ -625,8 +647,14 @@ dump_framesize_cache(FILE *ofp, struct framesize_cache *fcp)
 			framesize_cache[i].bp_adjust,
 			framesize_cache[i].flags & FRAMESIZE_VALIDATE ?
 			"V" : "-");	
-        	if ((sp = value_search(framesize_cache[i].pc, &offset))) {
-			fprintf(ofp, "(%s+", sp->name);
+        	if ((sp = value_search(framesize_cache[i].pc, &offset)) ||
+		    (spm = kl_lkup_symaddr(framesize_cache[i].pc))) {
+			if (sp) 
+				fprintf(ofp, "(%s+", sp->name);
+			else {
+				fprintf(ofp, "(%s+", spm->name);
+		    		offset = framesize_cache[i].pc - spm->value;
+			}
 			switch (pc->output_radix)
 			{
 			case 10:
@@ -776,7 +804,7 @@ get_framesize(kaddr_t pc)
 #endif
 
 	if (!(sp = kl_lkup_symaddr(pc))) {
-		return(-1);
+		return(0);
 	}
 #ifdef REDHAT
 	if (STREQ(sp->name, "do_IRQ") && (tt->flags & IRQSTACKS)) 
@@ -1801,6 +1829,7 @@ dump_stack_frame(trace_t *trace, sframe_t *curframe, FILE *ofp)
 	int i, first_time = 1;
 	kaddr_t sp;
 	uaddr_t *asp;
+	char buf[BUFSIZE];
 
 	sp = curframe->sp;
 	asp = curframe->asp;
@@ -1810,7 +1839,8 @@ dump_stack_frame(trace_t *trace, sframe_t *curframe, FILE *ofp)
 			if (first_time) {
 				first_time = 0;
 #ifdef REDHAT
-				fprintf(ofp, "    %x: %08x  ", sp, *asp++);
+				fprintf(ofp, "    %x: %s  ", sp, 
+					format_stack_entry(trace->bt, buf, *asp++, 0));
 #else
 				fprintf(ofp, "   %x: %08x  ", sp, *asp++);
 #endif
@@ -1820,11 +1850,13 @@ dump_stack_frame(trace_t *trace, sframe_t *curframe, FILE *ofp)
 #else
 				fprintf(ofp, "\n   %x: ", sp);
 #endif
-				fprintf(ofp, "%08x  ", *asp++);
+				fprintf(ofp, "%s  ", 
+					format_stack_entry(trace->bt, buf, *asp++, 0));
 			}
 			sp += 16;
 		} else  {
-			fprintf(ofp, "%08x  ", *asp++);
+			fprintf(ofp, "%s  ", 
+				format_stack_entry(trace->bt, buf, *asp++, 0));
 		}
 	}
 	if (curframe->frame_size) {
@@ -5672,6 +5704,8 @@ get_instr_stream(kaddr_t pc, int bcount, int acount)
 	} 
 #ifdef REDHAT
 	sp_next = next_symbol(NULL, sp1);
+	if (!sp_next)
+		return((instr_rec_t *)NULL);
 	sp_next_next = next_symbol(NULL, sp_next);
 
         if (pc > (sp_next->s_addr - (acount * 15))) {
