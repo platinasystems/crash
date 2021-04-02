@@ -75,7 +75,7 @@ main(int argc, char **argv)
 	 */
 	opterr = 0;
 	optind = 0;
-	while((c = getopt_long(argc, argv, "Lkgh::e:i:sSvc:d:tfp:m:",
+	while((c = getopt_long(argc, argv, "Lkgh::e:i:sSvc:d:tfp:m:x",
        		long_options, &option_index)) != -1) {
 		switch (c)
 		{
@@ -321,6 +321,10 @@ main(int argc, char **argv)
 					optarg);
 			break;
 
+		case 'x':
+			pc->flags |= PRELOAD_EXTENSIONS;
+			break;
+
 		default:
 			error(INFO, "invalid option: %s\n",
 				argv[optind-1]);
@@ -404,6 +408,17 @@ main(int argc, char **argv)
                                 pc->dumpfile = argv[optind];
                                 pc->readmem = read_kdump;
                                 pc->writemem = write_kdump;
+
+                        } else if (is_kvmdump(argv[optind])) {
+                                if (pc->flags & MEMORY_SOURCES) {
+                                        error(INFO,
+                                            "too many dumpfile arguments\n");
+                                        program_usage(SHORT_FORM);
+                                }
+                                pc->flags |= KVMDUMP;
+                                pc->dumpfile = argv[optind];
+                                pc->readmem = read_kvmdump;
+                                pc->writemem = write_kvmdump;
 
                         } else if (is_xendump(argv[optind])) {
                                 if (pc->flags & MEMORY_SOURCES) {
@@ -566,6 +581,9 @@ main_loop(void)
 		"minimal mode commands: log, dis, rd, sym, eval and exit\n\n");
 
         pc->flags |= RUNTIME;
+
+	if (pc->flags & PRELOAD_EXTENSIONS)
+		preload_extensions();
 
 	/*
 	 *  Return here if a non-recoverable error occurs
@@ -964,8 +982,8 @@ dump_program_context(void)
                 sprintf(&buf[strlen(buf)], "%sIN_FOREACH", others++ ? "|" : "");
         if (pc->flags & MFD_RDWR)
                 sprintf(&buf[strlen(buf)], "%sMFD_RDWR", others++ ? "|" : "");
-        if (pc->flags & DFD_RDWR)
-                sprintf(&buf[strlen(buf)], "%sDFD_RDWR", others++ ? "|" : "");
+        if (pc->flags & KVMDUMP)
+                sprintf(&buf[strlen(buf)], "%sKVMDUMP", others++ ? "|" : "");
         if (pc->flags & SILENT)
                 sprintf(&buf[strlen(buf)], "%sSILENT", others++ ? "|" : "");
         if (pc->flags & HASH)
@@ -1117,6 +1135,9 @@ dump_program_context(void)
         if (pc->flags & CRASHBUILTIN)
                 sprintf(&buf[strlen(buf)], 
 			"%sCRASHBUILTIN", others++ ? "|" : "");
+        if (pc->flags & PRELOAD_EXTENSIONS)
+                sprintf(&buf[strlen(buf)], 
+			"%sPRELOAD_EXTENSIONS", others++ ? "|" : "");
 
 	if (pc->flags)
 		strcat(buf, ")");

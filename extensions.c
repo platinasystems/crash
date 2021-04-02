@@ -19,6 +19,7 @@
 #include <dlfcn.h>
 
 static int in_extensions_library(char *, char *);
+static char *get_extensions_directory(char *);
 
 #define DUMP_EXTENSIONS   (0)
 #define LOAD_EXTENSION    (1)
@@ -228,7 +229,7 @@ load_extension(char *lib)
 	} else 
 		strcpy(ext->filename, lib);
 
-	if (!is_elf_file(ext->filename)) {
+	if (!is_shared_object(ext->filename)) {
 		error(INFO, "%s: not an ELF format object file\n",
 			ext->filename);
 		free(ext);
@@ -321,6 +322,80 @@ in_extensions_library(char *lib, char *buf)
 		return TRUE;
 
 	return FALSE;
+}
+
+/*
+ * Look for an extensions directory using the proper order. 
+ */
+static char *
+get_extensions_directory(char *dirbuf)
+{
+	char *env;
+
+	if ((env = getenv("CRASH_EXTENSIONS"))) {
+		if (is_directory(env)) {
+			strcpy(dirbuf, env);
+			return dirbuf;
+		}
+	}
+
+	if (BITS64()) {
+		sprintf(dirbuf, "/usr/lib64/crash/extensions");
+		if (is_directory(dirbuf))
+			return dirbuf;
+	}
+
+       	sprintf(dirbuf, "/usr/lib/crash/extensions");
+	if (is_directory(dirbuf))
+		return dirbuf;
+ 
+       	sprintf(dirbuf, "./extensions");
+	if (is_directory(dirbuf))
+		return dirbuf;
+
+	return NULL;
+}
+
+
+void
+preload_extensions(void)
+{
+	DIR *dirp;
+	struct dirent *dp;
+	char dirbuf[BUFSIZE];
+	char filename[BUFSIZE];
+	int found;
+
+	if (!get_extensions_directory(dirbuf))
+		return;
+
+        dirp = opendir(dirbuf);
+	if (!dirp) {
+		error(INFO, "%s: %s\n", dirbuf, strerror(errno));
+		return;
+	}
+
+        for (found = 0, dp = readdir(dirp); dp != NULL; dp = readdir(dirp)) {
+		sprintf(filename, "%s%s%s", dirbuf, 
+			LASTCHAR(dirbuf) == '/' ? "" : "/",
+			dp->d_name);
+
+		if (!is_shared_object(filename))
+			continue;
+
+		found++;
+
+		load_extension(dp->d_name);
+	}
+
+	closedir(dirp);
+	
+	if (found)
+		fprintf(fp, "\n");
+	else
+		error(NOTE, 
+		    "%s: no extension modules found in directory\n\n",
+			dirbuf);
 }
 
 /*

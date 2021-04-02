@@ -205,6 +205,10 @@ memory_source_init(void)
                         if (!xendump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
+		} else if (pc->flags & KVMDUMP) {
+                        if (!kvmdump_init(pc->dumpfile, fp))
+                                error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
 		} else if (pc->flags & DISKDUMP) {
                         if (!diskdump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",

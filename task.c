@@ -488,10 +488,25 @@ irqstacks_init(void)
 
 	thread_info_buf = GETBUF(SIZE(irq_ctx));
 
-        i = get_array_length("hardirq_ctx", NULL, 0);
-        get_symbol_data("hardirq_ctx",
-                sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
-                &tt->hardirq_ctx[0]);
+	if (symbol_exists("hardirq_ctx")) {
+		i = get_array_length("hardirq_ctx", NULL, 0);
+		get_symbol_data("hardirq_ctx",
+			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
+			&tt->hardirq_ctx[0]);
+	} else if (symbol_exists("per_cpu__hardirq_ctx")) {
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+			for (i = 0; i < NR_CPUS; i++) {
+				if (!kt->__per_cpu_offset[i])
+					continue;
+				tt->hardirq_ctx[i] =
+					symbol_value("per_cpu__hardirq_ctx") +
+					kt->__per_cpu_offset[i];
+			}
+		} else 
+			tt->hardirq_ctx[0] =
+				symbol_value("per_cpu__hardirq_ctx");
+	} else 
+		error(WARNING, "cannot determine hardirq_ctx addresses\n");
 
 	for (i = 0; i < NR_CPUS; i++) {
         	if (!(tt->hardirq_ctx[i]))
@@ -509,10 +524,25 @@ irqstacks_init(void)
 			ULONG(thread_info_buf+OFFSET(thread_info_task));
 	}
 
-        i = get_array_length("softirq_ctx", NULL, 0);
-        get_symbol_data("softirq_ctx",
-                sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
-                &tt->softirq_ctx[0]);
+	if (symbol_exists("softirq_ctx")) {
+		i = get_array_length("softirq_ctx", NULL, 0);
+		get_symbol_data("softirq_ctx",
+			sizeof(long)*(i <= NR_CPUS ? i : NR_CPUS),
+			&tt->softirq_ctx[0]);
+	} else if (symbol_exists("per_cpu__softirq_ctx")) {
+		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+			for (i = 0; i < NR_CPUS; i++) {
+				if (!kt->__per_cpu_offset[i])
+					continue;
+				tt->softirq_ctx[i] =
+					symbol_value("per_cpu__softirq_ctx") +
+					kt->__per_cpu_offset[i];
+			}
+		} else 
+			 tt->softirq_ctx[0] =
+				symbol_value("per_cpu__softirq_ctx");
+	} else
+		error(WARNING, "cannot determine softirq_ctx addresses\n");
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(tt->softirq_ctx[i]))
@@ -5499,6 +5529,10 @@ get_dumpfile_panic_task(void)
                 task = get_diskdump_panic_task();
                 if (task)
                         return task;
+        } else if (KVMDUMP_DUMPFILE()) {
+                task = get_kvmdump_panic_task();
+                if (task)
+                        return task;
 	} else if (XENDUMP_DUMPFILE()) {
                 task = get_xendump_panic_task();
                 if (task)
@@ -5557,7 +5591,7 @@ populate_panic_threads(void)
 
 	if (!found && !(kt->flags & SMP) &&
 	    (LKCD_DUMPFILE() || NETDUMP_DUMPFILE() || 
-	     KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE())) 
+	     KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE() || KVMDUMP_DUMPFILE())) 
 		tt->panic_threads[0] = get_dumpfile_panic_task();
 }
 	

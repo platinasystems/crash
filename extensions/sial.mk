@@ -5,7 +5,11 @@ else
         TARGET_FLAGS = -D$(TARGET)
 endif
 
-all: sial.so
+all:
+	@if [ -f /usr/bin/flex ] && [ -f /usr/bin/bison ]; then \
+	  make -f sial.mk sial.so; \
+	else \
+	  echo "sial.so: build failed: requires /usr/bin/flex and /usr/bin/bison"; fi
 
 lib-sial: 
 	cd libsial && make

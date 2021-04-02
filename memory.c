@@ -10481,7 +10481,7 @@ is_page_ptr(ulong addr, physaddr_t *phys)
 
 	if (IS_SPARSEMEM()) {
 		nr_mem_sections = NR_MEM_SECTIONS();
-	        for (nr = 0; nr <= nr_mem_sections ; nr++) {
+	        for (nr = 0; nr < nr_mem_sections ; nr++) {
 	                if ((sec_addr = valid_section_nr(nr))) {
 	                        coded_mem_map = section_mem_map_addr(sec_addr);
 	                        mem_map = sparse_decode_mem_map(coded_mem_map, nr);
@@ -12421,6 +12421,7 @@ memory_page_size(void)
 	case DEVMEM:                      
 	case MEMMOD:
 	case CRASHBUILTIN:
+	case KVMDUMP:
 		psz = (uint)getpagesize();  
 		break;
 
@@ -12630,6 +12631,8 @@ dumpfile_memory(int cmd)
         		retval = kdump_memory_used();
 		else if (pc->flags & XENDUMP)
         		retval = xendump_memory_used();
+		else if (pc->flags & KVMDUMP)
+			retval = kvmdump_memory_used();
 		else if (pc->flags & DISKDUMP)
         		retval = diskdump_memory_used();
 		else if (pc->flags & LKCD)
@@ -12649,6 +12652,8 @@ dumpfile_memory(int cmd)
 			retval = kdump_free_memory();
                 else if (pc->flags & XENDUMP)
 			retval = xendump_free_memory();
+                else if (pc->flags & KVMDUMP)
+			retval = kvmdump_free_memory();
                 else if (pc->flags & DISKDUMP)
 			retval = diskdump_free_memory();
                 else if (pc->flags & LKCD)
@@ -12668,6 +12673,8 @@ dumpfile_memory(int cmd)
                         retval = kdump_memory_dump(fp);
                 else if (pc->flags & XENDUMP) 
                         retval = xendump_memory_dump(fp);
+                else if (pc->flags & KVMDUMP) 
+                        retval = kvmdump_memory_dump(fp);
                 else if (pc->flags & DISKDUMP) 
                         retval = diskdump_memory_dump(fp);
                 else if (pc->flags & LKCD) 

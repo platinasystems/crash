@@ -1687,6 +1687,7 @@ find_trace(
 		if (func_name && XEN_HYPER_MODE()) {
 			if (STREQ(func_name, "continue_nmi") ||
 			    STREQ(func_name, "vmx_asm_vmexit_handler") ||
+			    STREQ(func_name, "common_interrupt") ||
 			    STREQ(func_name, "handle_nmi_mce") ||
 			    STREQ(func_name, "deferred_nmi")) {
 				/* Interrupt frame */
