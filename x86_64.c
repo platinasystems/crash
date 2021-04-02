@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 David Anderson
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -111,6 +111,8 @@ static int x86_64_get_framesize(struct bt_info *, ulong, ulong);
 static void x86_64_framesize_debug(struct bt_info *);
 static void x86_64_get_active_set(void);
 static int x86_64_get_kvaddr_ranges(struct vaddr_range *);
+static int x86_64_verify_paddr(uint64_t);
+static void GART_init(void);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -160,7 +162,7 @@ x86_64_init(int when)
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
-		machdep->verify_paddr = generic_verify_paddr;
+		machdep->verify_paddr = x86_64_verify_paddr;
 		machdep->ptrs_per_pgd = PTRS_PER_PGD;
 		machdep->flags |= MACHDEP_BT_TEXT;
 		machdep->flags |= FRAMESIZE_DEBUG;
@@ -265,7 +267,6 @@ x86_64_init(int when)
 		machdep->dis_filter = x86_64_dis_filter;
 		machdep->cmd_mach = x86_64_cmd_mach;
 		machdep->get_smp_cpus = x86_64_get_smp_cpus;
-		machdep->line_number_hooks = x86_64_line_number_hooks;
 		machdep->value_to_symbol = x86_64_value_to_symbol;
 		machdep->init_kernel_pgd = x86_64_init_kernel_pgd;
 		machdep->clear_machdep_cache = x86_64_clear_machdep_cache;
@@ -479,6 +480,8 @@ x86_64_init(int when)
 		machdep->dump_irq = x86_64_dump_irq;
 		machdep->get_irq_affinity = x86_64_get_irq_affinity;
 		machdep->show_interrupts = x86_64_show_interrupts;
+		if (THIS_KERNEL_VERSION < LINUX(2,6,24))
+			machdep->line_number_hooks = x86_64_line_number_hooks;
 		if (!machdep->hz) {
 			machdep->hz = HZ;
 			if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
@@ -541,6 +544,7 @@ x86_64_init(int when)
 				   "pr_reg");
 		STRUCT_SIZE_INIT(percpu_data, "percpu_data");
 
+		GART_init();
 		break;
 
 	case POST_VM:
@@ -550,6 +554,11 @@ x86_64_init(int when)
 	case POST_INIT:
 		x86_64_post_init();
 		x86_64_get_active_set();
+		break;
+
+	case LOG_ONLY:
+                machdep->machspec = &x86_64_machine_specific;
+		x86_64_calc_phys_base();
 		break;
 	}
 }
@@ -591,6 +600,8 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sFRAMESIZE_DEBUG", others++ ? "|" : "");
 	if (machdep->flags & FRAMEPOINTER)
 		fprintf(fp, "%sFRAMEPOINTER", others++ ? "|" : "");
+	if (machdep->flags & GART_REGION)
+		fprintf(fp, "%sGART_REGION", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -654,7 +665,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "       get_smp_cpus: x86_64_get_smp_cpus()\n");
         fprintf(fp, "          is_kvaddr: x86_64_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: x86_64_is_uvaddr()\n");
-        fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+        fprintf(fp, "       verify_paddr: x86_64_verify_paddr()\n");
         fprintf(fp, "  get_kvaddr_ranges: x86_64_get_kvaddr_ranges()\n");
         fprintf(fp, "    init_kernel_pgd: x86_64_init_kernel_pgd()\n");
         fprintf(fp, "clear_machdep_cache: x86_64_clear_machdep_cache()\n");
@@ -664,7 +675,8 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "   get_xendump_regs: x86_64_get_xendump_regs()\n");
 	fprintf(fp, " xendump_panic_task: x86_64_xendump_panic_task()\n");
 	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
-        fprintf(fp, "  line_number_hooks: x86_64_line_number_hooks\n");
+	fprintf(fp, "  line_number_hooks: %s\n", machdep->line_number_hooks ?
+		"x86_64_line_number_hooks" : "(unused)");
 	fprintf(fp, " verify_line_number: x86_64_verify_line_number()\n");
         fprintf(fp, "    value_to_symbol: x86_64_value_to_symbol()\n");
         fprintf(fp, " in_alternate_stack: x86_64_in_alternate_stack()\n");
@@ -696,6 +708,8 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "              vmemmap_end: %016lx %s\n", (ulong)ms->vmemmap_end,
 		machdep->flags & VMEMMAP ? "" : "(unused)");
 	fprintf(fp, "                phys_base: %lx\n", (ulong)ms->phys_base);
+	fprintf(fp, "               GART_start: %lx\n", ms->GART_start);
+	fprintf(fp, "                 GART_end: %lx\n", ms->GART_end);
 	fprintf(fp, "                     pml4: %lx\n", (ulong)ms->pml4);
 	fprintf(fp, "           last_pml4_read: %lx\n", (ulong)ms->last_pml4_read);
 	if (ms->upml) {
@@ -4917,6 +4931,9 @@ x86_64_display_machine_stats(void)
 	fprintf(fp, "          MACHINE TYPE: %s\n", uts->machine);
 	fprintf(fp, "           MEMORY SIZE: %s\n", get_memory_size(buf));
 	fprintf(fp, "                  CPUS: %d\n", kt->cpus);
+	if (!STREQ(kt->hypervisor, "(undetermined)") &&
+	    !STREQ(kt->hypervisor, "bare hardware"))
+		fprintf(fp, "            HYPERVISOR: %s\n",  kt->hypervisor);
 	fprintf(fp, "       PROCESSOR SPEED: ");
 	if ((mhz = machdep->processor_speed()))
 		fprintf(fp, "%ld Mhz\n", mhz);
@@ -5314,21 +5331,33 @@ x86_64_framepointer_init(void)
 {
 	unsigned int push_rbp_mov_rsp_rbp;
 	int i, check;
-	char *checkfuncs[] = {"sys_open", "sys_fork", "sys_read"};
+	char *checkfuncs[] = {"sys_open", "sys_fork", "sys_read",
+		"do_futex", "do_fork", "vfs_read"};
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
 
-        for (i = check = 0; i < 3; i++) {
-                if (!readmem(symbol_value(checkfuncs[i]), KVADDR,
-                    &push_rbp_mov_rsp_rbp, sizeof(uint),
-                    "framepointer check", RETURN_ON_ERROR))
+	for (i = check = 0; i < 6; i++) {
+		if (!kernel_symbol_exists(checkfuncs[i]))
+			continue;
+
+		if (!readmem(symbol_value(checkfuncs[i]), KVADDR,
+		    &push_rbp_mov_rsp_rbp, sizeof(uint),
+		    "framepointer check", RETURN_ON_ERROR))
 			return;
-		if (push_rbp_mov_rsp_rbp == 0xe5894855)
+
+		if (push_rbp_mov_rsp_rbp == 0x66666666) {
+			if (!readmem(symbol_value(checkfuncs[i]) + 5, 
+			    KVADDR, &push_rbp_mov_rsp_rbp, sizeof(uint),
+			    "framepointer check", RETURN_ON_ERROR))
+				return;
+		}
+
+		if (push_rbp_mov_rsp_rbp == PUSH_RBP_MOV_RSP_RBP)
 			check++;
         }
 
-	if (check == 3)
+	if (check >= 3)
 		machdep->flags |= FRAMEPOINTER;
 }
 
@@ -5653,6 +5682,8 @@ x86_64_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
         if (!readmem(PTOB(mfn), PHYSADDR, machdep->pgd, PAGESIZE(),
             "xen kdump pud page", RETURN_ON_ERROR))
 		error(FATAL, "cannot read/find pud page\n");
+
+	machdep->last_pgd_read = mfn;
         
         if (CRASHDEBUG(7))
 		x86_64_debug_dump_page(fp, machdep->pgd, 
@@ -5670,6 +5701,8 @@ x86_64_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
             "xen kdump pmd page", RETURN_ON_ERROR))
                 error(FATAL, "cannot read/find pmd page\n");
 
+	machdep->last_pmd_read = mfn;
+
         if (CRASHDEBUG(7)) 
 		x86_64_debug_dump_page(fp, machdep->pmd, 
 			"contents of page middle directory page:");
@@ -5685,6 +5718,8 @@ x86_64_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
        if (!readmem(PTOB(mfn), PHYSADDR, machdep->ptbl, PAGESIZE(),
             "xen kdump page table page", RETURN_ON_ERROR))
                 error(FATAL, "cannot read/find page table page\n");
+
+	machdep->last_ptbl_read = mfn;
 
         if (CRASHDEBUG(7)) 
 		x86_64_debug_dump_page(fp, machdep->ptbl, 
@@ -5771,13 +5806,16 @@ x86_64_calc_phys_base(void)
 
 	machdep->machspec->phys_base = 0;   /* default/traditional */
 
-	if (!kernel_symbol_exists("phys_base"))
-		return;
-
-	if (!symbol_exists("_text"))
-		return;
-	else
-		text_start = symbol_value("_text");
+	if (pc->flags2 & GET_LOG) 
+		text_start = BADADDR;
+	else {
+		if (!kernel_symbol_exists("phys_base"))
+			return;
+		if (!symbol_exists("_text"))
+			return;
+		else
+			text_start = symbol_value("_text");
+	}
 
 	if (ACTIVE()) {
 	        if ((iomem = fopen("/proc/iomem", "r")) == NULL)
@@ -6304,6 +6342,8 @@ x86_64_xendump_load_page(ulong kvaddr, struct xendump_data *xd)
 	if (!xc_core_mfn_to_page(mfn, machdep->pgd))
 		error(FATAL, "cannot read/find pud page\n");
 
+	machdep->last_pgd_read = mfn;
+
         if (CRASHDEBUG(7))
 		x86_64_debug_dump_page(xd->ofp, machdep->pgd, 
                 	"contents of page upper directory page:");
@@ -6319,6 +6359,8 @@ x86_64_xendump_load_page(ulong kvaddr, struct xendump_data *xd)
         if (!xc_core_mfn_to_page(mfn, machdep->pmd))
                 error(FATAL, "cannot read/find pmd page\n");
 
+	machdep->last_pmd_read = mfn;
+
         if (CRASHDEBUG(7)) 
 		x86_64_debug_dump_page(xd->ofp, machdep->pmd, 
 			"contents of page middle directory page:");
@@ -6333,6 +6375,8 @@ x86_64_xendump_load_page(ulong kvaddr, struct xendump_data *xd)
 
         if (!xc_core_mfn_to_page(mfn, machdep->ptbl))
                 error(FATAL, "cannot read/find page table page\n");
+
+	machdep->last_ptbl_read = mfn;
 
         if (CRASHDEBUG(7)) 
 		x86_64_debug_dump_page(xd->ofp, machdep->ptbl, 
@@ -7553,5 +7597,55 @@ x86_64_get_kvaddr_ranges(struct vaddr_range *vrp)
 	return cnt;
 }
 
+/*
+ *  Determine the physical memory range reserved for GART.
+ */
+static void
+GART_init(void)
+{
+	char resource[BUFSIZE];
+	struct syment *sp;
+	struct machine_specific *ms;
+
+	if (!(sp = kernel_symbol_search("gart_resource")))
+		return;
+
+	STRUCT_SIZE_INIT(resource, "resource");
+	MEMBER_OFFSET_INIT(resource_start, "resource", "start");
+	MEMBER_OFFSET_INIT(resource_end, "resource", "end");
+
+	if (VALID_STRUCT(resource) && 
+	    VALID_MEMBER(resource_start) && 
+	    VALID_MEMBER(resource_end)) {
+		if (!readmem(sp->value, KVADDR, resource,
+		    SIZE(resource), "GART resource", RETURN_ON_ERROR))
+			return;
+		ms = machdep->machspec;
+		ms->GART_start = ULONG(resource + OFFSET(resource_start));
+		ms->GART_end = ULONG(resource + OFFSET(resource_end)); 
+		if (ms->GART_start && ms->GART_end) {
+			machdep->flags |= GART_REGION;
+			if (CRASHDEBUG(1))
+				fprintf(fp, "GART address range: %lx - %lx\n", 
+					ms->GART_start, ms->GART_end);
+		}
+	}
+}
+
+static int 
+x86_64_verify_paddr(uint64_t paddr)
+{
+	struct machine_specific *ms;
+
+	if (machdep->flags & GART_REGION) {
+		ms = machdep->machspec;
+		if (ms->GART_start && ms->GART_end &&
+		    (paddr >= ms->GART_start) &&
+		    (paddr <= ms->GART_end))
+			return FALSE;
+	}
+
+	return TRUE;
+}
 
 #endif  /* X86_64 */ 

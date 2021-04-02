@@ -30,12 +30,14 @@ all:
         then \
         if  [ ! -f $(APPFILE) ]; \
         then \
-          if [ -f "$(GIT)" ] && [ -n "$(GOOGLE)" ] ; \
+          if [ -f "$(GIT)" ]; \
           then \
              if [ -n "$(EPPIC_GIT_URL)" ]; then \
                git clone "$(EPPIC_GIT_URL)" eppic; \
              else \
-               git clone https://code.google.com/p/eppic eppic; \
+	          if [ -n "$(GOOGLE)" ] ; then \
+	            git clone https://code.google.com/p/eppic eppic; \
+	          fi; \
              fi; \
           else \
 	     if [ ! -f "$(GIT)" ]; then \

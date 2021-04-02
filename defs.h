@@ -1,8 +1,8 @@
 /* defs.h - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -59,7 +59,7 @@
 #define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
 #endif
 
-#define BASELEVEL_REVISION  "6.1.0"
+#define BASELEVEL_REVISION  "6.1.2"
 
 #undef TRUE
 #undef FALSE
@@ -73,7 +73,7 @@
 
 #if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
     !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
-    !defined(ARM)
+    !defined(ARM) && !defined(ARM64)
 #ifdef __alpha__
 #define ALPHA
 #endif
@@ -101,13 +101,16 @@
 #ifdef __arm__
 #define ARM
 #endif
+#ifdef __aarch64__
+#define ARM64
+#endif
 #endif
 
 #ifdef X86
 #define NR_CPUS  (256)
 #endif
 #ifdef X86_64
-#define NR_CPUS  (4096)
+#define NR_CPUS  (5120)
 #endif
 #ifdef ALPHA
 #define NR_CPUS  (64)
@@ -129,6 +132,9 @@
 #endif
 #ifdef ARM
 #define NR_CPUS  (4)
+#endif
+#ifdef ARM64
+#define NR_CPUS  (4096)   /* TBD */
 #endif
 
 #define BUFSIZE  (1500)
@@ -495,6 +501,8 @@ struct program_context {
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 #define RADIX_OVERRIDE (0x80ULL)
 #define QEMU_MEM_DUMP (0x100ULL)
+#define GET_LOG       (0x200ULL)
+#define VMCOREINFO    (0x400ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -528,6 +536,7 @@ struct args_input_file {
 #define REFRESH_TASK_TABLE (0x1)           /* command_table_entry flags */
 #define HIDDEN_COMMAND     (0x2)
 #define CLEANUP            (0x4)           /* for extensions only */
+#define MINIMAL            (0x8)
 
 /*
  *  A linked list of extension table structures keeps track of the current
@@ -543,6 +552,7 @@ struct extension_table {
 
 #define REGISTERED              (0x1)      /* extension_table flags */
 #define DUPLICATE_COMMAND_NAME  (0x2)
+#define NO_MINIMAL_COMMANDS     (0x4)
 
 struct new_utsname {
         char sysname[65];
@@ -676,6 +686,22 @@ struct kernel_table {                   /* kernel data */
 #define IKCONFIG_LOADED	0x2	/* ikconfig data is currently loaded */
 	int ikconfig_flags;
 	int ikconfig_ents;
+	char *hypervisor;
+	struct vmcoreinfo_data {
+		ulong log_buf_SYMBOL;
+		ulong log_end_SYMBOL;
+		ulong log_buf_len_SYMBOL;
+		ulong logged_chars_SYMBOL;
+		ulong log_first_idx_SYMBOL;
+		ulong log_next_idx_SYMBOL;
+		long log_SIZE;
+		long log_ts_nsec_OFFSET;
+		long log_len_OFFSET;
+		long log_text_len_OFFSET;
+		long log_dict_len_OFFSET;
+		ulong phys_base_SYMBOL;
+		ulong _stext_SYMBOL;
+	} vmcoreinfo;
 };
 
 /*
@@ -709,11 +735,13 @@ struct kernel_table {                   /* kernel data */
 #define IS_KERNEL_STATIC_TEXT(x) (((ulong)(x) >= kt->stext) && \
 		  	          ((ulong)(x) < kt->etext))
 
+#define TASK_COMM_LEN 16     /* task command name length including NULL */
+
 struct task_context {                     /* context stored for each task */
         ulong task;
 	ulong thread_info;
         ulong pid;
-        char comm[16+1];
+        char comm[TASK_COMM_LEN+1];
 	int processor;
 	ulong ptask;
 	ulong mm_struct;
@@ -994,6 +1022,7 @@ extern struct machdep_table *machdep;
 #define POST_GDB   (3)
 #define POST_INIT  (4)
 #define POST_VM    (5)
+#define LOG_ONLY   (6)
 
 #define FOREACH_BT     (1)
 #define FOREACH_VM     (2)
@@ -1004,6 +1033,7 @@ extern struct machdep_table *machdep;
 #define FOREACH_TEST   (7)
 #define FOREACH_VTOP   (8)
 #define FOREACH_SIG    (9)
+#define FOREACH_PS    (10)
 
 #define MAX_FOREACH_KEYWORDS (10)
 #define MAX_FOREACH_TASKS    (50)
@@ -1038,6 +1068,11 @@ extern struct machdep_table *machdep;
 #define FOREACH_x_FLAG  (0x800000)
 #define FOREACH_d_FLAG (0x1000000)
 #define FOREACH_STATE  (0x2000000)
+#define FOREACH_a_FLAG (0x4000000)
+#define FOREACH_G_FLAG (0x8000000)
+
+#define FOREACH_PS_EXCLUSIVE \
+  (FOREACH_g_FLAG|FOREACH_a_FLAG|FOREACH_t_FLAG|FOREACH_c_FLAG|FOREACH_p_FLAG|FOREACH_l_FLAG|FOREACH_r_FLAG)
 
 struct foreach_data {
 	ulong flags;
@@ -1792,6 +1827,27 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long sched_rt_entity_my_q;
 	long neigh_table_hash_shift;
 	long neigh_table_nht_ptr;
+	long task_group_parent;
+	long task_group_css;
+	long cgroup_subsys_state_cgroup;
+	long cgroup_dentry;
+	long task_group_rt_rq;
+	long rt_rq_tg;
+	long task_group_cfs_rq;
+	long cfs_rq_tg;
+	long task_group_siblings;
+	long task_group_children;
+	long task_group_cfs_bandwidth;
+	long cfs_rq_throttled;
+	long task_group_rt_bandwidth;
+	long rt_rq_rt_throttled;
+	long rt_rq_highest_prio;
+	long rt_rq_rt_nr_running;
+	long vmap_area_va_start;
+	long vmap_area_va_end;
+	long vmap_area_list;
+	long vmap_area_flags;
+	long vmap_area_vm;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -1927,6 +1983,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long log;
 	long log_level;
 	long rt_rq;
+	long task_group;
+	long vmap_area;
 };
 
 struct array_table {
@@ -2120,6 +2178,7 @@ struct vm_table {                /* kernel VM-related data */
 #define SWAPINFO_V2            (0x400000)
 #define NODELISTS_IS_PTR       (0x800000)
 #define KMALLOC_COMMON        (0x1000000)
+#define USE_VMAP_AREA         (0x2000000)
 
 #define IS_FLATMEM()		(vt->flags & FLATMEM)
 #define IS_DISCONTIGMEM()	(vt->flags & DISCONTIGMEM)
@@ -2171,6 +2230,7 @@ struct tree_data {
 	long node_member_offset;
 	char **structname;
 	int structname_args;
+	int count;
 };
 
 #define TREE_ROOT_OFFSET_ENTERED  (VERBOSE << 1)
@@ -2492,6 +2552,14 @@ struct load_module {
 #define _MAX_PHYSMEM_BITS	32
 
 #endif  /* ARM */
+
+#ifdef ARM64
+#define _64BIT_
+#define MACHINE_TYPE       "ARM64"    
+
+/* TBD */
+
+#endif  /* ARM64 */
 
 #ifdef X86
 #define _32BIT_
@@ -3223,6 +3291,7 @@ struct efi_memory_desc_t {
 
 #define _SECTION_SIZE_BITS	24
 #define _MAX_PHYSMEM_BITS	44
+#define _MAX_PHYSMEM_BITS_3_7   46
 
 #endif /* PPC64 */
 
@@ -3333,6 +3402,10 @@ struct efi_memory_desc_t {
 #ifdef PPC64
 #define MAX_HEXADDR_STRLEN (16)
 #define UVADDR_PRLEN       (16)
+#endif
+#ifdef ARM64
+#define MAX_HEXADDR_STRLEN (16)
+#define UVADDR_PRLEN       (10)
 #endif
 
 #define BADADDR  ((ulong)(-1))
@@ -3689,21 +3762,23 @@ extern long _ZOMBIE_;
 /*
  *  ps command options.
  */
-#define PS_BY_PID       (0x1)
-#define PS_BY_TASK      (0x2)
-#define PS_BY_CMD       (0x4)
-#define PS_SHOW_ALL     (0x8)
-#define PS_PPID_LIST   (0x10)
-#define PS_CHILD_LIST  (0x20)
-#define PS_KERNEL      (0x40)
-#define PS_USER        (0x80)
-#define PS_TIMES      (0x100)
-#define PS_KSTACKP    (0x200)
-#define PS_LAST_RUN   (0x400)
-#define PS_ARGV_ENVP  (0x800)
-#define PS_TGID_LIST (0x1000)
-#define PS_RLIMIT    (0x2000)
-#define PS_GROUP     (0x4000)
+#define PS_BY_PID         (0x1)
+#define PS_BY_TASK        (0x2)
+#define PS_BY_CMD         (0x4)
+#define PS_SHOW_ALL       (0x8)
+#define PS_PPID_LIST     (0x10)
+#define PS_CHILD_LIST    (0x20)
+#define PS_KERNEL        (0x40)
+#define PS_USER          (0x80)
+#define PS_TIMES        (0x100)
+#define PS_KSTACKP      (0x200)
+#define PS_LAST_RUN     (0x400)
+#define PS_ARGV_ENVP    (0x800)
+#define PS_TGID_LIST   (0x1000)
+#define PS_RLIMIT      (0x2000)
+#define PS_GROUP       (0x4000)
+#define PS_BY_REGEX    (0x8000)
+#define PS_NO_HEADER  (0x10000)
 
 #define PS_EXCLUSIVE (PS_TGID_LIST|PS_ARGV_ENVP|PS_TIMES|PS_CHILD_LIST|PS_PPID_LIST|PS_LAST_RUN|PS_RLIMIT)
 
@@ -3714,7 +3789,12 @@ struct psinfo {
         ulong pid[MAX_PS_ARGS];
 	int type[MAX_PS_ARGS];
         ulong task[MAX_PS_ARGS];
-        char comm[MAX_PS_ARGS][16+1];
+        char comm[MAX_PS_ARGS][TASK_COMM_LEN+1];
+	struct regex_data {
+		char *pattern;
+		regex_t regex;
+	} regex_data[MAX_PS_ARGS];
+	int regexs;
 };
 
 #define IS_A_NUMBER(X)      (decimal(X, 0) || hexadecimal(X, 0))
@@ -3830,6 +3910,9 @@ void dump_program_context(void);
 void dump_build_data(void);
 #ifdef ARM
 #define machdep_init(X) arm_init(X)
+#endif
+#ifdef ARM64
+#define machdep_init(X) arm64_init(X)
 #endif
 #ifdef X86
 #define machdep_init(X) x86_init(X)
@@ -3947,8 +4030,8 @@ char *shift_string_right(char *, int);
 int bracketed(char *, char *, int);
 void backspace(int);
 int do_list(struct list_data *);
-void do_rdtree(struct tree_data *);
-void do_rbtree(struct tree_data *);
+int do_rdtree(struct tree_data *);
+int do_rbtree(struct tree_data *);
 int retrieve_list(ulong *, int);
 long power(long, int);
 long long ll_power(long long, long long);
@@ -3997,6 +4080,7 @@ int endian_mismatch(char *, char, ulong);
 uint16_t swap16(uint16_t, int);
 uint32_t swap32(uint32_t, int);
 int make_cpumask(char *, ulong *, int, int *);
+size_t strlcpy(char *, char *, size_t);
 
 /* 
  *  symbols.c 
@@ -4223,6 +4307,9 @@ void display_help_screen(char *);
 #ifdef ARM
 #define dump_machdep_table(X) arm_dump_machdep_table(X)
 #endif
+#ifdef ARM64
+#define dump_machdep_table(X) arm64_dump_machdep_table(X)
+#endif
 #ifdef X86
 #define dump_machdep_table(X) x86_dump_machdep_table(X)
 #endif
@@ -4408,6 +4495,7 @@ int get_cpus_possible(void);
 int get_highest_cpu_online(void);
 int get_highest_cpu_present(void);
 int get_cpus_to_display(void);
+void get_log_from_vmcoreinfo(char *file, char *(*)(const char *));
 int in_cpu_map(int, int);
 void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
@@ -4577,6 +4665,15 @@ int init_unwind_tables(void);
 void unwind_backtrace(struct bt_info *);
 #endif /* ARM */
 
+#ifdef ARM64
+void arm64_init(int);
+void arm64_dump_machdep_table(ulong);
+
+/* TBD */
+
+#endif  /* ARM64 */
+
+
 /*
  *  alpha.c
  */
@@ -4696,6 +4793,8 @@ struct machine_specific {
 	ulong vsyscall_page;
 	ulong thread_return;
 	ulong page_protnone;
+	ulong GART_start;
+	ulong GART_end;
 };
 
 #define KSYMS_START    (0x1)
@@ -4708,6 +4807,7 @@ struct machine_specific {
 #define PHYS_BASE     (0x80)
 #define VM_XEN_RHEL4 (0x100)
 #define FRAMEPOINTER (0x200)
+#define GART_REGION  (0x400)
 
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
 

@@ -1,8 +1,8 @@
 /* main.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@ static int is_input_file(void);
 static void check_xen_hyper(void);
 static void show_untrusted_files(void);
 static void get_osrelease(char *);
+static void get_log(char *);
 
 static struct option long_options[] = {
         {"memory_module", required_argument, 0, 0},
@@ -66,6 +67,7 @@ static struct option long_options[] = {
 	{"kvmio", required_argument, 0, 0},
 	{"no_elf_notes", 0, 0, 0},
 	{"osrelease", required_argument, 0, 0},
+	{"log", required_argument, 0, 0},
 	{"hex", 0, 0, 0},
 	{"dec", 0, 0, 0},
         {0, 0, 0, 0}
@@ -246,6 +248,11 @@ main(int argc, char **argv)
 		        else if (STREQ(long_options[option_index].name, "osrelease")) {
 				pc->flags2 |= GET_OSRELEASE;
 				get_osrelease(optarg);
+			}
+
+		        else if (STREQ(long_options[option_index].name, "log")) {
+				pc->flags2 |= GET_LOG;
+				get_log(optarg);
 			}
 
 			else if (STREQ(long_options[option_index].name, "hex")) {
@@ -687,7 +694,7 @@ main_loop(void)
 
 	if (pc->flags & MINIMAL_MODE)
             error(NOTE, 
-		"minimal mode commands: log, dis, rd, sym, eval, set and exit\n\n");
+		"minimal mode commands: log, dis, rd, sym, eval, set, extend and exit\n\n");
 
         pc->flags |= RUNTIME;
 
@@ -795,7 +802,7 @@ reattempt:
 	if (pc->flags & MINIMAL_MODE)
 		error(INFO, 
 		    "%s: command not available in minimal mode\n"
-		    "NOTE: minimal mode commands: log, dis, rd, sym, eval, set and exit\n",
+		    "NOTE: minimal mode commands: log, dis, rd, sym, eval, set, extend and exit\n",
 			args[0]);
 	else
 		error(INFO, "command not found: %s\n", args[0]);
@@ -829,18 +836,22 @@ get_command_table_entry(char *name)
 			name = "gdb";
 	}
 	
-	if ((pc->flags & MINIMAL_MODE) && !minimal_functions(name)) 
-		return NULL;
-  
 	for (cp = pc->cmd_table; cp->name; cp++) {
-                if (STREQ(cp->name, name))
-                        return cp;
+                if (STREQ(cp->name, name)) {
+			if (!(pc->flags & MINIMAL_MODE) || (cp->flags & MINIMAL))
+				return cp;
+			else
+				return NULL;
+		}
         }
                 
         for (ext = extension_table; ext; ext = ext->next) {
                 for (cp = ext->command_table; cp->name; cp++) {
                         if (STREQ(cp->name, name)) {
-                                return cp;
+				if (!(pc->flags & MINIMAL_MODE) || (cp->flags & MINIMAL))
+					return cp;
+				else
+					return NULL;
 			}
                 }
         }       
@@ -1331,6 +1342,10 @@ dump_program_context(void)
 		fprintf(fp, "%sRADIX_OVERRIDE", others++ ? "|" : "");
 	if (pc->flags2 & QEMU_MEM_DUMP)
 		fprintf(fp, "%sQEMU_MEM_DUMP", others++ ? "|" : "");
+	if (pc->flags2 & GET_LOG)
+		fprintf(fp, "%sGET_LOG", others++ ? "|" : "");
+	if (pc->flags2 & VMCOREINFO)
+		fprintf(fp, "%sVMCOREINFO", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
@@ -1758,6 +1773,29 @@ get_osrelease(char *dumpfile)
 	
 	if (retval)
 		fprintf(fp, "unknown\n");
+
+	clean_exit(retval);
+}
+
+static void
+get_log(char *dumpfile)
+{
+
+	int retval = 1;
+
+	if (is_flattened_format(dumpfile))
+		pc->flags2 |= FLAT;
+	
+	if (is_diskdump(dumpfile)) {
+		if (pc->flags2 & GET_LOG)
+			retval = 0;
+	} else if (is_kdump(dumpfile, KDUMP_LOCAL)) {
+		if (pc->flags2 & GET_LOG)
+			retval = 0;
+	}
+
+	if (retval)
+		fprintf(fp, "%s: no VMCOREINFO data\n", dumpfile);
 
 	clean_exit(retval);
 }

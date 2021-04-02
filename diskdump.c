@@ -7,8 +7,8 @@
  * netdump dumpfiles, the facilities in netdump.c are used.  For
  * compressed dumpfiles, the facilities in this file are used.
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2013 David Anderson
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2005  FUJITSU LIMITED
  * Copyright (C) 2005  NEC Corporation
  *
@@ -224,7 +224,7 @@ open_dump_file(char *file)
 
 	fd = open(file, O_RDONLY);
 	if (fd < 0) {
-		error(INFO, "diskdump / compressed kdump: unable to open dump file %s", file);
+		error(INFO, "diskdump / compressed kdump: unable to open dump file %s\n", file);
 		return FALSE;
 	}
 
@@ -295,6 +295,64 @@ x86_process_elf_notes(void *note_ptr, unsigned long size_note)
 		process_elf64_notes(note_ptr, size_note);
 	else if (machine_type("X86"))
 		process_elf32_notes(note_ptr, size_note);
+}
+
+/*
+ * ARM compressed kdumps with header version 3 may contain a malformed
+ * kdump_sub_header structure with offset_vmcoreinfo and size_vmcoreinfo
+ * fields offset by 4 bytes, and the actual vmcoreinfo data is not
+ * preceded by its ELF note header and its "VMCOREINFO" string.  This
+ * workaround finds the vmcoreinfo data and patches the stored copy
+ * copy of the header's offset_vmcoreinfo and size_vmcoreinfo values.
+ */
+static void
+arm_vmcoreinfo_kludge(int header_version, off_t offset, int block_size)
+{
+	ulong i, found;
+	char *p;
+	struct kdump_sub_header *kdsh;
+
+	if (header_version != 3)
+		return;
+
+	kdsh = dd->sub_header_kdump;
+	p = (char *)kdsh;
+
+	for (i = found = 0; i < block_size; i++, p++) {
+		if (!found && (*p == 'O')) {
+			if (STRNEQ(p, "OSRELEASE=")) {
+				found = i;
+				continue;
+			}
+		}
+		if (found && (*p == NULLCHAR))
+			break;
+	}
+
+	if (found) {
+		if (CRASHDEBUG(1)) {
+			if (kdsh->offset_vmcoreinfo != (found + offset)) {
+				fprintf(fp, "compressed kdump: "
+				    "invalid offset_vmcoreinfo: %lld (0x%llx)\n",
+					(ulonglong)kdsh->offset_vmcoreinfo,
+					(ulonglong)kdsh->offset_vmcoreinfo);
+				fprintf(fp,
+				    "%ssetting offset_vmcoreinfo: %lld (0x%llx)\n",
+					space(18),
+					(ulonglong)(found + offset), 
+					(ulonglong)(found + offset));
+			}
+			if (kdsh->size_vmcoreinfo != (i - found)) {
+				fprintf(fp, "compressed kdump: "
+				    "invalid size_vmcoreinfo: %ld\n",
+					kdsh->size_vmcoreinfo);
+				fprintf(fp, "%ssetting size_vmcoreinfo: %ld\n",
+					space(18), i - found);
+			}
+		}
+		kdsh->offset_vmcoreinfo = (off_t)(found + offset);
+		kdsh->size_vmcoreinfo = i - found;
+	}
 }
 
 static int 
@@ -397,8 +455,8 @@ restart:
                 error(WARNING, "%s: invalid nr_cpus value: %d\n",
                         DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
                         header->nr_cpus);
-		if (!machine_type("S390") && !machine_type("S390X")) {
-			/* s390 can get register information also from memory */
+		if (!machine_type("S390") && !machine_type("S390X") &&
+		    !machine_type("X86") && !machine_type("X86_64")) {
 			if (DISKDUMP_VALID())
 				goto err;
 		}
@@ -447,6 +505,9 @@ restart:
 			}
 		}
 		dd->sub_header_kdump = sub_header_kdump;
+
+		if (machine_type("ARM"))
+			arm_vmcoreinfo_kludge(header->header_version, offset, block_size);
 	}
 
 	/* read memory bitmap */
@@ -560,6 +621,11 @@ restart:
 		(sub_header_kdump->offset_eraseinfo) &&
 		(sub_header_kdump->size_eraseinfo))
 		pc->flags2 |= ERASEINFO_DATA;
+
+	if (KDUMP_CMPRS_VALID() && (dd->header->header_version >= 3) &&
+		dd->sub_header_kdump->offset_vmcoreinfo &&
+		dd->sub_header_kdump->size_vmcoreinfo)
+		pc->flags2 |= VMCOREINFO;
 
 	/* For split dumpfile */
 	if (KDUMP_CMPRS_VALID()) {
@@ -685,6 +751,13 @@ is_diskdump(char *file)
 #ifdef SNAPPY
 	dd->flags |= SNAPPY_SUPPORTED;
 #endif
+
+	if ((pc->flags2 & GET_LOG) && KDUMP_CMPRS_VALID()) {
+		pc->dfd = dd->dfd;
+		pc->readmem = read_diskdump;
+		pc->flags |= DISKDUMP;
+		get_log_from_vmcoreinfo(file, vmcoreinfo_read_string);
+	}
 
 	return TRUE;
 }
@@ -1485,14 +1558,26 @@ __diskdump_memory_dump(FILE *fp)
 			fprintf(fp, "%s\n", dump_level ? ")" : "");
 		} else
 			fprintf(fp, "(unknown)\n");
-		if (KDUMP_SPLIT()) {
-			fprintf(fp, "           start_pfn: %lu\n", dd->sub_header_kdump->start_pfn);
-			fprintf(fp, "             end_pfn: %lu\n", dd->sub_header_kdump->end_pfn);
+
+		if (dh->header_version >= 2) {
+			fprintf(fp, "               split: %d\n", kdsh->split);
+			fprintf(fp, "           start_pfn: ");
+			if (KDUMP_SPLIT())
+				fprintf(fp, "%ld (0x%lx)\n", 
+					kdsh->start_pfn, kdsh->start_pfn);
+			else
+				fprintf(fp, "(unused)\n");
+			fprintf(fp, "             end_pfn: ");
+			if (KDUMP_SPLIT())
+				fprintf(fp, "%ld (0x%lx)\n", 
+					kdsh->end_pfn, kdsh->end_pfn);
+			else
+				fprintf(fp, "(unused)\n");
 		}
 		if (dh->header_version >= 3) {
-			fprintf(fp, "   offset_vmcoreinfo: %lu (0x%lx)\n",
-				(ulong)dd->sub_header_kdump->offset_vmcoreinfo,
-				(ulong)dd->sub_header_kdump->offset_vmcoreinfo);
+			fprintf(fp, "   offset_vmcoreinfo: %llu (0x%llx)\n",
+				(ulonglong)dd->sub_header_kdump->offset_vmcoreinfo,
+				(ulonglong)dd->sub_header_kdump->offset_vmcoreinfo);
 			fprintf(fp, "     size_vmcoreinfo: %lu (0x%lx)\n",
 				dd->sub_header_kdump->size_vmcoreinfo,
 				dd->sub_header_kdump->size_vmcoreinfo);
@@ -1502,9 +1587,9 @@ __diskdump_memory_dump(FILE *fp)
 			}
 		}
 		if (dh->header_version >= 4) {
-			fprintf(fp, "         offset_note: %lu (0x%lx)\n",
-				(ulong)dd->sub_header_kdump->offset_note,
-				(ulong)dd->sub_header_kdump->offset_note);
+			fprintf(fp, "         offset_note: %llu (0x%llx)\n",
+				(ulonglong)dd->sub_header_kdump->offset_note,
+				(ulonglong)dd->sub_header_kdump->offset_note);
 			fprintf(fp, "           size_note: %lu (0x%lx)\n",
 				dd->sub_header_kdump->size_note,
 				dd->sub_header_kdump->size_note);
@@ -1519,9 +1604,9 @@ __diskdump_memory_dump(FILE *fp)
 			dump_nt_prstatus_offset(fp);
 		}
 		if (dh->header_version >= 5) {
-			fprintf(fp, "    offset_eraseinfo: %lu (0x%lx)\n",
-				(ulong)dd->sub_header_kdump->offset_eraseinfo,
-				(ulong)dd->sub_header_kdump->offset_eraseinfo);
+			fprintf(fp, "    offset_eraseinfo: %llu (0x%llx)\n",
+				(ulonglong)dd->sub_header_kdump->offset_eraseinfo,
+				(ulonglong)dd->sub_header_kdump->offset_eraseinfo);
 			fprintf(fp, "      size_eraseinfo: %lu (0x%lx)\n",
 				dd->sub_header_kdump->size_eraseinfo,
 				dd->sub_header_kdump->size_eraseinfo);

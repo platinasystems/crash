@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2013 David Anderson
+ * Copyright (C) 2002-2013 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1154,13 +1154,12 @@ set_tmpfile2(FILE *fptr)
 
 #define MOUNT_PRINT_INODES  0x1
 #define MOUNT_PRINT_FILES   0x2
-#define MOUNT_PRINT_ALL (MOUNT_PRINT_INODES|MOUNT_PRINT_FILES)
 
 /*
  *  Display basic information about the currently mounted filesystems.
  *  The -f option lists the open files for the filesystem(s).
  *  The -i option dumps the dirty inodes of the filesystem(s).
- *  If an inode address, vfsmount, superblock, device name or 
+ *  If an inode address, mount, vfsmount, superblock, device name or 
  *  directory name is also entered, just show the data for the 
  *  filesystem indicated by the argument.
  */
@@ -1173,11 +1172,11 @@ cmd_mount(void)
 	int i;
 	int c, found;
 	struct task_context *tc, *namespace_context;
-	ulong value;
+	ulong value1, value2;
 	char *spec_string;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
-        char *arglist[MAXARGS*2];
+	char *arglist[MAXARGS*2];
 	ulong vfsmount = 0;
 	int flags = 0;
 	int save_next;
@@ -1188,14 +1187,14 @@ cmd_mount(void)
 	while ((namespace_context = pid_to_context(pid)) == NULL)
 		pid++;
 
-        while ((c = getopt(argcnt, args, "ifn:")) != EOF) {
-                switch(c)
+	while ((c = getopt(argcnt, args, "ifn:")) != EOF) {
+		switch(c)
 		{
 		case 'i':
 			if (INVALID_MEMBER(super_block_s_dirty)) {
 				error(INFO, 
 				    "the super_block.s_dirty linked list does "
-                                    "not exist in this kernel\n");
+				    "not exist in this kernel\n");
 				option_not_supported(c);
 			}
 			flags |= MOUNT_PRINT_INODES;
@@ -1206,15 +1205,15 @@ cmd_mount(void)
 			break;
 
 		case 'n':
-			switch (str_to_context(optarg, &value, &tc)) {
-		        case STR_PID:
-                        case STR_TASK:
+			switch (str_to_context(optarg, &value1, &tc)) {
+			case STR_PID:
+			case STR_TASK:
 				namespace_context = tc;
-                               	break;
-                        case STR_INVALID:
-                               	error(FATAL, "invalid task or pid value: %s\n",
-                                        	optarg);
-                               	break;
+				break;
+			case STR_INVALID:
+				error(FATAL, "invalid task or pid value: %s\n",
+					optarg);
+				break;
 			}
 			break;
 
@@ -1227,58 +1226,83 @@ cmd_mount(void)
 	if (argerrs)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 
-	if (args[optind]) {
-		do {
-			spec_string = args[optind];
+	if (args[optind] == 0) {
+		show_mounts(0, flags, namespace_context);
+		return;
+	}
 
-                	if (STRNEQ(spec_string, "0x") && 
-			    hexadecimal(spec_string, 0))
-                        	shift_string_left(spec_string, 2);
+	/*
+	 *  Dump everything into a tmpfile, and then walk
+	 *  through it for each search argument entered.
+	 */
+	open_tmpfile();
+	show_mounts(0, MOUNT_PRINT_FILES | 
+		(VALID_MEMBER(super_block_s_dirty) ? MOUNT_PRINT_INODES : 0), 
+		namespace_context);
 
-			open_tmpfile();
-			show_mounts(0, MOUNT_PRINT_ALL, namespace_context);
+	do {
+		spec_string = args[optind];
+		if (STRNEQ(spec_string, "0x") && 
+		    hexadecimal(spec_string, 0))
+			shift_string_left(spec_string, 2);
 
-			found = FALSE;
-        		rewind(pc->tmpfile);
-			save_next = 0;
-        		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
-				if (STRNEQ(buf1, mount_hdr)) {
-					save_next = 1;
-					continue;
-				}
-				if (save_next) {
-					strcpy(buf2, buf1);
-					save_next = 0;
-				}
+		found = FALSE;
+		rewind(pc->tmpfile);
+		save_next = 0;
 
-                		if (!(c = parse_line(buf1, arglist)))
-                        		continue;
+		while (fgets(buf1, BUFSIZE, pc->tmpfile)) {
+			if (STRNEQ(buf1, mount_hdr)) {
+				save_next = TRUE;
+				continue;
+			}
+			if (save_next) {
+				strcpy(buf2, buf1);
+				save_next = FALSE;
+			}
 
-				for (i = 0; i < c; i++) {
-					if (PATHEQ(arglist[i], spec_string))
+			if (!(c = parse_line(buf1, arglist)))
+				continue;
+
+			for (i = 0; i < c; i++) {
+				if (PATHEQ(arglist[i], spec_string))
+					found = TRUE;
+				/*
+				 *  Check for a vfsmount address
+				 *  embedded in a struct mount.
+				 */
+				if ((i == 0) && (c == 5) &&
+				    VALID_MEMBER(mount_mnt) &&
+				    hexadecimal(spec_string, 0) &&
+				    hexadecimal(arglist[i], 0)) {
+					value1 = htol(spec_string, 
+						FAULT_ON_ERROR, NULL);
+					value2 = htol(arglist[i], 
+						FAULT_ON_ERROR, NULL) + 
+						OFFSET(mount_mnt);
+					if (value1 == value2)
 						found = TRUE;
 				}
-				if (found) {
-					fp = pc->saved_fp;
-					if (flags) {
-						sscanf(buf2,"%lx",&vfsmount);
-						show_mounts(vfsmount, flags, 
-							namespace_context);
-					} else {
-						if (!(pc->curcmd_flags & HEADER_PRINTED)) {
-							fprintf(fp, mount_hdr);
-							pc->curcmd_flags |= HEADER_PRINTED;
-						}
-						fprintf(fp, buf2);
+			}
+			if (found) {
+				fp = pc->saved_fp;
+				if (flags) {
+					sscanf(buf2,"%lx", &vfsmount);
+					show_mounts(vfsmount, flags, 
+						namespace_context);
+				} else {
+					if (!(pc->curcmd_flags & HEADER_PRINTED)) {
+						fprintf(fp, mount_hdr);
+						pc->curcmd_flags |= HEADER_PRINTED;
 					}
-					found = FALSE;
-					fp = pc->tmpfile;
+					fprintf(fp, buf2);
 				}
-        		}
-			close_tmpfile();
-		} while (args[++optind]);
-	} else
-		show_mounts(0, flags, namespace_context);
+				found = FALSE;
+				fp = pc->tmpfile;
+			}
+		}
+	} while (args[++optind]);
+
+	close_tmpfile();
 }
 
 /*
@@ -1304,7 +1328,7 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 	char *dentry_buf, *inode_buf;
 	int cnt, i, m, files_header_printed;
 	int mount_cnt; 
-	static int devlen = 0;
+	int devlen;
 	char mount_files_header[BUFSIZE];
 	long per_cpu_s_files;
 
@@ -1333,25 +1357,14 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
 	} else 
 		mntlist = get_mount_list(&mount_cnt, namespace_context); 
 
+	devlen = strlen("DEVNAME")+2;
+
 	if (!strlen(mount_hdr)) {
-		devlen = strlen("DEVNAME");
-
-        	for (m = 0, vfsmnt = mntlist; m < mount_cnt; m++, vfsmnt++) {
-			readmem(*vfsmnt + 
-				OFFSET_OPTION(vfsmount_mnt_devname,mount_mnt_devname),
-				KVADDR, &devp, sizeof(void *),
-				"[vfs]mount mnt_devname", FAULT_ON_ERROR);
-
-                	if (read_string(devp, buf1, BUFSIZE-1)) {
-				if (strlen(buf1) > devlen)
-					devlen = strlen(buf1);
-			}
-		}
-
-        	snprintf(mount_hdr, sizeof(mount_hdr), "%s %s %s %s DIRNAME\n",
-                	mkstring(buf1, VADDR_PRLEN, CENTER, "VFSMOUNT"),
+		snprintf(mount_hdr, sizeof(mount_hdr), "%s %s %s %s DIRNAME\n",
+                	mkstring(buf1, VADDR_PRLEN, CENTER, 
+				VALID_STRUCT(mount) ?  "MOUNT" : "VFSMOUNT"),
                 	mkstring(buf2, VADDR_PRLEN, CENTER, "SUPERBLK"),
-                	mkstring(buf3, strlen("devpts"), LJUST, "TYPE"),
+                	mkstring(buf3, strlen("rootfs"), LJUST, "TYPE"),
 			mkstring(buf4, devlen, LJUST, "DEVNAME"));
 	}
 
@@ -1423,15 +1436,21 @@ show_mounts(ulong one_vfsmount, int flags, struct task_context *namespace_contex
                         "file_system_type name", FAULT_ON_ERROR);
 
                 if (read_string(name, buf1, BUFSIZE-1))
-                       fprintf(fp, "%-6s ", buf1);
+			sprintf(buf3, "%-6s ", buf1);
                 else
-                       fprintf(fp, "unknown ");
+			sprintf(buf3, "unknown ");
 
-		if (read_string(devp, buf1, BUFSIZE-1)) {
-			fprintf(fp, "%s ", mkstring(buf2, devlen, LJUST, buf1));
-		} else
-			fprintf(fp, "%s ", mkstring(buf2, devlen, LJUST, 
-				"(unknown)"));
+		if (read_string(devp, buf1, BUFSIZE-1))
+			sprintf(buf4, "%s ", 
+				mkstring(buf2, devlen, LJUST, buf1));
+		else
+			sprintf(buf4, "%s ", 
+				mkstring(buf2, devlen, LJUST, "(unknown)"));
+
+		sprintf(buf1, "%s%s", buf3, buf4);
+		while ((strlen(buf1) > 17) && (buf1[strlen(buf1)-2] == ' '))
+			strip_ending_char(buf1, ' ');
+		fprintf(fp, buf1);
 
 		if (VALID_MEMBER(vfsmount_mnt_dirname)) {
                 	if (read_string(dirp, buf1, BUFSIZE-1))
@@ -4032,16 +4051,17 @@ vfsmount_devname(ulong vfsmnt, char *buf, int maxlen)
 static ulong
 get_root_vfsmount(char *file_buf)
 {
-	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
 	ulong vfsmnt;
 	ulong mnt_parent;
 
 	vfsmnt = ULONG(file_buf + OFFSET(file_f_vfsmnt));
 
-	if (!strlen(vfsmount_devname(vfsmnt, buf, BUFSIZE)))
+	if (!strlen(vfsmount_devname(vfsmnt, buf1, BUFSIZE)))
 		return vfsmnt;
 
-	if (STREQ(buf, "udev")) {
+	if (STREQ(buf1, "udev") || STREQ(buf1, "devtmpfs")) {
 		if (VALID_STRUCT(mount)) {
 			if (!readmem(vfsmnt - OFFSET(mount_mnt) + OFFSET(mount_mnt_parent), KVADDR, 
 			    &mnt_parent, sizeof(void *), "mount mnt_parent", 
@@ -4054,10 +4074,12 @@ get_root_vfsmount(char *file_buf)
 				return vfsmnt;
 		}
 
-		if (!strlen(vfsmount_devname(mnt_parent, buf, BUFSIZE)))
+		if (!strlen(vfsmount_devname(mnt_parent, buf2, BUFSIZE)))
 			return vfsmnt;
 
-		if (STREQ(buf, "udev"))
+		if (STREQ(buf1, "udev") && STREQ(buf2, "udev"))
+			return mnt_parent;
+		if (STREQ(buf1, "devtmpfs") && STREQ(buf2, "devtmpfs"))
 			return mnt_parent;
 	}
 

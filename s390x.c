@@ -606,11 +606,10 @@ static ulong _kl_pg_table_deref_s390x(ulong vaddr, ulong table)
 	readmem(table + offset, KVADDR, &entry, sizeof(entry), "entry",
 		FAULT_ON_ERROR);
 	/*
-	 * Return zero if the page table entry has any of the reserved bits
-	 * set (0x900) or the invalid bit (0x400) is set and it is not a
-	 * swap entry.
+	 * Return zero if the page table entry has the reserved (0x800) or
+	 * the invalid (0x400) bit set and it is not a swap entry.
 	 */
-	if ((entry & 0xd00ULL) && !swap_entry(entry))
+	if ((entry & 0xc00ULL) && !swap_entry(entry))
 		return 0;
 	/* Page table entry is valid and well formed. */
 	return entry;
@@ -643,6 +642,13 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 		if (!entry)
 			return FALSE;
 		table = entry & ~0xfffULL;
+		/* Check if this a 2GB page */
+		if ((entry & 0x400ULL) && (level == 1)) {
+			/* Add the 2GB frame offset & return the final value. */
+			table &= ~0x7fffffffULL;
+			*phys_addr = table + (vaddr & 0x7fffffffULL);
+			return TRUE;
+		}
 		len = entry & 0x3ULL;
 		level--;
 	}
@@ -650,6 +656,7 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 	/* Check if this is a large page. */
 	if (entry & 0x400ULL) {
 		/* Add the 1MB page offset and return the final value. */
+		table &= ~0xfffffULL;
 		*phys_addr = table + (vaddr & 0xfffffULL);
 		return TRUE;
 	}

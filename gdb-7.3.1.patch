@@ -1791,3 +1791,33 @@ diff -up gdb-7.3.1/gdb/psymtab.c.orig gdb-7.3.1/gdb/psymtab.c
  /* Free an entire objalloc structure.  */
  
  extern void objalloc_free (struct objalloc *);
+--- gdb-7.3.1/gdb/symfile.c.orig
++++ gdb-7.3.1/gdb/symfile.c
+@@ -773,7 +773,26 @@ default_symfile_offsets (struct objfile
+       for (cur_sec = abfd->sections; cur_sec != NULL; cur_sec = cur_sec->next)
+ 	/* We do not expect this to happen; just skip this step if the
+ 	   relocatable file has a section with an assigned VMA.  */
+-	if (bfd_section_vma (abfd, cur_sec) != 0)
++	if (bfd_section_vma (abfd, cur_sec) != 0
++           /*
++            *  Kernel modules may have some non-zero VMAs, i.e., like the
++            *  __ksymtab and __ksymtab_gpl sections in this example:
++            *     
++            *    Section Headers:
++            *      [Nr] Name              Type             Address           Offset
++            *           Size              EntSize          Flags  Link  Info  Align
++            *      ...
++            *      [ 8] __ksymtab         PROGBITS         0000000000000060  0000ad90
++            *           0000000000000010  0000000000000000   A       0     0     16
++            *      [ 9] .rela__ksymtab    RELA             0000000000000000  0000ada0
++            *           0000000000000030  0000000000000018          43     8     8
++            *      [10] __ksymtab_gpl     PROGBITS         0000000000000070  0000add0
++            *           00000000000001a0  0000000000000000   A       0     0     16
++            *      ...
++            *
++            *  but they should be treated as if they are NULL.
++            */
++	    && strncmp (bfd_get_section_name (abfd, cur_sec), "__k", 3) != 0)
+ 	  break;
+ 
+       if (cur_sec == NULL)

@@ -250,7 +250,6 @@ static int ftrace_init_pages(struct ring_buffer_per_cpu *cpu_buffer,
 
 	cpu_buffer->linear_pages = calloc(sizeof(ulong), nr_pages + 1);
 	if (cpu_buffer->linear_pages == NULL) {
-		free(cpu_buffer->pages);
 		return -1;
 	}
 
@@ -1533,23 +1532,21 @@ static struct command_table_entry command_table[] = {
 
 static int ftrace_initialized;
 
-int _init(void)
+void __attribute__((constructor))
+trace_init(void)
 {
 	if (ftrace_init() < 0)
-		return 0;
+		return;
 
 	ftrace_initialized = 1;
 	register_extension(command_table);
-
-	return 1;
 }
 
-int _fini(void)
+void __attribute__((destructor))
+trace_fini(void)
 {
 	if (ftrace_initialized)
 		ftrace_destroy();
-
-	return 1;
 }
 
 #define TRACE_CMD_FILE_VERSION_STRING "6"
@@ -1595,7 +1592,7 @@ do {									\
 		break;							\
 	__pos = tmp_file_pos;						\
 	__pos += snprintf(__buf + __pos, tmp_file_size - __pos, fmt);	\
-	if (__pos > tmp_file_size) {					\
+	if (__pos >= tmp_file_size) {					\
 		tmp_file_size = __pos + tmp_file_size;			\
 		__buf = realloc(__buf, tmp_file_size);			\
 		if (!__buf) {						\

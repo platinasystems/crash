@@ -16,8 +16,8 @@
 
 #include "defs.h"		/* From the crash source top-level directory */
 
-int _init(void);
-int _fini(void);
+void dminfo_init(void);
+void dminfo_fini(void);
 
 /*
  * Indices of size-offset array (Used by GET_xxx macros)
@@ -1511,7 +1511,8 @@ static struct command_table_entry command_table[] = {
 	{NULL, NULL, NULL, 0},
 };
 
-int _init(void)
+void __attribute__((constructor))
+dminfo_init(void)
 {
 	register_extension(command_table);
 
@@ -1524,11 +1525,9 @@ int _init(void)
 	dminfo_register_target_analyzer(&stripe_analyzer);
 	dminfo_register_target_analyzer(&snapshot_analyzer);
 	dminfo_register_target_analyzer(&snapshot_origin_analyzer);
-
-	return 0;
 }
 
-int _fini(void)
+void __attribute__((destructor))
+dminfo_fini(void)
 {
-	return 0;
 }
