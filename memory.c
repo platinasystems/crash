@@ -96,6 +96,7 @@ static void dump_kmem_cache_percpu_v2(struct meminfo *);
 static void dump_kmem_cache_slub(struct meminfo *);
 static void dump_kmem_cache_info_v2(struct meminfo *);
 static void kmem_cache_list_slub(void);
+static ulong get_cpu_slab_ptr(struct meminfo *, int);
 static char *vaddr_to_kmem_cache(ulong, char *);
 static ulong vaddr_to_slab(ulong);
 static void do_slab_chain(int, struct meminfo *);
@@ -453,10 +454,11 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_slab, "kmem_cache", "cpu_slab");
 		MEMBER_OFFSET_INIT(kmem_cache_list, "kmem_cache", "list");
 		MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
+		MEMBER_OFFSET_INIT(kmem_cache_cpu_freelist, "kmem_cache_cpu", "freelist");
+		MEMBER_OFFSET_INIT(kmem_cache_cpu_page, "kmem_cache_cpu", "page");
+		MEMBER_OFFSET_INIT(kmem_cache_cpu_node, "kmem_cache_cpu", "node");
 		ANON_MEMBER_OFFSET_INIT(page_inuse, "page", "inuse");
 		ANON_MEMBER_OFFSET_INIT(page_offset, "page", "offset");
-		ANON_MEMBER_OFFSET_INIT(page_lockless_freelist, "page", 
-			"lockless_freelist");
 		ANON_MEMBER_OFFSET_INIT(page_slab, "page", "slab");
 		ANON_MEMBER_OFFSET_INIT(page_first_page, "page", "first_page");
 		ANON_MEMBER_OFFSET_INIT(page_freelist, "page", "freelist");
@@ -467,6 +469,7 @@ vm_init(void)
                 ARRAY_LENGTH_INIT(len, NULL, "kmem_cache.cpu_slab", NULL, 0);
 
 		STRUCT_SIZE_INIT(kmem_cache_node, "kmem_cache_node");
+		STRUCT_SIZE_INIT(kmem_cache_cpu, "kmem_cache_cpu");
 		MEMBER_OFFSET_INIT(kmem_cache_node_nr_partial, 
 			"kmem_cache_node", "nr_partial");
 		MEMBER_OFFSET_INIT(kmem_cache_node_nr_slabs, 
@@ -3390,6 +3393,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 #define SLAB_DATA_NOSAVE       (ADDRESS_SPECIFIED << 18)
 #define GET_SLUB_SLABS         (ADDRESS_SPECIFIED << 19)
 #define GET_SLUB_OBJECTS       (ADDRESS_SPECIFIED << 20)
+#define VMLIST_VERIFY          (ADDRESS_SPECIFIED << 21)
 
 #define GET_ALL \
 	(GET_SHARED_PAGES|GET_TOTALRAM_PAGES|GET_BUFFERS_PAGES|GET_SLAB_PAGES)
@@ -6024,8 +6028,8 @@ dump_free_pages_zones_v2(struct meminfo *fi)
                                     PAGEOFFSET(fi->spec_addr) ?  "in " : "");
                         	break;
 			}
-                        fprintf(fp, "%s of %ld pages) ",
-                                ordinal(offset+1, buf), power(2, order));
+                        fprintf(fp, "%s of %ld pages)",
+                                ordinal(offset+1, buf), chunk_size/PAGESIZE());
                 }
 
 		fi->retval = TRUE;
@@ -6137,23 +6141,36 @@ char *free_area_hdr4 = "AREA    SIZE  FREE_AREA_STRUCT  BLOCKS  PAGES\n";
 static int
 dump_zone_free_area(ulong free_area, int num, ulong verbose)
 {
-	int i;
+	int i, j;
 	long chunk_size;
 	int flen, total_free, cnt;
 	char buf[BUFSIZE];
 	ulong free_area_buf[3];
+	char *free_area_buf2;
+	char *free_list_buf;
+	ulong free_list;
 	struct list_data list_data, *ld;
+	int list_count;
+	ulong *free_ptr;
 
 	if (VALID_STRUCT(free_area_struct)) {
 		if (SIZE(free_area_struct) != (3 * sizeof(ulong)))
 			error(FATAL, 
 			    "unrecognized free_area_struct size: %ld\n", 
 				SIZE(free_area_struct));
+		list_count = 1;
 	} else if (VALID_STRUCT(free_area)) {
-                if (SIZE(free_area) != (3 * sizeof(ulong)))
-                        error(FATAL,
-                            "unrecognized free_area struct size: %ld\n",
-                                SIZE(free_area));
+                if (SIZE(free_area) == (3 * sizeof(ulong)))
+			list_count = 1;
+		else {
+			list_count = MEMBER_SIZE("free_area", 
+				"free_list")/SIZE(list_head);
+			free_area_buf2 = GETBUF(SIZE(free_area));
+			free_list_buf = GETBUF(SIZE(list_head));
+			readmem(free_area, KVADDR, free_area_buf2,
+				SIZE(free_area), "free_area struct", 
+				FAULT_ON_ERROR);
+		}
 	} else error(FATAL, 
 		"neither free_area_struct or free_area structures exist\n");
 
@@ -6164,6 +6181,9 @@ dump_zone_free_area(ulong free_area, int num, ulong verbose)
 
 	total_free = 0;
 	flen = MAX(VADDR_PRLEN, strlen("FREE_AREA_STRUCT"));
+
+	if (list_count > 1)
+		goto multiple_lists;
 
 	for (i = 0; i < num; i++, 
 	     free_area += SIZE_OPTION(free_area_struct, free_area)) {
@@ -6215,6 +6235,65 @@ dump_zone_free_area(ulong free_area, int num, ulong verbose)
                 total_free += (cnt * chunk_size);
 	}
 
+	return total_free;
+
+multiple_lists:
+
+	for (i = 0; i < num; i++, 
+	     free_area += SIZE_OPTION(free_area_struct, free_area)) {
+
+		readmem(free_area, KVADDR, free_area_buf2,
+			SIZE(free_area), "free_area struct", FAULT_ON_ERROR);
+
+		for (j = 0, free_list = free_area; j < list_count; 
+		     j++, free_list += SIZE(list_head)) {
+
+			if (verbose)
+				fprintf(fp, free_area_hdr3);
+
+			fprintf(fp, "%3d ", i);
+			chunk_size = power(2, i);
+			sprintf(buf, "%ldk", (chunk_size * PAGESIZE())/1024);
+			fprintf(fp, " %7s  ", buf);
+
+			readmem(free_list, KVADDR, free_list_buf,
+				SIZE(list_head), "free_area free_list", 
+				FAULT_ON_ERROR);
+			fprintf(fp, "%s  ",
+				mkstring(buf, flen, CENTER|LONG_HEX, MKSTR(free_list)));
+
+			free_ptr = (ulong *)free_list_buf;
+
+			if (*free_ptr == free_list) {
+				if (verbose)
+					fprintf(fp, "\n");
+				else
+					fprintf(fp, "%6d %6d\n", 0, 0);
+				continue;
+			}
+
+			BZERO(ld, sizeof(struct list_data));
+			ld->flags = verbose | RETURN_ON_DUPLICATE;
+			ld->start = *free_ptr;
+			ld->end = free_list;
+			ld->list_head_offset = OFFSET(page_lru) + 
+				OFFSET(list_head_next);
+
+			cnt = do_list(ld);
+			if (cnt < 0) 
+				error(FATAL, 
+				    "corrupted free list %d from free_area struct: %lx\n", 
+					j, free_area);
+
+			if (!verbose)
+				fprintf(fp, "%6d %6ld\n", cnt, cnt*chunk_size);
+
+			total_free += (cnt * chunk_size);
+		}
+	}
+
+	FREEBUF(free_area_buf2);
+	FREEBUF(free_list_buf);
 	return total_free;
 }
 
@@ -6531,17 +6610,17 @@ dump_vmlist(struct meminfo *vi)
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	ulong vmlist;
-	ulong addr, size, next, pcheck, count; 
+	ulong addr, size, next, pcheck, count, verified; 
 	physaddr_t paddr;
 
 	get_symbol_data("vmlist", sizeof(void *), &vmlist);
 	next = vmlist;
-	count = 0;
+	count = verified = 0;
 
 	while (next) {
 		if (!(pc->curcmd_flags & HEADER_PRINTED) && (next == vmlist) && 
 		    !(vi->flags & (GET_HIGHEST|GET_PHYS_TO_VMALLOC|
-		      GET_VMLIST_COUNT|GET_VMLIST))) {
+		      GET_VMLIST_COUNT|GET_VMLIST|VMLIST_VERIFY))) {
 			fprintf(fp, "%s  ", 
 			    mkstring(buf, MAX(strlen("VM_STRUCT"), VADDR_PRLEN),
 			    	CENTER|LJUST, "VM_STRUCT"));
@@ -6574,7 +6653,11 @@ dump_vmlist(struct meminfo *vi)
 
 		if (!(vi->flags & ADDRESS_SPECIFIED) || 
 		    ((vi->memtype == KVADDR) &&
-		    ((vi->spec_addr >= addr) && (vi->spec_addr < (addr+size)))))
+		    ((vi->spec_addr >= addr) && (vi->spec_addr < (addr+size))))) {
+			if (vi->flags & VMLIST_VERIFY) {
+				verified++;
+				break;
+			}	
 			fprintf(fp, "%s%s  %s - %s  %6ld\n",
 				mkstring(buf,VADDR_PRLEN, LONG_HEX|CENTER|LJUST,
 				MKSTR(next)), space(MINSPACE-1),
@@ -6583,6 +6666,7 @@ dump_vmlist(struct meminfo *vi)
 				mkstring(buf2, VADDR_PRLEN, LONG_HEX|LJUST,
 				MKSTR(addr+size)),
 				size);
+		}
 
 		if ((vi->flags & ADDRESS_SPECIFIED) && 
 		     (vi->memtype == PHYSADDR)) {
@@ -6623,6 +6707,9 @@ next_entry:
 
 	if (vi->flags & GET_VMLIST_COUNT)
 		vi->retval = count;
+
+	if (vi->flags & VMLIST_VERIFY)
+		vi->retval = verified;
 }
 
 /*
@@ -10076,6 +10163,8 @@ kmem_search(struct meminfo *mi)
 	ulong task;
 	struct task_context *tc;
 
+	pc->curcmd_flags &= ~HEADER_PRINTED;
+
 	switch (mi->memtype)
 	{
 	case KVADDR:
@@ -10108,18 +10197,22 @@ kmem_search(struct meminfo *mi)
 	 */
 	if ((mi->memtype == KVADDR) && IS_VMALLOC_ADDR(mi->spec_addr)) {
 		if (kvtop(NULL, mi->spec_addr, &paddr, 0)) {
-			mi->flags = orig_flags;
+			mi->flags = orig_flags | VMLIST_VERIFY;
 			dump_vmlist(mi);
-			fprintf(fp, "\n");
-			mi->spec_addr = paddr;
-			mi->memtype = PHYSADDR;
+			if (mi->retval) {
+				mi->flags = orig_flags;
+				dump_vmlist(mi);
+				fprintf(fp, "\n");
+				mi->spec_addr = paddr;
+				mi->memtype = PHYSADDR;
+				goto mem_map;
+			}
 		}
-		goto mem_map;
 	}
+
 	/*
 	 *  If the address is physical, check whether it's in vmalloc space.
 	 */
-
 	if (mi->memtype == PHYSADDR) {
 		mi->flags = orig_flags;
 		mi->flags |= GET_PHYS_TO_VMALLOC;
@@ -10200,8 +10293,8 @@ mem_map:
         dump_mem_map(mi);
 
 	if (!mi->retval)
-		fprintf(fp, "%llx: address not found\n", mi->spec_addr);
-
+		fprintf(fp, "%llx: %s address not found in mem map\n", 
+			mi->spec_addr, memtype_string(mi->memtype, 0));
 }
 
 /*
@@ -10520,6 +10613,7 @@ dump_vm_table(int verbose)
 	fprintf(fp, "          slab_data: %lx\n", (ulong)vt->slab_data);
 	if (verbose) 
 		dump_saved_slab_data();
+	fprintf(fp, "      cpu_slab_type: %d\n", vt->cpu_slab_type);
 	fprintf(fp, "       nr_swapfiles: %d\n", vt->nr_swapfiles);
 	fprintf(fp, "     last_swap_read: %lx\n", vt->last_swap_read);
 	fprintf(fp, "   swap_info_struct: %lx\n", (ulong)vt->swap_info_struct);
@@ -11514,6 +11608,7 @@ dump_memory_nodes(int initialize)
 	}
 
 	if (initialize) {
+		pgdat = UNINITIALIZED;
 		/*
 		 *  This order may have to change based upon architecture...
 		 */
@@ -11536,6 +11631,11 @@ dump_memory_nodes(int initialize)
 		} 
 	} else
 		pgdat = vt->node_table[0].pgdat;
+
+	if (initialize && (pgdat == UNINITIALIZED)) {
+		error(WARNING, "cannot initialize pgdat list\n\n");
+		return;
+	}
 
 	for (n = 0, badaddr = FALSE; pgdat; n++) {
 		if (n >= vt->numnodes)
@@ -12405,8 +12505,8 @@ list_mem_sections(void)
 }
 
 /*
- *  For kernels containing the node_online_map, return
- *  the number of node bits set.
+ *  For kernels containing the node_online_map or node_states[], 
+ *  return the number of online node bits set.
  */
 static int
 get_nodes_online(void)
@@ -12414,24 +12514,37 @@ get_nodes_online(void)
 	int i, len, online;
 	struct gnu_request req;
 	ulong *maskptr;
+	long N_ONLINE;
+	ulong mapaddr;
 
-	if (!symbol_exists("node_online_map")) 
+	if (!symbol_exists("node_online_map") && 
+	    !symbol_exists("node_states")) 
 		return 0;
 
 	if (LKCD_KERNTYPES()) {
                 if ((len = STRUCT_SIZE("nodemask_t")) < 0)
        			error(FATAL, "cannot determine type nodemask_t\n");
-	} else
+		mapaddr = symbol_value("node_online_map");
+	} else if (symbol_exists("node_online_map")) {
 		len = get_symbol_type("node_online_map", NULL, &req)
 			== TYPE_CODE_UNDEF ?  sizeof(ulong) : req.length;
+		mapaddr = symbol_value("node_online_map");
+	} else if (symbol_exists("node_states")) {
+		if ((get_symbol_type("node_states", NULL, &req) != TYPE_CODE_ARRAY) ||
+		    !(len = get_array_length("node_states", NULL, 0)) ||
+		    !enumerator_value("N_ONLINE", &N_ONLINE))
+			return 0;
+		len = req.length / len;
+		mapaddr = symbol_value("node_states") + (N_ONLINE * len);
+	}
 
        	if (!(vt->node_online_map = (ulong *)malloc(len)))
        		error(FATAL, "cannot malloc node_online_map\n");
 
-       	if (!readmem(symbol_value("node_online_map"), KVADDR, 
+ 	if (!readmem(mapaddr, KVADDR, 
 	    (void *)&vt->node_online_map[0], len, "node_online_map", 
 	    QUIET|RETURN_ON_ERROR))
-		error(FATAL, "cannot read node_online_map\n");
+		error(FATAL, "cannot read node_online_map/node_states\n");
 
 	vt->node_online_map_len = len/sizeof(ulong);
 
@@ -12736,6 +12849,8 @@ kmem_cache_init_slub(void)
 		    "kmem_cache_init_slub: numnodes: %d without CONFIG_NUMA\n",
 			vt->numnodes);
 
+	vt->cpu_slab_type = MEMBER_TYPE("kmem_cache", "cpu_slab");
+
 	vt->flags |= KMEM_CACHE_INIT;
 }
 
@@ -12926,8 +13041,8 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 	total_slabs = total_objects = 0; 
 
 	for (i = 0; i < kt->cpus; i++) {
-		cpu_slab_ptr = ULONG(si->cache_buf + 
-			OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*i)); 
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
+
 		if (!cpu_slab_ptr)
 			continue;
 
@@ -13031,8 +13146,7 @@ do_kmem_cache_slub(struct meminfo *si)
 	per_cpu = (ulong *)GETBUF(sizeof(ulong) * vt->numnodes);
 
         for (i = 0; i < kt->cpus; i++) {
-                cpu_slab_ptr = ULONG(si->cache_buf +
-                        OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*i));
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
 
 		fprintf(fp, "CPU %d SLAB:\n%s", i, 
 			cpu_slab_ptr ? "" : "  (empty)\n");
@@ -13100,7 +13214,7 @@ do_slab_slub(struct meminfo *si, int verbose)
 	physaddr_t paddr; 
 	ulong vaddr;
 	ushort inuse; 
-	ulong freelist, lockless_freelist, cpu_slab_ptr;
+	ulong freelist, cpu_slab_ptr;
 	int i, cpu_slab, is_free, node;
 	ulong p, q;
 
@@ -13116,6 +13230,7 @@ do_slab_slub(struct meminfo *si, int verbose)
 			si->slab);
 		return;
 	} 
+
 	node = page_to_nid(si->slab);
 
 	vaddr = PTOV(paddr);
@@ -13129,10 +13244,6 @@ do_slab_slub(struct meminfo *si, int verbose)
 	if (!readmem(si->slab + OFFSET(page_freelist), KVADDR, &freelist,
 	    sizeof(void *), "page.freelist", RETURN_ON_ERROR))
 		return;
-	if (!readmem(si->slab + OFFSET(page_lockless_freelist), KVADDR, 
-	    &lockless_freelist, sizeof(void *), "page.lockless_freelist",
-	    RETURN_ON_ERROR))
-		return;
 
 	DUMP_SLAB_INFO_SLUB();
 
@@ -13140,8 +13251,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 		return;
 
 	for (i = 0, cpu_slab = -1; i < kt->cpus; i++) {
-		cpu_slab_ptr = ULONG(si->cache_buf +
-			OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*i));
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
+
 		if (!cpu_slab_ptr)
                         continue;
 		if (cpu_slab_ptr == si->slab) {
@@ -13448,6 +13559,45 @@ bailout:
 	FREEBUF(cache_buf);
 
 	return retval;
+}
+
+/*
+ *  Figure out which of the kmem_cache.cpu_slab declarations
+ *  is used by this kernel, and return a pointer to the slab
+ *  page being used.
+ */
+static ulong
+get_cpu_slab_ptr(struct meminfo *si, int cpu)
+{
+	ulong cpu_slab_ptr, page;
+
+	switch (vt->cpu_slab_type)
+	{
+	case TYPE_CODE_STRUCT:
+		cpu_slab_ptr = ULONG(si->cache_buf +
+                        OFFSET(kmem_cache_cpu_slab) +
+			OFFSET(kmem_cache_cpu_page));
+		break;
+
+	case TYPE_CODE_ARRAY:
+		cpu_slab_ptr = ULONG(si->cache_buf +
+			OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*cpu));
+	
+		if (cpu_slab_ptr && VALID_MEMBER(kmem_cache_cpu_page)) {
+			if (!readmem(cpu_slab_ptr + OFFSET(kmem_cache_cpu_page),
+			    KVADDR, &page, sizeof(void *),
+			    "kmem_cache_cpu.page", RETURN_ON_ERROR))
+				cpu_slab_ptr = 0;
+			else
+				cpu_slab_ptr = page;
+		}
+		break;
+
+	default:
+		error(FATAL, "cannot determine location of kmem_cache.cpu_slab page\n");
+	}
+
+	return cpu_slab_ptr;
 }
 
 #ifdef NOT_USED

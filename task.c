@@ -6396,15 +6396,16 @@ static void
 dump_CFS_runqueues(void)
 {
 	int cpu;
-	ulong runq;
-	char *runqbuf;
+	ulong runq, cfs_rq;
+	char *runqbuf, *cfs_rq_buf;
 	ulong leftmost, tasks_timeline;
 	struct task_context *tc;
 	long nr_running, cfs_rq_nr_running;
 	struct rb_root *root;
 	struct rb_node *node;
 
-	if (INVALID_MEMBER(rq_rt)) {
+	if (!VALID_STRUCT(cfs_rq)) {
+		STRUCT_SIZE_INIT(cfs_rq, "cfs_rq");
 		MEMBER_OFFSET_INIT(rq_rt, "rq", "rt");
 		MEMBER_OFFSET_INIT(rq_nr_running, "rq", "nr_running");
 		MEMBER_OFFSET_INIT(task_struct_se, "task_struct", "se");
@@ -6425,31 +6426,56 @@ dump_CFS_runqueues(void)
         runq = symbol_value("per_cpu__runqueues");
 
         runqbuf = GETBUF(SIZE(runqueue));
+	cfs_rq_buf = symbol_exists("per_cpu__init_cfs_rq") ?
+		GETBUF(SIZE(cfs_rq)) : NULL;
 
         for (cpu = 0; cpu < kt->cpus; cpu++) {
 		if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
 			runq = symbol_value("per_cpu__runqueues") +
-			kt->__per_cpu_offset[cpu];
+				kt->__per_cpu_offset[cpu];
 		} else
 			runq = symbol_value("per_cpu__runqueues");
 
                 fprintf(fp, "RUNQUEUES[%d]: %lx\n", cpu, runq);
-
                 readmem(runq, KVADDR, runqbuf, SIZE(runqueue),
                         "per-cpu rq", FAULT_ON_ERROR);
-                leftmost = ULONG(runqbuf + OFFSET(rq_cfs) + 
-			OFFSET(cfs_rq_rb_leftmost));
-                tasks_timeline = ULONG(runqbuf + OFFSET(rq_cfs) + 
-			OFFSET(cfs_rq_tasks_timeline));
-		nr_running = LONG(runqbuf + OFFSET(rq_nr_running));
-                cfs_rq_nr_running = ULONG(runqbuf + OFFSET(rq_cfs) + 
-			OFFSET(cfs_rq_nr_running));
+
+		if (cfs_rq_buf) {
+			/*
+		 	 *  Use default task group's cfs_rq on each cpu.
+		 	 */
+			if ((kt->flags & SMP) && (kt->flags & PER_CPU_OFF)) {
+				cfs_rq = symbol_value("per_cpu__init_cfs_rq") +
+					kt->__per_cpu_offset[cpu];
+			} else
+				cfs_rq = symbol_value("per_cpu__init_cfs_rq");
+
+			readmem(cfs_rq, KVADDR, cfs_rq_buf, SIZE(cfs_rq),
+				"per-cpu cfs_rq", FAULT_ON_ERROR);
+	                leftmost = ULONG(cfs_rq_buf + OFFSET(cfs_rq_rb_leftmost));
+	                tasks_timeline = ULONG(cfs_rq_buf + 
+				OFFSET(cfs_rq_tasks_timeline));
+			nr_running = LONG(cfs_rq_buf + OFFSET(rq_nr_running));
+	                cfs_rq_nr_running = ULONG(cfs_rq_buf + 
+				OFFSET(cfs_rq_nr_running));
+			root = (struct rb_root *)(cfs_rq + 
+				OFFSET(cfs_rq_tasks_timeline));
+		} else {
+	                leftmost = ULONG(runqbuf + OFFSET(rq_cfs) + 
+				OFFSET(cfs_rq_rb_leftmost));
+	                tasks_timeline = ULONG(runqbuf + OFFSET(rq_cfs) + 
+				OFFSET(cfs_rq_tasks_timeline));
+			nr_running = LONG(runqbuf + OFFSET(rq_nr_running));
+	                cfs_rq_nr_running = ULONG(runqbuf + OFFSET(rq_cfs) + 
+				OFFSET(cfs_rq_nr_running));
+			root = (struct rb_root *)(runq + OFFSET(rq_cfs) + 
+				OFFSET(cfs_rq_tasks_timeline));
+		}
 
 		dump_RT_prio_array(nr_running != cfs_rq_nr_running,
 			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
 			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
 
-		root = (struct rb_root *)(runq + OFFSET(rq_cfs) + OFFSET(cfs_rq_tasks_timeline));
 		fprintf(fp, " CFS RB_ROOT: %lx\n", (ulong)root);
 
 		if (!leftmost)
@@ -6464,6 +6490,10 @@ dump_CFS_runqueues(void)
 			print_task_header(fp, tc, FALSE);
 		}
 	}
+
+	FREEBUF(runqbuf);
+	if (cfs_rq_buf)
+		FREEBUF(cfs_rq_buf);
 }
 
 static void

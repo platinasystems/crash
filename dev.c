@@ -141,6 +141,8 @@ dump_chrdevs(ulong flags)
 	char *char_device_struct_buf;
 	ulong next, savenext, name, fops; 
 	int major;
+	int name_typecode;
+	size_t name_size;
 
 	if (!symbol_exists("chrdevs"))
 		error(FATAL, "chrdevs: symbol does not exist\n");
@@ -188,6 +190,8 @@ char_device_struct:
 
 	char_device_struct_buf = GETBUF(SIZE(char_device_struct));
 	cdp = (ulong *)&chrdevs[0];
+	name_typecode = MEMBER_TYPE("char_device_struct", "name");
+	name_size = (size_t)MEMBER_SIZE("char_device_struct", "name"); 
 
 	for (i = 0; i < MAX_DEV; i++, cdp++) {
 		if (!(*cdp))
@@ -201,11 +205,18 @@ char_device_struct:
 			OFFSET(char_device_struct_next));
 		name = ULONG(char_device_struct_buf + 
 			OFFSET(char_device_struct_name));
-                if (name) {
-                	if (!read_string(name, buf, BUFSIZE-1))
-                                 sprintf(buf, "(unknown)");
-                } else
-                        sprintf(buf, "(unknown)");
+		switch (name_typecode)
+		{
+		case TYPE_CODE_ARRAY:
+			snprintf(buf, name_size, char_device_struct_buf +	
+			    OFFSET(char_device_struct_name));
+			break;
+		case TYPE_CODE_PTR:
+		default:
+			if (!name || !read_string(name, buf, BUFSIZE-1))
+				break;
+		}
+
 		fops = ULONG(char_device_struct_buf + 
 			OFFSET(char_device_struct_fops));
 		major = INT(char_device_struct_buf + 
@@ -243,11 +254,19 @@ char_device_struct:
 	                        OFFSET(char_device_struct_next));
 	                name = ULONG(char_device_struct_buf +
 	                        OFFSET(char_device_struct_name));
-	                if (name) {
-	                        if (!read_string(name, buf, BUFSIZE-1))
-	                                 sprintf(buf, "(unknown)");
-	                } else
-	                        sprintf(buf, "(unknown)");
+			switch (name_typecode)
+			{
+			case TYPE_CODE_ARRAY:
+				snprintf(buf, name_size, char_device_struct_buf +	
+			    		OFFSET(char_device_struct_name));
+				break;
+			case TYPE_CODE_PTR:
+			default:
+				if (!name || !read_string(name, buf, BUFSIZE-1))
+					sprintf(buf, "(unknown)");
+				break;
+			}
+
 	                fops = ULONG(char_device_struct_buf +
 	                        OFFSET(char_device_struct_fops));
 	                major = INT(char_device_struct_buf +
