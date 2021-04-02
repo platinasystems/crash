@@ -9,11 +9,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 
-ifeq ($(TARGET), PPC64)
-        TARGET_FLAGS = -D$(TARGET) -m64
-else
-        TARGET_FLAGS = -D$(TARGET)
-endif
+TARGET_FLAGS = -D$(TARGET) $(TARGET_CFLAGS)
 
 all:
 	@if [ -f /usr/bin/flex ] && [ -f /usr/bin/bison ]; then \

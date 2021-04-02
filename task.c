@@ -5235,10 +5235,9 @@ cmd_foreach(void)
                                 else {
                                         fd->pid_array[p++] = value;
                                         fd->flags |= FOREACH_SPECIFIED;
-                                        optind++;
-                                        continue;
                                 }
-				break;
+				optind++;
+				continue;
 
 			case STR_TASK:
                                 if (t == MAX_FOREACH_TASKS)
@@ -5247,10 +5246,9 @@ cmd_foreach(void)
                                 else {
                                         fd->task_array[t++] = value;
                                         fd->flags |= FOREACH_SPECIFIED;
-                                        optind++;
-                                        continue;
                                 }
-				break;
+				optind++;
+				continue;
 
 			case STR_INVALID:
 				break;
@@ -5277,7 +5275,9 @@ cmd_foreach(void)
 		    STREQ(args[optind], "DE") ||
 		    STREQ(args[optind], "SW")) {
 
-			if (STREQ(args[optind], "RU"))
+			if (fd->flags & FOREACH_STATE)
+				error(INFO, "only one task state allowed\n");
+			else if (STREQ(args[optind], "RU"))
 				fd->state = _RUNNING_;
 			else if (STREQ(args[optind], "IN"))
 				fd->state = _INTERRUPTIBLE_;
@@ -5600,8 +5600,13 @@ foreach(struct foreach_data *fd)
 		if ((fd->flags & FOREACH_KERNEL) && !is_kernel_thread(tc->task))
 			continue;
 
-		if ((fd->flags & FOREACH_STATE) && !(task_state(tc->task) & fd->state))
-			continue;
+		if (fd->flags & FOREACH_STATE) {
+			if (fd->state == _RUNNING_) {
+				if (task_state(tc->task) != _RUNNING_)
+					continue;
+			} else if (!(task_state(tc->task) & fd->state))
+				continue;
+		}
 
 		if (specified) {
 			for (j = 0; j < fd->tasks; j++) {

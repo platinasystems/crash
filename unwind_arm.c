@@ -313,6 +313,7 @@ init_module_unwind_tables(void)
 	BZERO(&ld, sizeof(ld));
 	ld.start = head;
 	ld.member_offset = OFFSET(unwind_table_list);
+	ld.flags = RETURN_ON_LIST_ERROR;
 
 	if (CRASHDEBUG(1))
 		ld.flags |= VERBOSE;
@@ -323,6 +324,10 @@ init_module_unwind_tables(void)
 	 */
 	hq_open();
 	cnt = do_list(&ld);
+	if (cnt == -1) {
+		error(WARNING, "UNWIND: failed to gather unwind_table list");
+		return FALSE;
+	}
 	table_list = (ulong *)GETBUF(cnt * sizeof(ulong));
 	cnt = retrieve_list(table_list, cnt);
 	hq_close();

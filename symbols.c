@@ -3202,6 +3202,11 @@ is_shared_object(char *file)
 			if (machine_type("ARM"))
 				return TRUE;
 			break;
+
+		case EM_PPC:
+			if (machine_type("PPC"))
+				return TRUE;
+			break;
 		}
 
 		if (CRASHDEBUG(1))

@@ -328,6 +328,17 @@ static void s390x_process_elf_notes(void *note_ptr, unsigned long size_note)
 	}
 }
 
+static void s390x_check_live(void)
+{
+	unsigned long long live_magic;
+
+	readmem(0, KVADDR, &live_magic, sizeof(live_magic), "live_magic",
+		RETURN_ON_ERROR | QUIET);
+
+	if (live_magic == 0x4c49564544554d50ULL)
+		pc->flags2 |= LIVE_DUMP;
+}
+
 /*
  *  Do all necessary machine-specific setup here.  This is called several
  *  times during initialization.
@@ -402,6 +413,7 @@ s390x_init(int when)
 		break;
 
 	case POST_INIT:
+		s390x_check_live();
 		break;
 	}
 }
@@ -614,9 +626,11 @@ int s390x_vtop(ulong table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 	}
 
 	/* Check if this is a large page. */
-	if (entry & 0x400ULL)
+	if (entry & 0x400ULL) {
 		/* Add the 1MB page offset and return the final value. */
-		return table + (vaddr & 0xfffffULL);
+		*phys_addr = table + (vaddr & 0xfffffULL);
+		return TRUE;
+	}
 
 	/* Get the page table entry */
 	entry = _kl_pg_table_deref_s390x(vaddr, entry & ~0x7ffULL);
@@ -978,12 +992,16 @@ static void print_ptregs(struct bt_info *bt, unsigned long sp)
 		return;
 
 	fprintf(fp, " PSW:  %016lx %016lx ", psw_flags, psw_addr);
-	sym = closest_symbol(psw_addr);
-	offs = psw_addr - closest_symbol_value(psw_addr);
-	if (module_symbol(psw_addr, NULL, &lm, NULL, 0))
-		fprintf(fp, "(%s+%ld [%s])\n", sym, offs, lm->mod_name);
-	else
-		fprintf(fp, "(%s+%ld)\n", sym, offs);
+	if (psw_flags & S390X_PSW_MASK_PSTATE) {
+		fprintf(fp, "(user space)\n");
+	} else {
+		sym = closest_symbol(psw_addr);
+		offs = psw_addr - closest_symbol_value(psw_addr);
+		if (module_symbol(psw_addr, NULL, &lm, NULL, 0))
+			fprintf(fp, "(%s+%ld [%s])\n", sym, offs, lm->mod_name);
+		else
+			fprintf(fp, "(%s+%ld)\n", sym, offs);
+	}
 
 	addr = sp + MEMBER_OFFSET("pt_regs", "gprs");
 	for (i = 0; i < 16; i++) {
@@ -1039,8 +1057,10 @@ static unsigned long show_trace(struct bt_info *bt, int cnt, unsigned long sp,
 			return sp;
 		/* Check for user PSW */
 		reg = readmem_ul(sp + MEMBER_OFFSET("pt_regs", "psw"));
-		if (reg & S390X_PSW_MASK_PSTATE)
+		if (reg & S390X_PSW_MASK_PSTATE) {
+			print_ptregs(bt, sp);
 			return sp;
+		}
 		/* Get new backchain from r15 */
 		reg = readmem_ul(sp + MEMBER_OFFSET("pt_regs", "gprs") +
 				 15 * sizeof(long));
@@ -1080,10 +1100,6 @@ static void s390x_back_trace_cmd(struct bt_info *bt)
 	 * Print lowcore and print interrupt stacks when task has cpu
 	 */
 	if (s390x_has_cpu(bt)) {
-		if (ACTIVE()) {
-			fprintf(fp,"(active)\n");
-			return;
-		}
 		s390x_get_lowcore(bt, lowcore);
 		psw_flags = ULONG(lowcore + OFFSET(s390_lowcore_psw_save_area));
 

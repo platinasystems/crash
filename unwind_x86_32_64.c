@@ -928,11 +928,16 @@ populate_local_tables(ulong root, char *buf)
         BZERO(ld, sizeof(struct list_data));
         ld->start = root;
         ld->member_offset = OFFSET(unwind_table_link);
+	ld->flags = RETURN_ON_LIST_ERROR;
 	if (CRASHDEBUG(1))
         	ld->flags |= VERBOSE;
 
 	hq_open();
         cnt = do_list(ld);
+	if (cnt == -1) {
+		error(WARNING, "UNWIND: failed to gather unwind_table list");
+		return 0;
+	}
         table_list = (ulong *)GETBUF(cnt * sizeof(ulong));
 	cnt = retrieve_list(table_list, cnt);
 	hq_close();

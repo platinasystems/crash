@@ -65,6 +65,38 @@
 #  define offsetof(TYPE, MEMBER) ((ulong)&((TYPE *)0)->MEMBER)
 #endif
 
+#if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
+    !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
+    !defined(ARM)
+#ifdef __alpha__
+#define ALPHA
+#endif
+#ifdef __i386__
+#define X86
+#endif
+#ifdef __powerpc__
+#define PPC
+#endif
+#ifdef __ia64__
+#define IA64
+#endif
+#ifdef __s390__
+#define S390
+#endif
+#ifdef __s390x__
+#define S390X
+#endif
+#ifdef __powerpc64__
+#define PPC64
+#endif
+#ifdef __x86_64__
+#define X86_64
+#endif
+#ifdef __arm__
+#define ARM
+#endif
+#endif
+
 #ifdef X86
 #define NR_CPUS  (256)
 #endif
@@ -203,6 +235,7 @@ struct number_option {
 
 #define ACTIVE()            (pc->flags & LIVE_SYSTEM)
 #define DUMPFILE()          (!(pc->flags & LIVE_SYSTEM))
+#define LIVE()              (pc->flags2 & LIVE_DUMP || pc->flags & LIVE_SYSTEM)
 #define MEMORY_SOURCES (NETDUMP|KDUMP|MCLXCD|LKCD|DEVMEM|S390D|MEMMOD|DISKDUMP|XENDUMP|CRASHBUILTIN|KVMDUMP|PROC_KCORE|SADUMP)
 #define DUMPFILE_TYPES      (DISKDUMP|NETDUMP|KDUMP|MCLXCD|LKCD|S390D|XENDUMP|KVMDUMP|SADUMP)
 #define REMOTE()            (pc->flags2 & REMOTE_DAEMON)
@@ -446,6 +479,7 @@ struct program_context {
 #define REMOTE_DAEMON  (0x08ULL)
 #define ERASEINFO_DATA (0x10ULL)
 #define GDB_CMD_MODE   (0x20ULL)
+#define LIVE_DUMP      (0x40ULL)
 #define FLAT_FORMAT() (pc->flags2 & FLAT)
 #define ELF_NOTES_VALID() (pc->flags2 & ELF_NOTES)
 	char *cleanup;

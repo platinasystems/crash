@@ -18,6 +18,7 @@
 #include "defs.h"
 #include "xen_hyper_defs.h"
 #include <elf.h>
+#include <libgen.h>
 
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
 static char *find_module_objfile(char *, char *, char *);
@@ -992,6 +993,8 @@ non_matching_kernel(void)
                         else
                                 fprintf(fp, "%s", pc->dumpfile);
                 }
+		if (LIVE())
+			fprintf(fp, " [LIVE DUMP]");
         }
 
 	fprintf(fp, "\n\n");
@@ -1922,7 +1925,7 @@ cmd_bt(void)
 		case 'g':
 #ifdef GDB_5_3
 			bt->flags |= BT_USE_GDB;
-else
+#else
 			bt->flags |= BT_THREAD_GROUP;
 #endif
 			break;
@@ -2072,9 +2075,9 @@ else
 	}
 
 	if (active) {
-		if (ACTIVE())
+		if (LIVE())
 			error(FATAL, 
-			    "-a option not supported on a live system\n");
+			    "-a option not supported on a live system or live dump\n");
 
 		if (bt->flags & BT_THREAD_GROUP)
 			error(FATAL, 
@@ -2243,7 +2246,7 @@ back_trace(struct bt_info *bt)
 		return;
 	}
 
-	if (ACTIVE() && !(bt->flags & BT_EFRAME_SEARCH) && 
+	if (LIVE() && !(bt->flags & BT_EFRAME_SEARCH) && 
             ((bt->task == tt->this_task) || is_task_active(bt->task))) {
 
 		if (BT_REFERENCE_CHECK(bt) ||
@@ -3551,6 +3554,7 @@ module_objfile_search(char *modref, char *filename, char *tree)
 	struct syment *sp;
 	char *p1, *p2;
 	char *env;
+	char *namelist;
 
 	retbuf = NULL;
 	initrd = FALSE;
@@ -3723,6 +3727,28 @@ module_objfile_search(char *modref, char *filename, char *tree)
 				}
 			}
 		}
+	}
+
+	/*
+	 *  Check the directory tree where the vmlinux file is located.
+	 */ 
+	if (!retbuf && 
+	    (namelist = realpath(pc->namelist_orig ? 
+		pc->namelist_orig : pc->namelist, NULL))) {
+		sprintf(dir, "%s", dirname(namelist));
+		if (!(retbuf = search_directory_tree(dir, file, 0))) {
+			switch (kt->flags & (KMOD_V1|KMOD_V2))
+			{
+			case KMOD_V2:
+				sprintf(file, "%s.ko", modref);
+				retbuf = search_directory_tree(dir, file, 0);
+				if (!retbuf) {
+					sprintf(file, "%s.ko.debug", modref);
+					retbuf = search_directory_tree(dir, file, 0);
+				}
+			}
+		}
+		free(namelist);
 	}
 
 	return retbuf;
@@ -4097,6 +4123,9 @@ display_sys_stats(void)
 			else
                 		fprintf(fp, "%s", pc->dumpfile);
 		}
+
+		if (LIVE())
+			fprintf(fp, "  [LIVE DUMP]");
 
 		if (NETDUMP_DUMPFILE() && is_partial_netdump())
 			fprintf(fp, "  [PARTIAL DUMP]");
