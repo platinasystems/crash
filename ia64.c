@@ -71,8 +71,6 @@ static void rse_function_params(struct unw_frame_info *, char *);
 static int ia64_vtop_4l_xen_wpt(ulong, physaddr_t *paddr, ulong *pgd, int, int);
 static int ia64_vtop_xen_wpt(ulong, physaddr_t *paddr, ulong *pgd, int, int);
 static int ia64_xen_kdump_p2m_create(struct xen_kdump_data *);
-static char *ia64_xen_kdump_load_page(ulong, char *);
-static ulong ia64_xen_kdump_page_mfn(ulong);
 static int ia64_xendump_p2m_create(struct xendump_data *);
 static void ia64_debug_dump_page(FILE *, char *, char *);
 static char *ia64_xendump_load_page(ulong, struct xendump_data *);
@@ -3855,32 +3853,97 @@ ia64_calc_phys_start(void)
  *  From the xen vmcore, create an index of mfns for each page that makes
  *  up the dom0 kernel's complete phys_to_machine_mapping[max_pfn] array.
  */
-
 static int
 ia64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 {
-	error(FATAL, "ia64_xen_kdump_p2m_create: TBD\n");
+	/*
+	 *  Temporarily read physical (machine) addresses from vmcore by
+	 *  going directly to read_netdump() instead of via read_kdump().
+	 */
+	pc->readmem = read_netdump;
 
-	/* dummy calls for clean "make [wW]arn" */
-	ia64_xen_kdump_load_page(0, NULL);
-	ia64_xen_kdump_page_mfn(0);
-	ia64_debug_dump_page(NULL, NULL, NULL);
+	if (CRASHDEBUG(1))
+		fprintf(fp, "ia64_xen_kdump_p2m_create: p2m_mfn: %lx\n", xkd->p2m_mfn);
 
-	return FALSE;
+	if ((xkd->p2m_mfn_frame_list = (ulong *)malloc(PAGESIZE())) == NULL)
+		error(FATAL, "cannot malloc p2m_frame_list");
+
+	if (!readmem(PTOB(xkd->p2m_mfn), PHYSADDR, xkd->p2m_mfn_frame_list, PAGESIZE(), 
+	    "xen kdump p2m mfn page", RETURN_ON_ERROR))
+		error(FATAL, "cannot read xen kdump p2m mfn page\n");
+
+	xkd->p2m_frames = PAGESIZE()/sizeof(ulong);
+
+	pc->readmem = read_kdump;
+
+	return TRUE;
 }
 
-static char *
-ia64_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
+physaddr_t
+ia64_xen_kdump_p2m(struct xen_kdump_data *xkd, physaddr_t pseudo)
 {
-	error(FATAL, "ia64_xen_kdump_load_page: TBD\n");
-	return NULL;
-}
+	ulong pgd_idx, pte_idx;
+	ulong pmd, pte;
+	physaddr_t paddr;
 
-static ulong
-ia64_xen_kdump_page_mfn(ulong kvaddr)
-{
-	error(FATAL, "ia64_xen_kdump_page_mfn: TBD\n");
-	return 0;
+	/*
+	 *  Temporarily read physical (machine) addresses from vmcore by
+	 *  going directly to read_netdump() instead of via read_kdump().
+	 */
+	pc->readmem = read_netdump;
+
+	xkd->accesses += 2;
+
+	pgd_idx = (pseudo >> PGDIR_SHIFT_3L) & (PTRS_PER_PGD - 1);
+	pmd = xkd->p2m_mfn_frame_list[pgd_idx] & _PFN_MASK;
+	if (!pmd) {
+		paddr = P2M_FAILURE;
+		goto out;
+	}
+
+	pmd += ((pseudo >> PMD_SHIFT) & (PTRS_PER_PMD - 1)) * sizeof(ulong);
+	if (pmd != xkd->last_pmd_read) {
+		if (!readmem(pmd, PHYSADDR, &pte, sizeof(ulong), 
+		    "ia64_xen_kdump_p2m pmd", RETURN_ON_ERROR)) {
+			xkd->last_pmd_read = BADADDR;
+			xkd->last_mfn_read = BADADDR;
+			paddr = P2M_FAILURE;
+			goto out;
+		}
+		xkd->last_pmd_read = pmd;
+	} else {
+		pte = xkd->last_mfn_read;
+		xkd->cache_hits++;
+	}
+	pte = pte & _PFN_MASK;
+	if (!pte) {
+		paddr = P2M_FAILURE;
+		goto out;
+	}
+
+	if (pte != xkd->last_mfn_read) {
+		if (!readmem(pte, PHYSADDR, xkd->page, PAGESIZE(), 
+		    "ia64_xen_kdump_p2m pte page", RETURN_ON_ERROR)) {
+			xkd->last_pmd_read = BADADDR;
+			xkd->last_mfn_read = BADADDR;
+			paddr = P2M_FAILURE;
+			goto out;
+		}
+		xkd->last_mfn_read = pte;
+	} else
+		xkd->cache_hits++;
+
+	pte_idx = (pseudo >> PAGESHIFT()) & (PTRS_PER_PTE - 1);
+	paddr = *(((ulong *)xkd->page) + pte_idx);
+	if (!(paddr & _PAGE_P)) {
+		paddr = P2M_FAILURE;
+		goto out;
+	}
+	paddr = (paddr & _PFN_MASK) | PAGEOFFSET(pseudo);
+
+out:
+	pc->readmem = read_kdump;
+	return paddr;
 }
 
 #include "xendump.h"

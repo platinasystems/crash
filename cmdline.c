@@ -70,8 +70,35 @@ get_command_line(void)
 	 *       program invocation.
 	 *    4. from a terminal.
 	 *    5. from a pipe, if stdin is a pipe rather than a terminal.
+	 *
+	 *  But first, handle the interruption of an input file caused
+	 *  by a FATAL error in one of its commands.
+	 *
 	 */
-	if (pc->flags & RCHOME_IFILE) {
+	if (pc->ifile_in_progress) {
+		switch (pc->ifile_in_progress)
+		{
+		case RCHOME_IFILE:
+			pc->flags |= INIT_IFILE|RCHOME_IFILE;
+			sprintf(pc->command_line, "< %s/.%src", 
+				pc->home, pc->program_name);
+			break;
+		case RCLOCAL_IFILE:
+			sprintf(pc->command_line, "< .%src", pc->program_name);
+			pc->flags |= INIT_IFILE|RCLOCAL_IFILE;
+			break;
+		case CMDLINE_IFILE:
+			sprintf(pc->command_line, "< %s", pc->input_file);
+			pc->flags |= INIT_IFILE|CMDLINE_IFILE;
+			break;
+		case RUNTIME_IFILE:
+			sprintf(pc->command_line, "%s", pc->runtime_ifile_cmd);
+			pc->flags |= IFILE_ERROR;
+			break;
+		default:
+			error(FATAL, "invalid input file\n");
+		}
+	} else if (pc->flags & RCHOME_IFILE) {
                 sprintf(pc->command_line, "< %s/.%src", 
 			pc->home, pc->program_name);
 		pc->flags |= INIT_IFILE;
@@ -417,6 +444,9 @@ setup_redirect(int origin)
 				pc->redirect |= REDIRECT_FAILURE;
                                 return REDIRECT_FAILURE;
                         }
+
+			if (pc->flags & IFILE_ERROR)
+				append = TRUE;
 
         		if ((ofile = 
 			    fopen(p, append ? "a+" : "w+")) == NULL) {
@@ -842,6 +872,8 @@ static void
 restore_sanity(void)
 {
 	int fd, waitstatus;
+        struct extension_table *ext;
+	struct command_table_entry *cp;
 
         if (pc->stdpipe) {
 		close(fileno(pc->stdpipe));
@@ -921,7 +953,7 @@ restore_sanity(void)
 
 	wait_for_children(ZOMBIES_ONLY);
 
-	pc->flags &= ~(INIT_IFILE|RUNTIME_IFILE|_SIGINT_|PLEASE_WAIT);
+	pc->flags &= ~(INIT_IFILE|RUNTIME_IFILE|IFILE_ERROR|_SIGINT_|PLEASE_WAIT);
 	pc->sigint_cnt = 0;
 	pc->redirect = 0;
 	pc->pipe_command[0] = NULLCHAR;
@@ -952,6 +984,16 @@ restore_sanity(void)
 	clear_vma_cache();
 	clear_active_set();
 
+	/*
+	 *  Call the cleanup() function of any extension.
+	 */
+        for (ext = extension_table; ext; ext = ext->next) {
+                for (cp = ext->command_table; cp->name; cp++) {
+                        if (cp->flags & CLEANUP)
+                                (*cp->func)();
+		}
+        }
+
 	if (CRASHDEBUG(4)) {
                 dump_filesys_table(0);
 		dump_vma_cache(0);
@@ -970,6 +1012,8 @@ static void
 restore_ifile_sanity(void)
 {
         int fd;
+
+	pc->flags &= ~IFILE_ERROR;
 
         if (pc->ifile_pipe) {
 		close(fileno(pc->ifile_pipe));
@@ -1086,7 +1130,6 @@ exec_input_file(void)
 	} else
 		this = 0;
 
-
         if (pc->flags & RUNTIME_IFILE) {
                 error(INFO, "embedded input files not allowed!\n");
                 return;
@@ -1121,6 +1164,28 @@ exec_input_file(void)
         pc->flags |= RUNTIME_IFILE;
 	incoming_fp = fp;
 
+	/*
+	 *  Handle runtime commands that use input files.
+	 */
+	if ((pc->ifile_in_progress = this) == 0) {
+		if (!pc->runtime_ifile_cmd) {
+			if (!(pc->runtime_ifile_cmd = (char *)malloc(BUFSIZE))) {
+				error(INFO, 
+				    "cannot malloc input file command line buffer\n");
+				return;
+			}
+		}
+		strcpy(pc->runtime_ifile_cmd, pc->orig_line);
+		pc->ifile_in_progress = RUNTIME_IFILE;
+	}
+
+	/*
+	 *  If there's an offset, then there was a FATAL error caused
+	 *  by the last command executed from the input file.
+	 */
+	if (pc->ifile_offset)
+		fseek(pc->ifile, (long)pc->ifile_offset, SEEK_SET);
+
         while (fgets(buf, BUFSIZE-1, pc->ifile)) {
                 /*
                  *  Restore normal environment.
@@ -1129,6 +1194,8 @@ exec_input_file(void)
 		restore_ifile_sanity();
         	BZERO(pc->command_line, BUFSIZE);
         	BZERO(pc->orig_line, BUFSIZE);
+
+		pc->ifile_offset = ftell(pc->ifile);
 
 		if (STRNEQ(buf, "#") || STREQ(buf, "\n"))
 			continue;
@@ -1178,6 +1245,10 @@ done_input:
         fclose(pc->ifile);
         pc->ifile = NULL;
         pc->flags &= ~RUNTIME_IFILE;
+	pc->ifile_offset = 0;
+	if (pc->runtime_ifile_cmd)
+		BZERO(pc->runtime_ifile_cmd, BUFSIZE);
+	pc->ifile_in_progress = 0;
 }
 
 /*

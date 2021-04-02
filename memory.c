@@ -5786,7 +5786,7 @@ dump_free_pages_zones_v2(struct meminfo *fi)
                         zone_start_paddr = PTOB(zone_start_pfn);
 
 			if (!VALID_MEMBER(zone_zone_mem_map)) {
-				if (IS_SPARSEMEM()) {
+				if (IS_SPARSEMEM() || IS_DISCONTIGMEM()) {
 					zone_mem_map = 0;
 					if (size) {
 						phys = PTOB(zone_start_pfn);
@@ -11673,8 +11673,12 @@ dump_memory_nodes(int initialize)
 		}
 	} 
 
-	if (n != vt->numnodes)
-		error(FATAL, "numnodes out of sync with pgdat_list?\n");
+	if (n != vt->numnodes) {
+		if (CRASHDEBUG(2))
+			error(NOTE, "changing numnodes from %d to %d\n",
+				vt->numnodes, n);
+		vt->numnodes = n;
+	}
 
 	if (!initialize && IS_SPARSEMEM())
 		dump_mem_sections();
