@@ -3237,8 +3237,6 @@ cmd_mod(void)
 	    (tree || kt->module_tree)) {
 		if (!tree)
 			tree = kt->module_tree;
-
-		pc->curcmd_flags |= MODULE_TREE;
 	}
 
 	do_module_cmd(flag, modref, address, objfile, tree);
@@ -3255,8 +3253,6 @@ check_specified_module_tree(char *module, char *gdb_buffer)
 
 	retval = FALSE;
 
-	if (!(pc->curcmd_flags & MODULE_TREE))
-		return retval;
 	/*
 	 *  Search for "/lib/modules" in the module name string
 	 *  and insert "/usr/lib/debug" there.
@@ -3593,6 +3589,10 @@ module_objfile_search(char *modref, char *filename, char *tree)
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
 				retbuf = search_directory_tree(tree, file, 1);
+				if (!retbuf) {
+					sprintf(file, "%s.ko.debug", modref);
+					retbuf = search_directory_tree(tree, file, 1);
+				}
 			}
 		}
 		return retbuf;
@@ -3610,6 +3610,10 @@ module_objfile_search(char *modref, char *filename, char *tree)
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
 				retbuf = search_directory_tree(dir, file, 0);
+				if (!retbuf) {
+					sprintf(file, "%s.ko.debug", modref);
+					retbuf = search_directory_tree(dir, file, 0);
+				}
 			}
 		}
 	}
@@ -3634,6 +3638,22 @@ module_objfile_search(char *modref, char *filename, char *tree)
 			case KMOD_V2:
 				sprintf(file, "%s.ko", modref);
 				retbuf = search_directory_tree(dir, file, 0);
+			}
+		}
+	}
+
+	if (!retbuf && !filename && !tree && kt->module_tree) {
+		sprintf(dir, "%s", kt->module_tree);
+		if (!(retbuf = search_directory_tree(dir, file, 0))) {
+			switch (kt->flags & (KMOD_V1|KMOD_V2))
+			{
+			case KMOD_V2:
+				sprintf(file, "%s.ko", modref);
+				retbuf = search_directory_tree(dir, file, 0);
+				if (!retbuf) {
+					sprintf(file, "%s.ko.debug", modref);
+					retbuf = search_directory_tree(dir, file, 0);
+				}
 			}
 		}
 	}

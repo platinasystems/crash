@@ -407,7 +407,7 @@ struct program_context {
 #define BAD_INSTRUCTION    (0x80)
 #define UD2A_INSTRUCTION  (0x100)
 #define IRQ_IN_USE        (0x200)
-#define MODULE_TREE       (0x400)
+/*      (available)       (0x400) */
 #define IGNORE_ERRORS     (0x800)
 #define FROM_RCFILE      (0x1000)
 #define MEMTYPE_KVADDR   (0x2000)
@@ -857,6 +857,7 @@ struct machdep_table {
 	void (*dumpfile_init)(int, void *);
 	void (*process_elf_notes)(void *, unsigned long);
 	int (*get_kvaddr_ranges)(struct vaddr_range *);
+        int (*verify_line_number)(ulong, ulong, ulong);
 };
 
 /*
@@ -1614,6 +1615,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long user_regs_struct_r13;
 	long user_regs_struct_r14;
 	long user_regs_struct_r15;
+	long sched_entity_cfs_rq;
+	long sched_entity_my_q;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2612,6 +2615,9 @@ struct load_module {
 #define _MAX_PHYSMEM_BITS	44
 
 #define STACK_FRAME_OVERHEAD	16
+#define STACK_FRAME_LR_SAVE	(sizeof(ulong))
+#define STACK_FRAME_MARKER	(2 * sizeof(ulong))
+#define STACK_FRAME_REGS_MARKER	0x72656773
 #define PPC_STACK_SIZE		8192
 
 #endif  /* PPC */
@@ -3305,6 +3311,7 @@ int gdb_readmem_callback(ulong, void *, int, int);
 void patch_load_module(struct objfile *objfile, struct minimal_symbol *msymbol);
 int patch_kernel_symbol(struct gnu_request *);
 struct syment *symbol_search(char *);
+int gdb_line_number_callback(ulong, ulong, ulong);
 #endif
 
 #ifndef GDB_COMMON
@@ -5079,6 +5086,7 @@ void gdb_session_init(void);
 void gdb_interface(struct gnu_request *);
 int gdb_pass_through(char *, FILE *, ulong);
 int gdb_readmem_callback(ulong, void *, int, int);
+int gdb_line_number_callback(ulong, ulong, ulong);
 void gdb_error_hook(void);
 void restore_gdb_sanity(void);
 int is_gdb_command(int, ulong);
