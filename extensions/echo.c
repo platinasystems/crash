@@ -17,25 +17,34 @@
 
 #include "defs.h"    /* From the crash source top-level directory */
 
-void cmd_echo();     /* Declare the commands and their help data. */
+int _init(void);
+int _fini(void);
+
+void cmd_echo(void);     /* Declare the commands and their help data. */
 char *help_echo[];
 
 static struct command_table_entry command_table[] = {
-        "echo", cmd_echo, help_echo, 0,           /* One or more commands, */
-        NULL,                                     /* terminated by NULL, */
+	{ "echo", cmd_echo, help_echo, 0 },    /* One or more commands, */
+	{ NULL }                               /* terminated by NULL, */
 };
 
 
-_init() /* Register the command set. */
+int 
+_init(void) /* Register the command set. */
 { 
         register_extension(command_table);
+	return 1;
 }
  
 /* 
  *  The _fini() function is called if the shared object is unloaded. 
  *  If desired, perform any cleanups here. 
  */
-_fini() { }
+int 
+_fini(void) 
+{ 
+	return 1;
+}
 
 
 /* 
@@ -45,7 +54,7 @@ _fini() { }
  *  to accomplish what your task.
  */
 void
-cmd_echo()
+cmd_echo(void)
 {
         int c;
 

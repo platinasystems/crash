@@ -390,8 +390,12 @@ kernel_init()
 
         STRUCT_SIZE_INIT(__wait_queue, "__wait_queue");
         if (VALID_STRUCT(__wait_queue)) {
-                MEMBER_OFFSET_INIT(__wait_queue_task,
-                        "__wait_queue", "task");
+		if (MEMBER_EXISTS("__wait_queue", "task"))
+			MEMBER_OFFSET_INIT(__wait_queue_task,
+				"__wait_queue", "task");
+		else
+			MEMBER_OFFSET_INIT(__wait_queue_task,
+				"__wait_queue", "private");
                 MEMBER_OFFSET_INIT(__wait_queue_head_task_list,
                         "__wait_queue_head", "task_list");
                 MEMBER_OFFSET_INIT(__wait_queue_task_list,
@@ -3015,6 +3019,18 @@ module_objfile_search(char *modref, char *filename, char *tree)
 	sprintf(dir, "%s/%s", DEFAULT_REDHAT_DEBUG_LOCATION, 
 		kt->utsname.release);
 	retbuf = search_directory_tree(dir, file);
+
+	if (!retbuf) {
+		sprintf(dir, "/lib/modules/%s/updates", kt->utsname.release);
+		if (!(retbuf = search_directory_tree(dir, file))) {
+			switch (kt->flags & (KMOD_V1|KMOD_V2))
+			{
+			case KMOD_V2:
+				sprintf(file, "%s.ko", modref);
+				retbuf = search_directory_tree(dir, file);
+			}
+		}
+	}
 
 	if (!retbuf) {
 		sprintf(dir, "/lib/modules/%s", kt->utsname.release);

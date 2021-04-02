@@ -2526,7 +2526,8 @@ struct efi_memory_desc_t {
 #define PMD_INDEX_SIZE_L4_64K  12
 #define PUD_INDEX_SIZE_L4_64K  0
 #define PGD_INDEX_SIZE_L4_64K  4
-#define PTE_SHIFT_L4_64K  32
+#define PTE_SHIFT_L4_64K_V1  32
+#define PTE_SHIFT_L4_64K_V2  30
 #define PMD_MASKED_BITS_64K  0x1ff
 
 #define L4_OFFSET(vaddr)  ((vaddr >> (machdep->machspec->l4_shift)) & 0x1ff)
@@ -3874,6 +3875,7 @@ int fix_addr_v8(struct _dump_header_asm_s *);
 int lkcd_dump_init_v8_arch(struct _dump_header_s *dh);
 int fix_addr_v7(int);
 int get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp);
+int lkcd_get_kernel_start_v8(ulong *addr);
 
 /*
  * lkcd_v8.c
@@ -4144,6 +4146,7 @@ int lkcd_load_dump_page_header(void *, ulong);
 void lkcd_dumpfile_complaint(uint32_t, uint32_t, int);
 int set_mb_benchmark(ulong);
 ulonglong fix_lkcd_address(ulonglong);
+int lkcd_get_kernel_start(ulong *addr);
 int get_lkcd_regs_for_cpu(struct bt_info *bt, ulong *eip, ulong *esp);
 
 /*

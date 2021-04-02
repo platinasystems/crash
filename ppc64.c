@@ -160,7 +160,8 @@ ppc64_init(int when)
 				m->l2_index_size = PMD_INDEX_SIZE_L4_64K;
 				m->l3_index_size = PUD_INDEX_SIZE_L4_64K;
 				m->l4_index_size = PGD_INDEX_SIZE_L4_64K;
-				m->pte_shift = PTE_SHIFT_L4_64K; 
+				m->pte_shift = symbol_exists("demote_segment_4k") ?
+					PTE_SHIFT_L4_64K_V2 : PTE_SHIFT_L4_64K_V1; 
 				m->l2_masked_bits = PMD_MASKED_BITS_64K;
 			} else {
 				/* 4K pagesize */
@@ -305,7 +306,7 @@ ppc64_get_stacktop(ulong task)
 void
 ppc64_dump_machdep_table(ulong arg)
 {
-        int others; 
+        int i, c, others; 
  
         others = 0;
         fprintf(fp, "              flags: %lx (", machdep->flags);
@@ -368,10 +369,41 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
         fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
-	fprintf(fp, "     pgd_index_size: %d\n", machdep->machspec->l4_index_size);
-	fprintf(fp, "     pud_index_size: %d\n", machdep->machspec->l3_index_size);
-	fprintf(fp, "     pmd_index_size: %d\n", machdep->machspec->l2_index_size);
-	fprintf(fp, "     pte_index_size: %d\n", machdep->machspec->l1_index_size);
+	fprintf(fp, "     hwintrstack[%d]: ", NR_CPUS);
+       	for (c = 0; c < NR_CPUS; c++) {
+		for (others = 0, i = c; i < NR_CPUS; i++) {
+			if (machdep->machspec->hwintrstack[i])
+				others++;
+		}
+		if (!others) {
+			fprintf(fp, "%s%s", 
+			        c && ((c % 4) == 0) ? "\n  " : "",
+				c ? "(remainder unused)" : "(unused)");
+			break;
+		}
+
+		fprintf(fp, "%s%016lx ", 
+			((c % 4) == 0) ? "\n  " : "",
+			machdep->machspec->hwintrstack[c]);
+	}
+	fprintf(fp, "\n");
+	fprintf(fp, "           hwstackbuf: %lx\n", (ulong)machdep->machspec->hwstackbuf);
+	fprintf(fp, "          hwstacksize: %d\n", machdep->machspec->hwstacksize);
+	fprintf(fp, "               level4: %lx\n", (ulong)machdep->machspec->level4);
+	fprintf(fp, "     last_level4_read: %lx\n", (ulong)machdep->machspec->last_level4_read);
+	fprintf(fp, "        l4_index_size: %d\n", machdep->machspec->l4_index_size);
+	fprintf(fp, "        l3_index_size: %d\n", machdep->machspec->l3_index_size);
+	fprintf(fp, "        l2_index_size: %d\n", machdep->machspec->l2_index_size);
+	fprintf(fp, "        l1_index_size: %d\n", machdep->machspec->l1_index_size);
+	fprintf(fp, "          ptrs_per_l3: %d\n", machdep->machspec->ptrs_per_l3);
+	fprintf(fp, "          ptrs_per_l2: %d\n", machdep->machspec->ptrs_per_l2);
+	fprintf(fp, "          ptrs_per_l1: %d\n", machdep->machspec->ptrs_per_l1);
+	fprintf(fp, "             l4_shift: %d\n", machdep->machspec->l4_shift);
+	fprintf(fp, "             l3_shift: %d\n", machdep->machspec->l3_shift);
+	fprintf(fp, "             l2_shift: %d\n", machdep->machspec->l2_shift);
+	fprintf(fp, "             l1_shift: %d\n", machdep->machspec->l1_shift);
+	fprintf(fp, "            pte_shift: %d\n", machdep->machspec->pte_shift);
+	fprintf(fp, "       l2_masked_bits: %x\n", machdep->machspec->l2_masked_bits);
 }
 
 /*

@@ -21,17 +21,6 @@
 #define S390_WORD_SIZE    4
 #define S390_ADDR_MASK    0x7fffffff
 
-#define S390_PAGE_SHIFT   12
-#define S390_PAGE_SIZE    (1UL << S390_PAGE_SHIFT)
-#define S390_PAGE_MASK     (~(S390_PAGE_SIZE-1))
-
-#define S390_PGDIR_SHIFT  20
-#define S390_PGDIR_SIZE   (1UL << S390_PGDIR_SHIFT)
-#define S390_PGDIR_MASK   (~(S390_PGDIR_SIZE-1))
-
-#define S390_PTRS_PER_PGD       2048
-#define S390_PTRS_PER_PTE       256
-
 #define S390_PMD_BASE_MASK      (~((1UL<<6)-1))
 #define S390_PT_BASE_MASK       S390_PMD_BASE_MASK
 #define S390_PAGE_BASE_MASK     (~((1UL<<12)-1))
@@ -44,25 +33,9 @@
 #define S390_PAGE_INVALID       0x400    /* HW invalid */
 #define S390_PAGE_INVALID_MASK  0x601ULL /* for linux 2.6 */
 #define S390_PAGE_INVALID_NONE  0x401ULL /* for linux 2.6 */
-#define S390_PAGE_TABLE_LEN     0xf      /* only full page-tables */
-#define S390_PAGE_TABLE_INV     0x20     /* invalid page-table */
 
 #define S390_PTE_INVALID_MASK   0x80000900
 #define S390_PTE_INVALID(x) ((x) & S390_PTE_INVALID_MASK)
-
-#define S390_PMD_INVALID_MASK   0x80000000
-#define S390_PMD_INVALID(x) ((x) & S390_PMD_INVALID_MASK)
-
-/* pgd/pmd/pte query macros */
-#define s390_pmd_none(x) ((x) & S390_PAGE_TABLE_INV)
-#define s390_pmd_bad(x) (((x) & (~S390_PMD_BASE_MASK & \
-                                 ~S390_PAGE_TABLE_INV)) != \
-                                 S390_PAGE_TABLE_LEN)
-
-#define s390_pte_none(x) (((x) & (S390_PAGE_INVALID | S390_RO_S390 | \
-                                  S390_PAGE_PRESENT)) == \
-                                  S390_PAGE_INVALID)
-
 
 #define ASYNC_STACK_SIZE  STACKSIZE() // can be 4096 or 8192
 #define KERNEL_STACK_SIZE STACKSIZE() // can be 4096 or 8192
@@ -73,8 +46,6 @@
  * declarations of static functions
  */
 static void s390_print_lowcore(char*, struct bt_info*,int);
-static unsigned long s390_pgd_offset(unsigned long, unsigned long);
-static unsigned long s390_pte_offset(unsigned long, unsigned long);
 static int s390_kvtop(struct task_context *, ulong, physaddr_t *, int);
 static int s390_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static int s390_vtop(unsigned long, ulong, physaddr_t*, int);
@@ -292,60 +263,87 @@ s390_pte_present(unsigned long x)
 /*
  * page table traversal functions
  */
-static unsigned long 
-s390_pgd_offset(unsigned long pgd_base, unsigned long vaddr)
-{
-	unsigned long pgd_off, pmd_base;
 
-	pgd_off = ((vaddr >> S390_PGDIR_SHIFT) & (S390_PTRS_PER_PGD - 1))
-		* S390_WORD_SIZE;
-	readmem(pgd_base + pgd_off, PHYSADDR, &pmd_base,sizeof(long),
-		"pgd_base",FAULT_ON_ERROR);
-	return pmd_base;
+/* Segment table traversal function */
+static ulong _kl_sg_table_deref_s390(ulong vaddr, ulong table, int len)
+{
+	ulong offset, entry;
+
+	offset = ((vaddr >> 20) & 0x7ffUL) * 4;
+	if (offset >= (len + 1)*64)
+		/* Offset is over the table limit. */
+		return 0;
+	readmem(table + offset, KVADDR, &entry, sizeof(entry), "entry",
+		FAULT_ON_ERROR);
+
+	/*
+	 * Check if the segment table entry could be read and doesn't have
+	 * any of the reserved bits set.
+	 */
+	if (entry & 0x80000000UL)
+		return 0;
+	/* Check if the segment table entry has the invalid bit set. */
+	if (entry & 0x40UL)
+		return 0;
+	/* Segment table entry is valid and well formed. */
+	return entry;
 }
 
-unsigned long s390_pte_offset(unsigned long pte_base, unsigned long vaddr)
+/* Page table traversal function */
+static ulong _kl_pg_table_deref_s390(ulong vaddr, ulong table, int len)
 {
-	unsigned pte_off, pte_val;
+	ulong offset, entry;
 
-	pte_off = ((vaddr >> S390_PAGE_SHIFT) & (S390_PTRS_PER_PTE - 1))
-		* S390_WORD_SIZE;
-	readmem(pte_base + pte_off, PHYSADDR, &pte_val, sizeof(long),
-		"pte_val",FAULT_ON_ERROR);
-	return pte_val;
+	offset = ((vaddr >> 12) & 0xffUL) * 4;
+	if (offset >= (len + 1)*64)
+		/* Offset is over the table limit. */
+		return 0;
+	readmem(table + offset, KVADDR, &entry, sizeof(entry), "entry",
+		FAULT_ON_ERROR);
+	/*
+	 * Check if the page table entry could be read and doesn't have
+	 * any of the reserved bits set.
+	 */
+	if (entry & 0x80000900UL)
+		return 0;
+	/* Check if the page table entry has the invalid bit set. */
+	if (entry & 0x400UL)
+		return 0;
+	/* Page table entry is valid and well formed. */
+	return entry;
 }
 
-/*
- * Generic vtop function for user and kernel addresses
- */
+/* lookup virtual address in page tables */
 static int
-s390_vtop(unsigned long pgd_base, ulong kvaddr, physaddr_t *paddr, int verbose)
+s390_vtop(unsigned long table, ulong vaddr, physaddr_t *phys_addr, int verbose)
 {
-	unsigned pte_base, pte_val;
+	ulong entry, paddr;
+	int len;
 
-	/* get the pgd entry */
-	pte_base = s390_pgd_offset(pgd_base,kvaddr);
-	if(S390_PMD_INVALID(pte_base) ||
-	   s390_pmd_bad(pte_base) ||
-	   s390_pmd_none(pte_base)) {
-		*paddr = 0;
+	/*
+	 * Get the segment table entry.
+	 * We assume that the segment table length field in the asce
+	 * is set to the maximum value of 127 (which translates to
+	 * a segment table with 2048 entries) and that the addressing
+	 * mode is 31 bit.
+	 */
+	entry = _kl_sg_table_deref_s390(vaddr, table, 127);
+	if (!entry)
 		return FALSE;
-	}
-	/* get the pte */
-	pte_base = pte_base & S390_PT_BASE_MASK;
-	pte_val = s390_pte_offset(pte_base,kvaddr);
-	if(S390_PTE_INVALID(pte_val) ||
-	   s390_pte_none(pte_val)){
-		*paddr = 0;
+	table = entry & 0x7ffffc00UL;
+	len = entry & 0xfUL;
+
+	/* Get the page table entry */
+	entry = _kl_pg_table_deref_s390(vaddr, table, len);
+	if (!entry)
 		return FALSE;
-	}
-	if(!s390_pte_present(pte_val)){
-		/* swapped out */
-		*paddr = pte_val;
-		return FALSE;
-	}
-	*paddr = (pte_val & S390_PAGE_BASE_MASK) |
-		  (kvaddr & (~(S390_PAGE_MASK)));
+
+	/* Isolate the page origin from the page table entry. */
+	paddr = entry & 0x7ffff000UL;
+
+	/* Add the page offset and return the final value. */
+	*phys_addr = paddr + (vaddr & 0xfffUL);
+
 	return TRUE;
 }
 

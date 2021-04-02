@@ -277,7 +277,16 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(page_count, "page", "_count");
 	MEMBER_OFFSET_INIT(page_flags, "page", "flags");
         MEMBER_OFFSET_INIT(page_mapping, "page", "mapping");
+	if (INVALID_MEMBER(page_mapping))
+		ANON_MEMBER_OFFSET_INIT(page_mapping, "page", "mapping");
+	if (INVALID_MEMBER(page_mapping) && 
+	    (THIS_KERNEL_VERSION < LINUX(2,6,17)) &&
+	    MEMBER_EXISTS("page", "_mapcount"))
+		ASSIGN_OFFSET(page_mapping) = MEMBER_OFFSET("page", "_mapcount") +
+			STRUCT_SIZE("atomic_t") + sizeof(ulong);
         MEMBER_OFFSET_INIT(page_index, "page", "index");
+	if (INVALID_MEMBER(page_index))
+		ANON_MEMBER_OFFSET_INIT(page_mapping, "page", "index");
         MEMBER_OFFSET_INIT(page_buffers, "page", "buffers");
 	MEMBER_OFFSET_INIT(page_lru, "page", "lru");
 	MEMBER_OFFSET_INIT(page_pte, "page", "pte");
@@ -555,12 +564,12 @@ vm_init(void)
 
 	get_symbol_data("high_memory", sizeof(ulong), &vt->high_memory);
 
-	if (kernel_symbol_exists("mem_map")) {
+	if (kernel_symbol_exists("mem_section"))
+		vt->flags |= SPARSEMEM;
+	else if (kernel_symbol_exists("mem_map")) {
 		get_symbol_data("mem_map", sizeof(char *), &vt->mem_map);
 		vt->flags |= FLATMEM;
-	} else if (kernel_symbol_exists("mem_section"))
-		vt->flags |= SPARSEMEM;
-	else
+	} else
 		vt->flags |= DISCONTIGMEM;
 
 	sparse_mem_init();
@@ -4004,7 +4013,7 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 
 		pp = section_mem_map_addr(section);
 		pp = sparse_decode_mem_map(pp, section_nr);
-		phys = section_nr * PAGES_PER_SECTION() * PAGESIZE();
+		phys = (physaddr_t) section_nr * PAGES_PER_SECTION() * PAGESIZE();
 		section_size = PAGES_PER_SECTION();
 
 		for (i = 0; i < section_size; 
@@ -6915,13 +6924,14 @@ is_kmem_cache_addr(ulong vaddr, char *kbuf)
 	                        if (!read_string(name, kbuf, BUFSIZE-1)) {
 					if (vt->flags & 
 					  (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2))
-	                                	error(FATAL,
+	                                	error(WARNING,
 	                      "cannot read kmem_cache_s.name string at %lx\n",
 	                                        	name);
 					else
-	                                	error(FATAL,
+	                                	error(WARNING,
 	                      "cannot read kmem_cache_s.c_name string at %lx\n",
 	                                        	name);
+					sprintf(kbuf, "(unknown)");
 				}
 	                }
 			FREEBUF(cache_buf);
@@ -6982,13 +6992,14 @@ kmem_cache_list(void)
 	                if (!read_string(name, buf, BUFSIZE-1)) {
 				if (vt->flags & 
 				    (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2))
-	                               	error(FATAL,
+	                               	error(WARNING,
 	                      "cannot read kmem_cache_s.name string at %lx\n",
 	                                       	name);
 				else
-	                               	error(FATAL,
+	                               	error(WARNING,
 	                      "cannot read kmem_cache_s.c_name string at %lx\n",
 	                                       	name);
+				sprintf(buf, "(unknown)");
 			}
 	        }
 
@@ -7566,10 +7577,12 @@ dump_kmem_cache(struct meminfo *si)
 		} else {
 			name = ULONG(si->cache_buf + 
 				OFFSET(kmem_cache_s_c_name));
-                	if (!read_string(name, buf, BUFSIZE-1))
-				error(FATAL, 
+                	if (!read_string(name, buf, BUFSIZE-1)) {
+				error(WARNING, 
 			      "cannot read kmem_cache_s.c_name string at %lx\n",
 					name);
+				sprintf(buf, "(unknown)");
+			}
 		}
 
 		if (reqname && !STREQ(reqname, buf)) 
@@ -7764,10 +7777,12 @@ dump_kmem_cache_percpu_v1(struct meminfo *si)
                 	readmem(si->cache+OFFSET(kmem_cache_s_name), 
 				KVADDR, &name, sizeof(ulong),
                         	"name", FAULT_ON_ERROR);
-                	if (!read_string(name, buf, BUFSIZE-1))
-				error(FATAL, 
+                	if (!read_string(name, buf, BUFSIZE-1)) {
+				error(WARNING, 
 			      "cannot read kmem_cache_s.name string at %lx\n",
 					name);
+				sprintf(buf, "(unknown)");
+			}
 		}
 
 		if (reqname && !STREQ(reqname, buf)) 
@@ -7984,10 +7999,12 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                 	readmem(si->cache+OFFSET(kmem_cache_s_name), 
 				KVADDR, &name, sizeof(ulong),
                         	"name", FAULT_ON_ERROR);
-                	if (!read_string(name, buf, BUFSIZE-1))
-				error(FATAL, 
+                	if (!read_string(name, buf, BUFSIZE-1)) {
+				error(WARNING, 
 			      "cannot read kmem_cache_s.name string at %lx\n",
 					name);
+				sprintf(buf, "(unknown)");
+			}
 		}
 
 		if (reqname && !STREQ(reqname, buf)) 
@@ -12229,7 +12246,9 @@ nr_to_section(ulong nr)
 		addr = mem_sec[SECTION_NR_TO_ROOT(nr)] + 
 		    (nr & SECTION_ROOT_MASK()) * SIZE(mem_section);
 	else
-		addr = mem_sec[0] + (nr & SECTION_ROOT_MASK()) * SIZE(mem_section);
+		addr = symbol_value("mem_section") +
+		    (SECTIONS_PER_ROOT() * SECTION_NR_TO_ROOT(nr) +
+			(nr & SECTION_ROOT_MASK())) * SIZE(mem_section);
 
 	if (!IS_KVADDR(addr))
 		return 0;
@@ -12708,6 +12727,12 @@ dump_vm_stat(char *item, long *retval)
 static void
 kmem_cache_init_slub(void)
 {
+	if (CRASHDEBUG(1) &&
+	    !(vt->flags & CONFIG_NUMA) && (vt->numnodes > 1))
+		error(WARNING, 
+		    "kmem_cache_init_slub: numnodes: %d without CONFIG_NUMA\n",
+			vt->numnodes);
+
 	vt->flags |= KMEM_CACHE_INIT;
 }
 
@@ -12826,6 +12851,12 @@ dump_kmem_cache_slub(struct meminfo *si)
 				continue;
 			fprintf(fp, kmem_cache_hdr);
 		}
+		if (ignore_cache(si, buf)) {
+			fprintf(fp, "%lx %-18s [IGNORED]\n", 
+				si->cache_list[i], buf);
+			goto next_cache;
+		}
+
 		objsize = UINT(si->cache_buf + OFFSET(kmem_cache_objsize)); 
 		size = UINT(si->cache_buf + OFFSET(kmem_cache_size)); 
 		objects = UINT(si->cache_buf + OFFSET(kmem_cache_objects)); 
@@ -12961,6 +12992,9 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 			total_slabs += full_slabs;
 			break;
 		}
+
+		if (!(vt->flags & CONFIG_NUMA))
+			break;
 	}
 
 	switch (cmd)
@@ -13038,6 +13072,9 @@ do_kmem_cache_slub(struct meminfo *si)
 			n, node_nr_slabs, node_nr_partial, per_cpu[n]);
 
 		do_node_lists_slub(si, node_ptr, n);
+
+		if (!(vt->flags & CONFIG_NUMA))
+			break;
 	}
 
 	fprintf(fp, "\n");

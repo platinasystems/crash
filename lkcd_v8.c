@@ -71,15 +71,13 @@ get_lkcd_regs_for_cpu_arch(int cpu, ulong *eip, ulong *esp)
 int
 get_lkcd_regs_for_cpu_v8(struct bt_info *bt, ulong *eip, ulong *esp)
 {
-	int cpu;
+	int cpu = bt->tc->processor;
 
 	if (!bt || !bt->tc) {
 		fprintf(stderr, "get_lkcd_regs_for_cpu_v8: invalid tc "
 				"(CPU=%d)\n", cpu);
 		return -EINVAL;
 	}
-
-	cpu = bt->tc->processor;
 
 	if (cpu >= NR_CPUS) {
 		fprintf(stderr, "get_lkcd_regs_for_cpu_v8, cpu (%d) too high\n", cpu);

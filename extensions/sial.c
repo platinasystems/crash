@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.3 2007/10/30 15:50:57 anderson Exp $
+ * $Id: sial.c,v 1.5 2007/11/13 21:03:15 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -638,7 +638,17 @@ static void
 run_callback(void)
 {
 extern char *crash_global_cmd();
+FILE *ofp = NULL;
+
+	if (fp) {
+		ofp = sial_getofile();
+		sial_setofile(fp);
+	}
+
 	sial_cmd(crash_global_cmd(), args, argcnt);
+
+	if (ofp) 
+		sial_setofile(ofp);
 }
 
 

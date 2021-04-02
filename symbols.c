@@ -7516,6 +7516,9 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 	char *secname;
 	int i;
 
+	if ((store = bfd_make_empty_symbol(bfd)) == NULL)
+		error(FATAL, "bfd_make_empty_symbol() failed\n");
+
 	s1 = lm->mod_symtable;
 	s2 = lm->mod_symend;
 	while (s1 < s2) {
