@@ -667,29 +667,41 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
         boolean_t have_addr;
         db_expr_t count;
         char *modif;
-        ulong task;
 	db_addr_t last_callpc;
 	ulong lastframe;
 	physaddr_t phys;
 	int frame_number;
-	int frame_type;
 	int forced;
 	struct eframe eframe, *ep;
 	char dbuf[BUFSIZE];
 
+	if (!(bt->flags & BT_USER_SPACE) && 
+	    (!bt->stkptr || !accessible(bt->stkptr))) {
+		error(INFO, "cannot determine starting stack pointer\n");
+		if (KVMDUMP_DUMPFILE())
+			kvmdump_display_regs(bt->tc->processor, fp);
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			diskdump_display_regs(bt->tc->processor, fp);
+		else if (SADUMP_DUMPFILE())
+			sadump_display_regs(bt->tc->processor, fp);
+		return;
+	}
+
 	if (bt->flags & BT_USER_SPACE) {
 		if (KVMDUMP_DUMPFILE())
 			kvmdump_display_regs(bt->tc->processor, fp);
-		if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
 			diskdump_display_regs(bt->tc->processor, fp);
-		if (SADUMP_DUMPFILE())
+		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
 		fprintf(fp, " #0 [user space]\n");
 		return;
 	} else if ((bt->flags & BT_KERNEL_SPACE)) {
 		if (KVMDUMP_DUMPFILE())
 			kvmdump_display_regs(bt->tc->processor, fp);
-		if (SADUMP_DUMPFILE())
+		else if (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE())
+			diskdump_display_regs(bt->tc->processor, fp);
+		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
 	}
 
@@ -697,7 +709,6 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 	have_addr = TRUE;
 	count = 50;
 	modif = (char *)bt->instptr;
-	task = bt->task;
         mach_debug = bt->debug;
 
         if ((machdep->flags & OMIT_FRAME_PTR) || 
@@ -728,7 +739,6 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 	} else {
 		frame = (struct i386_frame *)addr;
 		lastframe = (ulong)frame;
-		frame_type = NORMAL;
 		ep = &eframe;
 		BZERO(ep, sizeof(struct eframe));
 		ep->eframe_found = FALSE;
@@ -1005,7 +1015,7 @@ static int x86_is_task_addr(ulong);
 static int x86_verify_symbol(const char *, ulong, char);
 static int x86_eframe_search(struct bt_info *);
 static ulong x86_in_irqstack(ulong);
-static int x86_dis_filter(ulong, char *);
+static int x86_dis_filter(ulong, char *, unsigned int);
 static struct line_number_hook x86_line_number_hooks[];
 static int x86_is_uvaddr(ulong, struct task_context *);
 static void x86_init_kernel_pgd(void);
@@ -3946,7 +3956,7 @@ x86_verify_symbol(const char *name, ulong value, char type)
  *  Filter disassembly output if the output radix is not gdb's default 10
  */
 static int 
-x86_dis_filter(ulong vaddr, char *inbuf)
+x86_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
         char buf1[BUFSIZE];
         char buf2[BUFSIZE];
@@ -3969,7 +3979,7 @@ x86_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -3991,7 +4001,7 @@ x86_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,	
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	} else if (STREQ(argv[argc-2], "call") && 
@@ -4008,7 +4018,7 @@ x86_dis_filter(ulong vaddr, char *inbuf)
                 if (extract_hex(argv[argc-1], &value, NULLCHAR, TRUE)) {
                 	sprintf(buf1, " <%s>\n",
 				value_to_symstr(value, buf2,
-                                pc->output_radix));
+                                output_radix));
                         if (IS_MODULE_VADDR(value) &&
                             !strstr(buf2, "+"))
                                 sprintf(p1, buf1);

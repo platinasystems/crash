@@ -369,7 +369,10 @@ restart:
                 error(INFO, "%s: invalid nr_cpus value: %d\n",
                         DISKDUMP_VALID() ? "diskdump" : "compressed kdump",
                         header->nr_cpus);
-                        goto err;
+		if (!machine_type("S390") && !machine_type("S390X")) {
+			/* s390 can get register information also from memory */
+			goto err;
+		}
         }
 
 	/* read sub header */
@@ -879,11 +882,30 @@ write_diskdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 ulong
 get_diskdump_panic_task(void)
 {
+	int i;
+
 	if ((!DISKDUMP_VALID() && !KDUMP_CMPRS_VALID())
 	    || !get_active_set())
 		return NO_TASK;
 
-	return (ulong)dd->header->tasks[dd->header->current_cpu];
+	if (DISKDUMP_VALID())
+		return (ulong)dd->header->tasks[dd->header->current_cpu];
+
+	if (KDUMP_CMPRS_VALID()) {
+		if (kernel_symbol_exists("crashing_cpu") &&
+		    cpu_map_addr("online")) {
+			get_symbol_data("crashing_cpu", sizeof(int), &i);
+			if ((i >= 0) && in_cpu_map(ONLINE, i)) {
+				if (CRASHDEBUG(1))
+					error(INFO, "get_diskdump_panic_task: "
+					    "active_set[%d]: %lx\n", 
+						i, tt->active_set[i]);
+				return (tt->active_set[i]);
+			}
+		}
+	}
+
+	return NO_TASK;
 }
 
 extern void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
@@ -1448,6 +1470,9 @@ show_split_dumpfiles(void)
 void *
 diskdump_get_prstatus_percpu(int cpu)
 {
+	if ((cpu < 0) || (cpu >= dd->num_prstatus_notes))
+		return NULL;
+
 	return dd->nt_prstatus_percpu[cpu];
 }
 

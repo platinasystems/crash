@@ -626,6 +626,8 @@ main_loop(void)
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
 		show_untrusted_files();
+		if (SADUMP_DUMPFILE())
+			sadump_kdump_backup_region_init();
 		if (XEN_HYPER_MODE()) {
 #ifdef XEN_HYPERVISOR_ARCH
 			machdep_init(POST_GDB);

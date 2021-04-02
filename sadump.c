@@ -32,12 +32,12 @@ static int read_dump_header(char *file);
 static int add_disk(char *file);
 static int open_dump_file(char *file);
 static int open_disk(char *file);
-static ulong paddr_to_pfn(physaddr_t paddr);
-static inline int is_set_bit(char *bitmap, ulong pfn);
-static inline int page_is_ram(unsigned int nr);
-static inline int page_is_dumpable(unsigned int nr);
-static int lookup_diskset(ulong whole_offset, int *diskid, ulong *disk_offset);
-static struct tm *efi_time_t_to_tm(const efi_time_t *e, struct tm *t);
+static uint64_t paddr_to_pfn(physaddr_t paddr);
+static inline int is_set_bit(char *bitmap, uint64_t pfn);
+static inline int page_is_ram(uint64_t nr);
+static inline int page_is_dumpable(uint64_t nr);
+static int lookup_diskset(uint64_t whole_offset, int *diskid, uint64_t *disk_offset);
+static struct tm *efi_time_t_to_tm(const efi_time_t *e);
 static char * guid_to_str(efi_guid_t *guid, char *buf, size_t buflen);
 static int verify_magic_number(uint32_t magicnum[DUMP_PART_HEADER_MAGICNUM_SIZE]);
 static ulong per_cpu_ptr(ulong ptr, int cpu);
@@ -48,7 +48,7 @@ static void display_smram_cpu_state(int apicid, struct sadump_smram_cpu_state *s
 static int cpu_to_apicid(int cpu, int *apicid);
 static int get_sadump_smram_cpu_state(int cpu, struct sadump_smram_cpu_state *smram);
 static int block_table_init(void);
-static ulong pfn_to_block(ulong pfn);
+static uint64_t pfn_to_block(uint64_t pfn);
 
 struct sadump_data *
 sadump_get_sadump_data(void)
@@ -69,7 +69,8 @@ sadump_cleanup_sadump_data(void)
 
 	if (sd->flags & SADUMP_DISKSET) {
 		for (i = 1; i < sd->sd_list_len; ++i) {
-			close(sd->sd_list[i]->dfd);
+			if (sd->sd_list[i]->dfd)
+				close(sd->sd_list[i]->dfd);
 			free(sd->sd_list[i]->header);
 			free(sd->sd_list[i]);
 		}
@@ -83,7 +84,9 @@ sadump_cleanup_sadump_data(void)
 	free(sd->dumpable_bitmap);
 	free(sd->page_buf);
 	free(sd->block_table);
-	free(sd->sd_list[0]);
+	if (sd->sd_list[0])
+		free(sd->sd_list[0]);
+	free(sd->sd_list);
 
 	memset(&sadump_data, 0, sizeof(sadump_data));
 
@@ -276,21 +279,18 @@ restart:
 		}
 
 		if (memcmp(&sph->time_stamp, &smh->time_stamp,
-			   sizeof(efi_guid_t)) != 0) {
-			struct tm tm;
-			if (CRASHDEBUG(1))
-				error(INFO, "sadump: time stamp mismatch\n"
-				      "  partition header: %s\n"
-				      "  media header: %s\n",
+			   sizeof(efi_time_t)) != 0) {
+			if (CRASHDEBUG(1)) {
+				error(INFO, "sadump: time stamp mismatch\n");
+				error(INFO, "sadump:   partition header: %s\n",
 				      strip_linefeeds(asctime
 						      (efi_time_t_to_tm
-						       (&sph->time_stamp,
-							&tm))),
+						       (&sph->time_stamp))));
+				error(INFO, "sadump:   media header: %s\n",
 				      strip_linefeeds(asctime
 						      (efi_time_t_to_tm
-						       (&smh->time_stamp,
-							&tm))));
-			goto err;
+						       (&smh->time_stamp))));
+			}
 		}
 
 		if (smh->sequential_num != 1) {
@@ -375,16 +375,6 @@ restart:
 		goto err;
 	}
 
-	if (flags & SADUMP_DISKSET) {
-
-		sd_list_len_0 = malloc(sizeof(struct sadump_diskset_data));
-		if (!sd_list_len_0) {
-			error(INFO, "sadump: cannot allocate diskset data buffer\n");
-			goto err;
-		}
-
-	}
-
 	sd->filename = file;
 	sd->flags = flags;
 
@@ -418,10 +408,25 @@ restart:
 	sd->page_buf = page_buf;
 
 	if (flags & SADUMP_DISKSET) {
+
+		sd_list_len_0 = malloc(sizeof(struct sadump_diskset_data));
+		if (!sd_list_len_0) {
+			error(INFO,
+			      "sadump: cannot allocate diskset data buffer\n");
+			goto err;
+		}
+
 		sd_list_len_0->filename = sd->filename;
 		sd_list_len_0->dfd = sd->dfd;
 		sd_list_len_0->header = sd->header;
 		sd_list_len_0->data_offset = sd->data_offset;
+
+		sd->sd_list = malloc(sizeof(struct sadump_diskset_data *));
+		if (!sd->sd_list) {
+			error(INFO,
+			      "sadump: cannot allocate diskset list buffer\n");
+			goto err;
+		}
 
 		sd->sd_list_len = 1;
 		sd->sd_list[0] = sd_list_len_0;
@@ -452,6 +457,8 @@ err:
 	free(page_buf);
 	free(sd_list_len_0);
 
+	free(sd->sd_list);
+
 	return FALSE;
 }
 
@@ -465,6 +472,9 @@ add_disk(char *file)
 
 	diskid = sd->sd_list_len - 1;
 	this_disk = sd->sd_list[diskid];
+
+	if (CRASHDEBUG(1))
+		error(INFO, "sadump: add disk #%d\n", diskid+1);
 
 	ph = malloc(sd->block_size);
 	if (!ph) {
@@ -536,20 +546,20 @@ add_disk(char *file)
 
 	if (memcmp(&sd->header->time_stamp, &ph->time_stamp,
 		   sizeof(efi_time_t)) != 0) {
-		struct tm tm;
-		if (CRASHDEBUG(1))
-			error(INFO, "sadump: time stamp mismatch\n"
-			      "  partition header on disk #1: %s\n"
-			      "  partition header on disk #%d: %s\n",
-			      strip_linefeeds(asctime(efi_time_t_to_tm
-						      (&sd->header->time_stamp,
-						       &tm))),
+		if (CRASHDEBUG(1)) {
+			error(INFO, "sadump: time stamp mismatch\n");
+			error(INFO,
+			      "sadump:   partition header on disk #1: %s\n",
+			      strip_linefeeds(asctime
+					      (efi_time_t_to_tm
+					       (&sd->header->time_stamp))));
+			error(INFO,
+			      "sadump:   partition header on disk #%d: %s\n",
 			      diskid+1,
-			      strip_linefeeds(asctime(efi_time_t_to_tm
-						      (&ph->time_stamp,
-						       &tm))));
-		free(ph);
-		return FALSE;
+			      strip_linefeeds(asctime
+					      (efi_time_t_to_tm
+					       (&ph->time_stamp))));
+		}
 	}
 
 	if (diskid != ph->set_disk_set - 1) {
@@ -591,10 +601,23 @@ open_disk(char *file)
 
 	sd->sd_list_len++;
 
+	if (CRASHDEBUG(1))
+		error(INFO, "sadump: open disk #%d\n", sd->sd_list_len);
+
 	if (sd->sd_list_len > sd->diskset_header->disk_num) {
 		error(INFO, "sadump: too many diskset arguments; "
 		      "this diskset consists of %d disks\n",
 		      sd->diskset_header->disk_num);
+		return FALSE;
+	}
+
+	sd->sd_list = realloc(sd->sd_list,
+			      sd->sd_list_len *
+			      sizeof(struct sadump_diskset_data *));
+	if (!sd->sd_list) {
+		if (CRASHDEBUG(1)) {
+			error(INFO, "sadump: cannot malloc diskset list buffer\n");
+		}
 		return FALSE;
 	}
 
@@ -605,7 +628,7 @@ open_disk(char *file)
 		}
 		return FALSE;
 	}
-
+	memset(this_disk, 0, sizeof(*this_disk));
 	sd->sd_list[sd->sd_list_len - 1] = this_disk;
 
 	this_disk->dfd = open(file, O_RDONLY);
@@ -621,17 +644,21 @@ open_disk(char *file)
 int is_sadump(char *file)
 {
 	if (SADUMP_VALID()) {
-		if (sd->flags & SADUMP_DISKSET) {
-			if (!open_disk(file) || !add_disk(file)) {
-				(void) sadump_cleanup_sadump_data();
-				return FALSE;
-			}
-			return TRUE;
+
+		if (!(sd->flags & SADUMP_DISKSET)) {
+			if (CRASHDEBUG(1))
+				error(INFO, "sadump: does not support multiple"
+				      " file formats\n");
+			(void) sadump_cleanup_sadump_data();
+			return FALSE;
 		}
-		if (CRASHDEBUG(1))
-			error(INFO, "sadump: does not support multiple file formats\n");
-		(void) sadump_cleanup_sadump_data();
-		return FALSE;
+
+		if (!open_disk(file) || !add_disk(file)) {
+			(void) sadump_cleanup_sadump_data();
+			return FALSE;
+		}
+
+		return TRUE;
 	}
 
 	if (!open_dump_file(file) || !read_dump_header(file))
@@ -657,14 +684,14 @@ uint sadump_page_size(void)
  * Translate physical address in paddr to PFN number. This means normally that
  * we just shift paddr by some constant.
  */
-static ulong
+static uint64_t
 paddr_to_pfn(physaddr_t paddr)
 {
 	return paddr >> sd->block_shift;
 }
 
 static inline int
-is_set_bit(char *bitmap, ulong pfn)
+is_set_bit(char *bitmap, uint64_t pfn)
 {
 	ulong index, bit;
 
@@ -675,25 +702,26 @@ is_set_bit(char *bitmap, ulong pfn)
 }
 
 static inline int
-page_is_ram(unsigned int nr)
+page_is_ram(uint64_t nr)
 {
 	return is_set_bit(sd->bitmap, nr);
 }
 
 static inline int
-page_is_dumpable(unsigned int nr)
+page_is_dumpable(uint64_t nr)
 {
 	return is_set_bit(sd->dumpable_bitmap, nr);
 }
 
 static int
-lookup_diskset(ulong whole_offset, int *diskid, ulong *disk_offset)
+lookup_diskset(uint64_t whole_offset, int *diskid, uint64_t *disk_offset)
 {
-	ulong offset = whole_offset;
+	uint64_t offset = whole_offset;
 	int i;
 
 	for (i = 0; i < sd->sd_list_len; ++i) {
-		ulong used_device_i, data_offset_i, ram_size;
+		uint64_t used_device_i, ram_size;
+		ulong data_offset_i;
 
 		used_device_i = sd->sd_list[i]->header->used_device;
 		data_offset_i = sd->sd_list[i]->data_offset;
@@ -716,9 +744,24 @@ lookup_diskset(ulong whole_offset, int *diskid, ulong *disk_offset)
 
 int read_sadump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
-	physaddr_t curpaddr;
-	ulong pfn, page_offset, block, whole_offset, perdisk_offset;
+	physaddr_t curpaddr ATTRIBUTE_UNUSED;
+	uint64_t pfn, whole_offset, perdisk_offset, block;
+	ulong page_offset;
 	int dfd;
+
+	if (sd->flags & SADUMP_KDUMP_BACKUP &&
+	    paddr >= sd->backup_src_start &&
+	    paddr < sd->backup_src_start + sd->backup_src_size) {
+		ulong orig_paddr;
+
+		orig_paddr = paddr;
+		paddr += sd->backup_offset - sd->backup_src_start;
+
+		if (CRASHDEBUG(1))
+			error(INFO, "sadump: kdump backup region: %#llx => %#llx\n",
+			      orig_paddr, paddr);
+
+	}
 
 	pfn = paddr_to_pfn(paddr);
 
@@ -788,30 +831,31 @@ ulong get_sadump_switch_stack(ulong task)
 }
 
 static struct tm *
-efi_time_t_to_tm(const efi_time_t *e, struct tm *t)
+efi_time_t_to_tm(const efi_time_t *e)
 {
+	static struct tm t;
 	time_t ti;
 
-	memset(t, 0, sizeof(*t));
+	memset(&t, 0, sizeof(t));
 
-	t->tm_sec  = e->second;
-	t->tm_min  = e->minute;
-	t->tm_hour = e->hour;
-	t->tm_mday = e->day;
-	t->tm_mon  = e->month - 1;
-	t->tm_year = e->year - 1900;
+	t.tm_sec  = e->second;
+	t.tm_min  = e->minute;
+	t.tm_hour = e->hour;
+	t.tm_mday = e->day;
+	t.tm_mon  = e->month - 1;
+	t.tm_year = e->year - 1900;
 
 	if (e->timezone != EFI_UNSPECIFIED_TIMEZONE)
-		t->tm_hour += e->timezone;
+		t.tm_hour += e->timezone;
 
 	else if (CRASHDEBUG(1))
 		error(INFO, "sadump: timezone information is missing\n");
 
-	ti = mktime(t);
+	ti = mktime(&t);
 	if (ti == (time_t)-1)
-		return t;
+		return &t;
 
-	return localtime_r(&ti, t);
+	return localtime_r(&ti, &t);
 }
 
 static char *
@@ -861,7 +905,6 @@ int sadump_memory_dump(FILE *fp)
 	struct sadump_header *sh;
 	struct sadump_media_header *smh;
 	int i, others;
-	struct tm tm;
 	char guid[33];
 
 	fprintf(fp, "sadump_data: \n");
@@ -876,6 +919,8 @@ int sadump_memory_dump(FILE *fp)
 		fprintf(fp, "%sSADUMP_MEDIA", others++ ? "|" : "");
 	if (sd->flags & SADUMP_ZERO_EXCLUDED)
 		fprintf(fp, "%sSADUMP_ZERO_EXCLUDED", others++ ? "|" : "");
+	if (sd->flags & SADUMP_KDUMP_BACKUP)
+		fprintf(fp, "%sSADUMP_KDUMP_BACKUP", others++ ? "|" : "");
 	fprintf(fp, ") \n");
         fprintf(fp, "               dfd: %d\n", sd->dfd);
         fprintf(fp, "      machine_type: %d ", sd->machine_type);
@@ -902,7 +947,7 @@ int sadump_memory_dump(FILE *fp)
 	fprintf(fp, "         disk_set_id: %s\n", guid_to_str(&sph->disk_set_id, guid, sizeof(guid)));
 	fprintf(fp, "              vol_id: %s\n", guid_to_str(&sph->vol_id, guid, sizeof(guid)));
 	fprintf(fp, "          time_stamp: %s\n",
-		strip_linefeeds(asctime(efi_time_t_to_tm(&sph->time_stamp, &tm))));
+		strip_linefeeds(asctime(efi_time_t_to_tm(&sph->time_stamp))));
 	fprintf(fp, "        set_disk_set: %u\n", sph->set_disk_set);
 	fprintf(fp, "             reserve: %u\n", sph->reserve);
 	fprintf(fp, "         used_device: %llu\n", (ulonglong)sph->used_device);
@@ -916,7 +961,7 @@ int sadump_memory_dump(FILE *fp)
 	fprintf(fp, "      header_version: %u\n", sh->header_version);
 	fprintf(fp, "             reserve: %u\n", sh->reserve);
 	fprintf(fp, "           timestamp: %s\n",
-		strip_linefeeds(asctime(efi_time_t_to_tm(&sh->timestamp, &tm))));
+		strip_linefeeds(asctime(efi_time_t_to_tm(&sh->timestamp))));
 	fprintf(fp, "              status: %u\n", sh->status);
 	fprintf(fp, "            compress: %u\n", sh->compress);
 	fprintf(fp, "          block_size: %u\n", sh->block_size);
@@ -992,7 +1037,7 @@ int sadump_memory_dump(FILE *fp)
 		fprintf(fp, "\n           sadump_id: %s\n", guid_to_str(&smh->sadump_id, guid, sizeof(guid)));
 		fprintf(fp, "         disk_set_id: %s\n", guid_to_str(&smh->disk_set_id, guid, sizeof(guid)));
 		fprintf(fp, "          time_stamp: %s\n",
-			strip_linefeeds(asctime(efi_time_t_to_tm(&smh->time_stamp, &tm))));
+			strip_linefeeds(asctime(efi_time_t_to_tm(&smh->time_stamp))));
 		fprintf(fp, "      sequential_num: %d\n", smh->sequential_num);
 		fprintf(fp, "           term_cord: %d\n", smh->term_cord);
 		fprintf(fp, "disk_set_header_size: %d\n", smh->disk_set_header_size);
@@ -1012,6 +1057,9 @@ int sadump_memory_dump(FILE *fp)
 	fprintf(fp, "       block_table: %lx\n", (ulong)sd->block_table);
 	fprintf(fp, "       sd_list_len: %d\n", sd->sd_list_len);
 	fprintf(fp, "           sd_list: %lx\n", (ulong)sd->sd_list);
+	fprintf(fp, "  backup_src_start: %lx\n", sd->backup_src_start);
+	fprintf(fp, "   backup_src_size: %lx\n", sd->backup_src_size);
+	fprintf(fp, "     backup_offset: %llx\n", (ulonglong)sd->backup_src_size);
 
 	for (i = 0; i < sd->sd_list_len; ++i) {
 		struct sadump_diskset_data *sdd = sd->sd_list[i];
@@ -1033,7 +1081,7 @@ int sadump_memory_dump(FILE *fp)
 		fprintf(fp, "           disk_set_id: %s\n", guid_to_str(&sph->disk_set_id, guid, sizeof(guid)));
 		fprintf(fp, "                vol_id: %s\n", guid_to_str(&sph->vol_id, guid, sizeof(guid)));
 		fprintf(fp, "            time_stamp: %s\n",
-			strip_linefeeds(asctime(efi_time_t_to_tm(&sph->time_stamp, &tm))));
+			strip_linefeeds(asctime(efi_time_t_to_tm(&sph->time_stamp))));
 		fprintf(fp, "          set_disk_set: %u\n", sph->set_disk_set);
 		fprintf(fp, "               reserve: %u\n", sph->reserve);
 		fprintf(fp, "           used_device: %llu\n", (ulonglong)sph->used_device);
@@ -1367,10 +1415,14 @@ void get_sadump_regs(struct bt_info *bt, ulong *ipp, ulong *spp)
 	if (get_prstatus_from_crash_notes(cpu, prstatus)) {
 		ip = ULONG(prstatus +
 			   OFFSET(elf_prstatus_pr_reg) +
-			   OFFSET(user_regs_struct_rip));
+			   (BITS64()
+			    ? OFFSET(user_regs_struct_rip)
+			    : OFFSET(user_regs_struct_eip)));
 		sp = ULONG(prstatus +
 			   OFFSET(elf_prstatus_pr_reg) +
-			   OFFSET(user_regs_struct_rsp));
+			   (BITS64()
+			    ? OFFSET(user_regs_struct_rsp)
+			    : OFFSET(user_regs_struct_eip)));
 		if (ip || sp) {
 			*ipp = ip;
 			*spp = sp;
@@ -1498,12 +1550,11 @@ void sadump_show_diskset(void)
 
 static int block_table_init(void)
 {
-	ulong section, max_section, pfn;
-	ulong *block_table;
+	uint64_t pfn, section, max_section, *block_table;
 
 	max_section = divideup(sd->dump_header->max_mapnr, SADUMP_PF_SECTION_NUM);
 
-	block_table = calloc(sizeof(ulong), max_section);
+	block_table = calloc(sizeof(uint64_t), max_section);
 	if (!block_table) {
 		error(INFO, "sadump: cannot allocate memory for block_table\n");
 		return FALSE;
@@ -1524,9 +1575,9 @@ static int block_table_init(void)
 	return TRUE;
 }
 
-static ulong pfn_to_block(ulong pfn)
+static uint64_t pfn_to_block(uint64_t pfn)
 {
-	ulong block, section, p;
+	uint64_t block, section, p;
 
 	section = pfn / SADUMP_PF_SECTION_NUM;
 
@@ -1555,4 +1606,166 @@ void sadump_set_zero_excluded(void)
 void sadump_unset_zero_excluded(void)
 {
 	sd->flags &= ~SADUMP_ZERO_EXCLUDED;
+}
+
+/**
+ * kdump saves the first 640kB physical memory for BIOS to use the
+ * range on boot of 2nd kernel. sadump translates read request to the
+ * 640kB region as to the back up region. This function seachs kexec
+ * resources for the backup region.
+ */
+void sadump_kdump_backup_region_init(void)
+{
+	char buf[BUFSIZE];
+	ulong i, total, kexec_crash_image_p, elfcorehdr_p;
+	Elf64_Off e_phoff;
+	uint16_t e_phnum, e_phentsize;
+	uint64_t backup_offset;
+	ulong backup_src_start, backup_src_size;
+	int kimage_segment_len;
+	size_t bufsize;
+
+	if (!readmem(symbol_value("kexec_crash_image"), KVADDR,
+		     &kexec_crash_image_p, sizeof(ulong),
+		     "kexec backup region: kexec_crash_image",
+		     QUIET|RETURN_ON_ERROR))
+		goto error;
+
+	if (!kexec_crash_image_p) {
+		if (CRASHDEBUG(1))
+			error(INFO, "sadump: kexec_crash_image not loaded\n");
+		return;
+	}
+
+	kimage_segment_len = get_array_length("kimage.segment", NULL,
+					      STRUCT_SIZE("kexec_segment"));
+
+	if (!readmem(kexec_crash_image_p + MEMBER_OFFSET("kimage", "segment"),
+		     KVADDR, buf, MEMBER_SIZE("kimage", "segment"),
+		     "kexec backup region: kexec_crash_image->segment",
+		     QUIET|RETURN_ON_ERROR))
+		goto error;
+
+	elfcorehdr_p = 0;
+	for (i = 0; i < kimage_segment_len; ++i) {
+		char e_ident[EI_NIDENT];
+		ulong mem;
+
+		mem = ULONG(buf + i * STRUCT_SIZE("kexec_segment") +
+			    MEMBER_OFFSET("kexec_segment", "mem"));
+		if (!mem)
+			continue;
+
+		if (!readmem(mem, PHYSADDR, e_ident, SELFMAG,
+			     "elfcorehdr: e_ident",
+			     QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		if (strncmp(ELFMAG, e_ident, SELFMAG) == 0) {
+			elfcorehdr_p = mem;
+			break;
+		}
+	}
+	if (!elfcorehdr_p) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+	"sadump: elfcorehdr not found in segments of kexec_crash_image\n");
+		goto error;
+	}
+	if (!readmem(elfcorehdr_p, PHYSADDR, buf, STRUCT_SIZE("elf64_hdr"),
+		     "elfcorehdr", QUIET|RETURN_ON_ERROR))
+		goto error;
+
+	e_phnum = USHORT(buf + MEMBER_OFFSET("elf64_hdr", "e_phnum"));
+	e_phentsize = USHORT(buf + MEMBER_OFFSET("elf64_hdr", "e_phentsize"));
+	e_phoff = ULONG(buf + MEMBER_OFFSET("elf64_hdr", "e_phoff"));
+
+	backup_src_start = backup_src_size = backup_offset = 0;
+
+	for (i = 0; i < e_phnum; ++i) {
+		uint32_t p_type;
+		Elf64_Off p_offset;
+		Elf64_Addr p_paddr;
+		uint64_t p_memsz;
+
+		if (!readmem(elfcorehdr_p + e_phoff + i * e_phentsize,
+			     PHYSADDR, buf, e_phentsize,
+			     "elfcorehdr: program heaer",
+			     QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		p_type = UINT(buf+MEMBER_OFFSET("elf64_phdr","p_type"));
+		p_offset=ULONGLONG(buf+MEMBER_OFFSET("elf64_phdr","p_offset"));
+		p_paddr = ULONGLONG(buf+MEMBER_OFFSET("elf64_phdr","p_paddr"));
+		p_memsz = ULONGLONG(buf+MEMBER_OFFSET("elf64_phdr","p_memsz"));
+
+		/*
+		 * kexec marks backup region PT_LOAD by assigning
+		 * backup region address in p_offset, and p_addr in
+		 * p_offsets for other PT_LOAD entries.
+		 */
+		if (p_type == PT_LOAD &&
+		    p_paddr <= KEXEC_BACKUP_SRC_END &&
+		    p_paddr != p_offset) {
+
+			backup_src_start = p_paddr;
+			backup_src_size = p_memsz;
+			backup_offset = p_offset;
+
+			if (CRASHDEBUG(1))
+				error(INFO,
+				      "sadump: kexec backup region found: "
+			  "START: %#016lx SIZE: %#016lx OFFSET: %#016llx\n",
+			  backup_src_start, backup_src_size, backup_offset);
+
+			break;
+		}
+	}
+
+	if (!backup_offset) {
+		if (CRASHDEBUG(1))
+	error(WARNING, "sadump: backup region not found in elfcorehdr\n");
+		return;
+	}
+
+	bufsize = BUFSIZE;
+	for (total = 0; total < backup_src_size; total += bufsize) {
+		char backup_buf[BUFSIZE];
+		int j;
+
+		if (backup_src_size - total < BUFSIZE)
+			bufsize = backup_src_size - total;
+
+		if (!readmem(backup_offset + total, PHYSADDR, backup_buf,
+			     bufsize, "backup source", QUIET|RETURN_ON_ERROR))
+			goto error;
+
+		/*
+		 * We're assuming the backup resion is initialized
+		 * with 0 filled if kdump has not run.
+		 */
+		for (j = 0; j < bufsize; ++j) {
+			if (backup_buf[j]) {
+
+				sd->flags |= SADUMP_KDUMP_BACKUP;
+				sd->backup_src_start = backup_src_start;
+				sd->backup_src_size = backup_src_size;
+				sd->backup_offset = backup_offset;
+
+				if (CRASHDEBUG(1))
+error(INFO, "sadump: backup region is used: %lx\n", backup_offset + total + j);
+
+				return;
+			}
+		}
+	}
+
+	if (CRASHDEBUG(1))
+		error(INFO, "sadump: kexec backup region not used\n");
+
+	return;
+
+error:
+	error(WARNING, "failed to init kexec backup region\n");
+
 }

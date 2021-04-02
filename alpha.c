@@ -1,8 +1,8 @@
 /* alpha.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2010, 2011 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,8 +28,8 @@ static int alpha_backtrace_resync(struct gnu_request *, ulong,
 static void alpha_print_stack_entry(struct gnu_request *, ulong, 
 	char *, ulong, struct bt_info *);
 static int alpha_resync_speculate(struct gnu_request *, ulong,struct bt_info *);
-static int alpha_dis_filter(ulong, char *);
-static void dis_address_translation(ulong, char *);
+static int alpha_dis_filter(ulong, char *, unsigned int);
+static void dis_address_translation(ulong, char *, unsigned int);
 static void alpha_cmd_mach(void);
 static int alpha_get_smp_cpus(void);
 static void alpha_display_machine_stats(void);
@@ -796,7 +796,7 @@ alpha_frame_offset(struct gnu_request *req, ulong alt_pc)
 	}
 
 use_gdb:
-#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
+#ifndef GDB_5_3
 {
 	static int gdb_frame_offset_warnings = 10;
 
@@ -1954,7 +1954,7 @@ static struct instruction_data {
 } instruction_data = { {0} };
 
 static int
-alpha_dis_filter(ulong vaddr, char *buf)
+alpha_dis_filter(ulong vaddr, char *buf, unsigned int output_radix)
 {
 	struct syment *sp;
 	struct instruction_data *id;
@@ -1993,7 +1993,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 		return TRUE;   /* dis_address_translation() filter */
 	}
 
-	dis_address_translation(vaddr, buf);
+	dis_address_translation(vaddr, buf, output_radix);
 
 	if (!id->gp || !(sp = value_search(vaddr, NULL)) || 
 	    !STREQ(id->curfunc, sp->name)) {
@@ -2013,7 +2013,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
 		p1 = strstr(strstr(buf, "jsr"), "0x");
 		sprintf(p1, "0x%lx <%s>%s", 
 			id->target,
-			value_to_symstr(id->target, buf2, pc->output_radix),
+			value_to_symstr(id->target, buf2, output_radix),
 			CRASHDEBUG(1) ? "  [PATCHED]\n" : "\n");
 		return TRUE;
 	}
@@ -2034,7 +2034,7 @@ alpha_dis_filter(ulong vaddr, char *buf)
  *  output radix on the translations.
  */
 static void
-dis_address_translation(ulong vaddr, char *inbuf)
+dis_address_translation(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
@@ -2049,7 +2049,7 @@ dis_address_translation(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -2071,7 +2071,7 @@ dis_address_translation(ulong vaddr, char *inbuf)
 			return;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,	
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	}

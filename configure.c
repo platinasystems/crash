@@ -143,13 +143,14 @@ int name_to_target(char *);
  *  unless overridden.
  */
 
-#define GDB_5_3  0
-#define GDB_6_0  1
-#define GDB_6_1  2
-#define GDB_7_0  3
-#define SUPPORTED_GDB_VERSIONS (GDB_7_0 + 1)
+#define GDB_5_3   (0)
+#define GDB_6_0   (1)
+#define GDB_6_1   (2)
+#define GDB_7_0   (3)
+#define GDB_7_3_1 (4)
+#define SUPPORTED_GDB_VERSIONS (GDB_7_3_1 + 1)
 
-int default_gdb = GDB_7_0;
+int default_gdb = GDB_7_3_1;
 
 struct supported_gdb_version {
 	char *GDB;
@@ -194,6 +195,15 @@ struct supported_gdb_version {
 	    "GDB_OFILES=${GDB_7.0_OFILES}",
 	    "GDB_PATCH_FILES=gdb-7.0.patch",
 	    "GDB_FLAGS=-DGDB_7_0",
+	    "GPLv3"
+	},
+	{
+	    "GDB=gdb-7.3.1",
+	    "7.3.1",
+	    "GDB_FILES=${GDB_7.3.1_FILES}",
+	    "GDB_OFILES=${GDB_7.3.1_OFILES}",
+	    "GDB_PATCH_FILES=gdb-7.3.1.patch",
+	    "GDB_FLAGS=-DGDB_7_3_1",
 	    "GPLv3"
 	},
 };
@@ -1278,6 +1288,13 @@ setup_gdb_defaults(void)
 			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
 			return store_gdb_defaults(sp);
 		}
+		if (strcmp(buf, "7.3.1") == 0) {
+			fclose(fp);
+			sp = &supported_gdb_versions[GDB_7_3_1];
+			fprintf(stderr, ".gdb configuration: %s\n", sp->GDB_VERSION_IN);
+			return store_gdb_defaults(sp);
+		}
+
         }
 	
 	fclose(fp);

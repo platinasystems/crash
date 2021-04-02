@@ -710,6 +710,7 @@ unwind_backtrace(struct bt_info *bt)
 	 */
 	if (bt->machdep) {
 		const struct arm_pt_regs *regs = bt->machdep;
+		frame.fp = regs->ARM_fp;
 		frame.lr = regs->ARM_lr;
 	}
 

@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.11 2011/06/07 12:43:07 anderson Exp $
+ * $Id: sial.c,v 1.13 2011/09/28 13:01:25 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -170,7 +170,16 @@ apigetctype(int ctype, char *name, TYPE_S *tout)
         type=sym->type;
         if(sial_is_typedef(ctype) && v) goto match;
         switch(TYPE_CODE(type)) {
-            case TYPE_CODE_TYPEDEF: case TYPE_CODE_INT: 
+	    case TYPE_CODE_INT: 
+                sial_dbg_named(DBG_TYPE, name, 2, "Variable is integer\n");
+		if (sial_is_typedef(ctype)) {
+		    sial_dbg_named(DBG_TYPE, name, 2, 
+				    "integer is not a typedef\n");
+		    break;
+			
+		}
+	
+            case TYPE_CODE_TYPEDEF:
                                     if(sial_is_typedef(ctype))  goto match; break;
             case TYPE_CODE_ENUM:    if(sial_is_enum(ctype))     goto match; break;
             case TYPE_CODE_STRUCT:  if(sial_is_struct(ctype))   goto match; break;
@@ -737,7 +746,7 @@ char *edit_help[]={
 
 
 // these control debug mode when parsing (pre-processor and compile)
-int sialdebug=0, sialppdebug=0;
+int sialdebug, sialppdebug;
 
 void
 load_cmd(void)

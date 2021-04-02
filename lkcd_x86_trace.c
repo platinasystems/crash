@@ -1995,7 +1995,8 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 	sframe_t *frmp;
 #ifdef REDHAT
 	kaddr_t fp = 0;
-	kaddr_t last_fp, last_pc, next_fp, next_pc;
+	kaddr_t last_fp ATTRIBUTE_UNUSED;
+	kaddr_t last_pc, next_fp, next_pc;
 	struct bt_info *bt;
 
 	bt = trace->bt;
@@ -4626,7 +4627,8 @@ op_indir_e(int opnum, int opdata, instr_rec_t *irp)
 static void
 get_modrm_data16(int opnum, int opdata, instr_rec_t *irp)
 {
-	int reg, mod, mod_rm, reg_op;
+	int mod ATTRIBUTE_UNUSED;
+	int reg, mod_rm, reg_op;
 
 	get_modrm_info(irp->modrm, &mod_rm, &reg_op);
 	mod = irp->modrm >> 6;
@@ -4780,7 +4782,8 @@ get_modrm_data16(int opnum, int opdata, instr_rec_t *irp)
 static void
 get_modrm_data32(int opnum, int opdata, instr_rec_t *irp)
 {
-	int reg, mod, mod_rm, reg_op;
+	int mod ATTRIBUTE_UNUSED;
+	int reg, mod_rm, reg_op;
 
 	get_modrm_info(irp->modrm, &mod_rm, &reg_op);
 	mod = irp->modrm >> 6;
@@ -4890,7 +4893,8 @@ get_modrm_data32(int opnum, int opdata, instr_rec_t *irp)
 		case  4: /* [..][..] (SIB) */
 		case 12: /* disp8[..][..] (SIB) */
 		case 20: { /* disp32[..][..] (SIB) */
-			int s, i, b, mod, rm, havebase;
+			int rm ATTRIBUTE_UNUSED;
+			int s, i, b, mod, havebase;
 
 			s = (irp->sib >> 6) & 3;
 			i = (irp->sib >> 3) & 7;

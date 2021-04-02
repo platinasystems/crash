@@ -175,7 +175,7 @@ static void dump_vmlist(struct meminfo *);
 static int dump_page_lists(struct meminfo *);
 static void dump_kmeminfo(void);
 static int page_to_phys(ulong, physaddr_t *); 
-static void display_memory(ulonglong, long, ulong, int); 
+static void display_memory(ulonglong, long, ulong, int, void *); 
 static ulong search_ulong(ulong *, ulong, int, struct searchinfo *);
 static ulong search_uint(ulong *, ulong, int, struct searchinfo *);
 static ulong search_ushort(ulong *, ulong, int, struct searchinfo *);
@@ -264,7 +264,9 @@ static void dump_page_flags(ulonglong);
 #define SLAB_CACHE    (0x1000)
 #define DISPLAY_ASCII (0x2000)
 #define NET_ENDIAN    (0x4000)
-#define DISPLAY_TYPES (DISPLAY_ASCII|DISPLAY_8|DISPLAY_16|DISPLAY_32|DISPLAY_64)
+#define DISPLAY_RAW   (0x8000)
+#define DISPLAY_TYPES (DISPLAY_RAW|DISPLAY_ASCII|DISPLAY_8|\
+		       DISPLAY_16|DISPLAY_32|DISPLAY_64)
 
 #define ASCII_UNLIMITED ((ulong)(-1) >> 1)
 
@@ -966,14 +968,18 @@ cmd_rd(void)
 	ulonglong addr, endaddr;
 	ulong offset;
 	struct syment *sp;
+	FILE *tmpfp;
+	char *outputfile;
 
 	flag = HEXADECIMAL|DISPLAY_DEFAULT;
 	endaddr = 0;
 	offset = 0;
 	memtype = KVADDR;
+	tmpfp = NULL;
+	outputfile = NULL;
 	count = -1;
 
-        while ((c = getopt(argcnt, args, "axme:pfudDusSNo:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "axme:r:pfudDusSNo:81:3:6:")) != EOF) {
                 switch(c)
 		{
 		case 'a':
@@ -1021,6 +1027,16 @@ cmd_rd(void)
 
 		case 'e':
 			endaddr = htoll(optarg, FAULT_ON_ERROR, NULL);
+			break;
+
+		case 'r':
+			flag &= ~DISPLAY_TYPES;
+			flag |= DISPLAY_RAW;
+			outputfile = optarg;
+			if ((tmpfp = fopen(outputfile, "w")) == NULL)
+				error(FATAL, "cannot open output file: %s\n",
+					outputfile);
+			set_tmpfile2(tmpfp);
 			break;
 
 		case 's':
@@ -1138,14 +1154,19 @@ cmd_rd(void)
 				break;
         		case DISPLAY_8:
         		case DISPLAY_ASCII:
+			case DISPLAY_RAW:
 				count = bcnt;
 				break;
 			}
 
 			if (bcnt == 0)
 				count = 1;
-		} else
+		} else {
+			if ((flag & DISPLAY_TYPES) == DISPLAY_RAW)
+				error(FATAL, "-r option requires either a count"
+					" argument or the -e option\n");
 			count = (flag & DISPLAY_ASCII) ? ASCII_UNLIMITED : 1;
+		}
 	} else if (endaddr)
 		error(WARNING, 
 		    "ending address ignored when count is specified\n");
@@ -1159,7 +1180,7 @@ cmd_rd(void)
 			memtype = UVADDR;
 	}
 
-	display_memory(addr, count, flag, memtype);
+	display_memory(addr, count, flag, memtype, outputfile);
 }
 
 /*
@@ -1190,10 +1211,11 @@ struct memloc {                  /* common holder of read memory */
 };
 
 static void
-display_memory(ulonglong addr, long count, ulong flag, int memtype)
+display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 {
 	int i, a, j;
-	size_t typesz;
+	size_t typesz, sz;
+	long written;
 	void *location;
 	char readtype[20];
 	char *addrtype;
@@ -1238,6 +1260,23 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	if (CRASHDEBUG(4))
 		fprintf(fp, "<addr: %llx count: %ld flag: %lx (%s)>\n", 
 			addr, count, flag, addrtype);
+
+	if (flag & DISPLAY_RAW) {
+		for (written = 0; written < count; written += sz) {
+			sz = BUFSIZE > (count - written) ? 
+				(size_t)(count - written) : (size_t)BUFSIZE;
+			readmem(addr + written, memtype, buf, (long)sz,
+				"raw dump to file", FAULT_ON_ERROR);
+			if (fwrite(buf, 1, sz, pc->tmpfile2) != sz)
+				error(FATAL, "cannot write to: %s\n",
+					(char *)opt);
+		}
+		close_tmpfile2();
+
+		fprintf(fp, "%ld bytes copied from 0x%llx to %s\n",
+			count, addr, (char *)opt);
+		return;
+	}
 
 	BZERO(&mem, sizeof(struct memloc));
 	hx = linelen = typesz = per_line = ascii_start = 0;
@@ -1758,7 +1797,7 @@ void
 raw_stack_dump(ulong stackbase, ulong size)
 {
 	display_memory(stackbase, size/sizeof(ulong), 
-	    	HEXADECIMAL|DISPLAY_DEFAULT|SYMBOLIC, KVADDR);
+	    	HEXADECIMAL|DISPLAY_DEFAULT|SYMBOLIC, KVADDR, NULL);
 }
 
 /*
@@ -1802,7 +1841,7 @@ raw_data_dump(ulong addr, long count, int symbolic)
 
 	display_memory(address, wordcnt, 
  	    HEXADECIMAL|DISPLAY_DEFAULT|(symbolic ? SYMBOLIC : ASCII_ENDLINE),
-		memtype);
+		memtype, NULL);
 }
 
 /*
@@ -14989,7 +15028,8 @@ dump_per_cpu_offsets(void)
 void
 dump_page_flags(ulonglong flags)
 {
-	int c, sz, val, found, largest, longest, header_printed;
+	int c ATTRIBUTE_UNUSED;
+	int sz, val, found, largest, longest, header_printed;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char header[BUFSIZE];

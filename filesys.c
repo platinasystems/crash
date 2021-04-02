@@ -1099,12 +1099,13 @@ close_tmpfile(void)
 #endif
 
 /*
- *  open_tmpfile2() and close_tmpfile2() do not use a permanent tmpfile, 
- *  and do NOT modify the global fp pointer or pc->saved_fp.  That being the 
- *  case, all wrapped functions must be aware of it, or fp has to manipulated
- *  by the calling function.  The secondary tmpfile should only be used by
- *  common functions that might be called by a higher-level function using
- *  the primary permanent tmpfile.
+ *  open_tmpfile2(), set_tmpfile2() and close_tmpfile2() do not use a 
+ *  permanent tmpfile, and do NOT modify the global fp pointer or pc->saved_fp.
+ *  That being the case, all wrapped functions must be aware of it, or the 
+ *  global fp pointer has to explicitly manipulated by the calling function.  
+ *  The secondary tmpfile should only be used by common functions that might 
+ *  be called by a higher-level function using the primary permanent tmpfile,
+ *  or alternatively a caller may pass in a FILE pointer to set_tmpfile2().
  */
 void 
 open_tmpfile2(void)
@@ -1126,6 +1127,15 @@ close_tmpfile2(void)
 		fclose(pc->tmpfile2);
         	pc->tmpfile2 = NULL;
 	}
+}
+
+void
+set_tmpfile2(FILE *fptr)
+{
+        if (pc->tmpfile2)
+                error(FATAL, "secondary temporary file already in use\n");
+
+	pc->tmpfile2 = fptr;
 }
 
 
@@ -2024,7 +2034,6 @@ void
 cmd_files(void)
 {
 	int c;
-	ulong flag;
 	ulong value;
 	struct task_context *tc;
 	int subsequent;
@@ -2033,7 +2042,6 @@ cmd_files(void)
 
         ref = NULL;
         refarg = NULL;
-	flag = 0;
 
         while ((c = getopt(argcnt, args, "d:R:")) != EOF) {
                 switch(c)

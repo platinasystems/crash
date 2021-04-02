@@ -467,6 +467,23 @@ string_insert(char *insert, char *where)
 }
 
 /*
+ *  Find the rightmost instance of a substring in a string.
+ */
+char *
+strstr_rightmost(char *s, char *lookfor)
+{
+	char *next, *last, *p;
+
+	for (p = s, last = NULL; *p; p++) {
+		if (!(next = strstr(p, lookfor)))
+			break;
+		last = p = next;
+	}
+
+	return last;
+}
+
+/*
  *  Prints a string verbatim, allowing strings with % signs to be displayed
  *  without printf conversions.
  */

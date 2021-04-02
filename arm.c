@@ -46,7 +46,7 @@ static void arm_dump_exception_stack(ulong, ulong);
 static void arm_display_full_frame(struct bt_info *, ulong);
 static ulong arm_vmalloc_start(void);
 static int arm_is_task_addr(ulong);
-static int arm_dis_filter(ulong, char *);
+static int arm_dis_filter(ulong, char *, unsigned int);
 static int arm_eframe_search(struct bt_info *);
 static ulong arm_get_task_pgd(ulong);
 static void arm_cmd_mach(void);
@@ -1313,7 +1313,7 @@ arm_is_task_addr(ulong task)
  * Filter dissassembly output if the output radix is not gdb's default 10
  */
 static int
-arm_dis_filter(ulong vaddr, char *inbuf)
+arm_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 {
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
@@ -1335,7 +1335,7 @@ arm_dis_filter(ulong vaddr, char *inbuf)
 
 	if (colon) {
 		sprintf(buf1, "0x%lx <%s>", vaddr,
-			value_to_symstr(vaddr, buf2, pc->output_radix));
+			value_to_symstr(vaddr, buf2, output_radix));
 		sprintf(buf2, "%s%s", buf1, colon);
 		strcpy(inbuf, buf2);
 	}
@@ -1357,7 +1357,7 @@ arm_dis_filter(ulong vaddr, char *inbuf)
 			return FALSE;
 
 		sprintf(buf1, "0x%lx <%s>\n", value,
-			value_to_symstr(value, buf2, pc->output_radix));
+			value_to_symstr(value, buf2, output_radix));
 
 		sprintf(p1, buf1);
 	}

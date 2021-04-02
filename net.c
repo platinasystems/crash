@@ -210,9 +210,16 @@ net_init(void)
 					MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "dport");
 					MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "sport");
 					MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "num");
-				} else {
+				} else if (MEMBER_EXISTS("inet_sock", "inet_daddr")) {
 					MEMBER_OFFSET_INIT(inet_opt_daddr, "inet_sock", "inet_daddr");
 					MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "inet_sock", "inet_rcv_saddr");
+					MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "inet_dport");
+					MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "inet_sport");
+					MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "inet_num");
+				} else if ((MEMBER_OFFSET("inet_sock", "sk") == 0) &&
+				    (MEMBER_OFFSET("sock", "__sk_common") == 0)) {
+					MEMBER_OFFSET_INIT(inet_opt_daddr, "sock_common", "skc_daddr");
+					MEMBER_OFFSET_INIT(inet_opt_rcv_saddr, "sock_common", "skc_rcv_saddr");
 					MEMBER_OFFSET_INIT(inet_opt_dport, "inet_sock", "inet_dport");
 					MEMBER_OFFSET_INIT(inet_opt_sport, "inet_sock", "inet_sport");
 					MEMBER_OFFSET_INIT(inet_opt_num, "inet_sock", "inet_num");
