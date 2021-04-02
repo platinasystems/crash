@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -3999,6 +3999,28 @@ no_nt_prstatus_exists:
 	return pt_regs;
 }
 
+int
+kdump_phys_base(ulong *phys_base)
+{
+	if (!kdump_kaslr_check())
+		return FALSE;
+
+	*phys_base = nd->phys_base;
+
+	return TRUE;
+}
+
+int
+kdump_set_phys_base(ulong phys_base)
+{
+	if (!kdump_kaslr_check())
+		return FALSE;
+
+	nd->phys_base = phys_base;
+
+	return TRUE;
+}
+
 /*
  * In case of ARM we need to determine correct PHYS_OFFSET from the kdump file.
  * This is done by taking lowest physical address (LMA) from given load
@@ -4076,19 +4098,26 @@ read_proc_kcore(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	Elf64_Phdr *lp64;
 	off_t offset;
 
-	if (!machdep->verify_paddr(paddr)) {
-		if (CRASHDEBUG(1))
-			error(INFO, "verify_paddr(%lx) failed\n", paddr);
-		return READ_ERROR;
+	if (paddr != KCORE_USE_VADDR) {
+		if (!machdep->verify_paddr(paddr)) {
+			if (CRASHDEBUG(1))
+				error(INFO, "verify_paddr(%lx) failed\n", paddr);
+			return READ_ERROR;
+		}
 	}
 
 	/*
-	 *  Turn the physical address into a unity-mapped kernel 
-	 *  virtual address, which should work for 64-bit architectures,
-	 *  and for lowmem access for 32-bit architectures.
+	 *  Unless specified otherwise, turn the physical address into 
+	 *  a unity-mapped kernel virtual address, which should work 
+	 *  for 64-bit architectures, and for lowmem access for 32-bit
+	 *  architectures.
 	 */
+	if (paddr == KCORE_USE_VADDR)
+		kvaddr = addr;
+	else
+		kvaddr =  PTOV((ulong)paddr);
+
 	offset = UNINITIALIZED;
-	kvaddr =  PTOV((ulong)paddr);
 	readcnt = cnt;
 
 	switch (pkd->flags & (KCORE_ELF32|KCORE_ELF64)) 
@@ -4713,3 +4742,38 @@ error(INFO, "%s: backup region is used: %llx\n", typename, backup_offset + total
 error:
 	error(WARNING, "failed to init kexec backup region\n");
 }
+
+int
+kdump_kaslr_check(void)
+{
+	if (!QEMU_MEM_DUMP_NO_VMCOREINFO())
+		return FALSE;
+
+	/* If vmcore has QEMU note, need to calculate kaslr offset */
+	if (nd->num_qemu_notes)
+		return TRUE;
+	else
+		return FALSE;
+}
+
+#ifdef X86_64
+QEMUCPUState *
+kdump_get_qemucpustate(int cpu)
+{
+	if (cpu >= nd->num_qemu_notes) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+			    "Invalid index for QEMU Note: %d (>= %d)\n",
+			    cpu, nd->num_qemu_notes);
+		return NULL;
+	}
+
+	if (!nd->elf64 || (nd->elf64->e_machine != EM_X86_64)) {
+		if (CRASHDEBUG(1))
+			error(INFO, "Only x86_64 64bit is supported.\n");
+		return NULL;
+	}
+
+	return (QEMUCPUState *)nd->nt_qemu_percpu[cpu];
+}
+#endif

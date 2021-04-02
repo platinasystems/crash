@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002-2017 David Anderson
- * Copyright (C) 2002-2017 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002-2018 David Anderson
+ * Copyright (C) 2002-2018 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -255,7 +255,7 @@ static void PG_reserved_flag_init(void);
 static void PG_slab_flag_init(void);
 static ulong nr_blockdev_pages(void);
 void sparse_mem_init(void);
-void dump_mem_sections(void);
+void dump_mem_sections(int);
 void list_mem_sections(void);
 ulong sparse_decode_mem_map(ulong, ulong);
 char *read_mem_section(ulong);
@@ -1437,7 +1437,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 	char hexchars[MAX_HEXCHARS_PER_LINE+1];
 	char ch;
 	int linelen;
-	char buf[BUFSIZE];
+	char buf[BUFSIZE*2];
 	char slab[BUFSIZE];
 	int ascii_start;
 	ulong error_handle;
@@ -1951,7 +1951,7 @@ cmd_wr(void)
 char *
 format_stack_entry(struct bt_info *bt, char *retbuf, ulong value, ulong limit)
 {
-	char buf[BUFSIZE];
+	char buf[BUFSIZE*2];
 	char slab[BUFSIZE];
 
 	if (BITS32()) {
@@ -4014,7 +4014,7 @@ vm_area_page_dump(ulong vma,
 	int display;
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
-	char buf3[BUFSIZE];
+	char buf3[BUFSIZE*2];
 	char buf4[BUFSIZE];
 
 	if (mm == symbol_value("init_mm"))
@@ -5110,7 +5110,13 @@ PG_reserved_flag_init(void)
 		return;
 	}
 
-	vaddr = kt->stext ? kt->stext : symbol_value("sys_read");
+	vaddr = kt->stext;
+	if (!vaddr) {
+		if (kernel_symbol_exists("sys_read"))
+			vaddr = symbol_value("sys_read");
+		else if (kernel_symbol_exists("__x64_sys_read"))
+			vaddr = symbol_value("__x64_sys_read");
+	}
 
 	if (!phys_to_page((physaddr_t)VTOP(vaddr), &pageptr))
 		return;
@@ -13333,6 +13339,12 @@ mem_map:
 			mi->spec_addr, memtype_string(mi->memtype, 0));
 }
 
+int
+generic_is_page_ptr(ulong addr, physaddr_t *phys)
+{
+	return FALSE;
+}
+
 /*
  *  Determine whether an address is a page pointer from the mem_map[] array.
  *  If the caller requests it, return the associated physical address.
@@ -13349,8 +13361,11 @@ is_page_ptr(ulong addr, physaddr_t *phys)
 	ulong coded_mem_map, mem_map, end_mem_map;
 	physaddr_t section_paddr;
 
+	if (machdep->is_page_ptr(addr, phys))
+		return TRUE;
+
 	if (IS_SPARSEMEM()) {
-		nr_mem_sections = NR_MEM_SECTIONS();
+		nr_mem_sections = vt->max_mem_section_nr+1;
 	        for (nr = 0; nr < nr_mem_sections ; nr++) {
 	                if ((sec_addr = valid_section_nr(nr))) {
 	                        coded_mem_map = section_mem_map_addr(sec_addr);
@@ -13668,6 +13683,7 @@ dump_vm_table(int verbose)
 	fprintf(fp, "   swap_info_struct: %lx\n", (ulong)vt->swap_info_struct);
 	fprintf(fp, "            mem_sec: %lx\n", (ulong)vt->mem_sec);
 	fprintf(fp, "        mem_section: %lx\n", (ulong)vt->mem_section);
+	fprintf(fp, " max_mem_section_nr: %ld\n", (ulong)vt->max_mem_section_nr);
 	fprintf(fp, "       ZONE_HIGHMEM: %d\n", vt->ZONE_HIGHMEM);
 	fprintf(fp, "node_online_map_len: %d\n", vt->node_online_map_len);
 	if (vt->node_online_map_len) {
@@ -13771,7 +13787,7 @@ show_hits:
                 for (i = vhits = 0; i < VMA_CACHE; i++)
                         vhits += vt->cached_vma_hits[i];
 
-                fprintf(stderr, "%s       vma hit rate: %2ld%% (%ld of %ld)\n",
+                fprintf(fp, "%s       vma hit rate: %2ld%% (%ld of %ld)\n",
 			verbose ? "" : "  ",
                         (vhits * 100)/vt->vma_cache_fills,
                         vhits, vt->vma_cache_fills);
@@ -16295,8 +16311,8 @@ dump_memory_nodes(int initialize)
 		vt->numnodes = n;
 	}
 
-	if (!initialize && IS_SPARSEMEM())
-		dump_mem_sections();
+	if (IS_SPARSEMEM())
+		dump_mem_sections(initialize);
 }
 
 /*
@@ -16899,6 +16915,8 @@ dumpfile_memory(int cmd)
                         retval = kcore_memory_dump(fp);
 		else if (pc->flags & SADUMP)
 			retval = sadump_memory_dump(fp);
+		else if (pc->flags & VMWARE_VMSS)
+			retval = vmware_vmss_memory_dump(fp);
 		break;
 	
 	case DUMPFILE_ENVIRONMENT:
@@ -17128,9 +17146,9 @@ pfn_to_map(ulong pfn)
 }
 
 void 
-dump_mem_sections(void)
+dump_mem_sections(int initialize)
 {
-	ulong nr,addr;
+	ulong nr, max, addr;
 	ulong nr_mem_sections;
 	ulong coded_mem_map, mem_map, pfn;
 	char buf1[BUFSIZE];
@@ -17139,6 +17157,15 @@ dump_mem_sections(void)
 	char buf4[BUFSIZE];
 
 	nr_mem_sections = NR_MEM_SECTIONS();
+
+	if (initialize) {
+		for (nr = max = 0; nr < nr_mem_sections ; nr++) {
+			if (valid_section_nr(nr))
+				max = nr;
+		}
+		vt->max_mem_section_nr = max;
+		return;
+	}
 
 	fprintf(fp, "\n");
 	pad_line(fp, BITS32() ? 59 : 67, '-');

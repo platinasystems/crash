@@ -610,7 +610,13 @@ kaslr_init(void)
 		st->_stext_vmlinux = UNINITIALIZED;
 	}
 
-	if (KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE()) {
+	if (QEMU_MEM_DUMP_NO_VMCOREINFO()) {
+		if (KDUMP_DUMPFILE() && kdump_kaslr_check()) {
+			kt->flags2 |= KASLR_CHECK;
+		} else if (DISKDUMP_DUMPFILE() && diskdump_kaslr_check()) {
+			kt->flags2 |= KASLR_CHECK;
+		}
+	} else if (KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE()) {
 		if ((string = pc->read_vmcoreinfo("SYMBOL(_stext)"))) {
 			kt->vmcoreinfo._stext_SYMBOL =
 				htol(string, RETURN_ON_ERROR, NULL);
@@ -625,7 +631,7 @@ kaslr_init(void)
 		}
 	}
 
-	if (SADUMP_DUMPFILE())
+	if (SADUMP_DUMPFILE() || VMSS_DUMPFILE())
 		kt->flags2 |= KASLR_CHECK;
 }
 
@@ -640,14 +646,26 @@ derive_kaslr_offset(bfd *abfd, int dynamic, bfd_byte *start, bfd_byte *end,
 	unsigned long relocate;
 	ulong _stext_relocated;
 
-	if (SADUMP_DUMPFILE()) {
+	if (SADUMP_DUMPFILE() || QEMU_MEM_DUMP_NO_VMCOREINFO() || VMSS_DUMPFILE()) {
 		ulong kaslr_offset = 0;
+		ulong phys_base = 0;
 
-		sadump_calc_kaslr_offset(&kaslr_offset);
+		calc_kaslr_offset(&kaslr_offset, &phys_base);
 
 		if (kaslr_offset) {
 			kt->relocate = kaslr_offset * -1;
 			kt->flags |= RELOC_SET;
+		}
+
+		if (phys_base) {
+			if (SADUMP_DUMPFILE())
+				sadump_set_phys_base(phys_base);
+			else if (KDUMP_DUMPFILE())
+				kdump_set_phys_base(phys_base);
+			else if (DISKDUMP_DUMPFILE())
+				diskdump_set_phys_base(phys_base);
+			else if (VMSS_DUMPFILE())
+				vmware_vmss_set_phys_base(phys_base);
 		}
 
 		return;
@@ -1346,9 +1364,9 @@ store_module_symbols_v1(ulong total, int mods_installed)
 	struct module_symbol *modsym;
 	struct load_module *lm;
 	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
+	char buf2[BUFSIZE*2];
 	char name[BUFSIZE];
-	char rodata[BUFSIZE];
+	char rodata[BUFSIZE*2];
 	char *strbuf, *modbuf, *modsymbuf;
 	struct syment *sp;
 	ulong first, last;
@@ -1414,7 +1432,7 @@ store_module_symbols_v1(ulong total, int mods_installed)
 			error(INFO, 
 			    "module name greater than MAX_MOD_NAME: %s\n",
 				name);
-                	strncpy(lm->mod_name, name, MAX_MOD_NAME-1);
+			BCOPY(name, lm->mod_name, MAX_MOD_NAME-1);
 		}
 
 		lm->mod_flags = MOD_EXT_SYMS;
@@ -3067,7 +3085,7 @@ dump_symbol_table(void)
 	else
 		fprintf(fp, "\n");
 
-	if (SADUMP_DUMPFILE()) {
+	if (SADUMP_DUMPFILE() || QEMU_MEM_DUMP_NO_VMCOREINFO() || VMSS_DUMPFILE()) {
 		fprintf(fp, "divide_error_vmlinux: %lx\n", st->divide_error_vmlinux);
 		fprintf(fp, "   idt_table_vmlinux: %lx\n", st->idt_table_vmlinux);
 		fprintf(fp, "saved_command_line_vmlinux: %lx\n", st->saved_command_line_vmlinux);
@@ -3488,7 +3506,8 @@ is_kernel(char *file)
 
 		if (endian_mismatch(file, elf64->e_ident[EI_DATA], 0))
 			goto bailout;
-	}
+	} else
+		return FALSE;
 
 bailout:
 	return(is_bfd_format(file));
@@ -5913,7 +5932,7 @@ static int
 dereference_pointer(ulong addr, struct datatype_member *dm, ulong flags)
 {
 	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
+	char buf2[BUFSIZE*2];
 	char *typeptr, *member, *charptr, *voidptr, *p1, *sym;
 	int found, ptrptr, funcptr, typedef_is_ptr, use_symbol;
 	ulong target, value;
@@ -8421,6 +8440,10 @@ builtin_array_length(char *s, int len, int *two_dim)
 		lenptr = &array_table.kmem_cache_cpu_slab;
 	else if (STREQ(s, "rt_prio_array.queue"))
 		lenptr = &array_table.rt_prio_array_queue;
+	else if (STREQ(s, "task_struct.rlim"))
+		lenptr = &array_table.task_struct_rlim;
+	else if (STREQ(s, "signal_struct.rlim"))
+		lenptr = &array_table.signal_struct_rlim;
 
 	if (!lenptr)                /* not stored */
 		return(len);        
@@ -10192,6 +10215,49 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mod_arch_specific_orc_unwind_ip));
 	fprintf(fp, "  mod_arch_specific_orc_unwind: %ld\n",
 		OFFSET(mod_arch_specific_orc_unwind));
+	fprintf(fp, "                  bpf_prog_aux: %ld\n",
+		OFFSET(bpf_prog_aux));
+	fprintf(fp, "                 bpf_prog_type: %ld\n",
+		OFFSET(bpf_prog_type));
+	fprintf(fp, "                  bpf_prog_tag: %ld\n",
+		OFFSET(bpf_prog_tag));
+	fprintf(fp, "            bpf_prog_jited_len: %ld\n",
+		OFFSET(bpf_prog_jited_len));
+	fprintf(fp, "             bpf_prog_bpf_func: %ld\n",
+		OFFSET(bpf_prog_bpf_func));
+	fprintf(fp, "                  bpf_prog_len: %ld\n",
+		OFFSET(bpf_prog_len));
+	fprintf(fp, "                bpf_prog_pages: %ld\n",
+		OFFSET(bpf_prog_pages));
+	fprintf(fp, "               bpf_prog_insnsi: %ld\n",
+		OFFSET(bpf_prog_insnsi));
+	fprintf(fp, "             bpf_map_map_flags: %ld\n",
+		OFFSET(bpf_map_map_flags));
+	fprintf(fp, "              bpf_map_map_type: %ld\n",
+		OFFSET(bpf_map_map_type));
+	fprintf(fp, "                 bpf_map_pages: %ld\n",
+		OFFSET(bpf_map_pages));
+	fprintf(fp, "              bpf_map_key_size: %ld\n",
+		OFFSET(bpf_map_key_size));
+	fprintf(fp, "            bpf_map_value_size: %ld\n",
+		OFFSET(bpf_map_value_size));
+	fprintf(fp, "           bpf_map_max_entries: %ld\n",
+		OFFSET(bpf_map_max_entries));
+	fprintf(fp, "                  bpf_map_name: %ld\n",
+		OFFSET(bpf_map_name));
+	fprintf(fp, "                  bpf_map_user: %ld\n",
+		OFFSET(bpf_map_user));
+
+	fprintf(fp, "     bpf_prog_aux_used_map_cnt: %ld\n",
+		OFFSET(bpf_prog_aux_used_map_cnt));
+	fprintf(fp, "        bpf_prog_aux_used_maps: %ld\n",
+		OFFSET(bpf_prog_aux_used_maps));
+	fprintf(fp, "        bpf_prog_aux_load_time: %ld\n",
+		OFFSET(bpf_prog_aux_load_time));
+	fprintf(fp, "             bpf_prog_aux_user: %ld\n",
+		OFFSET(bpf_prog_aux_user));
+	fprintf(fp, "               user_struct_uid: %ld\n",
+		OFFSET(user_struct_uid));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -10438,6 +10504,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(sk_buff_len));
 	fprintf(fp, "                     orc_entry: %ld\n",
 		SIZE(orc_entry));
+	fprintf(fp, "                      bpf_prog: %ld\n",
+		SIZE(bpf_prog));
+	fprintf(fp, "                  bpf_prog_aux: %ld\n",
+		SIZE(bpf_prog_aux));
+	fprintf(fp, "                       bpf_map: %ld\n",
+		SIZE(bpf_map));
+	fprintf(fp, "                      bpf_insn: %ld\n",
+		SIZE(bpf_insn));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -10501,6 +10575,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		ARRAY_LENGTH(kmem_cache_cpu_slab));
         fprintf(fp, "           rt_prio_array_queue: %d\n",
                 ARRAY_LENGTH(rt_prio_array_queue));
+	fprintf(fp, "              task_struct_rlim: %d\n",
+		ARRAY_LENGTH(task_struct_rlim));
+	fprintf(fp, "            signal_struct_rlim: %d\n",
+		ARRAY_LENGTH(signal_struct_rlim));
 
 	if (spec) {
 		int in_size_table, in_array_table, arrays, offsets, sizes;
@@ -11361,7 +11439,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 	ulong vaddr, array_entry, attribute, owner, name, address;
 	long name_type;
 	char buf[BUFSIZE];
-	char section_name[BUFSIZE];
+	char section_name[BUFSIZE/2];
 	ulong section_vaddr;
 
 #if defined(GDB_5_3) || defined(GDB_6_0) || defined(GDB_6_1)
@@ -11520,7 +11598,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 			}
 		}
 	
-		BZERO(section_name, BUFSIZE);
+		BZERO(section_name, BUFSIZE/2);
 		if (!read_string(name, section_name, 32)) {
 			done = TRUE;
 			retval = FALSE;
@@ -11548,7 +11626,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 				buflen *= 2;
 			}
 			shift_string_right(req->buf, strlen(buf));
-			strncpy(req->buf, buf, strlen(buf));
+			BCOPY(buf, req->buf, strlen(buf));
 			retval = TRUE;
 		} else {
 			sprintf(buf, " -s %s 0x%lx", section_name, section_vaddr);
@@ -12293,7 +12371,7 @@ numeric_forward(const void *P_x, const void *P_y)
 		}
 	}
 
-	if (SADUMP_DUMPFILE()) {
+	if (SADUMP_DUMPFILE() || QEMU_MEM_DUMP_NO_VMCOREINFO() || VMSS_DUMPFILE()) {
 		/* Need for kaslr_offset and phys_base */
 		if (STREQ(x->name, "divide_error"))
 			st->divide_error_vmlinux = valueof(x);

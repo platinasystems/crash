@@ -172,8 +172,14 @@ arm64_init(int when)
 		if (!machdep->pagesize &&
 		    kernel_symbol_exists("swapper_pg_dir") &&
 		    kernel_symbol_exists("idmap_pg_dir")) {
-			value = symbol_value("swapper_pg_dir") -
-				symbol_value("idmap_pg_dir");
+			if (kernel_symbol_exists("tramp_pg_dir"))
+				value = symbol_value("tramp_pg_dir");
+			else if (kernel_symbol_exists("reserved_ttbr0"))
+				value = symbol_value("reserved_ttbr0");
+			else
+				value = symbol_value("swapper_pg_dir");
+
+			value -= symbol_value("idmap_pg_dir");
 			/*
 			 * idmap_pg_dir is 2 pages prior to 4.1,
 			 * and 3 pages thereafter.  Only 4K and 64K 
@@ -435,6 +441,12 @@ arm64_verify_symbol(const char *name, ulong value, char type)
 
 	if ((type == 'A') && STREQ(name, "_kernel_flags_le"))
 		machdep->machspec->kernel_flags = le64toh(value);
+
+	if ((type == 'A') && STREQ(name, "_kernel_flags_le_hi32"))
+		machdep->machspec->kernel_flags |= ((ulong)le32toh(value) << 32);
+
+	if ((type == 'A') && STREQ(name, "_kernel_flags_le_lo32"))
+		machdep->machspec->kernel_flags |= le32toh(value);
 
 	if (((type == 'A') || (type == 'a')) && (highest_bit_long(value) != 63))
 		return FALSE;
@@ -830,7 +842,10 @@ arm64_calc_phys_offset(void)
 
 		if ((machdep->flags & NEW_VMEMMAP) &&
 		    ms->kimage_voffset && (sp = kernel_symbol_search("memstart_addr"))) {
-			paddr =	sp->value - machdep->machspec->kimage_voffset;
+			if (pc->flags & PROC_KCORE)
+				paddr = KCORE_USE_VADDR;
+			else
+				paddr =	sp->value - machdep->machspec->kimage_voffset;
 			if (READMEM(pc->mfd, &phys_offset, sizeof(phys_offset),
 			    sp->value, paddr) > 0) {
 				ms->phys_offset = phys_offset;
