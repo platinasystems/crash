@@ -470,11 +470,13 @@ struct new_utsname {
 #define RELOC_SET            (0x2000000)
 #define RELOC_FORCE          (0x4000000)
 #define ARCH_OPENVZ          (0x8000000)
+#define ARCH_PVOPS          (0x10000000)
 
 #define GCC_VERSION_DEPRECATED (GCC_3_2|GCC_3_2_3|GCC_2_96|GCC_3_3_2|GCC_3_3_3)
 
 #define XEN()    (kt->flags & ARCH_XEN)
 #define OPENVZ() (kt->flags & ARCH_OPENVZ)
+#define PVOPS()  (kt->flags & ARCH_PVOPS)
 
 #define XEN_MACHINE_TO_MFN(m)    ((ulonglong)(m) >> PAGESHIFT())
 #define XEN_PFN_TO_PSEUDO(p)     ((ulonglong)(p) << PAGESHIFT())
@@ -1452,6 +1454,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long vcpu_struct_rq;
 	long task_struct_sched_info;
 	long sched_info_last_arrival;
+	long page_objects;
+	long kmem_cache_oo;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2124,6 +2128,8 @@ struct load_module {
 #define VMEMMAP_VADDR_2_6_24       0xffffe20000000000
 #define VMEMMAP_END_2_6_24         0xffffe2ffffffffff
 
+#define PAGE_OFFSET_2_6_27         0xffff880000000000
+
 #define USERSPACE_TOP_XEN          0x0000800000000000
 #define PAGE_OFFSET_XEN            0xffff880000000000
 #define VMALLOC_START_ADDR_XEN     0xffffc20000000000
@@ -2220,6 +2226,17 @@ struct load_module {
 #define TIF_SIGPENDING  (2)
 
 #define PAGEBASE(X)           (((ulong)(X)) & (ulong)machdep->pagemask)
+
+#define _CPU_PDA_READ2(CPU, BUFFER) \
+ 	((readmem(symbol_value("_cpu_pda"),				\
+		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),		\
+		 "_cpu_pda addr", FAULT_ON_ERROR)) &&			\
+ 	(readmem(cpu_pda_addr + ((CPU) * sizeof(void *)),		\
+		 KVADDR, &cpu_pda_addr, sizeof(unsigned long),		\
+		 "_cpu_pda addr", FAULT_ON_ERROR)) &&			\
+	(cpu_pda_addr) &&						\
+	(readmem(cpu_pda_addr, KVADDR, (BUFFER), SIZE(x8664_pda),	\
+		 "cpu_pda entry", FAULT_ON_ERROR)))
 
 #define _CPU_PDA_READ(CPU, BUFFER) \
 	((STRNEQ("_cpu_pda", closest_symbol((symbol_value("_cpu_pda") +	\
@@ -2636,6 +2653,9 @@ struct efi_memory_desc_t {
 
 #define TIF_SIGPENDING (2)
 
+#define _SECTION_SIZE_BITS	25
+#define _MAX_PHYSMEM_BITS	31
+
 #endif  /* S390 */
 
 #ifdef S390X
@@ -2657,6 +2677,9 @@ struct efi_memory_desc_t {
 #define __swp_offset(entry) SWP_OFFSET(entry)
 
 #define TIF_SIGPENDING (2)
+
+#define _SECTION_SIZE_BITS	28
+#define _MAX_PHYSMEM_BITS	42
 
 #endif  /* S390X */
 
@@ -3609,6 +3632,7 @@ int get_cpus_online(void);
 int get_cpus_present(void);
 int get_cpus_possible(void);
 int in_cpu_map(int, int);
+void paravirt_init(void);
 void print_stack_text_syms(struct bt_info *, ulong, ulong);
 void back_trace(struct bt_info *);
 #define BT_RAW                     (0x1ULL)

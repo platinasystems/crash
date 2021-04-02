@@ -130,6 +130,8 @@ s390_init(int when)
 		machdep->dump_irq = s390_dump_irq;
 		if (!machdep->hz)
 			machdep->hz = HZ;
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		break;
 
 	case POST_INIT:
@@ -195,6 +197,8 @@ s390_dump_machdep_table(ulong arg)
 	fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
 	fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
+	fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
+	fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 }
 
