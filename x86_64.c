@@ -356,9 +356,11 @@ x86_64_init(int when)
 			machdep->machspec->physical_mask_shift = __PHYSICAL_MASK_SHIFT_5LEVEL;
 			machdep->machspec->pgdir_shift = PGDIR_SHIFT_5LEVEL;
 			machdep->machspec->ptrs_per_pgd = PTRS_PER_PGD_5LEVEL;
-			if ((machdep->machspec->p4d = (char *)malloc(PAGESIZE())) == NULL)
-				error(FATAL, "cannot malloc p4d space.");
-			machdep->machspec->last_p4d_read = 0;
+			if (!machdep->machspec->p4d) {
+				if ((machdep->machspec->p4d = (char *)malloc(PAGESIZE())) == NULL)
+					error(FATAL, "cannot malloc p4d space.");
+				machdep->machspec->last_p4d_read = 0;
+			}
 			machdep->uvtop = x86_64_uvtop_level4;  /* 5-level is optional per-task */
 			machdep->kvbase = (ulong)PAGE_OFFSET;
 			machdep->identity_map_base = (ulong)PAGE_OFFSET;
@@ -2020,6 +2022,19 @@ x86_64_uvtop_level4(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, in
 	if (!(pud_pte & _PAGE_PRESENT))
 		goto no_upage;
 
+	if (pud_pte & _PAGE_PSE) {
+		if (verbose) {
+			fprintf(fp, "  PAGE: %lx  (1GB)\n\n",
+			       PAGEBASE(pud_pte) & PHYSICAL_PAGE_MASK);
+			x86_64_translate_pte(pud_pte, 0, 0);
+		}
+
+		physpage = (PAGEBASE(pud_pte) & PHYSICAL_PAGE_MASK) +
+			       (uvaddr & ~_1GB_PAGE_MASK);
+		*paddr = physpage;
+		return TRUE;
+	}
+
 	/*
          *  pmd = pmd_offset(pud, address);
 	 */
@@ -2428,6 +2443,19 @@ start_vtop_with_pagetable:
 
 	if (!(pud_pte & _PAGE_PRESENT))
 		goto no_kpage;
+
+	if (pud_pte & _PAGE_PSE) {
+		if (verbose) {
+			fprintf(fp, "  PAGE: %lx  (1GB)\n\n",
+			       PAGEBASE(pud_pte) & PHYSICAL_PAGE_MASK);
+			x86_64_translate_pte(pud_pte, 0, 0);
+		}
+
+		physpage = (PAGEBASE(pud_pte) & PHYSICAL_PAGE_MASK) +
+			       (kvaddr & ~_1GB_PAGE_MASK);
+		*paddr = physpage;
+		return TRUE;
+	}
 
 	/*
          *  pmd = pmd_offset(pud, address);
@@ -4386,15 +4414,20 @@ x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
         long r8, r9, r10, r11, r12, r13, r14, r15;
 	struct machine_specific *ms;
 	struct syment *sp;
-	ulong offset;
+	ulong offset, verify_addr;
 	char *pt_regs_buf;
 	long verified;
 	long err;
 	char buf[BUFSIZE];
 
-	if (flags == EFRAME_VERIFY) {
-		if (!accessible(kvaddr) || 
-		    !accessible(kvaddr + SIZE(pt_regs) - sizeof(long)))
+	if (flags & EFRAME_VERIFY) {
+		if (kvaddr)
+			verify_addr = kvaddr;
+		else
+			verify_addr = (local - bt->stackbuf) + bt->stackbase;
+
+		if (!accessible(verify_addr) ||
+		    !accessible(verify_addr + SIZE(pt_regs) - sizeof(long)))
 			return FALSE;
 	}
 

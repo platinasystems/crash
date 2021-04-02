@@ -225,22 +225,26 @@ kernel_init()
 	get_xtime(&kt->date);
 	if (CRASHDEBUG(1))
 		fprintf(fp, "xtime timespec.tv_sec: %lx: %s\n", 
-			kt->date.tv_sec, strip_linefeeds(ctime(&kt->date.tv_sec)));
+			kt->date.tv_sec, ctime_tz(&kt->date.tv_sec));
 	if (kt->flags2 & GET_TIMESTAMP) {
-		fprintf(fp, "%s\n\n", 
-			strip_linefeeds(ctime(&kt->date.tv_sec)));
+		fprintf(fp, "%s\n\n", ctime_tz(&kt->date.tv_sec));
 		clean_exit(0);
 	}
-	
+
+	MEMBER_OFFSET_INIT(uts_namespace_name, "uts_namespace", "name");
 	if (symbol_exists("system_utsname"))
         	readmem(symbol_value("system_utsname"), KVADDR, &kt->utsname,
                 	sizeof(struct new_utsname), "system_utsname", 
 			RETURN_ON_ERROR);
-	else if (symbol_exists("init_uts_ns"))
-		readmem(symbol_value("init_uts_ns") + sizeof(int),
-			KVADDR,  &kt->utsname, sizeof(struct new_utsname), 
+	else if (symbol_exists("init_uts_ns")) {
+		long offset = sizeof(int);
+		if (VALID_MEMBER(uts_namespace_name))
+			offset = OFFSET(uts_namespace_name);
+
+		readmem(symbol_value("init_uts_ns") + offset,
+			KVADDR,  &kt->utsname, sizeof(struct new_utsname),
 			"init_uts_ns", RETURN_ON_ERROR);
-	else
+	} else
 		error(INFO, "cannot access utsname information\n\n");
 
 	if (CRASHDEBUG(1)) {
@@ -548,6 +552,12 @@ kernel_init()
 		MEMBER_OFFSET_INIT(irq_data_chip, "irq_data", "chip");
 		MEMBER_OFFSET_INIT(irq_data_affinity, "irq_data", "affinity");
 		MEMBER_OFFSET_INIT(irq_desc_irq_data, "irq_desc", "irq_data");
+	}
+
+	STRUCT_SIZE_INIT(irq_common_data, "irq_common_data");
+	if (VALID_STRUCT(irq_common_data)) {
+		MEMBER_OFFSET_INIT(irq_common_data_affinity, "irq_common_data", "affinity");
+		MEMBER_OFFSET_INIT(irq_desc_irq_common_data, "irq_desc", "irq_common_data");
 	}
 
         STRUCT_SIZE_INIT(irq_cpustat_t, "irq_cpustat_t");
@@ -3540,6 +3550,62 @@ module_init(void)
 					   "module_core");
 			MEMBER_OFFSET_INIT(module_module_init, "module",
 					   "module_init");
+		} else if (MEMBER_EXISTS("module", "module_core_rx")) {
+			if (CRASHDEBUG(1))
+				error(INFO, "PaX module layout detected.\n");
+			kt->flags2 |= KMOD_PAX;
+
+			MEMBER_OFFSET_INIT(module_core_size_rw, "module",
+					   "core_size_rw");
+			MEMBER_OFFSET_INIT(module_core_size_rx, "module",
+					   "core_size_rx");
+
+			MEMBER_OFFSET_INIT(module_init_size_rw, "module",
+					   "init_size_rw");
+			MEMBER_OFFSET_INIT(module_init_size_rx, "module",
+					   "init_size_rx");
+
+			MEMBER_OFFSET_INIT(module_module_core_rw, "module",
+					   "module_core_rw");
+			MEMBER_OFFSET_INIT(module_module_core_rx, "module",
+					   "module_core_rx");
+
+			MEMBER_OFFSET_INIT(module_module_init_rw, "module",
+					   "module_init_rw");
+			MEMBER_OFFSET_INIT(module_module_init_rx, "module",
+					   "module_init_rx");
+		} else if (MEMBER_EXISTS("module_layout", "base_rx")) {
+			if (CRASHDEBUG(1))
+				error(INFO, "PaX module layout detected.\n");
+			kt->flags2 |= KMOD_PAX;
+
+			ASSIGN_OFFSET(module_core_size_rw) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "size_rw");
+			ASSIGN_OFFSET(module_core_size_rx) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "size_rx");
+
+			ASSIGN_OFFSET(module_init_size_rw) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "size_rw");
+			ASSIGN_OFFSET(module_init_size_rx) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "size_rx");
+
+			ASSIGN_OFFSET(module_module_core_rw) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "base_rw");
+			ASSIGN_OFFSET(module_module_core_rx) =
+				MEMBER_OFFSET("module", "core_layout") +
+				MEMBER_OFFSET("module_layout", "base_rx");
+
+			ASSIGN_OFFSET(module_module_init_rw) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "base_rw");
+			ASSIGN_OFFSET(module_module_init_rx) =
+				MEMBER_OFFSET("module", "init_layout") +
+				MEMBER_OFFSET("module_layout", "base_rx");
 		} else {
 			ASSIGN_OFFSET(module_core_size) =
 				MEMBER_OFFSET("module", "core_layout") +
@@ -3682,10 +3748,10 @@ module_init(void)
 		case KALLSYMS_V2:
 			if (THIS_KERNEL_VERSION >= LINUX(2,6,27)) {
 				numksyms = UINT(modbuf + OFFSET(module_num_symtab));
-				size = UINT(modbuf + OFFSET(module_core_size));
+				size = UINT(modbuf + MODULE_OFFSET2(module_core_size, rx));
 			} else {
 				numksyms = ULONG(modbuf + OFFSET(module_num_symtab));
-				size = ULONG(modbuf + OFFSET(module_core_size));
+				size = ULONG(modbuf + MODULE_OFFSET2(module_core_size, rx));
 			}
 
 			if (!size) {
@@ -3792,7 +3858,7 @@ verify_modules(void)
 				break;
 			case KMOD_V2:
 				mod_base = ULONG(modbuf + 
-					OFFSET(module_module_core));
+					MODULE_OFFSET2(module_module_core, rx));
 				break;
 			}
 
@@ -3816,10 +3882,10 @@ verify_modules(void)
 						OFFSET(module_name);
 					if (THIS_KERNEL_VERSION >= LINUX(2,6,27))
 						mod_size = UINT(modbuf +
-							OFFSET(module_core_size));
+							MODULE_OFFSET2(module_core_size, rx));
 					else
 						mod_size = ULONG(modbuf +
-							OFFSET(module_core_size));
+							MODULE_OFFSET2(module_core_size, rx));
                 			if (strlen(module_name) < MAX_MOD_NAME)
                         			strcpy(buf, module_name);
                 			else 
@@ -4912,9 +4978,12 @@ cmd_log(void)
 
 	msg_flags = 0;
 
-        while ((c = getopt(argcnt, args, "tdma")) != EOF) {
+        while ((c = getopt(argcnt, args, "Ttdma")) != EOF) {
                 switch(c)
                 {
+		case 'T':
+			msg_flags |= SHOW_LOG_CTIME;
+			break;
 		case 't':
 			msg_flags |= SHOW_LOG_TEXT;
 			break;
@@ -4935,6 +5004,23 @@ cmd_log(void)
 
         if (argerrs)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	if (msg_flags & SHOW_LOG_CTIME) {
+		if (pc->flags & MINIMAL_MODE) {
+			error(WARNING, "the option '-T' is not available in minimal mode\n");
+			return;
+		}
+
+		if (kt->boot_date.tv_sec == 0) {
+			ulonglong uptime_jiffies;
+			ulong  uptime_sec;
+
+			get_uptime(NULL, &uptime_jiffies);
+			uptime_sec = (uptime_jiffies)/(ulonglong)machdep->hz;
+			kt->boot_date.tv_sec = kt->date.tv_sec - uptime_sec;
+			kt->boot_date.tv_nsec = 0;
+		}
+	}
 
 	if (msg_flags & SHOW_LOG_AUDIT) {
 		dump_audit();
@@ -4962,6 +5048,8 @@ dump_log(int msg_flags)
 		return;
 	}
 
+	if (msg_flags & SHOW_LOG_CTIME)
+		option_not_supported('T');
 	if (msg_flags & SHOW_LOG_DICT)
 		option_not_supported('d');
 	if ((msg_flags & SHOW_LOG_TEXT) && STREQ(pc->curcmd, "log"))
@@ -5154,7 +5242,12 @@ dump_log_entry(char *logptr, int msg_flags)
 	if ((msg_flags & SHOW_LOG_TEXT) == 0) {
 		nanos = (ulonglong)ts_nsec / (ulonglong)1000000000;
 		rem = (ulonglong)ts_nsec % (ulonglong)1000000000;
-		sprintf(buf, "[%5lld.%06ld] ", nanos, rem/1000);
+		if (msg_flags & SHOW_LOG_CTIME) {
+			time_t t = kt->boot_date.tv_sec + nanos;
+			sprintf(buf, "[%s] ", ctime_tz(&t));
+		}
+		else
+			sprintf(buf, "[%5lld.%06ld] ", nanos, rem/1000);
 		ilen = strlen(buf);
 		fprintf(fp, "%s", buf);
 	}
@@ -5278,8 +5371,12 @@ dump_variable_length_record_log(int msg_flags)
 		idx = log_next(idx, logbuf);
 
 		if (idx >= log_buf_len) {
-			error(INFO, "\ninvalid log_buf entry encountered\n");
-			break;
+			if (log_first_idx > log_next_idx)
+				idx = 0;
+			else {
+				error(INFO, "\ninvalid log_buf entry encountered\n");
+				break;
+			}
 		}
 
 		if (CRASHDEBUG(1) && (idx == log_next_idx))
@@ -5522,8 +5619,7 @@ display_sys_stats(void)
 
 	if (ACTIVE())
 		get_xtime(&kt->date);
-        fprintf(fp, "        DATE: %s\n", 
-		strip_linefeeds(ctime(&kt->date.tv_sec))); 
+        fprintf(fp, "        DATE: %s\n", ctime_tz(&kt->date.tv_sec));
         fprintf(fp, "      UPTIME: %s\n", get_uptime(buf, NULL)); 
         fprintf(fp, "LOAD AVERAGE: %s\n", get_loadavg(buf)); 
 	fprintf(fp, "       TASKS: %ld\n", RUNNING_TASKS());
@@ -5966,6 +6062,8 @@ dump_kernel_table(int verbose)
 		fprintf(fp, "%sIRQ_DESC_TREE_RADIX", others++ ? "|" : "");
 	if (kt->flags2 & IRQ_DESC_TREE_XARRAY)
 		fprintf(fp, "%sIRQ_DESC_TREE_XARRAY", others++ ? "|" : "");
+	if (kt->flags2 & KMOD_PAX)
+		fprintf(fp, "%sKMOD_PAX", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
         fprintf(fp, "         stext: %lx\n", kt->stext);
@@ -6012,8 +6110,8 @@ dump_kernel_table(int verbose)
 		kt->source_tree : "(not used)");
 	if (!(pc->flags & KERNEL_DEBUG_QUERY) && ACTIVE()) 
 		get_xtime(&kt->date);
-        fprintf(fp, "          date: %s\n",
-                strip_linefeeds(ctime(&kt->date.tv_sec)));
+        fprintf(fp, "          date: %s\n", ctime_tz(&kt->date.tv_sec));
+        fprintf(fp, "     boot_date: %s\n", ctime_tz(&kt->boot_date.tv_sec));
         fprintf(fp, "  proc_version: %s\n", strip_linefeeds(kt->proc_version));
         fprintf(fp, "   new_utsname: \n");
         fprintf(fp, "      .sysname: %s\n", uts->sysname);
@@ -6306,10 +6404,9 @@ cmd_irq(void)
 			if (!machdep->get_irq_affinity)
 				option_not_supported(c);
 
-			if (VALID_STRUCT(irq_data)) {
-				if (INVALID_MEMBER(irq_data_affinity))
-					option_not_supported(c);
-			} else if (INVALID_MEMBER(irq_desc_t_affinity))
+			if (INVALID_MEMBER(irq_data_affinity) &&
+			    INVALID_MEMBER(irq_common_data_affinity) &&
+			    INVALID_MEMBER(irq_desc_t_affinity))
 				option_not_supported(c);
 
 			if ((nr_irqs = machdep->nr_irqs) == 0)
@@ -7071,7 +7168,10 @@ generic_get_irq_affinity(int irq)
 		len = DIV_ROUND_UP(kt->cpus, BITS_PER_LONG) * sizeof(ulong);
 
 	affinity = (ulong *)GETBUF(len);
-	if (VALID_STRUCT(irq_data))
+	if (VALID_MEMBER(irq_common_data_affinity))
+		tmp_addr = irq_desc_addr + OFFSET(irq_desc_irq_common_data)
+				+ OFFSET(irq_common_data_affinity);
+	else if (VALID_MEMBER(irq_data_affinity))
 		tmp_addr = irq_desc_addr + \
 			   OFFSET(irq_data_affinity);
 	else

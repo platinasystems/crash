@@ -544,6 +544,7 @@ struct program_context {
 #define is_excluded_vmemmap() (pc->flags2 & EXCLUDED_VMEMMAP)
 #define MEMSRC_LOCAL         (0x80000ULL)
 #define REDZONE             (0x100000ULL)
+#define VMWARE_VMSS_GUESTDUMP (0x200000ULL)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -654,11 +655,14 @@ struct new_utsname {
 #define TIMER_BASES                (0x20ULL)
 #define IRQ_DESC_TREE_RADIX        (0x40ULL)
 #define IRQ_DESC_TREE_XARRAY       (0x80ULL)
+#define KMOD_PAX                  (0x100ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
 #define PVOPS()     (kt->flags & ARCH_PVOPS)
 #define PVOPS_XEN() (kt->flags & ARCH_PVOPS_XEN)
+
+#define PAX_MODULE_SPLIT() (kt->flags2 & KMOD_PAX)
 
 #define XEN_MACHINE_TO_MFN(m)    ((ulonglong)(m) >> PAGESHIFT())
 #define XEN_PFN_TO_PSEUDO(p)     ((ulonglong)(p) << PAGESHIFT())
@@ -763,6 +767,7 @@ struct kernel_table {                   /* kernel data */
 	} vmcoreinfo;
 	ulonglong flags2;
 	char *source_tree;
+	struct timespec boot_date;
 };
 
 /*
@@ -2075,6 +2080,32 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long device_private_knode_class;
 	long timerqueue_head_rb_root;
 	long rb_root_cached_rb_leftmost;
+	long bpf_map_memory;
+	long bpf_map_memory_pages;
+	long bpf_map_memory_user;
+	long bpf_prog_aux_name;
+	long page_private;
+	long swap_info_struct_bdev;
+	long zram_mempoll;
+	long zram_compressor;
+	long zram_table_flag;
+	long zspoll_size_class;
+	long size_class_size;
+	long gendisk_private_data;
+	long zram_table_entry;
+	long module_core_size_rw;
+	long module_core_size_rx;
+	long module_init_size_rw;
+	long module_init_size_rx;
+	long module_module_core_rw;
+	long module_module_core_rx;
+	long module_module_init_rw;
+	long module_module_init_rx;
+	long super_block_s_inodes;
+	long inode_i_sb_list;
+	long irq_common_data_affinity;
+	long irq_desc_irq_common_data;
+	long uts_namespace_name;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2232,6 +2263,8 @@ struct size_table {         /* stash of commonly-used sizes */
 	long bpf_insn;
 	long xarray;
 	long xa_node;
+	long zram_table_entry;
+	long irq_common_data;
 };
 
 struct array_table {
@@ -2279,6 +2312,7 @@ struct array_table {
 #define MEMBER_TYPE_REQUEST ((struct datatype_member *)(-3))
 #define STRUCT_SIZE_REQUEST ((struct datatype_member *)(-4))
 #define MEMBER_TYPE_NAME_REQUEST ((struct datatype_member *)(-5))
+#define ANON_MEMBER_SIZE_REQUEST ((struct datatype_member *)(-6))
 
 #define STRUCT_SIZE(X)      datatype_info((X), NULL, STRUCT_SIZE_REQUEST)
 #define UNION_SIZE(X)       datatype_info((X), NULL, STRUCT_SIZE_REQUEST)
@@ -2290,12 +2324,15 @@ struct array_table {
 #define MEMBER_TYPE(X,Y)    datatype_info((X), (Y), MEMBER_TYPE_REQUEST)
 #define MEMBER_TYPE_NAME(X,Y)    ((char *)datatype_info((X), (Y), MEMBER_TYPE_NAME_REQUEST))
 #define ANON_MEMBER_OFFSET(X,Y)    datatype_info((X), (Y), ANON_MEMBER_OFFSET_REQUEST)
+#define ANON_MEMBER_SIZE(X,Y)    datatype_info((X), (Y), ANON_MEMBER_SIZE_REQUEST)
 
 /*
  *  The following set of macros can only be used with pre-intialized fields
  *  in the offset table, size table or array_table.
  */
 #define OFFSET(X)	   (OFFSET_verify(offset_table.X, (char *)__FUNCTION__, __FILE__, __LINE__, #X))
+#define MODULE_OFFSET(X,Y) (PAX_MODULE_SPLIT() ? OFFSET(Y) : OFFSET(X))
+#define MODULE_OFFSET2(X,T) MODULE_OFFSET(X, X##_##T)
 #define SIZE(X)            (SIZE_verify(size_table.X, (char *)__FUNCTION__, __FILE__, __LINE__, #X))
 #define INVALID_OFFSET     (-1)
 #define INVALID_MEMBER(X)  (offset_table.X == INVALID_OFFSET)
@@ -2697,6 +2734,7 @@ struct symbol_table_data {
 	ulong pti_init_vmlinux;
 	ulong kaiser_init_vmlinux;
 	int kernel_symbol_type;
+	ulong linux_banner_vmlinux;
 };
 
 /* flags for st */
@@ -3014,7 +3052,7 @@ typedef u64 pte_t;
 #define MACHINE_TYPE       "ARM64"    
 
 #define PTOV(X) \
-	((unsigned long)(X)-(machdep->machspec->phys_offset)+(machdep->machspec->page_offset))
+	((unsigned long)(X) - (machdep->machspec->physvirt_offset))
 
 #define VTOP(X)               arm64_VTOP((ulong)(X))
 
@@ -3264,6 +3302,8 @@ struct machine_specific {
 	ulong VA_BITS_ACTUAL;
 	ulong CONFIG_ARM64_VA_BITS;
 	ulong VA_START;
+	ulong CONFIG_ARM64_KERNELPACMASK;
+	ulong physvirt_offset;
 };
 
 struct arm64_stackframe {
@@ -3511,6 +3551,8 @@ struct arm64_stackframe {
 		    SIZE, "p4d page", FAULT_ON_ERROR);                        \
 	    machdep->machspec->last_p4d_read = (ulong)(P4D);                  \
     }
+
+#define MAX_POSSIBLE_PHYSMEM_BITS     52
 
 /* 
  *  PHYSICAL_PAGE_MASK changed (enlarged) between 2.4 and 2.6, so
@@ -5074,6 +5116,7 @@ char *strdupbuf(char *);
 void sigsetup(int, void *, struct sigaction *, struct sigaction *);
 #define SIGACTION(s, h, a, o) sigsetup(s, h, a, o)
 char *convert_time(ulonglong, char *);
+char *ctime_tz(time_t *);
 void stall(ulong);
 char *pages_to_size(ulong, char *);
 int clean_arg(void);
@@ -5286,7 +5329,7 @@ int in_user_stack(ulong, ulong);
 int dump_inode_page(ulong);
 ulong valid_section_nr(ulong);
 void display_memory_from_file_offset(ulonglong, long, void *);
-
+void swap_info_init(void);
 
 /*
  *  filesys.c 
@@ -5561,6 +5604,7 @@ void dump_log(int);
 #define SHOW_LOG_DICT  (0x2)
 #define SHOW_LOG_TEXT  (0x4)
 #define SHOW_LOG_AUDIT (0x8)
+#define SHOW_LOG_CTIME (0x10)
 void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
@@ -5976,6 +6020,7 @@ struct machine_specific {
 #define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4|VM_5LEVEL)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
+#define _1GB_PAGE_MASK (~((GIGABYTES(1))-1))
 
 #endif
 
@@ -6412,6 +6457,7 @@ void display_ELF_note(int, int, void *, FILE *);
 void *netdump_get_prstatus_percpu(int);
 int kdump_kaslr_check(void);
 void display_vmcoredd_note(void *ptr, FILE *ofp);
+int kdump_get_nr_cpus(void);
 QEMUCPUState *kdump_get_qemucpustate(int);
 void kdump_device_dump_info(FILE *);
 void kdump_device_dump_extract(int, char *, FILE *);
@@ -6460,9 +6506,39 @@ void process_elf32_notes(void *, ulong);
 void process_elf64_notes(void *, ulong);
 void dump_registers_for_compressed_kdump(void);
 int diskdump_kaslr_check(void);
+int diskdump_get_nr_cpus(void);
 QEMUCPUState *diskdump_get_qemucpustate(int);
 void diskdump_device_dump_info(FILE *);
 void diskdump_device_dump_extract(int, char *, FILE *);
+/*support for zram*/
+ulong try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong vaddr);
+#ifdef LZO
+#define OBJ_TAG_BITS     1
+#ifndef MAX_POSSIBLE_PHYSMEM_BITS
+#define MAX_POSSIBLE_PHYSMEM_BITS (MAX_PHYSMEM_BITS())
+#endif
+#define _PFN_BITS        (MAX_POSSIBLE_PHYSMEM_BITS - PAGESHIFT())
+#define OBJ_INDEX_BITS   (BITS_PER_LONG - _PFN_BITS - OBJ_TAG_BITS)
+#define OBJ_INDEX_MASK   ((1 << OBJ_INDEX_BITS) - 1)
+#define ZS_HANDLE_SIZE   (sizeof(unsigned long))
+#define ZSPAGE_MAGIC     0x58
+#define SWAP_ADDRESS_SPACE_SHIFT	14
+#define SECTOR_SHIFT     9
+#define SECTORS_PER_PAGE_SHIFT  (PAGESHIFT() - SECTOR_SHIFT)
+#define SECTORS_PER_PAGE        (1 << SECTORS_PER_PAGE_SHIFT)
+#define ZRAM_FLAG_SHIFT         (1<<24)
+#define ZRAM_FLAG_SAME_BIT      (1<<25)
+struct zspage {
+    struct {
+        unsigned int fullness : 2;
+        unsigned int class : 9;
+        unsigned int isolated : 3;
+        unsigned int magic : 8;
+    };
+    unsigned int inuse;
+    unsigned int freeobj;
+};
+#endif
 
 /*
  * makedumpfile.c
@@ -6549,7 +6625,8 @@ void sadump_unset_zero_excluded(void);
 struct sadump_data;
 struct sadump_data *get_sadump_data(void);
 int sadump_calc_kaslr_offset(ulong *);
-int sadump_get_cr3_idtr(ulong *, ulong *);
+int sadump_get_nr_cpus(void);
+int sadump_get_cr3_cr4_idtr(int, ulong *, ulong *, ulong *);
 
 /*
  * qemu.c
@@ -6602,9 +6679,17 @@ void get_vmware_vmss_regs(struct bt_info *, ulong *, ulong *);
 int vmware_vmss_memory_dump(FILE *);
 void dump_registers_for_vmss_dump(void);
 int vmware_vmss_valid_regs(struct bt_info *);
-int vmware_vmss_get_cr3_idtr(ulong *, ulong *);
+int vmware_vmss_get_nr_cpus(void);
+int vmware_vmss_get_cr3_cr4_idtr(int, ulong *, ulong *, ulong *);
 int vmware_vmss_phys_base(ulong *phys_base);
 int vmware_vmss_set_phys_base(ulong);
+
+/*
+ * vmware_guestdump.c
+ */
+int is_vmware_guestdump(char *filename);
+int vmware_guestdump_init(char *filename, FILE *ofp);
+int vmware_guestdump_memory_dump(FILE *);
 
 /*
  * kaslr_helper.c

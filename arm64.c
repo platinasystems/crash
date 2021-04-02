@@ -31,6 +31,7 @@ static int arm64_search_for_kimage_voffset(ulong);
 static int verify_kimage_voffset(void);
 static void arm64_calc_kimage_voffset(void);
 static void arm64_calc_phys_offset(void);
+static void arm64_calc_physvirt_offset(void);
 static void arm64_calc_virtual_memory_ranges(void);
 static void arm64_get_section_size_bits(void);
 static int arm64_kdump_phys_base(ulong *);
@@ -84,6 +85,7 @@ static int arm64_get_kvaddr_ranges(struct vaddr_range *);
 static void arm64_get_crash_notes(void);
 static void arm64_calc_VA_BITS(void);
 static int arm64_is_uvaddr(ulong, struct task_context *);
+static void arm64_calc_KERNELPACMASK(void);
 
 
 /*
@@ -213,6 +215,7 @@ arm64_init(int when)
 		machdep->pagemask = ~((ulonglong)machdep->pageoffset);
 
 		arm64_calc_VA_BITS();
+		arm64_calc_KERNELPACMASK();
 		ms = machdep->machspec;
 		if (ms->VA_BITS_ACTUAL) {
 			ms->page_offset = ARM64_PAGE_OFFSET_ACTUAL;
@@ -362,6 +365,7 @@ arm64_init(int when)
 
 		/* use machdep parameters */
 		arm64_calc_phys_offset();
+		arm64_calc_physvirt_offset();
 	
 		if (CRASHDEBUG(1)) {
 			if (machdep->flags & NEW_VMEMMAP)
@@ -369,6 +373,7 @@ arm64_init(int when)
 					machdep->machspec->kimage_voffset);
 			fprintf(fp, "phys_offset: %lx\n", 
 				machdep->machspec->phys_offset);
+			fprintf(fp, "physvirt_offset: %lx\n", machdep->machspec->physvirt_offset);
 		}
 
 		break;
@@ -472,8 +477,10 @@ arm64_init(int when)
 	case LOG_ONLY:
 		machdep->machspec = &arm64_machine_specific;
 		arm64_calc_VA_BITS();
+		arm64_calc_KERNELPACMASK();
 		arm64_calc_phys_offset();
 		machdep->machspec->page_offset = ARM64_PAGE_OFFSET;
+		arm64_calc_physvirt_offset();
 		break;
 	}
 }
@@ -659,6 +666,11 @@ arm64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%ld\n", ms->VA_BITS_ACTUAL);
 	else
 		fprintf(fp, "(unused)\n");
+	fprintf(fp, "CONFIG_ARM64_KERNELPACMASK: ");
+	if (ms->CONFIG_ARM64_KERNELPACMASK)
+		fprintf(fp, "%lx\n", ms->CONFIG_ARM64_KERNELPACMASK);
+	else
+		fprintf(fp, "(unused)\n");
 	fprintf(fp, "         userspace_top: %016lx\n", ms->userspace_top);
 	fprintf(fp, "           page_offset: %016lx\n", ms->page_offset);
 	fprintf(fp, "    vmalloc_start_addr: %016lx\n", ms->vmalloc_start_addr);
@@ -747,6 +759,8 @@ arm64_parse_machdep_arg_l(char *argstring, char *param, ulong *value)
 
 		if (STRNEQ(argstring, "max_physmem_bits")) {
 			*value = dtol(p, flags, &err);
+		} else if (STRNEQ(argstring, "vabits_actual")) {
+			*value = dtol(p, flags, &err);
 		} else if (megabytes) {
 			*value = dtol(p, flags, &err);
 			if (!err)
@@ -815,6 +829,12 @@ arm64_parse_cmdline_args(void)
 				error(NOTE,
 					"setting max_physmem_bits to: %ld\n\n",
 					machdep->max_physmem_bits);
+				continue;
+			} else if (arm64_parse_machdep_arg_l(arglist[i], "vabits_actual",
+			        &machdep->machspec->VA_BITS_ACTUAL)) {
+				error(NOTE,
+					"setting vabits_actual to: %ld\n\n",
+					machdep->machspec->VA_BITS_ACTUAL);
 				continue;
 			}
 
@@ -956,6 +976,25 @@ arm64_calc_kimage_voffset(void)
 
 	if ((kt->flags2 & KASLR) && (kt->flags & RELOC_SET))
 		ms->kimage_voffset += (kt->relocate * -1);
+}
+
+static void
+arm64_calc_physvirt_offset(void)
+{
+	struct machine_specific *ms = machdep->machspec;
+	ulong physvirt_offset;
+	struct syment *sp;
+
+	ms->physvirt_offset = ms->phys_offset - ms->page_offset;
+
+	if ((sp = kernel_symbol_search("physvirt_offset")) &&
+			machdep->machspec->kimage_voffset) {
+		if (READMEM(pc->mfd, &physvirt_offset, sizeof(physvirt_offset),
+			sp->value, sp->value -
+			machdep->machspec->kimage_voffset) > 0) {
+				ms->physvirt_offset = physvirt_offset;
+		}
+	}
 }
 
 static void
@@ -1140,8 +1179,7 @@ arm64_VTOP(ulong addr)
 		}
 
 		if (addr >= machdep->machspec->page_offset)
-			return machdep->machspec->phys_offset
-				+ (addr - machdep->machspec->page_offset);
+			return addr + machdep->machspec->physvirt_offset;
 		else if (machdep->machspec->kimage_voffset)
 			return addr - machdep->machspec->kimage_voffset;
 		else /* no randomness */
@@ -1774,13 +1812,14 @@ static int
 arm64_is_kernel_exception_frame(struct bt_info *bt, ulong stkptr)
 {
         struct arm64_pt_regs *regs;
+	struct machine_specific *ms = machdep->machspec;
 
         regs = (struct arm64_pt_regs *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(stkptr))];
 
 	if (INSTACK(regs->sp, bt) && INSTACK(regs->regs[29], bt) && 
 	    !(regs->pstate & (0xffffffff00000000ULL | PSR_MODE32_BIT)) &&
 	    is_kernel_text(regs->pc) &&
-	    is_kernel_text(regs->regs[30])) {
+	    is_kernel_text(regs->regs[30] | ms->CONFIG_ARM64_KERNELPACMASK)) {
 		switch (regs->pstate & PSR_MODE_MASK)
 		{
 		case PSR_MODE_EL1t:
@@ -1924,6 +1963,7 @@ arm64_print_stackframe_entry(struct bt_info *bt, int level, struct arm64_stackfr
          * See, for example, "bl schedule" before ret_to_user().
          */
 	branch_pc = frame->pc - 4;
+
         name = closest_symbol(branch_pc);
         name_plus_offset = NULL;
 
@@ -2135,7 +2175,7 @@ arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
 	unsigned long stack_mask;
 	unsigned long irq_stack_ptr, orig_sp;
 	struct arm64_pt_regs *ptregs;
-	struct machine_specific *ms;
+	struct machine_specific *ms = machdep->machspec;
 
 	stack_mask = (unsigned long)(ARM64_STACK_SIZE) - 1;
 	fp = frame->fp;
@@ -2149,6 +2189,8 @@ arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
 	frame->sp = fp + 0x10;
 	frame->fp = GET_STACK_ULONG(fp);
 	frame->pc = GET_STACK_ULONG(fp + 8);
+	if (is_kernel_text(frame->pc | ms->CONFIG_ARM64_KERNELPACMASK))
+		frame->pc |= ms->CONFIG_ARM64_KERNELPACMASK;
 
 	if ((frame->fp == 0) && (frame->pc == 0))
 		return FALSE;
@@ -2200,7 +2242,6 @@ arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
 	 *  irq_stack_ptr = IRQ_STACK_PTR(raw_smp_processor_id());
 	 *  orig_sp = IRQ_STACK_TO_TASK_STACK(irq_stack_ptr);   (pt_regs pointer on process stack)
 	 */
-	ms = machdep->machspec;
 	irq_stack_ptr = ms->irq_stacks[bt->tc->processor] + ms->irq_stack_size - 16;
 
 	if (frame->sp == irq_stack_ptr) {
@@ -2802,6 +2843,8 @@ arm64_print_text_symbols(struct bt_info *bt, struct arm64_stackframe *frame, FIL
 	char buf2[BUFSIZE];
 	char *name;
 	ulong start;
+	ulong val;
+	struct machine_specific *ms = machdep->machspec;
 
 	if (bt->flags & BT_TEXT_SYMBOLS_ALL)
 		start = bt->stackbase;
@@ -2816,8 +2859,10 @@ arm64_print_text_symbols(struct bt_info *bt, struct arm64_stackframe *frame, FIL
 
 	for (i = (start - bt->stackbase)/sizeof(ulong); i < LONGS_PER_STACK; i++) {
 		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
-		if (is_kernel_text(*up)) {
-			name = closest_symbol(*up);
+		val = *up;
+		if (is_kernel_text(val | ms->CONFIG_ARM64_KERNELPACMASK)) {
+			val |= ms->CONFIG_ARM64_KERNELPACMASK;
+			name = closest_symbol(val);
 			fprintf(ofp, "  %s[%s] %s at %lx",
 				bt->flags & BT_ERROR_MASK ?
 				"  " : "",
@@ -2826,13 +2871,13 @@ arm64_print_text_symbols(struct bt_info *bt, struct arm64_stackframe *frame, FIL
 				MKSTR(bt->stackbase + 
 				(i * sizeof(long)))),
 				bt->flags & BT_SYMBOL_OFFSET ?
-				value_to_symstr(*up, buf2, bt->radix) :
-				name, *up);
-			if (module_symbol(*up, NULL, &lm, NULL, 0))
+				value_to_symstr(val, buf2, bt->radix) :
+				name, val);
+			if (module_symbol(val, NULL, &lm, NULL, 0))
 				fprintf(ofp, " [%s]", lm->mod_name);
 			fprintf(ofp, "\n");
 			if (BT_REFERENCE_CHECK(bt))
-				arm64_do_bt_reference_check(bt, *up, name);
+				arm64_do_bt_reference_check(bt, val, name);
 		}
 	}
 }
@@ -3135,6 +3180,7 @@ arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode, FILE *o
 	struct syment *sp;
 	ulong LR, SP, offset;
 	char buf[BUFSIZE];
+	struct machine_specific *ms = machdep->machspec;
 
 	if (CRASHDEBUG(1)) 
 		fprintf(ofp, "pt_regs: %lx\n", pt_regs);
@@ -3150,6 +3196,8 @@ arm64_print_exception_frame(struct bt_info *bt, ulong pt_regs, int mode, FILE *o
 		rows = 4;
 	} else {
 		LR = regs->regs[30];
+		if (is_kernel_text (LR | ms->CONFIG_ARM64_KERNELPACMASK))
+			LR |= ms->CONFIG_ARM64_KERNELPACMASK;
 		SP = regs->sp;
 		top_reg = 29;
 		is_64_bit = TRUE;
@@ -3839,7 +3887,8 @@ arm64_IS_VMALLOC_ADDR(ulong vaddr)
 
         return ((vaddr >= ms->vmalloc_start_addr && vaddr <= ms->vmalloc_end) ||
                 ((machdep->flags & VMEMMAP) &&
-                 (vaddr >= ms->vmemmap_vaddr && vaddr <= ms->vmemmap_end)) ||
+                ((vaddr >= ms->vmemmap_vaddr && vaddr <= ms->vmemmap_end) ||
+                (vaddr >= ms->vmalloc_end && vaddr <= ms->vmemmap_vaddr))) ||
                 (vaddr >= ms->modules_vaddr && vaddr <= ms->modules_end));
 }
 
@@ -3873,7 +3922,7 @@ arm64_calc_VA_BITS(void)
 		} else if (ACTIVE())
 			error(FATAL, "cannot determine VA_BITS_ACTUAL: please use /proc/kcore\n");
 		else {
-			if ((string = pc->read_vmcoreinfo("NUMBER(tcr_el1_t1sz)"))) {
+			if ((string = pc->read_vmcoreinfo("NUMBER(TCR_EL1_T1SZ)"))) {
 				/* See ARMv8 ARM for the description of
 				 * TCR_EL1.T1SZ and how it can be used
 				 * to calculate the vabits_actual
@@ -3888,6 +3937,9 @@ arm64_calc_VA_BITS(void)
 				free(string);
 				machdep->machspec->VA_BITS_ACTUAL = value;
 				machdep->machspec->VA_BITS = value;
+				machdep->machspec->VA_START = _VA_START(machdep->machspec->VA_BITS_ACTUAL);
+			} else if (machdep->machspec->VA_BITS_ACTUAL) {
+				machdep->machspec->VA_BITS = machdep->machspec->VA_BITS_ACTUAL;
 				machdep->machspec->VA_START = _VA_START(machdep->machspec->VA_BITS_ACTUAL);
 			} else
 				error(FATAL, "cannot determine VA_BITS_ACTUAL\n");
@@ -3969,6 +4021,7 @@ arm64_calc_virtual_memory_ranges(void)
 	struct machine_specific *ms = machdep->machspec;
 	ulong value, vmemmap_start, vmemmap_end, vmemmap_size, vmalloc_end;
 	char *string;
+	int ret;
 	ulong PUD_SIZE = UNINITIALIZED;
 
 	if (!machdep->machspec->CONFIG_ARM64_VA_BITS) {
@@ -3976,6 +4029,10 @@ arm64_calc_virtual_memory_ranges(void)
 			value = atol(string);
 			free(string);
 			machdep->machspec->CONFIG_ARM64_VA_BITS = value;
+		} else if (kt->ikconfig_flags & IKCONFIG_AVAIL) {
+			if ((ret = get_kernel_config("CONFIG_ARM64_VA_BITS",
+					&string)) == IKCONFIG_STR)
+				machdep->machspec->CONFIG_ARM64_VA_BITS = atol(string);
 		}
 	}
 
@@ -4000,9 +4057,14 @@ arm64_calc_virtual_memory_ranges(void)
 #define STRUCT_PAGE_MAX_SHIFT   6
 
 	if (ms->VA_BITS_ACTUAL) {
-		vmemmap_size = (1UL) << (ms->CONFIG_ARM64_VA_BITS - machdep->pageshift - 1 + STRUCT_PAGE_MAX_SHIFT);
+		ulong va_bits_min = 48;
+
+		if (machdep->machspec->CONFIG_ARM64_VA_BITS < 48)
+			va_bits_min = ms->CONFIG_ARM64_VA_BITS;
+
+		vmemmap_size = (1UL) << (va_bits_min - machdep->pageshift - 1 + STRUCT_PAGE_MAX_SHIFT);
 		vmalloc_end = (- PUD_SIZE - vmemmap_size - KILOBYTES(64));
-		vmemmap_start = (-vmemmap_size);
+		vmemmap_start = (-vmemmap_size - MEGABYTES(2));
 		ms->vmalloc_end = vmalloc_end - 1;
 		ms->vmemmap_vaddr = vmemmap_start;
 		ms->vmemmap_end = -1;
@@ -4056,6 +4118,20 @@ arm64_swp_offset(ulong pte)
 	if (ms->__SWP_OFFSET_MASK)
 		pte &= ms->__SWP_OFFSET_MASK;
 	return pte;
+}
+
+static void arm64_calc_KERNELPACMASK(void)
+{
+	ulong value;
+	char *string;
+
+	if ((string = pc->read_vmcoreinfo("NUMBER(KERNELPACMASK)"))) {
+		value = htol(string, QUIET, NULL);
+		free(string);
+		machdep->machspec->CONFIG_ARM64_KERNELPACMASK = value;
+		if (CRASHDEBUG(1))
+			fprintf(fp, "CONFIG_ARM64_KERNELPACMASK: %lx\n", value);
+	}
 }
 
 #endif  /* ARM64 */
