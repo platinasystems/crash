@@ -685,6 +685,7 @@ db_stack_trace_cmd(addr, have_addr, count, modif, task, flags)
 	    bt->debug || 
 	    (bt->flags & BT_FRAMESIZE_DEBUG) ||
 	    !(bt->flags & BT_OLD_BACK_TRACE)) {
+		bt->flags &= ~BT_OLD_BACK_TRACE;
                 lkcd_x86_back_trace(bt, 0, fp);
                 return;
         }
@@ -1437,6 +1438,20 @@ x86_next_eframe(ulong addr, struct bt_info *bt)
                     ((short)pt->reg_value[INT_EFRAME_ES] == 0x7b) &&
                     ((short)pt->reg_value[INT_EFRAME_SS] == 0x7b) &&
                     IS_UVADDR(pt->reg_value[INT_EFRAME_EIP], bt->tc) &&
+                    IS_UVADDR(pt->reg_value[INT_EFRAME_ESP], bt->tc)) {
+                        rv = bt->stackbase + sizeof(ulong) * (first - stack);
+                        break;
+                }
+
+		/*
+		 *  2.6 kernels using sysenter_entry instead of system_call
+		 *  have a funky trampoline EIP address.
+		 */
+                if (((short)pt->reg_value[INT_EFRAME_CS] == 0x73) &&
+                    ((short)pt->reg_value[INT_EFRAME_DS] == 0x7b) &&
+                    ((short)pt->reg_value[INT_EFRAME_ES] == 0x7b) &&
+                    ((short)pt->reg_value[INT_EFRAME_SS] == 0x7b) &&
+                    (pt->reg_value[INT_EFRAME_EFLAGS] == 0x246) &&
                     IS_UVADDR(pt->reg_value[INT_EFRAME_ESP], bt->tc)) {
                         rv = bt->stackbase + sizeof(ulong) * (first - stack);
                         break;
@@ -2355,8 +2370,6 @@ x86_dump_machdep_table(ulong arg)
                 fprintf(fp, "%sPAE", others++ ? "|" : "");
         if (machdep->flags & OMIT_FRAME_PTR)
                 fprintf(fp, "%sOMIT_FRAME_PTR", others++ ? "|" : "");
-        if (machdep->flags & SYSRQ)
-                fprintf(fp, "%sSYSRQ", others++ ? "|" : "");
         if (machdep->flags & FRAMESIZE_DEBUG)
                 fprintf(fp, "%sFRAMESIZE_DEBUG", others++ ? "|" : "");
         fprintf(fp, ")\n");
@@ -3092,31 +3105,31 @@ x86_display_memmap(void)
  *  with the -fomit-frame-pointer flag.
  */
 #define PUSH_BP_MOV_ESP_BP 0xe58955
+#define PUSH_BP_CLR_EAX_MOV_ESP_BP 0xe589c03155ULL
 
 static int
 x86_omit_frame_pointer(void)
 {
-	ulong push_bp_mov_esp_bp[3];
+	ulonglong push_bp_mov_esp_bp;
+        int i;
+        char *checkfuncs[] = {"sys_open", "sys_fork", "sys_read"};
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return FALSE;
 
-	if (!readmem(symbol_value("sys_open"), KVADDR, &push_bp_mov_esp_bp[0], 
-	    sizeof(ulong), "x86_omit_frame_pointer", RETURN_ON_ERROR))
-		return TRUE;
-	if (!readmem(symbol_value("sys_fork"), KVADDR, &push_bp_mov_esp_bp[1], 
-	    sizeof(ulong), "x86_omit_frame_pointer", RETURN_ON_ERROR))
-		return TRUE;
-	if (!readmem(symbol_value("sys_read"), KVADDR, &push_bp_mov_esp_bp[2], 
-	    sizeof(ulong), "x86_omit_frame_pointer", RETURN_ON_ERROR))
-		return TRUE;
+        for (i = 0; i < 2; i++) {
+                if (!readmem(symbol_value(checkfuncs[i]), KVADDR,
+                    &push_bp_mov_esp_bp, sizeof(ulonglong),
+                    "x86_omit_frame_pointer", RETURN_ON_ERROR))
+                        return TRUE;
+                if (!(((push_bp_mov_esp_bp & 0x0000ffffffULL) == 
+		    PUSH_BP_MOV_ESP_BP) ||
+                    ((push_bp_mov_esp_bp & 0xffffffffffULL) ==
+                    PUSH_BP_CLR_EAX_MOV_ESP_BP)))
+                        return TRUE;
+        }
 
-	if (((push_bp_mov_esp_bp[0] & 0xffffff) == PUSH_BP_MOV_ESP_BP) &&
-	    ((push_bp_mov_esp_bp[1] & 0xffffff) == PUSH_BP_MOV_ESP_BP) &&
-	    ((push_bp_mov_esp_bp[2] & 0xffffff) == PUSH_BP_MOV_ESP_BP))
-		return FALSE;
-
-	return TRUE;
+	return FALSE;
 }
 
 /*

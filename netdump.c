@@ -22,12 +22,12 @@ struct pt_load_segment {
 	physaddr_t phys_end;
 };
 
-struct netdump_data {
+struct vmcore_data {
 	ulong flags;
 	int ndfd;
 	FILE *ofp;
 	uint header_size;
-	char *netdump_header;
+	char *elf_header;
 	uint num_pt_load_segments;
 	struct pt_load_segment *pt_load_segments;
         Elf32_Ehdr *elf32;
@@ -40,11 +40,14 @@ struct netdump_data {
         void *nt_prpsinfo;
         void *nt_taskstruct;
 	ulong task_struct;
+	uint page_size;
 	ulong switch_stack;
+	uint num_prstatus_notes;
+	void *nt_prstatus_percpu[NR_CPUS];
 };
 
-static struct netdump_data netdump_data = { 0 };
-static struct netdump_data *nd = &netdump_data;
+static struct vmcore_data vmcore_data = { 0 };
+static struct vmcore_data *nd = &vmcore_data;
 static void netdump_print(char *, ...);
 static void dump_Elf32_Ehdr(Elf32_Ehdr *);
 static void dump_Elf32_Phdr(Elf32_Phdr *, int);
@@ -52,19 +55,19 @@ static size_t dump_Elf32_Nhdr(Elf32_Off offset, int);
 static void dump_Elf64_Ehdr(Elf64_Ehdr *);
 static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
-static void get_netdump_regs_x86(struct bt_info *, ulong *, ulong *);
-static void get_netdump_regs_x86_64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 
 #define ELFSTORE 1
 #define ELFREAD  0
+
+#define MIN_PAGE_SIZE (4096)
 	
 /*
- *  Determine whether a file is a netdump creation, and if TRUE, 
- *  initialize the netdump_data structure.
+ *  Determine whether a file is a netdump/diskdump/kdump creation, 
+ *  and if TRUE, initialize the vmcore_data structure.
  */
 int 
-is_netdump(char *file, ulong source) 
+is_netdump(char *file, ulong source_query) 
 {
         int i;
 	int fd;
@@ -77,6 +80,8 @@ is_netdump(char *file, ulong source)
 	size_t size, len, tot;
         Elf32_Off offset32;
         Elf64_Off offset64;
+	ulong tmp_flags;
+	char *tmp_elf_header;
 
 	if ((fd = open(file, O_RDWR)) < 0) {
         	if ((fd = open(file, O_RDONLY)) < 0) {
@@ -99,11 +104,24 @@ is_netdump(char *file, ulong source)
                 goto bailout;
 	}
 
+	tmp_flags = 0;
 	elf32 = (Elf32_Ehdr *)&header[0];
 	elf64 = (Elf64_Ehdr *)&header[0];
 
   	/* 
-	 *  Verify the ELF header 
+	 *  Verify the ELF header, and determine the dumpfile format.
+	 * 
+	 *  For now, kdump vmcores differ from netdump/diskdump like so:
+	 *
+ 	 *   1. The first kdump PT_LOAD segment is packed just after
+	 *      the ELF header, whereas netdump/diskdump page-align 
+	 *      the first PT_LOAD segment.
+	 *   2. Each kdump PT_LOAD segment has a p_align field of zero,
+	 *      whereas netdump/diskdump have their p_align fields set
+	 *      to the system page-size. 
+	 *
+	 *  If either kdump difference is seen, presume kdump -- this
+	 *  is obviously subject to change.
 	 */
         if (STRNEQ(elf32->e_ident, ELFMAG) && 
 	    (elf32->e_ident[EI_CLASS] == ELFCLASS32) &&
@@ -120,10 +138,16 @@ is_netdump(char *file, ulong source)
 		default:
                 	goto bailout;
 		}
-                nd->flags |= NETDUMP_ELF32;
+
                 load32 = (Elf32_Phdr *)
                         &header[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
                 size = (size_t)load32->p_offset;
+
+		if ((load32->p_offset & (MIN_PAGE_SIZE-1)) &&
+		    (load32->p_align == 0))
+                	tmp_flags |= KDUMP_ELF32;
+		else
+                	tmp_flags |= NETDUMP_ELF32;
 	} else if (STRNEQ(elf64->e_ident, ELFMAG) &&
 	    (elf64->e_ident[EI_CLASS] == ELFCLASS64) &&
 	    (elf64->e_ident[EI_VERSION] == EV_CURRENT) &&
@@ -153,35 +177,68 @@ is_netdump(char *file, ulong source)
 			else
 				goto bailout;
 
+		case EM_386:
+			if ((elf64->e_ident[EI_DATA] == ELFDATA2LSB) &&
+				machine_type("X86"))
+				break;
+			else
+				goto bailout;
+
 		default:
 			goto bailout;
 		}
-                nd->flags |= NETDUMP_ELF64;
+
                 load64 = (Elf64_Phdr *)
                         &header[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
                 size = (size_t)load64->p_offset;
+		if ((load64->p_offset & (MIN_PAGE_SIZE-1)) &&
+		    (load64->p_align == 0))
+                	tmp_flags |= KDUMP_ELF64;
+		else
+                	tmp_flags |= NETDUMP_ELF64;
 	} else
 		goto bailout;
 
-	if ((nd->netdump_header = (char *)malloc(size)) == NULL) {
-		fprintf(stderr, "cannot malloc netdump header buffer\n");
+	switch (DUMPFILE_FORMAT(tmp_flags))
+	{
+	case NETDUMP_ELF32:
+	case NETDUMP_ELF64:
+		if (source_query & (NETDUMP_LOCAL|NETDUMP_REMOTE))
+			break;
+		else
+			goto bailout;
+
+	case KDUMP_ELF32:
+	case KDUMP_ELF64:
+		if (source_query & KDUMP_LOCAL)
+			break;
+		else
+			goto bailout;
+	}
+
+	if ((tmp_elf_header = (char *)malloc(size)) == NULL) {
+		fprintf(stderr, "cannot malloc ELF header buffer\n");
 		clean_exit(1);
 	}
 
-        if (read(fd, nd->netdump_header, size) != size) {
+        if (read(fd, tmp_elf_header, size) != size) {
                 sprintf(buf, "%s: read", file);
                 perror(buf);
+		free(tmp_elf_header);
                 goto bailout;
         }
 
 	nd->ndfd = fd;
-	nd->flags |= source;
+	nd->elf_header = tmp_elf_header;
+	nd->flags = tmp_flags;
+	nd->flags |= source_query;
 
-	switch (nd->flags & (NETDUMP_ELF32|NETDUMP_ELF64))
+	switch (DUMPFILE_FORMAT(nd->flags))
 	{
 	case NETDUMP_ELF32:
+	case KDUMP_ELF32:
 		nd->header_size = load32->p_offset;
-        	nd->elf32 = (Elf32_Ehdr *)&nd->netdump_header[0];
+        	nd->elf32 = (Elf32_Ehdr *)&nd->elf_header[0];
 		nd->num_pt_load_segments = nd->elf32->e_phnum - 1;
 		if ((nd->pt_load_segments = (struct pt_load_segment *)
 		    malloc(sizeof(struct pt_load_segment) *
@@ -190,9 +247,11 @@ is_netdump(char *file, ulong source)
 			clean_exit(1);
 		}
         	nd->notes32 = (Elf32_Phdr *)
-		    &nd->netdump_header[sizeof(Elf32_Ehdr)];
+		    &nd->elf_header[sizeof(Elf32_Ehdr)];
         	nd->load32 = (Elf32_Phdr *)
-		    &nd->netdump_header[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
+		    &nd->elf_header[sizeof(Elf32_Ehdr)+sizeof(Elf32_Phdr)];
+		if (DUMPFILE_FORMAT(nd->flags) == NETDUMP_ELF32)
+			nd->page_size = (uint)nd->load32->p_align;
                 dump_Elf32_Ehdr(nd->elf32);
                 dump_Elf32_Phdr(nd->notes32, ELFREAD);
 		for (i = 0; i < nd->num_pt_load_segments; i++) 
@@ -205,8 +264,9 @@ is_netdump(char *file, ulong source)
 		break;
 
 	case NETDUMP_ELF64:
+	case KDUMP_ELF64:
                 nd->header_size = load64->p_offset;
-                nd->elf64 = (Elf64_Ehdr *)&nd->netdump_header[0];
+                nd->elf64 = (Elf64_Ehdr *)&nd->elf_header[0];
 		nd->num_pt_load_segments = nd->elf64->e_phnum - 1;
                 if ((nd->pt_load_segments = (struct pt_load_segment *)
                     malloc(sizeof(struct pt_load_segment) *
@@ -215,9 +275,11 @@ is_netdump(char *file, ulong source)
                         clean_exit(1);
                 }
                 nd->notes64 = (Elf64_Phdr *)
-                    &nd->netdump_header[sizeof(Elf64_Ehdr)];
+                    &nd->elf_header[sizeof(Elf64_Ehdr)];
                 nd->load64 = (Elf64_Phdr *)
-                    &nd->netdump_header[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
+                    &nd->elf_header[sizeof(Elf64_Ehdr)+sizeof(Elf64_Phdr)];
+		if (DUMPFILE_FORMAT(nd->flags) == NETDUMP_ELF64)
+			nd->page_size = (uint)nd->load64->p_align;
                 dump_Elf64_Ehdr(nd->elf64);
                 dump_Elf64_Phdr(nd->notes64, ELFREAD);
 		for (i = 0; i < nd->num_pt_load_segments; i++)
@@ -229,6 +291,9 @@ is_netdump(char *file, ulong source)
                 }
 		break;
 	}
+
+	if (CRASHDEBUG(1))
+		netdump_memory_dump(fp);
 
 	return nd->header_size;
 
@@ -243,7 +308,7 @@ bailout:
 int
 netdump_init(char *unused, FILE *fptr)
 {
-	if (!NETDUMP_VALID())
+	if (!VMCORE_VALID())
 		return FALSE;
 
 	nd->ofp = fptr;
@@ -263,19 +328,19 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	/*
 	 *  The Elf32_Phdr has 32-bit fields for p_paddr, p_filesz and
 	 *  p_memsz, so for now, multiple PT_LOAD segment support is
-	 *  restricted to 64-bit machines.  Until a "standard" becomes 
-	 *  available in the future that deals with physical memory 
-	 *  segments that start at greater then 4GB, or memory segments
-	 *  sizes that are greater than 4GB (kexec?), then this feature
-	 *  is restricted to 64-bit machines.
+	 *  restricted to 64-bit machines for netdump/diskdump vmcores.
+	 *  However, kexec/kdump has introduced the optional use of a
+         *  64-bit ELF header for 32-bit processors.
 	 */ 
-        switch (nd->flags & (NETDUMP_ELF32|NETDUMP_ELF64))
+        switch (DUMPFILE_FORMAT(nd->flags))
 	{
 	case NETDUMP_ELF32:
 		offset = (off_t)paddr + (off_t)nd->header_size;
 		break;
 
 	case NETDUMP_ELF64:
+	case KDUMP_ELF32:
+	case KDUMP_ELF64:
 		if (nd->num_pt_load_segments == 1) {
 			offset = (off_t)paddr + (off_t)nd->header_size;
 			break;
@@ -302,24 +367,57 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 
         if (read(nd->ndfd, bufptr, cnt) != cnt)
                 return READ_ERROR;
+
         return cnt;
 }
 
 /*
- *  Write to a netdump-created dumpfile.
+ *  Write to a netdump-created dumpfile.  Note that cmd_wr() does not
+ *  allow writes to dumpfiles, so you can't get here from there.
+ *  But, if it would ever be helpful, here it is...
  */
 int
 write_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
 	off_t offset;
+	struct pt_load_segment *pls;
+	int i;
 
-        offset = (off_t)paddr + (off_t)nd->header_size;
+        switch (DUMPFILE_FORMAT(nd->flags))
+	{
+	case NETDUMP_ELF32:
+		offset = (off_t)paddr + (off_t)nd->header_size;
+		break;
 
-        if (lseek(nd->ndfd, offset, SEEK_SET) != offset)
+	case NETDUMP_ELF64:
+	case KDUMP_ELF32:
+	case KDUMP_ELF64:
+		if (nd->num_pt_load_segments == 1) {
+			offset = (off_t)paddr + (off_t)nd->header_size;
+			break;
+		}
+
+		for (i = offset = 0; i < nd->num_pt_load_segments; i++) {
+			pls = &nd->pt_load_segments[i];
+			if ((paddr >= pls->phys_start) &&
+			    (paddr < pls->phys_end)) {
+				offset = (off_t)(paddr - pls->phys_start) +
+					pls->file_offset;
+				break;
+			}
+		}
+	
+		if (!offset) 
+	                return READ_ERROR;
+		
+		break;
+	}	
+
+        if (lseek(nd->ndfd, offset, SEEK_SET) == -1)
                 return SEEK_ERROR;
 
         if (write(nd->ndfd, bufptr, cnt) != cnt)
-                return WRITE_ERROR;
+                return READ_ERROR;
 
         return cnt;
 }
@@ -330,7 +428,7 @@ write_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 FILE *
 set_netdump_fp(FILE *fp)
 {
-	if (!NETDUMP_VALID())
+	if (!VMCORE_VALID())
 		return NULL;
 
 	nd->ofp = fp;
@@ -346,7 +444,7 @@ netdump_print(char *fmt, ...)
         char buf[BUFSIZE];
         va_list ap;
 
-        if (!fmt || !strlen(fmt) || !NETDUMP_VALID())
+        if (!fmt || !strlen(fmt) || !VMCORE_VALID())
                 return;
 
         va_start(ap, fmt);
@@ -362,33 +460,21 @@ netdump_print(char *fmt, ...)
 uint 
 netdump_page_size(void)
 {
-	uint pagesz;
-
-	if (!NETDUMP_VALID())
+	if (!VMCORE_VALID())
 		return 0;
 
-	switch (nd->flags & (NETDUMP_ELF32|NETDUMP_ELF64))
-	{
-	case NETDUMP_ELF32:
-		pagesz = (uint)nd->load32->p_align;
-		break;
-	case NETDUMP_ELF64:
-		pagesz = (uint)nd->load64->p_align;
-		break;
-	}
-
-	return pagesz;
+	return nd->page_size;
 }
 
 int 
 netdump_free_memory(void)
 {
-	return (NETDUMP_VALID() ? 0 : 0);
+	return (VMCORE_VALID() ? 0 : 0);
 }
 
 int netdump_memory_used(void)
 {
-	return (NETDUMP_VALID() ? 0 : 0);
+	return (VMCORE_VALID() ? 0 : 0);
 }
 
 /*
@@ -414,21 +500,57 @@ get_netdump_panic_task(void)
 #ifdef DAEMON
 	return nd->task_struct;
 #else
-	int i;
+	int i, crashing_cpu;
         size_t len;
 	char *user_regs;
 	ulong ebp, esp, task;
 
-	if (!NETDUMP_VALID() || !get_active_set())
-		return NO_TASK;
+	if (!VMCORE_VALID() || !get_active_set())
+		goto panic_task_undetermined;
 
-	if (nd->task_struct)
+	if (nd->task_struct) {
+		if (CRASHDEBUG(1))
+			error(INFO, 
+			    "get_netdump_panic_task: NT_TASKSTRUCT: %lx\n", 
+				nd->task_struct);
 		return nd->task_struct;
+	}
 
-        if (nd->elf32 && nd->elf32->e_machine == EM_386) {
-	        Elf32_Nhdr *note32 = (Elf32_Nhdr *)
-			((char *)nd->elf32 + nd->notes32->p_offset);
-		
+        switch (DUMPFILE_FORMAT(nd->flags))
+        {
+        case NETDUMP_ELF32:
+        case NETDUMP_ELF64:
+		crashing_cpu = -1;
+		break;
+
+        case KDUMP_ELF32:
+        case KDUMP_ELF64:
+		crashing_cpu = -1;
+		if (symbol_exists("crashing_cpu")) {
+			get_symbol_data("crashing_cpu", sizeof(int), &i);
+			if ((i >= 0) && (i < nd->num_prstatus_notes)) {
+				crashing_cpu = i;
+				if (CRASHDEBUG(1))
+					error(INFO, 
+				   "get_netdump_panic_task: crashing_cpu: %d\n",
+						crashing_cpu);
+			}
+		}
+
+		if ((nd->num_prstatus_notes > 1) && (crashing_cpu == -1))
+			goto panic_task_undetermined;
+		break;
+	}
+
+        if (nd->elf32 && (nd->elf32->e_machine == EM_386)) {
+		Elf32_Nhdr *note32;
+
+                if ((nd->num_prstatus_notes > 1) && (crashing_cpu != -1))
+                        note32 = (Elf32_Nhdr *)
+                                nd->nt_prstatus_percpu[crashing_cpu];
+                else
+                        note32 = (Elf32_Nhdr *)nd->nt_prstatus;
+
 	        len = sizeof(Elf32_Nhdr);
 	        len = roundup(len + note32->n_namesz, 4);
 	        len = roundup(len + note32->n_descsz, 4);
@@ -437,14 +559,15 @@ get_netdump_panic_task(void)
 			- SIZE(user_regs_struct) - sizeof(int);
 		ebp = ULONG(user_regs + OFFSET(user_regs_struct_ebp));
 		esp = ULONG(user_regs + OFFSET(user_regs_struct_esp));
+check_ebp_esp:
 		if (CRASHDEBUG(1)) 
-			fprintf(fp, 
-			    "get_netdump_panic_task: esp: %lx ebp: %lx\n",
+			error(INFO, 
+			    "get_netdump_panic_task: NT_PRSTATUS esp: %lx ebp: %lx\n",
 				esp, ebp);
 		if (IS_KVADDR(esp)) {
 			task = stkptr_to_task(esp);
 			if (CRASHDEBUG(1))
-				fprintf(fp, 
+				error(INFO, 
 			    "get_netdump_panic_task: esp: %lx -> task: %lx\n",
 					esp, task);
 			for (i = 0; task && (i < NR_CPUS); i++) {
@@ -455,7 +578,7 @@ get_netdump_panic_task(void)
                 if (IS_KVADDR(ebp)) {
                         task = stkptr_to_task(ebp);
 			if (CRASHDEBUG(1))
-				fprintf(fp, 
+				error(INFO, 
 			    "get_netdump_panic_task: ebp: %lx -> task: %lx\n",
 					ebp, task);
                         for (i = 0; task && (i < NR_CPUS); i++) {
@@ -464,25 +587,37 @@ get_netdump_panic_task(void)
                         }
                 }
 	} else if (nd->elf64) {
-	        Elf64_Nhdr *note64 = (Elf64_Nhdr *)
-			((char *)nd->elf64 + nd->notes64->p_offset);
-		
+		Elf64_Nhdr *note64;
+
+                if ((nd->num_prstatus_notes > 1) && (crashing_cpu != -1))
+                        note64 = (Elf64_Nhdr *)
+                                nd->nt_prstatus_percpu[crashing_cpu];
+                else
+                        note64 = (Elf64_Nhdr *)nd->nt_prstatus;
+
 	        len = sizeof(Elf64_Nhdr);
 	        len = roundup(len + note64->n_namesz, 4);
 		user_regs = (char *)((char *)note64 + len +
 			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+
+		if (nd->elf64->e_machine == EM_386) {
+                	ebp = ULONG(user_regs + OFFSET(user_regs_struct_ebp));
+                	esp = ULONG(user_regs + OFFSET(user_regs_struct_esp));
+			goto check_ebp_esp;
+		}
+
 		if (nd->elf64->e_machine == EM_PPC64) {
 			/*
 			 * Get the GPR1 register value.
 			 */
 			esp = *(ulong *)((char *)user_regs + 8);
 			if (CRASHDEBUG(1)) 
-				fprintf(fp, 
-			    	"get_netdump_panic_task: esp: %lx\n", esp);
+				error(INFO, 
+			    	"get_netdump_panic_task: NT_PRSTATUS esp: %lx\n", esp);
 			if (IS_KVADDR(esp)) {
 				task = stkptr_to_task(esp);
 				if (CRASHDEBUG(1))
-					fprintf(fp, 
+					error(INFO, 
 			    		"get_netdump_panic_task: esp: %lx -> task: %lx\n",
 						esp, task);
 				for (i = 0; task && (i < NR_CPUS); i++) {
@@ -493,8 +628,10 @@ get_netdump_panic_task(void)
 		}
 	} 
 
+panic_task_undetermined:
+
 	if (CRASHDEBUG(1))
-		fprintf(fp, "get_netdump_panic_task: returning NO_TASK\n");
+		error(INFO, "get_netdump_panic_task: failed\n");
 
 	return NO_TASK;
 #endif
@@ -512,7 +649,7 @@ get_netdump_switch_stack(ulong task)
 		return nd->switch_stack;
 	return 0;
 #else
-	if (!NETDUMP_VALID() || !get_active_set())
+	if (!VMCORE_VALID() || !get_active_set())
 		return 0;
 
 	if (nd->task_struct == task)
@@ -525,30 +662,36 @@ get_netdump_switch_stack(ulong task)
 int
 netdump_memory_dump(FILE *fp)
 {
-	int i, others;
+	int i, others, wrap, flen;
 	size_t len, tot;
 	FILE *fpsave;
 	Elf32_Off offset32;
 	Elf32_Off offset64;
 	struct pt_load_segment *pls;
 
-	if (!NETDUMP_VALID())
+	if (!VMCORE_VALID())
 		return FALSE;
 
 	fpsave = nd->ofp;
 	nd->ofp = fp;
 
-	netdump_print("netdump_data: \n");
+	netdump_print("vmcore_data: \n");
 	netdump_print("                  flags: %lx (", nd->flags);
 	others = 0;
 	if (nd->flags & NETDUMP_LOCAL)
 		netdump_print("%sNETDUMP_LOCAL", others++ ? "|" : "");
+	if (nd->flags & KDUMP_LOCAL)
+		netdump_print("%sKDUMP_LOCAL", others++ ? "|" : "");
 	if (nd->flags & NETDUMP_REMOTE)
 		netdump_print("%sNETDUMP_REMOTE", others++ ? "|" : "");
 	if (nd->flags & NETDUMP_ELF32)
 		netdump_print("%sNETDUMP_ELF32", others++ ? "|" : "");
 	if (nd->flags & NETDUMP_ELF64)
 		netdump_print("%sNETDUMP_ELF64", others++ ? "|" : "");
+	if (nd->flags & KDUMP_ELF32)
+		netdump_print("%sKDUMP_ELF32", others++ ? "|" : "");
+	if (nd->flags & KDUMP_ELF64)
+		netdump_print("%sKDUMP_ELF64", others++ ? "|" : "");
 	if (nd->flags & PARTIAL_DUMP)
 		netdump_print("%sPARTIAL_DUMP", others++ ? "|" : "");
 	netdump_print(")\n");
@@ -566,7 +709,7 @@ netdump_memory_dump(FILE *fp)
 		netdump_print("               phys_end: %llx\n", 
 			pls->phys_end);
 	}
-	netdump_print("         netdump_header: %lx\n", nd->netdump_header);
+	netdump_print("             elf_header: %lx\n", nd->elf_header);
 	netdump_print("                  elf32: %lx\n", nd->elf32);
 	netdump_print("                notes32: %lx\n", nd->notes32);
 	netdump_print("                 load32: %lx\n", nd->load32);
@@ -577,11 +720,28 @@ netdump_memory_dump(FILE *fp)
 	netdump_print("            nt_prpsinfo: %lx\n", nd->nt_prpsinfo);
 	netdump_print("          nt_taskstruct: %lx\n", nd->nt_taskstruct);
 	netdump_print("            task_struct: %lx\n", nd->task_struct);
-	netdump_print("           switch_stack: %lx\n\n", nd->switch_stack);
+	netdump_print("              page_size: %d\n", nd->page_size);
+	netdump_print("           switch_stack: %lx\n", nd->switch_stack);
+	netdump_print("     num_prstatus_notes: %d\n", nd->num_prstatus_notes);	
+	netdump_print("     nt_prstatus_percpu: ");
+        wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
+        flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
+	if (nd->num_prstatus_notes == 1)
+                netdump_print("%.*lx\n", flen, nd->nt_prstatus_percpu[0]);
+	else {
+        	for (i = 0; i < nd->num_prstatus_notes; i++) {
+                	if ((i % wrap) == 0)
+                        	netdump_print("\n        ");
+                	netdump_print("%.*lx ", flen, 
+				nd->nt_prstatus_percpu[i]);
+        	}
+	}
+	netdump_print("\n\n");
 
-        switch (nd->flags & (NETDUMP_ELF32|NETDUMP_ELF64))
+        switch (DUMPFILE_FORMAT(nd->flags))
 	{
 	case NETDUMP_ELF32:
+	case KDUMP_ELF32:
 		dump_Elf32_Ehdr(nd->elf32);
 		dump_Elf32_Phdr(nd->notes32, ELFREAD);
                 for (i = 0; i < nd->num_pt_load_segments; i++) 
@@ -594,6 +754,7 @@ netdump_memory_dump(FILE *fp)
 		break;
 
 	case NETDUMP_ELF64:
+	case KDUMP_ELF64:
 		dump_Elf64_Ehdr(nd->elf64);
 		dump_Elf64_Phdr(nd->notes64, ELFREAD);
                 for (i = 0; i < nd->num_pt_load_segments; i++)
@@ -865,6 +1026,9 @@ dump_Elf64_Ehdr(Elf64_Ehdr *elf)
         netdump_print("              e_machine: %d ", elf->e_machine);
         switch (elf->e_machine)
         {
+	case EM_386:
+		netdump_print("(EM_386)\n");
+		break;
         case EM_IA_64:
                 netdump_print("(EM_IA_64)\n");
                 break;
@@ -1061,7 +1225,7 @@ dump_Elf64_Phdr(Elf64_Phdr *prog, int store_pt_load_data)
  */
 
 static size_t 
-dump_Elf32_Nhdr(Elf32_Off offset, int store_addresses)
+dump_Elf32_Nhdr(Elf32_Off offset, int store)
 {
 	int i, lf;
 	Elf32_Nhdr *note;
@@ -1085,17 +1249,26 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_addresses)
 	{
 	case NT_PRSTATUS:
 		netdump_print("(NT_PRSTATUS)\n");
-		if (store_addresses)
-			nd->nt_prstatus = (void *)note;
+		if (store) { 
+			if (!nd->nt_prstatus)
+				nd->nt_prstatus = (void *)note;
+			for (i = 0; i < NR_CPUS; i++) {
+				if (!nd->nt_prstatus_percpu[i]) {
+					nd->nt_prstatus_percpu[i] = (void *)note;
+					nd->num_prstatus_notes++;
+					break;
+				}
+			}
+		}
 		break;
 	case NT_PRPSINFO:
 		netdump_print("(NT_PRPSINFO)\n");
-		if (store_addresses)
+		if (store)
 			nd->nt_prpsinfo = (void *)note;
 		break;
 	case NT_TASKSTRUCT:
 		netdump_print("(NT_TASKSTRUCT)\n");
-		if (store_addresses) {
+		if (store) {
 			nd->nt_taskstruct = (void *)note;
 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
 			nd->switch_stack = *((ulong *)
@@ -1105,14 +1278,36 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_addresses)
         case NT_DISKDUMP:
                 netdump_print("(NT_DISKDUMP)\n");
 		uptr = (ulong *)(ptr + note->n_namesz);
-		if (*uptr)
+		if (*uptr && store)
 			nd->flags |= PARTIAL_DUMP;
 		break;
+#ifdef NOTDEF
+	/*
+	 *  Note: Based upon the original, abandoned, proposal for
+	 *  its contents -- keep around for potential future use.
+	 */
+	case NT_KDUMPINFO:
+		netdump_print("(NT_KDUMPINFO)\n");
+		if (store) {
+			uptr = (note->n_namesz == 5) ?
+				(ulong *)(ptr + ((note->n_namesz + 3) & ~3)) :
+				(ulong *)(ptr + note->n_namesz);
+			nd->page_size = (uint)(1 << *uptr);
+			uptr++;
+			nd->task_struct = *uptr;
+		}
+		break;
+#endif
 	default:
 		netdump_print("(?)\n");
 	}
 
 	uptr = (ulong *)(ptr + note->n_namesz);
+	/*
+	 * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
+ 	 */
+	if ((nd->flags & KDUMP_ELF32) && (note->n_namesz == 5))
+		uptr = (ulong *)(ptr + ((note->n_namesz + 3) & ~3));
 	for (i = lf = 0; i < note->n_descsz/sizeof(ulong); i++) {
 		if (((i%4)==0)) {
 			netdump_print("%s                         ", 
@@ -1135,7 +1330,7 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store_addresses)
 
 
 static size_t 
-dump_Elf64_Nhdr(Elf64_Off offset, int store_addresses)
+dump_Elf64_Nhdr(Elf64_Off offset, int store)
 {
 	int i, lf;
 	Elf64_Nhdr *note;
@@ -1160,17 +1355,26 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store_addresses)
 	{
 	case NT_PRSTATUS:
 		netdump_print("(NT_PRSTATUS)\n");
-		if (store_addresses)
-			nd->nt_prstatus = (void *)note;
+		if (store) {
+			if (!nd->nt_prstatus)
+				nd->nt_prstatus = (void *)note;
+			for (i = 0; i < NR_CPUS; i++) {
+				if (!nd->nt_prstatus_percpu[i]) {
+					nd->nt_prstatus_percpu[i] = (void *)note;
+					nd->num_prstatus_notes++;
+					break;
+				}
+			}
+		}
 		break;
 	case NT_PRPSINFO:
 		netdump_print("(NT_PRPSINFO)\n");
-		if (store_addresses)
+		if (store)
 			nd->nt_prpsinfo = (void *)note;
 		break;
 	case NT_TASKSTRUCT:
 		netdump_print("(NT_TASKSTRUCT)\n");
-		if (store_addresses) {
+		if (store) {
 			nd->nt_taskstruct = (void *)note;
 			nd->task_struct = *((ulong *)(ptr + note->n_namesz));
                         nd->switch_stack = *((ulong *)
@@ -1180,16 +1384,49 @@ dump_Elf64_Nhdr(Elf64_Off offset, int store_addresses)
         case NT_DISKDUMP:
                 netdump_print("(NT_DISKDUMP)\n");
 		iptr = (int *)(ptr + note->n_namesz);
-		if (*iptr)
+		if (*iptr && store)
 			nd->flags |= PARTIAL_DUMP;
 		if (note->n_descsz < sizeof(ulonglong))
 			netdump_print("                         %08x", *iptr);
 		break;
+#ifdef NOTDEF
+	/*
+	 *  Note: Based upon the original, abandoned, proposal for
+	 *  its contents -- keep around for potential future use.
+	 */
+        case NT_KDUMPINFO:
+                netdump_print("(NT_KDUMPINFO)\n");
+		if (store) {
+			uint32_t *u32ptr;
+
+			if (nd->elf64->e_machine == EM_386) {
+				u32ptr = (note->n_namesz == 5) ?
+				    (uint *)(ptr + ((note->n_namesz + 3) & ~3)) :
+	                            (uint *)(ptr + note->n_namesz);
+				nd->page_size = 1 << *u32ptr;
+				u32ptr++;
+				nd->task_struct = *u32ptr;
+			} else {
+	                       	uptr = (note->n_namesz == 5) ?
+				    (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3)) :
+	                            (ulonglong *)(ptr + note->n_namesz);
+				nd->page_size = (uint)(1 << *uptr);
+				uptr++;
+				nd->task_struct = *uptr;
+			}
+		}
+                break;
+#endif
 	default:
 		netdump_print("(?)\n");
 	}
 
 	uptr = (ulonglong *)(ptr + note->n_namesz);
+        /*
+         * kdumps are off-by-1, because their n_namesz is 5 for "CORE".
+         */
+        if ((nd->flags & KDUMP_ELF64) && (note->n_namesz == 5))
+                uptr = (ulonglong *)(ptr + ((note->n_namesz + 3) & ~3));
 	for (i = lf = 0; i < note->n_descsz/sizeof(ulonglong); i++) {
 		if (((i%2)==0)) {
 			netdump_print("%s                         ", 
@@ -1251,12 +1488,12 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 
 	default:
 		error(FATAL, 
-		   "netdump support for ELF machine type %d not available\n",
+		   "support for ELF machine type %d not available\n",
 			e_machine);  
 	}
 }
 
-static void 
+void 
 get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
 {
         Elf64_Nhdr *note;
@@ -1267,8 +1504,13 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
         if (is_task_active(bt->task)) 
                 bt->flags |= BT_DUMPFILE_SEARCH;
 
-	if (VALID_STRUCT(user_regs_struct) && (bt->task == tt->panic_task)) {
-                note = (Elf64_Nhdr *)nd->nt_prstatus;
+	if ((NETDUMP_DUMPFILE() || KDUMP_DUMPFILE()) &&
+            VALID_STRUCT(user_regs_struct) && (bt->task == tt->panic_task)) {
+		if (nd->num_prstatus_notes > 1)
+                	note = (Elf64_Nhdr *)
+				nd->nt_prstatus_percpu[bt->tc->processor];
+		else
+                	note = (Elf64_Nhdr *)nd->nt_prstatus;
 
                 len = sizeof(Elf64_Nhdr);
                 len = roundup(len + note->n_namesz, 4);
@@ -1295,7 +1537,7 @@ get_netdump_regs_x86_64(struct bt_info *bt, ulong *ripp, ulong *rspp)
  *  the raw stack for some reasonable hooks.
  */
 
-static void
+void
 get_netdump_regs_x86(struct bt_info *bt, ulong *eip, ulong *esp)
 {
 	int i, search, panic;
@@ -1320,6 +1562,7 @@ retry:
 		if (STREQ(sym, "netconsole_netdump") || 
 		    STREQ(sym, "netpoll_start_netdump") ||
 		    STREQ(sym, "start_disk_dump") ||
+		    STREQ(sym, "crash_kexec") ||
 		    STREQ(sym, "disk_dump")) {
 			*eip = *up;
 			*esp = search ?
@@ -1354,7 +1597,7 @@ retry:
 next_sysrq:
                         *eip = *up;
 			*esp = bt->stackbase + ((char *)(up+4) - bt->stackbuf);
-			machdep->flags |= SYSRQ;
+			pc->flags |= SYSRQ;
 			for (i++, up++; i < LONGS_PER_STACK; i++, up++) {
 				sym = closest_symbol(*up);
                 		if (STREQ(sym, "sysrq_handle_crash")) 
@@ -1371,7 +1614,15 @@ next_sysrq:
                         *esp = search ?
                             bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
                                 *(up-1);
-                        machdep->flags |= SYSRQ;
+                        pc->flags |= SYSRQ;
+                        return;
+                }
+
+                if (STREQ(sym, "crash_nmi_callback")) {
+                        *eip = *up;
+                        *esp = search ?
+                            bt->stackbase + ((char *)(up+1) - bt->stackbuf) :
+                                *(up-1);
                         return;
                 }
 
@@ -1418,7 +1669,7 @@ next_sysrq:
                 goto retry;
         }
 
-	console("get_netdump_regs_x86: cannot find anything useful\n");
+	console("get_netdump_regs_x86: cannot find anything useful for task: %lx\n", bt->task);
  
 	machdep->get_stack_frame(bt, eip, esp);
 }
@@ -1430,7 +1681,11 @@ get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 	size_t len;
 
 	if (bt->task == tt->panic_task) {
-		note = (Elf64_Nhdr *)nd->nt_prstatus;
+                if (nd->num_prstatus_notes > 1)
+                        note = (Elf64_Nhdr *)
+                                nd->nt_prstatus_percpu[bt->tc->processor];
+		else
+			note = (Elf64_Nhdr *)nd->nt_prstatus;
 
 		len = sizeof(Elf64_Nhdr);
 		len = roundup(len + note->n_namesz, 4);
@@ -1445,4 +1700,79 @@ int
 is_partial_netdump(void)
 {
 	return (nd->flags & PARTIAL_DUMP ? TRUE : FALSE);
+}
+
+
+/*
+ *  kexec/kdump generated vmcore files are similar enough in
+ *  nature to netdump/diskdump such that most vmcore access
+ *  functionality may be borrowed from the equivalent netdump
+ *  function.  If not, re-work them here.
+ */
+int
+is_kdump(char *file, ulong source_query)
+{
+        return is_netdump(file, source_query);
+}
+
+int
+kdump_init(char *unused, FILE *fptr)
+{
+	return netdump_init(unused, fptr);
+}
+
+ulong 
+get_kdump_panic_task(void)
+{
+	return get_netdump_panic_task();
+}
+
+int
+read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
+{
+	return read_netdump(fd, bufptr, cnt, addr, paddr);
+}
+
+int
+write_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
+{
+	return write_netdump(fd, bufptr, cnt, addr, paddr);
+}
+
+void
+get_kdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	get_netdump_regs(bt, eip, esp);
+}
+
+uint
+kdump_page_size(void)
+{
+        uint pagesz;
+
+        if (!VMCORE_VALID())
+                return 0;
+
+	if (!(pagesz = nd->page_size))
+                pagesz = (uint)getpagesize();
+
+        return pagesz;
+}
+
+int 
+kdump_free_memory(void)
+{
+	return netdump_free_memory();
+}
+
+int 
+kdump_memory_used(void)
+{
+	return netdump_memory_used();
+}
+
+int 
+kdump_memory_dump(FILE *fp)
+{
+	return netdump_memory_dump(fp);
 }

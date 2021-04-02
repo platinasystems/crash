@@ -71,14 +71,17 @@ get_command_line(void)
 	 *    4. from a terminal.
 	 *    5. from a pipe, if stdin is a pipe rather than a terminal.
 	 */
-	if (pc->flags & RCHOME_IFILE)  
+	if (pc->flags & RCHOME_IFILE) {
                 sprintf(pc->command_line, "< %s/.%src", 
 			pc->home, pc->program_name);
-	else if (pc->flags & RCLOCAL_IFILE) 
+		pc->flags |= INIT_IFILE;
+	} else if (pc->flags & RCLOCAL_IFILE) { 
                 sprintf(pc->command_line, "< .%src", pc->program_name);
-	else if (pc->flags & CMDLINE_IFILE) 
+		pc->flags |= INIT_IFILE;
+	} else if (pc->flags & CMDLINE_IFILE) {
 		sprintf(pc->command_line, "< %s", pc->input_file);
-	else if (pc->flags & TTY) {
+		pc->flags |= INIT_IFILE;
+	} else if (pc->flags & TTY) {
 		if (!(pc->readline = readline(pc->prompt))) {
 			args[0] = NULL;
 			fprintf(fp, "\n");
@@ -918,7 +921,7 @@ restore_sanity(void)
 
 	wait_for_children(ZOMBIES_ONLY);
 
-	pc->flags &= ~(RUNTIME_IFILE|_SIGINT_);
+	pc->flags &= ~(INIT_IFILE|RUNTIME_IFILE|_SIGINT_);
 	pc->sigint_cnt = 0;
 	pc->redirect = 0;
 	pc->pipe_command[0] = NULLCHAR;

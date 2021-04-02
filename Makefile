@@ -39,6 +39,8 @@ GDB=gdb-6.1
 GDB_FILES=${GDB_6.1_FILES}
 GDB_OFILES=
 
+GDB_PATCH_FILES=gdb-6.1.patch
+
 #
 # Default installation directory
 #
@@ -88,6 +90,15 @@ OBJECT_FILES=main.o tools.o global_data.o memory.o filesys.o help.o task.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
 	lkcd_fix_mem.o s390_dump.o netdump.o diskdump.o \
 	lkcd_x86_trace.o unwind_v1.o unwind_v2.o unwind_v3.o
+
+# These are the current set of crash extensions sources.  They are not built
+# by default unless the third command line of the "all:" stanza is uncommented.
+# Alternatively, they can be built by entering "make extensions" from this
+# directory.
+
+EXTENSIONS=extensions
+EXTENSION_SOURCE_FILES=${EXTENSIONS}/Makefile ${EXTENSIONS}/echo.c ${EXTENSIONS}/dminfo.c
+EXTENSION_OBJECT_FILES=echo.so dminfo.so 
 
 DAEMON_OBJECT_FILES=remote_daemon.o va_server.o va_server_v1.o \
 	lkcd_common.o lkcd_v1.o lkcd_v2_v3.o lkcd_v5.o lkcd_v7.o lkcd_v8.o \
@@ -176,7 +187,8 @@ TARGET_CFLAGS=
 
 CFLAGS=-g -D${TARGET} ${TARGET_CFLAGS}
 
-TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8
+TAR_FILES=${SOURCE_FILES} Makefile COPYING README .rh_rpm_package crash.8 \
+	${EXTENSION_SOURCE_FILES}
 CSCOPE_FILES=${SOURCE_FILES}
 
 READLINE_DIRECTORY=./${GDB}/readline
@@ -185,9 +197,13 @@ GDB_INCLUDE_DIRECTORY=./${GDB}/include
 
 REDHATFLAGS=-DREDHAT
 
+# To build the extensions library by default, uncomment the third command
+# line below.  Otherwise they can be built by entering "make extensions".
+
 all: make_configure
 	@./configure -p "RPMPKG=${RPMPKG}" -b
 	@make --no-print-directory gdb_merge
+#	@make --no-print-directory extensions
 
 gdb_merge: force
 	@if [ ! -f ${GDB}/README ]; then \
@@ -207,6 +223,11 @@ gdb_unzip:
 	@for FILE in ${GDB_FILES}; do\
 	  echo $$FILE >> gdb.files; done
 	@tar --exclude-from gdb.files -xvzmf ${GDB}.tar.gz
+	@make --no-print-directory gdb_patch
+
+gdb_patch:
+	if [ -f ${GDB}.patch ] && [ -s ${GDB}.patch ]; then \
+		patch -p0 < ${GDB}.patch; fi
 
 library: make_build_data ${OBJECT_FILES}
 	ar -rs ${PROGRAM}lib.a ${OBJECT_FILES}
@@ -394,13 +415,13 @@ files: make_configure
 
 gdb_files: make_configure
 	@./configure -q -b
-	@echo ${GDB_FILES}
+	@echo ${GDB_FILES} ${GDB_PATCH_FILES}
 
 show_files:
 	@if [ -f ${PROGRAM}  ]; then \
 		./${PROGRAM} --no_crashrc -h README > README; fi
-	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} COPYING README \
-	.rh_rpm_package crash.8
+	@echo ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING README \
+	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES}
 
 ctags:
 	ctags ${SOURCE_FILES}
@@ -412,7 +433,7 @@ tar: make_configure
 do_tar:
 	@if [ -f ${PROGRAM}  ]; then \
 		./${PROGRAM} --no_crashrc -h README > README; fi
-	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES}
+	tar cvzf ${PROGRAM}.tar.gz ${TAR_FILES} ${GDB_FILES} ${GDB_PATCH_FILES}
 	@echo; ls -l ${PROGRAM}.tar.gz
 
 # To create a base tar file for Red Hat RPM packaging, pass the base RPM
@@ -422,7 +443,7 @@ do_tar:
 # spec file will have its own release number, which will in turn get passed 
 # to the "all" target upon the initial build.
 
-RELEASE=4.0-2.2
+RELEASE=4.0-2.18
 
 release: make_configure
 	@if [ "`id --user`" != "0" ]; then \
@@ -447,8 +468,8 @@ do_release:
 	@rm -f ${PROGRAM}-${RELEASE}.tar.gz 
 	@rm -f ${PROGRAM}-${RELEASE}.src.rpm
 	@chown root ./RELDIR/${PROGRAM}-${RELEASE}
-	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} COPYING \
-	.rh_rpm_package crash.8 | (cd ./RELDIR/${PROGRAM}-${RELEASE}; tar xf -)
+	@tar cf - ${SOURCE_FILES} Makefile ${GDB_FILES} ${GDB_PATCH_FILES} COPYING \
+	.rh_rpm_package crash.8 ${EXTENSION_SOURCE_FILES} | (cd ./RELDIR/${PROGRAM}-${RELEASE}; tar xf -)
 	@cp ${GDB}.tar.gz ./RELDIR/${PROGRAM}-${RELEASE}
 	@./${PROGRAM} --no_crashrc -h README > ./RELDIR/${PROGRAM}-${RELEASE}/README
 	@(cd ./RELDIR; find . -exec chown root {} ";")
@@ -489,3 +510,10 @@ name:
 
 dis:
 	objdump --disassemble --line-numbers ${PROGRAM} > ${PROGRAM}.dis
+
+extensions: make_configure
+	@./configure -q -b
+	@make --no-print-directory do_extensions
+
+do_extensions:
+	@(cd extensions; make -i OBJECTS="$(EXTENSION_OBJECT_FILES)" TARGET=$(TARGET))

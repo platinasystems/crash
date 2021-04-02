@@ -401,8 +401,6 @@ ia64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sUNW_R0", others++ ? "|" : "");
 	if (machdep->flags & MEM_LIMIT)
 		fprintf(fp, "%sMEM_LIMIT", others++ ? "|" : "");
-	if (machdep->flags & SYSRQ)
-		fprintf(fp, "%sSYSRQ", others++ ? "|" : "");
 	if (machdep->flags & DEVMEMRD)
 		fprintf(fp, "%sDEVMEMRD", others++ ? "|" : "");
 	if (machdep->flags & INIT)
@@ -2605,6 +2603,7 @@ static void
 ia64_post_init(void)
 {
 	struct machine_specific *ms;
+	struct gnu_request req;
 
 	ms = &ia64_machine_specific;
 
@@ -2677,9 +2676,10 @@ ia64_post_init(void)
 		}
 	}
 
-        if (symbol_exists("ia64_init_stack") && !ms->ia64_init_stack_size) 
-		ms->ia64_init_stack_size = get_array_length("ia64_init_stack", 
-			NULL, 0);
+        if (symbol_exists("ia64_init_stack") && !ms->ia64_init_stack_size) { 
+		get_symbol_type("ia64_init_stack", NULL, &req);
+		ms->ia64_init_stack_size = req.length;
+	}
 
 	if (DUMPFILE() && ia64_in_init_stack(SWITCH_STACK_ADDR(CURRENT_TASK())))
 		machdep->flags |= INIT;

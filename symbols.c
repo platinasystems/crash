@@ -5433,6 +5433,8 @@ builtin_array_length(char *s, int len, int *two_dim)
                 lenptr = &array_table.kmem_cache_s_c_name;
         else if (STREQ(s, "kmem_cache_s.array"))
                 lenptr = &array_table.kmem_cache_s_array;
+        else if (STREQ(s, "kmem_cache.array"))
+                lenptr = &array_table.kmem_cache_s_array;
         else if (STREQ(s, "kmem_cache_s.cpudata"))
                 lenptr = &array_table.kmem_cache_s_cpudata;
 	else if (STREQ(s, "log_buf")) 
@@ -5766,6 +5768,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mm_struct_pgd));
 	fprintf(fp, "                 mm_struct_rss: %ld\n", 
 		OFFSET(mm_struct_rss));
+	fprintf(fp, "            mm_struct_anon_rss: %ld\n", 
+		OFFSET(mm_struct_anon_rss));
 	fprintf(fp, "            mm_struct_total_vm: %ld\n", 
 		OFFSET(mm_struct_total_vm));
 	fprintf(fp, "          mm_struct_start_code: %ld\n", 
@@ -5972,6 +5976,16 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "  irq_cpustat_t___softirq_mask: %ld\n",
         	OFFSET(irq_cpustat_t___softirq_mask));
 	
+        fprintf(fp, "              files_struct_fdt: %ld\n",
+		OFFSET(files_struct_fdt));
+        fprintf(fp, "               fdtable_max_fds: %ld\n",
+		OFFSET(fdtable_max_fds));
+        fprintf(fp, "             fdtable_max_fdset: %ld\n",
+		OFFSET(fdtable_max_fdset));
+        fprintf(fp, "              fdtable_open_fds: %ld\n",
+		OFFSET(fdtable_open_fds));
+        fprintf(fp, "                    fdtable_fd: %ld\n",
+		OFFSET(fdtable_fd));
         fprintf(fp, "          files_struct_max_fds: %ld\n", 
 		OFFSET(files_struct_max_fds));
         fprintf(fp, "        files_struct_max_fdset: %ld\n", 
@@ -6216,6 +6230,11 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(inet_opt_sport));
         fprintf(fp, "                  inet_opt_num: %ld\n", 
 		OFFSET(inet_opt_num));
+
+        fprintf(fp, "          ipv6_pinfo_rcv_saddr: %ld\n", 
+		OFFSET(ipv6_pinfo_rcv_saddr));
+        fprintf(fp, "              ipv6_pinfo_daddr: %ld\n", 
+		OFFSET(ipv6_pinfo_daddr));
 
         fprintf(fp, "               timer_list_list: %ld\n",
                 OFFSET(timer_list_list));
@@ -6516,6 +6535,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                     fs_struct: %ld\n", SIZE(fs_struct));
 	fprintf(fp, "                  files_struct: %ld\n", 
 		SIZE(files_struct));
+	fprintf(fp, "                       fdtable: %ld\n", SIZE(fdtable));
 	fprintf(fp, "                          file: %ld\n", SIZE(file)); 
 	fprintf(fp, "                         inode: %ld\n", SIZE(inode)); 
 	fprintf(fp, "                      vfsmount: %ld\n", SIZE(vfsmount)); 
@@ -6550,6 +6570,7 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                          sock: %ld\n", SIZE(sock));
 	fprintf(fp, "                     inet_sock: %ld\n", SIZE(inet_sock));
 	fprintf(fp, "                        socket: %ld\n", SIZE(socket));
+	fprintf(fp, "                      in6_addr: %ld\n", SIZE(in6_addr));
 	fprintf(fp, "                 signal_struct: %ld\n", 
 		SIZE(signal_struct));
 	fprintf(fp, "                  signal_queue: %ld\n", 

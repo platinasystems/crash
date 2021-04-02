@@ -190,7 +190,11 @@ memory_source_init(void)
                         if (!netdump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
-		} else if (pc->flags & NETDUMP) {
+		} else if (pc->flags & KDUMP) {
+                        if (!kdump_init(pc->dumpfile, fp))
+                                error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
+		} else if (pc->flags & DISKDUMP) {
                         if (!diskdump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
@@ -1706,12 +1710,20 @@ vfs_init(void)
 	MEMBER_OFFSET_INIT(fs_struct_pwd, "fs_struct", "pwd");
 	MEMBER_OFFSET_INIT(fs_struct_rootmnt, "fs_struct", "rootmnt");
 	MEMBER_OFFSET_INIT(fs_struct_pwdmnt, "fs_struct", "pwdmnt");
-	MEMBER_OFFSET_INIT(files_struct_max_fds, "files_struct", "max_fds");
-	MEMBER_OFFSET_INIT(files_struct_max_fdset, "files_struct", "max_fdset");
-	MEMBER_OFFSET_INIT(files_struct_open_fds, "files_struct", "open_fds");
 	MEMBER_OFFSET_INIT(files_struct_open_fds_init,  
 		"files_struct", "open_fds_init");
-	MEMBER_OFFSET_INIT(files_struct_fd, "files_struct", "fd");
+	MEMBER_OFFSET_INIT(files_struct_fdt, "files_struct", "fdt");
+	if (VALID_MEMBER(files_struct_fdt)) {
+		MEMBER_OFFSET_INIT(fdtable_max_fds, "fdtable", "max_fds");
+		MEMBER_OFFSET_INIT(fdtable_max_fdset, "fdtable", "max_fdset");
+		MEMBER_OFFSET_INIT(fdtable_open_fds, "fdtable", "open_fds");
+		MEMBER_OFFSET_INIT(fdtable_fd, "fdtable", "fd");
+	} else {
+		MEMBER_OFFSET_INIT(files_struct_max_fds, "files_struct", "max_fds");
+		MEMBER_OFFSET_INIT(files_struct_max_fdset, "files_struct", "max_fdset");
+		MEMBER_OFFSET_INIT(files_struct_open_fds, "files_struct", "open_fds");
+		MEMBER_OFFSET_INIT(files_struct_fd, "files_struct", "fd");
+	}
 	MEMBER_OFFSET_INIT(file_f_dentry, "file", "f_dentry");
 	MEMBER_OFFSET_INIT(file_f_vfsmnt, "file", "f_vfsmnt");
 	MEMBER_OFFSET_INIT(file_f_count, "file", "f_count");
@@ -1762,6 +1774,8 @@ vfs_init(void)
 	STRUCT_SIZE_INIT(umode_t, "umode_t");
 	STRUCT_SIZE_INIT(dentry, "dentry");
 	STRUCT_SIZE_INIT(files_struct, "files_struct");
+	if (VALID_MEMBER(files_struct_fdt))
+		STRUCT_SIZE_INIT(fdtable, "fdtable");
 	STRUCT_SIZE_INIT(file, "file");
 	STRUCT_SIZE_INIT(inode, "inode");
 	STRUCT_SIZE_INIT(vfsmount, "vfsmount");
@@ -1998,8 +2012,9 @@ void
 open_files_dump(ulong task, int flags, struct reference *ref)
 {
         struct task_context *tc;
-	ulong files_struct_addr;
-	char *files_struct_buf;
+	ulong files_struct_addr; 
+	ulong fdtable_addr = 0;
+	char *files_struct_buf, *fdtable_buf = NULL;
 	ulong fs_struct_addr;
 	char *dentry_buf, *fs_struct_buf;
 	ulong root_dentry, pwd_dentry;
@@ -2027,6 +2042,8 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 	BZERO(root_pathname, BUFSIZE);
 	BZERO(pwd_pathname, BUFSIZE);
 	files_struct_buf = GETBUF(SIZE(files_struct));
+	if (VALID_STRUCT(fdtable))
+		fdtable_buf = GETBUF(SIZE(fdtable));
 	fill_task_struct(task);
 
 	sprintf(files_header, " FD%s%s%s%s%s%s%sTYPE%sPATH\n",
@@ -2107,24 +2124,42 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 
 	files_struct_addr = ULONG(tt->task_struct + OFFSET(task_struct_files));
 
-        if (files_struct_addr) {
-                readmem(files_struct_addr, KVADDR, files_struct_buf, 
-			SIZE(files_struct), "files_struct buffer", 
-			FAULT_ON_ERROR); 
-
-		max_fdset = INT(files_struct_buf + 
+	if (files_struct_addr) {
+		readmem(files_struct_addr, KVADDR, files_struct_buf,
+			SIZE(files_struct), "files_struct buffer",
+			FAULT_ON_ERROR);
+	
+		if (VALID_MEMBER(files_struct_max_fdset)) {
+			max_fdset = INT(files_struct_buf +
 			OFFSET(files_struct_max_fdset));
 
-		max_fds = INT(files_struct_buf + 
-                        OFFSET(files_struct_max_fds));
-        } 
+			max_fds = INT(files_struct_buf +
+			OFFSET(files_struct_max_fds));
+		}
+	}
 
-	if (!files_struct_addr || max_fdset == 0 || max_fds == 0) {
+	if (VALID_MEMBER(files_struct_fdt)) {
+		fdtable_addr = ULONG(files_struct_buf + OFFSET(files_struct_fdt));
+
+		if (fdtable_addr) {
+			readmem(fdtable_addr, KVADDR, fdtable_buf,
+	 			SIZE(fdtable), "fdtable buffer", FAULT_ON_ERROR); 
+			max_fdset = INT(fdtable_buf +
+				OFFSET(fdtable_max_fdset));
+			max_fds = INT(fdtable_buf +
+        	                OFFSET(fdtable_max_fds));
+		}
+	}
+
+	if ((VALID_MEMBER(files_struct_fdt) && !fdtable_addr) || 
+	    !files_struct_addr || max_fdset == 0 || max_fds == 0) {
 		if (ref) {
 			if (ref->cmdflags & FILES_REF_FOUND)
 				fprintf(fp, "\n");
 		} else
 			fprintf(fp, "No open files\n");
+		if (fdtable_buf)
+			FREEBUF(fdtable_buf);
 		FREEBUF(files_struct_buf);
 		return;
 	}
@@ -2146,8 +2181,12 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 		}
         }
 
-	open_fds_addr = ULONG(files_struct_buf + 
-		OFFSET(files_struct_open_fds));
+	if (VALID_MEMBER(fdtable_open_fds))
+		open_fds_addr = ULONG(fdtable_buf +
+			OFFSET(fdtable_open_fds));
+	else
+		open_fds_addr = ULONG(files_struct_buf +
+			OFFSET(files_struct_open_fds));
 
 	if (open_fds_addr) {
 		if (VALID_MEMBER(files_struct_open_fds_init) && 
@@ -2157,16 +2196,21 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 			        OFFSET(files_struct_open_fds_init),
 				&open_fds, sizeof(fd_set));
 		else
-			readmem(open_fds_addr, KVADDR, &open_fds, 
-				sizeof(fd_set), "files_struct open_fds", 
+			readmem(open_fds_addr, KVADDR, &open_fds,
+				sizeof(fd_set), "fdtable open_fds",
 				FAULT_ON_ERROR);
 	} 
 
-	fd = ULONG(files_struct_buf + OFFSET(files_struct_fd));
+	if (VALID_MEMBER(fdtable_fd))
+		fd = ULONG(fdtable_buf + OFFSET(fdtable_fd));
+	else
+		fd = ULONG(files_struct_buf + OFFSET(files_struct_fd));
 
 	if (!open_fds_addr || !fd) {
                 if (ref && (ref->cmdflags & FILES_REF_FOUND))
                 	fprintf(fp, "\n");
+		if (fdtable_buf)
+			FREEBUF(fdtable_buf);
 		FREEBUF(files_struct_buf);
 		return;
 	}
@@ -2220,6 +2264,8 @@ open_files_dump(ulong task, int flags, struct reference *ref)
 	if (ref && (ref->cmdflags & FILES_REF_FOUND))
 		fprintf(fp, "\n");
 
+	if (fdtable_buf)
+		FREEBUF(fdtable_buf);
 	FREEBUF(files_struct_buf);
 }
 

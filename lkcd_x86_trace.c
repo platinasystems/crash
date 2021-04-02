@@ -47,11 +47,13 @@ static void clean_trace_rec(trace_t *);
 static int setup_trace_rec(kaddr_t, kaddr_t, int, trace_t *);
 static int valid_ra(kaddr_t);
 static int valid_ra_function(kaddr_t, char *);
+static int eframe_incr(kaddr_t, char *);
 static int find_trace(kaddr_t, kaddr_t, kaddr_t, kaddr_t, trace_t *, int);
 static void dump_stack_frame(trace_t *, sframe_t *, FILE *);
 static void print_trace(trace_t *, int, FILE *);
 struct pt_regs;
 static int eframe_type(struct pt_regs *);
+char *funcname_display(char *);
 static void print_eframe(FILE *, struct pt_regs *);
 static void trace_banner(FILE *);
 static void print_kaddr(kaddr_t, FILE *, int);
@@ -505,7 +507,7 @@ struct framesize_mods {
 	{ "receive_chars", NULL, 
 		COMPILER_VERSION_EQUAL, GCC(2,96,0), 0, 0, 48 },
 	{ "default_idle", NULL, 
-		COMPILER_VERSION_START, GCC(3,3,2), 0, -4, 0 },
+		COMPILER_VERSION_START, GCC(2,96,0), 0, -4, 0 },
  	{ NULL, NULL, 0, 0, 0, 0, 0 },
 };
 
@@ -1206,6 +1208,93 @@ void print_eframe(FILE *ofp, struct pt_regs *regs)
         }                                              \
 }
 #endif
+
+/*
+ *  Determine how much to increment the stack pointer to find the 
+ *  exception frame associated with a generic "error_code" or "nmi" 
+ *  exception.
+ *
+ *  The incoming addr is that of the call to the generic error_code 
+ *  or nmi exception handler function.  Until later 2.6 kernels, the next
+ *  instruction had always been an "addl $8,%esp".  However, with later 
+ *  2.6 kernels, that esp adjustment is no long valid, and there will be 
+ *  an immediate "jmp" instruction.  Returns 4 or 12, whichever is appropriate. 
+ *  Cache the value the first time, and allow for future changes or additions.
+ */
+
+#define NMI_ADJ         (0)
+#define ERROR_CODE_ADJ  (1)
+#define EFRAME_ADJUSTS  (ERROR_CODE_ADJ+1)
+
+static int eframe_adjust[EFRAME_ADJUSTS] = { 0 };
+
+static int
+eframe_incr(kaddr_t addr, char *funcname)
+{
+	instr_rec_t irp;
+	kaddr_t next;
+	int size, adj, val;
+
+	if (STRNEQ(funcname, "nmi")) {
+		adj = NMI_ADJ;
+		val = eframe_adjust[NMI_ADJ];
+	} else if (strstr(funcname, "error_code")) {
+		adj = ERROR_CODE_ADJ;
+		val = eframe_adjust[ERROR_CODE_ADJ];
+	} else { 
+		adj = -1;
+		val = 0;
+		error(INFO, 
+		    "unexpected exception frame marker: %lx (%s)\n",
+			addr, funcname);
+	}
+
+	if (val) {
+		console("eframe_incr(%lx, %s): eframe_adjust[%d]: %d\n", 
+			addr, funcname, adj, val);
+		return val;
+	}
+		
+	console("eframe_incr(%lx, %s): TBD:\n", addr, funcname);
+
+	bzero(&irp, sizeof(irp));
+	irp.aflag = 1;
+	irp.dflag = 1;
+	if (!(size = get_instr_info(addr, &irp))) {
+		if (CRASHDEBUG(1))
+			error(INFO, 
+			    "eframe_incr(%lx, %s): get_instr_info(%lx) failed\n", 
+				addr, funcname, addr);			
+		return((THIS_KERNEL_VERSION > LINUX(2,6,9)) ? 4 : 12);
+	}
+	console("  addr: %lx size: %d  opcode: 0x%x insn: \"%s\"\n", 
+		addr, size, irp.opcode, irp.opcodep->name);
+
+	next = addr + size;
+	bzero(&irp, sizeof(irp));
+	irp.aflag = 1;
+	irp.dflag = 1;
+	if (!(size = get_instr_info(next, &irp))) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+			    "eframe_incr(%lx, %s): get_instr_info(%lx) failed\n",
+				addr, funcname, next);
+		return((THIS_KERNEL_VERSION > LINUX(2,6,9)) ? 4 : 12);
+	}
+	console("  next: %lx size: %d  opcode: 0x%x insn: \"%s\"\n",
+		next, size, irp.opcode, irp.opcodep->name);
+
+	if (STREQ(irp.opcodep->name, "jmp"))
+		val = 4;
+	else
+		val = 12;
+
+	if (adj >= 0)
+		eframe_adjust[adj] = val;
+
+	return val;
+}
+
 /*
  * find_trace()
  *
@@ -1503,12 +1592,13 @@ find_trace(
 				return(trace->nframes);
 #ifdef REDHAT
 			} else if (strstr(func_name, "error_code") 
+				|| STREQ(func_name, "nmi_stack_correct")
 				|| STREQ(func_name, "nmi")) {
 #else
 			} else if (strstr(func_name, "error_code")) {
 #endif
 				/* an exception frame */
-				sp = curframe->fp+12;
+				sp = curframe->fp + eframe_incr(pc, func_name);
 
 				bp = sp + (KERNEL_EFRAME_SZ-1)*4;
 				asp = (uaddr_t*)((uaddr_t)sbp + (STACK_SIZE - 
@@ -1708,6 +1798,10 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 #endif
 			if (frmp->flag & EX_FRAME) {
 				pt = (struct pt_regs *)frmp->asp;
+				if (CRASHDEBUG(1))
+					fprintf(ofp, 
+					    " EXCEPTION FRAME: %lx\n", 
+						(unsigned long)frmp->sp);
 				print_eframe(ofp, pt);
 			}
 #ifdef REDHAT
@@ -2192,11 +2286,12 @@ print_stack_entry(struct bt_info *bt, int level, ulong esp, ulong eip,
 	else
 		buf[0] = NULLCHAR;
 
-	if ((sp = eframe_label(funcname, eip)))
+	if ((sp = eframe_label(funcname, eip))) 
 		funcname = sp->name;
 
 	fprintf(ofp, "%s#%d [%8lx] %s%s at %lx\n",
-                level < 10 ? " " : "", level, esp, funcname, 
+                level < 10 ? " " : "", level, esp, 
+		funcname_display(funcname), 
 		strlen(buf) ? buf : "", eip);
 
         if (bt->flags & BT_LINE_NUMBERS) {
@@ -2323,6 +2418,25 @@ eframe_label(char *funcname, ulong eip)
 
 	return NULL;
 }
+
+/*
+ *  If it makes sense to display a different function/label name
+ *  in a stack entry, it can be done here.  Unlike eframe_label(),
+ *  this routine won't cause the passed-in function name pointer
+ *  to be changed -- this is strictly for display purposes only.
+ */
+char *
+funcname_display(char *funcname)
+{
+	struct syment *sp;
+
+        if (STREQ(funcname, "nmi_stack_correct") &&
+            (sp = symbol_search("nmi"))) 
+                return sp->name;
+
+	return funcname;
+}
+
 
 /*
  *  Cache 2k starting from the passed-in text address.  This sits on top

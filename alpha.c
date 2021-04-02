@@ -1858,8 +1858,6 @@ alpha_dump_machdep_table(ulong arg)
 	fprintf(fp, "              flags: %lx (", machdep->flags);
         if (machdep->flags & HWRESET)
                 fprintf(fp, "%sHWRESET", others++ ? "|" : "");
-        if (machdep->flags & SYSRQ)
-                fprintf(fp, "%sSYSRQ", others++ ? "|" : "");
         fprintf(fp, ")\n");
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
 	fprintf(fp, "  identity_map_base: %lx\n", machdep->identity_map_base);

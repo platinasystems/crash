@@ -2938,11 +2938,13 @@ show_context(struct task_context *tc)
 	if (is_task_active(tc->task)) {
 		if (machdep->flags & HWRESET)
 			fprintf(fp, "(HARDWARE RESET)");
-		else if (machdep->flags & SYSRQ)
+		else if ((pc->flags & SYSRQ) && (tc->task == tt->panic_task))
 			fprintf(fp, "(SYSRQ)");
 		else if (machdep->flags & INIT)
 			fprintf(fp, "(INIT)");
-		else if (kt->cpu_flags[tc->processor] & NMI)
+		else if ((tc->processor >= 0) && 
+		        (tc->processor < NR_CPUS) && 
+			(kt->cpu_flags[tc->processor] & NMI))
 			fprintf(fp, "(NMI)");
 		else if (tc->task == tt->panic_task)
 			fprintf(fp, "(PANIC)");
@@ -3411,6 +3413,9 @@ get_panic_context(void)
 
 use_task_0:
 
+	if (CRASHDEBUG(1))
+		error(INFO, "get_panic_context: panic task not found\n");
+
 	tt->flags |= PANIC_TASK_NOT_FOUND;
 	tc = FIRST_CONTEXT();
         return(tc->task);
@@ -3448,49 +3453,68 @@ get_panicmsg(char *buf)
 	int msg_found;
 
         BZERO(buf, BUFSIZE);
+	msg_found = FALSE;
 
-	if (tt->panicmsg)
+	if (tt->panicmsg) {
 		read_string(tt->panicmsg, buf, BUFSIZE-1);
-	else if (LKCD_DUMPFILE())
+		msg_found = TRUE;
+	} else if (LKCD_DUMPFILE()) {
 		get_lkcd_panicmsg(buf);
-	else { 
-		msg_found = FALSE;
-
-	        open_tmpfile();
-	        dump_log(FALSE);
-
-	        rewind(pc->tmpfile);
-	        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-	                if (strstr(buf, "Kernel panic: ")) 
-				msg_found = TRUE;
-	        }
-	        rewind(pc->tmpfile);
-	        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-	                if (strstr(buf, "Oops: ") || 
-			    strstr(buf, "kernel BUG at")) 
-	                        msg_found = TRUE;
-	        }
-                rewind(pc->tmpfile);
-                while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-                        if (strstr(buf, "SysRq : Netdump") ||
-			    strstr(buf, "SysRq : Crash")) {
-				machdep->flags |= SYSRQ;
-                                msg_found = TRUE;
-			}
-                }
-                rewind(pc->tmpfile);
-                while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
-                        if (strstr(buf, "sysrq") && 
-		            symbol_exists("sysrq_pressed")) 
-				get_symbol_data("sysrq_pressed", sizeof(int), 
-					&msg_found);
-                }
-
-	        close_tmpfile();
-
-		if (!msg_found)
-        		BZERO(buf, BUFSIZE);
+		msg_found = TRUE;
 	}
+
+        if (msg_found == TRUE)
+                return(buf);
+
+	open_tmpfile();
+	dump_log(FALSE);
+
+	/*
+	 *  First check for a SYSRQ-generated crash, and set the
+	 *  active-task flag appropriately.  The message may or
+	 *  may not be used as the panic message.
+	 */
+        rewind(pc->tmpfile);
+        while (fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "SysRq : Crash") ||
+		    strstr(buf, "SysRq : Trigger a crashdump")) {
+			pc->flags |= SYSRQ;
+			break;
+		}
+	}
+
+	rewind(pc->tmpfile);
+	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+		if (strstr(buf, "Kernel panic: ")) 
+			msg_found = TRUE;
+	}
+	rewind(pc->tmpfile);
+	while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+	        if (strstr(buf, "Oops: ") || 
+		    strstr(buf, "kernel BUG at")) 
+	        	msg_found = TRUE;
+	}
+        rewind(pc->tmpfile);
+        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "SysRq : Netdump") ||
+		    strstr(buf, "SysRq : Trigger a crashdump") ||
+		    strstr(buf, "SysRq : Crash")) {
+			pc->flags |= SYSRQ;
+                        msg_found = TRUE;
+		}
+        }
+        rewind(pc->tmpfile);
+        while (!msg_found && fgets(buf, BUFSIZE, pc->tmpfile)) {
+                if (strstr(buf, "sysrq") && 
+		    symbol_exists("sysrq_pressed")) 
+			get_symbol_data("sysrq_pressed", sizeof(int), 
+				&msg_found);
+        }
+
+        close_tmpfile();
+
+	if (!msg_found)
+       		BZERO(buf, BUFSIZE);
 
 	return(buf);
 }
@@ -3517,7 +3541,7 @@ cmd_foreach(void)
 	BZERO(&foreach_data, sizeof(struct foreach_data));
 	fd = &foreach_data;
 
-        while ((c = getopt(argcnt, args, "R:vomlgersStpukcf")) != EOF) {
+        while ((c = getopt(argcnt, args, "R:vomlgersStTpukcf")) != EOF) {
                 switch(c)
 		{
 		case 'R':
@@ -3558,6 +3582,10 @@ cmd_foreach(void)
 
 		case 'r':
 			fd->flags |= FOREACH_r_FLAG;
+			break;
+
+		case 'T':
+			fd->flags |= FOREACH_T_FLAG;
 			break;
 
 		case 't':
@@ -3962,7 +3990,12 @@ foreach(struct foreach_data *fd)
 					bt->flags |= BT_SYMBOLIC_ARGS;
 				if (fd->flags & FOREACH_t_FLAG)
 					bt->flags |= BT_TEXT_SYMBOLS;
-				if (fd->flags & FOREACH_o_FLAG)
+				if (fd->flags & FOREACH_T_FLAG) {
+					bt->flags |= BT_TEXT_SYMBOLS;
+					bt->flags |= BT_TEXT_SYMBOLS_ALL;
+				}
+				if ((fd->flags & FOREACH_o_FLAG) ||
+				    (kt->flags & USE_OLD_BT))
 					bt->flags |= BT_OLD_BACK_TRACE;
                                 if (fd->flags & FOREACH_e_FLAG)
                                         bt->flags |= BT_EFRAME_SEARCH;
@@ -4188,6 +4221,12 @@ panic_search(void)
 			break;	
 		}
 
+		if (strstr(buf, " crash_kexec at ") ||
+		    strstr(buf, " .crash_kexec at ")) {
+			found = TRUE;
+			break;	
+		}
+
                 if (strstr(buf, " die at ")) {
 			switch (dietask)
 			{
@@ -4211,6 +4250,10 @@ panic_search(void)
 	if (dietask == (NO_TASK+1))
 		error(WARNING, "multiple active tasks have called die\n\n");
 
+	if (CRASHDEBUG(1))
+		error(INFO, "panic_search: %lx (via foreach bt)\n", 
+			lasttask);
+
 found_panic_task:
 	populate_panic_threads();
 
@@ -4229,6 +4272,9 @@ found_panic_task:
 		}
 	} 
 
+	if (CRASHDEBUG(1))
+		error(INFO, "panic_search: failed (via foreach bt)\n");
+
 	return NULL;
 }
 
@@ -4240,25 +4286,24 @@ get_dumpfile_panic_task(void)
 {
 	ulong task;
 
-	if (LKCD_DUMPFILE())
-		return(get_lkcd_panic_task());
-
 	if (NETDUMP_DUMPFILE()) {
 		task = pc->flags & REM_NETDUMP ?
 			tt->panic_task : get_netdump_panic_task();
 		if (task) 
 			return task;
-		if (get_active_set())
-			return(get_active_set_panic_task());
-	}
-
-        if (DISKDUMP_DUMPFILE()) {
+	} else if (KDUMP_DUMPFILE()) {
+                task = get_kdump_panic_task();
+                if (task)
+                        return task;
+        } else if (DISKDUMP_DUMPFILE()) {
                 task = get_diskdump_panic_task();
                 if (task)
                         return task;
-                if (get_active_set())
-                        return(get_active_set_panic_task());
-        }
+        } else if (LKCD_DUMPFILE())
+		return(get_lkcd_panic_task());
+
+	if (get_active_set())
+		return(get_active_set_panic_task());
 
 	return NO_TASK;
 }
@@ -4298,14 +4343,17 @@ populate_panic_threads(void)
 
         tc = FIRST_CONTEXT();
         for (i = 0; i < RUNNING_TASKS(); i++, tc++) {
-		if (task_has_cpu(tc->task, NULL)) {
+		if (task_has_cpu(tc->task, NULL) && 
+		    (tc->processor >= 0) && 
+		    (tc->processor < NR_CPUS)) {
 			tt->panic_threads[tc->processor] = tc->task;
 			found++;
 		}
 	}
 
 	if (!found && !(kt->flags & SMP) &&
-	    (LKCD_DUMPFILE() || NETDUMP_DUMPFILE() || DISKDUMP_DUMPFILE())) 
+	    (LKCD_DUMPFILE() || NETDUMP_DUMPFILE() || 
+	     KDUMP_DUMPFILE() || DISKDUMP_DUMPFILE())) 
 		tt->panic_threads[0] = get_dumpfile_panic_task();
 }
 	
@@ -4799,23 +4847,33 @@ clear_active_set(void)
                 tt->flags &= ~ACTIVE_SET;
 }
 
-#define RESOLVE_PANIC_AND_DIE_CALLERS()               \
-        if ((panic_task > (NO_TASK+1)) && !die_task)  \
-                return panic_task;                    \
-                                                      \
-        if (panic_task && die_task) {                 \
-                error(WARNING,                        \
-	"multiple active tasks have called die and/or panic\n\n"); \
-                return NO_TASK;                       \
-        }                                             \
-                                                      \
-        if (die_task > (NO_TASK+1))                   \
-                return die_task;                      \
-        else if (die_task == (NO_TASK+1))             \
-                error(WARNING,                        \
+#define RESOLVE_PANIC_AND_DIE_CALLERS()               		\
+        if ((panic_task > (NO_TASK+1)) && !die_task) {		\
+		if (CRASHDEBUG(1))				\
+			fprintf(fp, 				\
+		    "get_active_set_panic_task: %lx (panic)\n", \
+				panic_task);			\
+                return panic_task;                    		\
+	}							\
+                                                      		\
+        if (panic_task && die_task) {                 		\
+                error(WARNING,                        		\
+     "multiple active tasks have called die and/or panic\n\n"); \
+		goto no_panic_task_found;			\
+        }                                             		\
+                                                      		\
+        if (die_task > (NO_TASK+1)) {                 		\
+		if (CRASHDEBUG(1))				\
+			fprintf(fp, 				\
+		    "get_active_set_panic_task: %lx (die)\n", 	\
+				die_task);			\
+                return die_task;                      		\
+	}							\
+        else if (die_task == (NO_TASK+1))             		\
+                error(WARNING,                        		\
 	"multiple active tasks have called die\n\n"); 
 
-#define SEARCH_STACK_FOR_PANIC_AND_DIE_CALLERS()        \
+#define SEARCH_STACK_FOR_PANIC_DIE_AND_KEXEC_CALLERS()  \
 	while (fgets(buf, BUFSIZE, pc->tmpfile)) {      \
                 if (strstr(buf, " die+")) {             \
                         switch (die_task)               \
@@ -4839,6 +4897,10 @@ clear_active_set(void)
                                 break;                  \
                         }                               \
                 }                                       \
+                if (strstr(buf, " crash_kexec+") ||     \
+                    strstr(buf, " .crash_kexec+")) {    \
+			crash_kexec_task = task;	\
+                }                                       \
 	}
 
 /*
@@ -4850,11 +4912,11 @@ get_active_set_panic_task()
 	int i, j, found;
 	ulong task;
 	char buf[BUFSIZE];
-	ulong panic_task, die_task;
+	ulong panic_task, die_task, crash_kexec_task;
 	char *tp;
 	struct task_context *tc;
 
-	panic_task = die_task = NO_TASK;
+	panic_task = die_task = crash_kexec_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]))
@@ -4875,7 +4937,7 @@ get_active_set_panic_task()
 		raw_stack_dump(GET_STACKBASE(task), STACKSIZE());
         	rewind(pc->tmpfile);
 
-		SEARCH_STACK_FOR_PANIC_AND_DIE_CALLERS();
+		SEARCH_STACK_FOR_PANIC_DIE_AND_KEXEC_CALLERS();
 
 		close_tmpfile();
         }
@@ -4903,7 +4965,7 @@ get_active_set_panic_task()
 			raw_stack_dump(tt->hardirq_ctx[i], SIZE(thread_union));
 	        	rewind(pc->tmpfile);
 	
-			SEARCH_STACK_FOR_PANIC_AND_DIE_CALLERS();
+			SEARCH_STACK_FOR_PANIC_DIE_AND_KEXEC_CALLERS();
 
 			close_tmpfile();
 	        }
@@ -4930,13 +4992,27 @@ get_active_set_panic_task()
 			raw_stack_dump(tt->softirq_ctx[i], SIZE(thread_union));
 	        	rewind(pc->tmpfile);
 	
-			SEARCH_STACK_FOR_PANIC_AND_DIE_CALLERS();
+			SEARCH_STACK_FOR_PANIC_DIE_AND_KEXEC_CALLERS();
 
 			close_tmpfile();
 	        }
 
 		RESOLVE_PANIC_AND_DIE_CALLERS();
 	} 
+
+	if (crash_kexec_task) {
+		if (CRASHDEBUG(1))
+			error(INFO,
+		    "get_active_set_panic_task: %lx (crash_kexec)\n", 
+				crash_kexec_task);
+		return crash_kexec_task;
+	}
+
+no_panic_task_found:
+
+	if (CRASHDEBUG(1)) 
+		error(INFO,
+		    "get_active_set_panic_task: failed\n");
 
 	return NO_TASK;
 }

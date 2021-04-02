@@ -53,6 +53,8 @@ static int cache_page(void);
 
 struct lkcd_environment lkcd_environment = { 0 };
 struct lkcd_environment *lkcd = &lkcd_environment;
+static int uncompress_errloc;
+static int uncompress_recover(unsigned char *, ulong, unsigned char *, ulong);
 
 ulonglong 
 fix_lkcd_address(ulonglong addr)
@@ -208,6 +210,7 @@ is_lkcd_compressed_dump(char *s)
 
 	case LKCD_DUMP_V8:
 	case LKCD_DUMP_V9:
+	case LKCD_DUMP_V10:
 		lkcd->version = LKCD_DUMP_V8;
 		return TRUE;
 
@@ -1164,40 +1167,103 @@ lkcd_uncompress_RLE(unsigned char *cbuf, unsigned char *ucbuf,
         return 1;
 }
 
+/* Returns the bit offset if it's able to correct, or negative if not */
+static int
+uncompress_recover(unsigned char *dest, ulong destlen,
+    unsigned char *source, ulong sourcelen)
+{
+        int byte, bit;
+        ulong retlen = destlen;
+        int good_decomp = 0, good_rv = -1;
+
+        /* Generate all single bit errors */
+        if (sourcelen > 16384) {
+                lkcd_print("uncompress_recover: sourcelen %ld too long\n",
+                    sourcelen);
+                return(-1);
+        }
+        for (byte = 0; byte < sourcelen; byte++) {
+                for (bit = 0; bit < 8; bit++) {
+                        source[byte] ^= (1 << bit);
+
+                        if (uncompress(dest, &retlen, source, sourcelen) == Z_OK &&
+                            retlen == destlen) {
+                                good_decomp++;
+                                lkcd_print("good for flipping byte %d bit %d\n",
+                                    byte, bit);
+                                good_rv = bit + byte * 8;
+                        }
+
+                        /* Put it back */
+                        source[byte] ^= (1 << bit);
+                }
+        }
+        if (good_decomp == 0) {
+                lkcd_print("Could not correct gzip errors.\n");
+                return -2;
+        } else if (good_decomp > 1) {
+                lkcd_print("Too many valid gzip decompressions: %d.\n", good_decomp);
+                return -3;
+        } else {
+                source[good_rv >> 8] ^= 1 << (good_rv % 8);
+                uncompress(dest, &retlen, source, sourcelen);
+                source[good_rv >> 8] ^= 1 << (good_rv % 8);
+                return good_rv;
+        }
+}
+
+
 /*
  *  Uncompress a gzip'd buffer.
+ *
+ *  Returns FALSE on error.  If set, then
+ *    a non-negative value of uncompress_errloc indicates the location of
+ *    a single-bit error, and the data may be used.
  */
 static int 
 lkcd_uncompress_gzip(unsigned char *dest, ulong destlen, 
 	unsigned char *source, ulong sourcelen)
 {
         ulong retlen = destlen;
+        int rc;
 
 	switch (uncompress(dest, &retlen, source, sourcelen)) 
 	{
 	case Z_OK:
 		if (retlen == destlen)
-			return TRUE;
+                        rc = TRUE;
+                        break;
 
 		lkcd_print("uncompress: returned length not page size: %ld\n",
 				retlen);
-		return FALSE;
+                rc = FALSE;
+                break;
 
 	case Z_MEM_ERROR:
 		lkcd_print("uncompress: Z_MEM_ERROR (not enough memory)\n");
-		return FALSE;
+                rc = FALSE;
+                break;
 
 	case Z_BUF_ERROR:
 		lkcd_print("uncompress: "
 			"Z_BUF_ERROR (not enough room in output buffer)\n");
-		return FALSE;
+                rc = FALSE;
+                break;
 
 	case Z_DATA_ERROR:
 		lkcd_print("uncompress: Z_DATA_ERROR (input data corrupted)\n");
-		return FALSE;
+                rc = FALSE;
+                break;
+        default:
+                rc = FALSE;
+                break;
 	}
 
-	return FALSE;
+        if (rc == FALSE) {
+                uncompress_errloc =
+                    uncompress_recover(dest, destlen, source, sourcelen);
+        }
+	return rc;
 }
 
 
@@ -1252,8 +1318,9 @@ lkcd_load_dump_page_header(void *dp, ulong page)
 	dp_flags = lkcd->get_dp_flags();
 	dp_address = lkcd->get_dp_address();
 
-        if (dp_flags & LKCD_DUMP_END)
+        if (dp_flags & LKCD_DUMP_END) {
                 return LKCD_DUMPFILE_END;
+        }
 
 	if ((lkcd->flags & LKCD_VALID) && (page > lkcd->total_pages)) 
 		lkcd->total_pages = page;
