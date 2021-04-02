@@ -540,10 +540,10 @@ verify_version(void)
 		error(WARNING, "cannot read linux_banner string\n");
 
 	if (ACTIVE()) {
-		len = strlen(kt->proc_version) - 1;
+		len = strlen(kt->proc_version);
 		if ((len > 0) && (strncmp(buf, kt->proc_version, len) != 0)) {
                		if (CRASHDEBUG(1)) {
-                        	fprintf(fp, "/proc/version:\n%s", 
+                        	fprintf(fp, "/proc/version:\n%s\n", 
 					kt->proc_version);
                         	fprintf(fp, "linux_banner:\n%s\n", buf);
                 	}
@@ -558,7 +558,7 @@ verify_version(void)
                         	fprintf(fp, "linux_banner:\n%s\n", buf);
 			goto bad_match;
 		}
-		strcpy(kt->proc_version, buf);
+		strcpy(kt->proc_version, strip_linefeeds(buf));
 	}
 
 	verify_namelist();
@@ -776,7 +776,7 @@ verify_namelist()
 		if (!strstr(buffer, "Linux version 2."))
 			continue;
 
-                if (STREQ(buffer, kt->proc_version)) {
+                if (strstr(buffer, kt->proc_version)) {
                 	found = TRUE;
 			break;
 		}
@@ -823,7 +823,7 @@ verify_namelist()
 	if (found) {
                 if (CRASHDEBUG(1)) {
                 	fprintf(fp, "verify_namelist:\n");
-			fprintf(fp, "/proc/version:\n%s", kt->proc_version);
+			fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
 			fprintf(fp, "utsname version: %s\n",
 				kt->utsname.version);
 			fprintf(fp, "%s:\n%s\n", namelist, buffer);
@@ -833,7 +833,7 @@ verify_namelist()
 
         if (CRASHDEBUG(1)) {
                	fprintf(fp, "verify_namelist:\n");
-                fprintf(fp, "/proc/version:\n%s", kt->proc_version);
+                fprintf(fp, "/proc/version:\n%s\n", kt->proc_version);
                 fprintf(fp, "utsname version: %s\n", kt->utsname.version);
                 fprintf(fp, "%s:\n%s\n", namelist, buffer2);
         }

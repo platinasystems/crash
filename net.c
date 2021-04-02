@@ -65,6 +65,8 @@ struct devinfo {
 #define BYTES_IP_TUPLE	(BYTES_IP_ADDR + BYTES_PORT_NUM + 1)
 
 static void show_net_devices(void);
+static void show_net_devices_v2(void);
+static void show_net_devices_v3(void);
 static void print_neighbour_q(ulong, int);
 static void get_netdev_info(ulong, struct devinfo *);
 static void get_device_name(ulong, char *);
@@ -111,6 +113,8 @@ net_init(void)
 			"net_device", "addr_len");
 		net->dev_ip_ptr = MEMBER_OFFSET_INIT(net_device_ip_ptr,
 			"net_device", "ip_ptr");
+		MEMBER_OFFSET_INIT(net_device_dev_list, "net_device", "dev_list");
+		MEMBER_OFFSET_INIT(net_dev_base_head, "net", "dev_base_head");
 		ARRAY_LENGTH_INIT(net->net_device_name_index,
 			net_device_name, "net_device.name", NULL, sizeof(char));
 		net->flags |= (NETDEV_INIT|STRUCT_NET_DEVICE);
@@ -355,8 +359,16 @@ show_net_devices(void)
 	long flen;
 	char buf[BUFSIZE];
 
+	if (symbol_exists("dev_base_head")) {
+		show_net_devices_v2();
+		return;
+	} else if (symbol_exists("init_net")) {
+		show_net_devices_v3();
+		return;
+	}
+
 	if (!symbol_exists("dev_base"))
-		error(FATAL, "dev_base does not exist!\n");
+		error(FATAL, "dev_base, dev_base_head or init_net do not exist!\n");
 
 	get_symbol_data("dev_base", sizeof(void *), &next);
 
@@ -384,6 +396,114 @@ show_net_devices(void)
 	} while (next);
 }
 
+static void
+show_net_devices_v2(void)
+{
+	struct list_data list_data, *ld;
+	char *net_device_buf;
+	char buf[BUFSIZE];
+	ulong *ndevlist;
+	int ndevcnt, i;
+	long flen;
+
+	if (!net->netdevice) /* initialized in net_init() */
+		return;
+
+	flen = MAX(VADDR_PRLEN, strlen(net->netdevice));
+
+	fprintf(fp, "%s  NAME   IP ADDRESS(ES)\n",
+		mkstring(upper_case(net->netdevice, buf), 
+			flen, CENTER|LJUST, NULL));
+
+	net_device_buf = GETBUF(SIZE(net_device));
+
+	ld =  &list_data;
+	BZERO(ld, sizeof(struct list_data));
+	get_symbol_data("dev_base_head", sizeof(void *), &ld->start);
+	ld->end = symbol_value("dev_base_head");
+	ld->list_head_offset = OFFSET(net_device_dev_list);
+
+	hq_open();
+	ndevcnt = do_list(ld);
+	ndevlist = (ulong *)GETBUF(ndevcnt * sizeof(ulong));
+	ndevcnt = retrieve_list(ndevlist, ndevcnt);
+	hq_close();
+
+	for (i = 0; i < ndevcnt; ++i) {
+		readmem(ndevlist[i], KVADDR, net_device_buf,
+			SIZE(net_device), "net_device buffer",
+			FAULT_ON_ERROR);
+
+                fprintf(fp, "%s  ",
+			mkstring(buf, flen, CENTER|RJUST|LONG_HEX,
+			MKSTR(ndevlist[i])));
+
+		get_device_name(ndevlist[i], buf);
+		fprintf(fp, "%-6s ", buf);
+
+		get_device_address(ndevlist[i], buf);
+		fprintf(fp, "%s\n", buf);
+	}
+	
+	FREEBUF(ndevlist);
+	FREEBUF(net_device_buf);
+}
+
+static void
+show_net_devices_v3(void)
+{
+	struct list_data list_data, *ld;
+	char *net_device_buf;
+	char buf[BUFSIZE];
+	ulong *ndevlist;
+	int ndevcnt, i;
+	long flen;
+
+	if (!net->netdevice) /* initialized in net_init() */
+		return;
+
+	flen = MAX(VADDR_PRLEN, strlen(net->netdevice));
+
+	fprintf(fp, "%s  NAME   IP ADDRESS(ES)\n",
+		mkstring(upper_case(net->netdevice, buf), 
+			flen, CENTER|LJUST, NULL));
+
+	net_device_buf = GETBUF(SIZE(net_device));
+
+	ld =  &list_data;
+	BZERO(ld, sizeof(struct list_data));
+	ld->start = ld->end =
+		 symbol_value("init_net") + OFFSET(net_dev_base_head);
+	ld->list_head_offset = OFFSET(net_device_dev_list);
+
+	hq_open();
+	ndevcnt = do_list(ld);
+	ndevlist = (ulong *)GETBUF(ndevcnt * sizeof(ulong));
+	ndevcnt = retrieve_list(ndevlist, ndevcnt);
+	hq_close();
+
+	/*
+	 *  Skip the first entry (init_net).
+	 */
+	for (i = 1; i < ndevcnt; ++i) {
+		readmem(ndevlist[i], KVADDR, net_device_buf,
+			SIZE(net_device), "net_device buffer",
+			FAULT_ON_ERROR);
+
+                fprintf(fp, "%s  ",
+			mkstring(buf, flen, CENTER|RJUST|LONG_HEX,
+			MKSTR(ndevlist[i])));
+
+		get_device_name(ndevlist[i], buf);
+		fprintf(fp, "%-6s ", buf);
+
+		get_device_address(ndevlist[i], buf);
+		fprintf(fp, "%s\n", buf);
+	}
+	
+	FREEBUF(ndevlist);
+	FREEBUF(net_device_buf);
+}
 
 /*
  * Perform the actual work of dumping the ARP table...

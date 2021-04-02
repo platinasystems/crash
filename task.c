@@ -34,6 +34,7 @@ static struct task_context *store_context(struct task_context *, ulong, char *);
 static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
 static void child_list(ulong);
+static void initialize_task_state(void);
 static void show_task_times(struct task_context *, ulong);
 static void show_task_args(struct task_context *);
 static void show_task_rlimit(struct task_context *);
@@ -445,6 +446,9 @@ task_init(void)
 	}
 
 	sort_context_array();
+
+	if (pc->flags & SILENT)
+		initialize_task_state();
 
 	tt->flags |= TASK_INIT_DONE;
 }

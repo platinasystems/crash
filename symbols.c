@@ -6618,6 +6618,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(kmem_cache_cpu_page));
         fprintf(fp, "           kmem_cache_cpu_node: %ld\n",
                 OFFSET(kmem_cache_cpu_node));
+        fprintf(fp, "              kmem_cache_flags: %ld\n",
+                OFFSET(kmem_cache_flags));
 
 	fprintf(fp, "               net_device_next: %ld\n",
         	OFFSET(net_device_next));
@@ -6629,6 +6631,11 @@ dump_offset_table(char *spec, ulong makestruct)
         	OFFSET(net_device_addr_len));
 	fprintf(fp, "             net_device_ip_ptr: %ld\n",
         	OFFSET(net_device_ip_ptr));
+	fprintf(fp, "           net_device_dev_list: %ld\n",
+		OFFSET(net_device_dev_list));
+	fprintf(fp, "             net_dev_base_head: %ld\n",
+		OFFSET(net_dev_base_head));
+
 	fprintf(fp, "                   device_next: %ld\n",
         	OFFSET(device_next));
 	fprintf(fp, "                   device_name: %ld\n",

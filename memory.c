@@ -68,6 +68,7 @@ struct meminfo {           /* general purpose memory information structure */
 		ulong addr;
 		ulong size;
 	} *vmlist;
+	ulong container;
 };
 
 static char *memtype_string(int, int);
@@ -96,8 +97,8 @@ static void dump_kmem_cache_percpu_v2(struct meminfo *);
 static void dump_kmem_cache_slub(struct meminfo *);
 static void dump_kmem_cache_info_v2(struct meminfo *);
 static void kmem_cache_list_slub(void);
-static ulong get_cpu_slab_ptr(struct meminfo *, int);
-static char *vaddr_to_kmem_cache(ulong, char *);
+static ulong get_cpu_slab_ptr(struct meminfo *, int, ulong *);
+static char *vaddr_to_kmem_cache(ulong, char *, int);
 static ulong vaddr_to_slab(ulong);
 static void do_slab_chain(int, struct meminfo *);
 static void do_slab_chain_percpu_v1(long, struct meminfo *);
@@ -177,6 +178,7 @@ static int get_kmem_cache_slub_data(long, struct meminfo *);
 static ulong compound_head(ulong);
 static long count_partial(ulong);
 static ulong get_freepointer(struct meminfo *, void *);
+static int count_free_objects(struct meminfo *, ulong);
 char *is_slab_page(struct meminfo *, char *);
 static void do_node_lists_slub(struct meminfo *, ulong, int);
 
@@ -195,6 +197,7 @@ static void do_node_lists_slub(struct meminfo *, ulong, int);
 #define UDECIMAL       (0x200)
 #define ASCII_ENDLINE  (0x400)
 #define NO_ASCII       (0x800)
+#define SLAB_CACHE    (0x1000)
 
 static ulong DISPLAY_DEFAULT;
 
@@ -455,6 +458,7 @@ vm_init(void)
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_slab, "kmem_cache", "cpu_slab");
 		MEMBER_OFFSET_INIT(kmem_cache_list, "kmem_cache", "list");
 		MEMBER_OFFSET_INIT(kmem_cache_name, "kmem_cache", "name");
+		MEMBER_OFFSET_INIT(kmem_cache_flags, "kmem_cache", "flags");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_freelist, "kmem_cache_cpu", "freelist");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_page, "kmem_cache_cpu", "page");
 		MEMBER_OFFSET_INIT(kmem_cache_cpu_node, "kmem_cache_cpu", "node");
@@ -869,7 +873,7 @@ cmd_rd(void)
 	memtype = KVADDR;
 	count = -1;
 
-        while ((c = getopt(argcnt, args, "xme:pfudDuso:81:3:6:")) != EOF) {
+        while ((c = getopt(argcnt, args, "xme:pfudDusSo:81:3:6:")) != EOF) {
                 switch(c)
 		{
 		case '8':
@@ -915,12 +919,15 @@ cmd_rd(void)
 			break;
 
 		case 's':
-			if (flag & DISPLAY_DEFAULT)
+		case 'S':
+			if (flag & DISPLAY_DEFAULT) {
 				flag |= SYMBOLIC;
-			else {
-				error(INFO, 
-				   "-s only allowed with %d-bit display\n",
-					DISPLAY_DEFAULT == DISPLAY_64 ?
+				if (c == 'S')
+					flag |= SLAB_CACHE;
+			} else {
+				error(INFO, "-%c option"
+				    " is only allowed with %d-bit display\n",
+					c, DISPLAY_DEFAULT == DISPLAY_64 ?
 					64 : 32);
 				argerrs++;
 			}
@@ -1086,6 +1093,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 	char ch;
 	int linelen;
 	char buf[BUFSIZE];
+	char slab[BUFSIZE];
 	int ascii_start;
 	char *hex_64_fmt = BITS32() ? "%.*llx " : "%.*lx ";
 	char *dec_64_fmt = BITS32() ? "%12lld " : "%15ld ";
@@ -1185,6 +1193,19 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 					linelen += strlen(buf)+1;
 					break;
 				}
+				if ((flag & SLAB_CACHE) && 
+				    vaddr_to_kmem_cache(mem.u64, slab, 
+				    !VERBOSE)) {
+					if (CRASHDEBUG(1))
+						sprintf(buf, "[%llx:%s]", 
+							(ulonglong)mem.u64,
+							slab);
+					else
+						sprintf(buf, "[%s]", slab);
+					fprintf(fp, "%-16s ", buf);
+					linelen += strlen(buf)+1;
+					break;
+				}
 			} 
 			if (flag & HEXADECIMAL) {
 				fprintf(fp, hex_64_fmt, LONG_LONG_PRLEN, 
@@ -1208,6 +1229,19 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype)
 					    "%-16s " : "%-8s ",
                                                 value_to_symstr(mem.u32,
 						                buf, 0));
+					linelen += strlen(buf)+1;
+					break;
+				}
+				if ((flag & SLAB_CACHE) && 
+				    vaddr_to_kmem_cache(mem.u32, slab, 
+				    !VERBOSE)) {
+					if (CRASHDEBUG(1))
+						sprintf(buf, "[%x:%s]", 
+							mem.u32, slab);
+					else
+						sprintf(buf, "[%s]", slab);
+					fprintf(fp, INT_PRLEN == 16 ? 
+					    "%-16s " : "%-8s ", buf);
 					linelen += strlen(buf)+1;
 					break;
 				}
@@ -7141,22 +7175,25 @@ kmem_cache_list(void)
  *  name of the cache to which it belongs.
  */
 static char *
-vaddr_to_kmem_cache(ulong vaddr, char *buf)
+vaddr_to_kmem_cache(ulong vaddr, char *buf, int verbose)
 {
 	physaddr_t paddr;
 	ulong page;
 	ulong cache;
 
         if (!kvtop(NULL, vaddr, &paddr, 0)) {
-		error(WARNING, 
-		    "cannot make virtual-to-physical translation: %lx\n", 
-			vaddr);
+		if (verbose)
+		 	error(WARNING, 
+ 		            "cannot make virtual-to-physical translation: %lx\n", 
+				vaddr);
 		return NULL;
 	}
 
 	if (!phys_to_page(paddr, &page)) {
-		error(WARNING, "cannot find mem_map page for address: %lx\n", 
-			vaddr);
+		if (verbose)
+			error(WARNING, 
+			    "cannot find mem_map page for address: %lx\n", 
+				vaddr);
 		return NULL;
 	}
 
@@ -7665,7 +7702,7 @@ dump_kmem_cache(struct meminfo *si)
 	si->cache = cache_cache = symbol_value("cache_cache");
 
 	if (si->flags & ADDRESS_SPECIFIED) {
-	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf))) {
+	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
 			error(INFO, 
 			   "address is not allocated in slab subsystem: %lx\n",
 				si->spec_addr);
@@ -7791,12 +7828,14 @@ dump_kmem_cache(struct meminfo *si)
 					case KMEM_OBJECT_ADDR_FREE:
                                                 fprintf(fp, free_inuse_hdr);
 						fprintf(fp, "   %lx\n", 
+							si->container ? si->container :
                                                         (ulong)si->spec_addr);
 						break;
 
                                         case KMEM_OBJECT_ADDR_INUSE:
                                                 fprintf(fp, free_inuse_hdr);
                                                 fprintf(fp, "  [%lx]\n",
+							si->container ? si->container :
                                                         (ulong)si->spec_addr);
                                                 break;
 					}
@@ -7869,7 +7908,7 @@ dump_kmem_cache_percpu_v1(struct meminfo *si)
 	si->cache = cache_cache = symbol_value("cache_cache");
 
 	if (si->flags & ADDRESS_SPECIFIED) {
-	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf))) {
+	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
 			error(INFO, 
 			   "address is not allocated in slab subsystem: %lx\n",
 				si->spec_addr);
@@ -7996,12 +8035,14 @@ dump_kmem_cache_percpu_v1(struct meminfo *si)
 				case KMEM_OBJECT_ADDR_FREE:
                                         fprintf(fp, free_inuse_hdr);
 					fprintf(fp, "   %lx\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr);
 					break;
 
                                 case KMEM_OBJECT_ADDR_INUSE:
                                         fprintf(fp, free_inuse_hdr);
-                                        fprintf(fp, "  [%lx]\n", 
+					fprintf(fp, "  [%lx]\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr);
                                         break;
 
@@ -8009,6 +8050,7 @@ dump_kmem_cache_percpu_v1(struct meminfo *si)
                                         fprintf(fp, free_inuse_hdr);
                                         fprintf(fp, 
 					    "   %lx  (cpu %d cache)\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr, si->cpu);
                                         break;
 				}
@@ -8091,7 +8133,7 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
         cache_end = symbol_value("cache_chain");
 
 	if (si->flags & ADDRESS_SPECIFIED) {
-	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf))) {
+	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
 			error(INFO, 
 			   "address is not allocated in slab subsystem: %lx\n",
 				si->spec_addr);
@@ -8225,12 +8267,14 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 				case KMEM_OBJECT_ADDR_FREE:
                                         fprintf(fp, free_inuse_hdr);
 					fprintf(fp, "   %lx\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr);
 					break;
 
                                 case KMEM_OBJECT_ADDR_INUSE:
                                         fprintf(fp, free_inuse_hdr);
                                         fprintf(fp, "  [%lx]\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr);
                                         break;
 
@@ -8238,6 +8282,7 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                                         fprintf(fp, free_inuse_hdr);
                                         fprintf(fp, 
 					    "   %lx  (cpu %d cache)\n", 
+						si->container ? si->container :
 						(ulong)si->spec_addr, si->cpu);
                                         break;
 
@@ -8245,6 +8290,7 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                                         fprintf(fp, free_inuse_hdr);
                                         fprintf(fp,
                                             "   %lx  (shared cache)\n",
+						si->container ? si->container :
                                                 (ulong)si->spec_addr);
                                         break;
                                 }
@@ -9638,6 +9684,7 @@ gather_slab_free_list_percpu(struct meminfo *si)
                         if (INOBJECT(si->spec_addr, obj)) {	\
                                 si->found =			\
                                     KMEM_OBJECT_ADDR_FREE;	\
+				si->container = obj;		\
                                 return;				\
                         }					\
                 }						\
@@ -9649,6 +9696,7 @@ gather_slab_free_list_percpu(struct meminfo *si)
                         if (INOBJECT(si->spec_addr, obj)) {	\
                                 si->found =			\
                                     KMEM_OBJECT_ADDR_INUSE;	\
+				si->container = obj;		\
                                 return;				\
                         }					\
                 }						\
@@ -9670,6 +9718,7 @@ dump_slab_objects(struct meminfo *si)
 
         cnt = 0;
         expected = si->s_inuse;
+	si->container = 0;
 
         if (CRASHDEBUG(1))
                 for (i = 0; i < si->c_num; i++) {
@@ -9745,6 +9794,7 @@ dump_slab_objects_percpu(struct meminfo *si)
 
         cnt = 0;
         expected = si->s_inuse;
+	si->container = 0;
 
         if (CRASHDEBUG(1))
                 for (i = 0; i < si->c_num; i++) {
@@ -9796,6 +9846,7 @@ dump_slab_objects_percpu(struct meminfo *si)
 	                        if (INOBJECT(si->spec_addr, obj)) {     
 	                                si->found =                     
 	                                    KMEM_OBJECT_ADDR_FREE;      
+					si->container = obj;
 	                                return;                         
 	                        }                                       
 	                }                                               
@@ -9808,6 +9859,7 @@ dump_slab_objects_percpu(struct meminfo *si)
                                 if (INOBJECT(si->spec_addr, obj)) {
                                         si->found =
                                             KMEM_OBJECT_ADDR_CACHED;
+					si->container = obj;
                                         return;
                                 } 
                         }
@@ -9819,6 +9871,7 @@ dump_slab_objects_percpu(struct meminfo *si)
                                 if (INOBJECT(si->spec_addr, obj)) {
                                         si->found =
                                             KMEM_OBJECT_ADDR_SHARED;
+					si->container = obj;
                                         return;
                                 } 
 			}
@@ -9830,6 +9883,7 @@ dump_slab_objects_percpu(struct meminfo *si)
 	                        if (INOBJECT(si->spec_addr, obj)) {     
 	                                si->found =                     
 	                                    KMEM_OBJECT_ADDR_INUSE;     
+					si->container = obj;
 	                                return;                         
 	                        }                                       
 	                }                                               
@@ -10270,7 +10324,7 @@ kmem_search(struct meminfo *mi)
 	 */
 	mi->flags = orig_flags;
 	mi->retval = 0;
-	if ((vaddr != BADADDR) && vaddr_to_kmem_cache(vaddr, buf)) {
+	if ((vaddr != BADADDR) && vaddr_to_kmem_cache(vaddr, buf, VERBOSE)) {
 		BZERO(&tmp_meminfo, sizeof(struct meminfo));
 		tmp_meminfo.spec_addr = vaddr;
 		tmp_meminfo.memtype = KVADDR;
@@ -10889,6 +10943,10 @@ cmd_search(void)
 		case 'k':
 			if (!sflag) {
 				start = machdep->kvbase;
+				if (machine_type("IA64") &&
+				    (start < machdep->identity_map_base) &&
+				    (kt->stext > start))
+					start = kt->stext;
 				sflag++;
 			}
 			memtype = KVADDR;
@@ -13353,7 +13411,8 @@ dump_kmem_cache_slub(struct meminfo *si)
 		if ((p1 = is_slab_page(si, kbuf))) {
 			si->flags |= VERBOSE;
 			si->slab = (ulong)si->spec_addr;
-		} else if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf))) {
+		} else if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, 
+		    	VERBOSE))) {
 			error(INFO, 
 			   "address is not allocated in slab subsystem: %lx\n",
 				si->spec_addr);
@@ -13453,7 +13512,7 @@ get_kmem_cache_slub_data(long cmd, struct meminfo *si)
 	total_slabs = total_objects = 0; 
 
 	for (i = 0; i < kt->cpus; i++) {
-		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i, NULL);
 
 		if (!cpu_slab_ptr)
 			continue;
@@ -13558,7 +13617,7 @@ do_kmem_cache_slub(struct meminfo *si)
 	per_cpu = (ulong *)GETBUF(sizeof(ulong) * vt->numnodes);
 
         for (i = 0; i < kt->cpus; i++) {
-		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i, NULL);
 
 		fprintf(fp, "CPU %d SLAB:\n%s", i, 
 			cpu_slab_ptr ? "" : "  (empty)\n");
@@ -13626,7 +13685,7 @@ do_slab_slub(struct meminfo *si, int verbose)
 	physaddr_t paddr; 
 	ulong vaddr;
 	ushort inuse; 
-	ulong freelist, cpu_slab_ptr;
+	ulong freelist, cpu_freelist, cpu_slab_ptr;
 	int i, cpu_slab, is_free, node;
 	ulong p, q;
 
@@ -13657,23 +13716,54 @@ do_slab_slub(struct meminfo *si, int verbose)
 	    sizeof(void *), "page.freelist", RETURN_ON_ERROR))
 		return;
 
-	DUMP_SLAB_INFO_SLUB();
-
-	if (!verbose)
+	if (!verbose) {
+		DUMP_SLAB_INFO_SLUB();
 		return;
+	}
 
 	for (i = 0, cpu_slab = -1; i < kt->cpus; i++) {
-		cpu_slab_ptr = get_cpu_slab_ptr(si, i);
+		cpu_slab_ptr = get_cpu_slab_ptr(si, i, &cpu_freelist);
 
 		if (!cpu_slab_ptr)
                         continue;
 		if (cpu_slab_ptr == si->slab) {
 			cpu_slab = i;
+			/*
+			 *  Later slub scheme uses the per-cpu freelist
+			 *  and keeps page->inuse maxed out, so count 
+			 *  the free objects by hand.
+			 */
+			if (cpu_freelist)
+				freelist = cpu_freelist;
+			if ((si->objects - inuse) == 0)
+				inuse = si->objects - 
+					count_free_objects(si, freelist);
 			break;
 		}
 	}
 
+	DUMP_SLAB_INFO_SLUB();
+
 	fprintf(fp, "  %s", free_inuse_hdr);
+
+#define PAGE_MAPPING_ANON  1
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "< SLUB: free list START: >\n");
+		i = 0;
+		for (q = freelist; q; q = get_freepointer(si, (void *)q)) {
+			if (q & PAGE_MAPPING_ANON) { 
+				fprintf(fp, 
+				    "< SLUB: free list END: %lx (%d found) >\n",
+					q, i); 
+				break;
+			}
+			fprintf(fp, "   %lx\n", q);
+			i++;
+		}
+		if (!q) 
+			fprintf(fp, "< SLUB: free list END (%d found) >\n", i);
+	}
 
 	for (p = vaddr; p < vaddr + si->objects * si->size; p += si->size) {
 		is_free = FALSE;
@@ -13681,6 +13771,8 @@ do_slab_slub(struct meminfo *si, int verbose)
 			q = get_freepointer(si, (void *)q)) {
 			if (q == BADADDR)
 				return;
+			if (q & PAGE_MAPPING_ANON)
+				break;
 			if (p == q) {
 				is_free = TRUE;
 				break;
@@ -13705,6 +13797,23 @@ do_slab_slub(struct meminfo *si, int verbose)
 	}
 }
 
+static int
+count_free_objects(struct meminfo *si, ulong freelist)
+{
+	int c;
+	ulong q;
+
+	c = 0;
+	for (q = freelist; q; q = get_freepointer(si, (void *)q)) {
+                if (q & PAGE_MAPPING_ANON)
+			break;
+                c++;
+	}
+
+	return c;
+}
+
+
 static ulong
 get_freepointer(struct meminfo *si, void *object)
 {
@@ -13721,7 +13830,7 @@ get_freepointer(struct meminfo *si, void *object)
 static void
 do_node_lists_slub(struct meminfo *si, ulong node_ptr, int node)
 {
-	ulong next, list_head;
+	ulong next, list_head, flags;
 	int first;
 
 	list_head = node_ptr + OFFSET(kmem_cache_node_partial);
@@ -13746,7 +13855,11 @@ do_node_lists_slub(struct meminfo *si, ulong node_ptr, int node)
                         return;
         }
 
-	if (INVALID_MEMBER(kmem_cache_node_full)) {
+#define SLAB_STORE_USER (0x00010000UL)
+	flags = ULONG(si->cache_buf + OFFSET(kmem_cache_flags));
+	
+	if (INVALID_MEMBER(kmem_cache_node_full) ||
+	    !(flags & SLAB_STORE_USER)) {
 		fprintf(fp, "NODE %d FULL:\n  (not tracked)\n", node);
 		return;
 	}
@@ -13938,7 +14051,7 @@ is_slab_page(struct meminfo *si, char *buf)
 	    RETURN_ON_ERROR|QUIET))
 		return NULL;
 
-	if (!(page_flags & vt->PG_slab))
+	if (!(page_flags & (1 << vt->PG_slab)))
 		return NULL;
 
 	if (!readmem(si->spec_addr + OFFSET(page_slab), KVADDR, 
@@ -13976,12 +14089,16 @@ bailout:
 /*
  *  Figure out which of the kmem_cache.cpu_slab declarations
  *  is used by this kernel, and return a pointer to the slab
- *  page being used.
+ *  page being used.  Return the kmem_cache_cpu.freelist pointer
+ *  if requested.
  */
 static ulong
-get_cpu_slab_ptr(struct meminfo *si, int cpu)
+get_cpu_slab_ptr(struct meminfo *si, int cpu, ulong *cpu_freelist)
 {
-	ulong cpu_slab_ptr, page;
+	ulong cpu_slab_ptr, page, freelist;
+
+	if (cpu_freelist)
+		*cpu_freelist = 0;
 
 	switch (vt->cpu_slab_type)
 	{
@@ -13989,11 +14106,23 @@ get_cpu_slab_ptr(struct meminfo *si, int cpu)
 		cpu_slab_ptr = ULONG(si->cache_buf +
                         OFFSET(kmem_cache_cpu_slab) +
 			OFFSET(kmem_cache_cpu_page));
+		if (cpu_freelist && VALID_MEMBER(kmem_cache_cpu_freelist))
+			*cpu_freelist = ULONG(si->cache_buf +
+                        	OFFSET(kmem_cache_cpu_slab) +
+                        	OFFSET(kmem_cache_cpu_freelist));
 		break;
 
 	case TYPE_CODE_ARRAY:
 		cpu_slab_ptr = ULONG(si->cache_buf +
 			OFFSET(kmem_cache_cpu_slab) + (sizeof(void *)*cpu));
+
+		if (cpu_slab_ptr && cpu_freelist &&
+		    VALID_MEMBER(kmem_cache_cpu_freelist)) {
+			if (readmem(cpu_slab_ptr + OFFSET(kmem_cache_cpu_freelist),
+			    KVADDR, &freelist, sizeof(void *),
+			    "kmem_cache_cpu.freelist", RETURN_ON_ERROR))
+				*cpu_freelist = freelist;
+		}
 	
 		if (cpu_slab_ptr && VALID_MEMBER(kmem_cache_cpu_page)) {
 			if (!readmem(cpu_slab_ptr + OFFSET(kmem_cache_cpu_page),
