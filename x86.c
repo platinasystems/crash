@@ -290,7 +290,7 @@ db_print_stack_entry(name, narg, argnp, argp, callpc)
 
 	if (!name) {
 		if (IS_MODULE_VADDR(callpc) &&
-		    module_symbol(callpc, NULL, NULL, buf1, output_radix)) {
+		    module_symbol(callpc, NULL, NULL, buf1, *gdb_output_radix)) {
 			sprintf(buf2, "(%s)", buf1);
 			name = buf2;
 		}

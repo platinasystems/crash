@@ -44,7 +44,10 @@ static void calculate_load_order_v2(struct load_module *, bfd *, int,
 static void check_insmod_builtin(struct load_module *, int, ulong *);
 static int is_insmod_builtin(struct load_module *, struct syment *);
 struct load_module;
-static int add_symbol_file(struct load_module *lm);
+static int add_symbol_file(struct load_module *);
+#ifdef GDB_7_0
+static int add_symbol_file_kallsyms(struct load_module *, struct gnu_request *);
+#endif
 static void find_mod_etext(struct load_module *); 
 static long rodata_search(ulong *, ulong);
 static int ascii_long(ulong word);
@@ -415,7 +418,7 @@ separate_debug_file_exists(const char *name, unsigned long crc, int *exists)
   	while ((count = read(fd, buffer, sizeof(buffer))) > 0)
 #if defined(GDB_5_3)
     		file_crc = calc_crc32(file_crc, buffer, count);
-#elif defined(GDB_6_0) || defined(GDB_6_1)
+#elif defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
     		file_crc = gnu_debuglink_crc32(file_crc, 
 			(unsigned char *)buffer, count);
 #else
@@ -952,7 +955,7 @@ check_for_dups(struct load_module *lm)
 
         for ( ; sp <= sp_end; sp++) {
                 if (symbol_name_count(sp->name) > 1)
-			error(WARNING, "%s: duplicate symbol name: %s\n",
+			error(NOTE, "%s: duplicate symbol name: %s\n",
 				lm->mod_name, sp->name);
         }
 }
@@ -2303,6 +2306,14 @@ dump_symbol_table(void)
                 fprintf(fp, "%sUSE_OLD_ADD_SYM", others++ ? "|" : "");
         if (st->flags & PERCPU_SYMS)
                 fprintf(fp, "%sPERCPU_SYMS", others++ ? "|" : "");
+        if (st->flags & MODSECT_V1)
+                fprintf(fp, "%sMODSECT_V1", others++ ? "|" : "");
+        if (st->flags & MODSECT_V2)
+                fprintf(fp, "%sMODSECT_V2", others++ ? "|" : "");
+        if (st->flags & MODSECT_V3)
+                fprintf(fp, "%sMODSECT_V3", others++ ? "|" : "");
+        if (st->flags & MODSECT_UNKNOWN)
+                fprintf(fp, "%sMODSECT_UNKNOWN", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "                 bfd: %lx\n", (ulong)st->bfd);
@@ -2418,6 +2429,8 @@ dump_symbol_table(void)
 			fprintf(fp, "%sMOD_KALLSYMS", others++ ? "|" : "");
 		if (lm->mod_flags & MOD_INITRD)
 			fprintf(fp, "%sMOD_INITRD", others++ ? "|" : "");
+		if (lm->mod_flags & MOD_NOPATCH)
+			fprintf(fp, "%sMOD_NOPATCH", others++ ? "|" : "");
 		fprintf(fp, ")\n");
 
         	fprintf(fp, "          mod_symtable: %lx\n",
@@ -2837,7 +2850,7 @@ not_system_map:
 static int
 is_bfd_format(char *filename) 
 {
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
         struct bfd *bfd;
 #else
         struct _bfd *bfd;
@@ -2859,7 +2872,7 @@ is_bfd_format(char *filename)
 static int
 is_binary_stripped(char *filename)
 {
-#if defined(GDB_6_0) || defined(GDB_6_1)
+#if defined(GDB_6_0) || defined(GDB_6_1) || defined(GDB_7_0)
         struct bfd *bfd;
 #else
         struct _bfd *bfd;
@@ -2986,7 +2999,7 @@ cmd_sym(void)
 					show_symbol(sp, offset, show_flags);
 				}
 				else if (module_symbol(value, &sp, 
-				        NULL, buf, output_radix)) {
+				        NULL, buf, *gdb_output_radix)) {
 					name = buf;
 
                                         if (prev && sp && 
@@ -3151,7 +3164,7 @@ get_section(ulong vaddr, char *buf)
 
 	buf[0] = NULLCHAR;
 
-	if (module_symbol(vaddr, NULL, &lm, NULL, output_radix)) {
+	if (module_symbol(vaddr, NULL, &lm, NULL, *gdb_output_radix)) {
 		if (lm->mod_flags & MOD_LOAD_SYMS) { 
 			for (i = (lm->mod_sections-1); i >= 0; i--) {
                                 start = lm->mod_base +
@@ -3399,7 +3412,7 @@ in_ksymbol_range(ulong value)
 			return TRUE;
 	}
 
-	if (module_symbol(value, NULL, NULL, NULL, output_radix))
+	if (module_symbol(value, NULL, NULL, NULL, *gdb_output_radix))
 		return TRUE;
 
 	if (machdep->value_to_symbol(value, NULL))
@@ -3431,7 +3444,7 @@ module_symbol(ulong value,
 		return FALSE;
 
         if (!radix)
-                radix = output_radix;
+                radix = *gdb_output_radix;
         if ((radix != 10) && (radix != 16))
                 radix = 16;
 
@@ -3536,6 +3549,11 @@ check_modules:
 					spnext = sp+1;
 					if ((spnext < sp_end) &&
 					    (value == spnext->value)) 
+						sp = spnext;
+				}
+				if (sp->name[0] == '.') {
+					spnext = sp+1;
+					if (spnext->value == value)
 						sp = spnext;
 				}
                         	if (offset)
@@ -3647,7 +3665,7 @@ value_to_symstr(ulong value, char *buf, ulong radix)
 	buf[0] = NULLCHAR;
 
 	if (!radix)
-		radix = output_radix;
+		radix = *gdb_output_radix;
 	if ((radix != 10) && (radix != 16))
 		radix = 16;
 
@@ -3659,7 +3677,7 @@ value_to_symstr(ulong value, char *buf, ulong radix)
                         sprintf(buf, "%s", sp->name);
         }
 
-	if (module_symbol(value, NULL, NULL, locbuf, output_radix)) {
+	if (module_symbol(value, NULL, NULL, locbuf, *gdb_output_radix)) {
 		if (sp) {
 			if (STRNEQ(locbuf, "_MODULE_START_"))
 				shift_string_left(locbuf, 
@@ -4350,16 +4368,16 @@ dump_struct(char *s, ulong addr, unsigned radix)
 		error(FATAL, "invalid structure name: %s\n", s);
 
 	if (radix) {
-		restore_radix = output_radix; 
-		output_radix = radix;
-		output_format = (output_radix == 10) ? 0 : 'x';
+		restore_radix = *gdb_output_radix; 
+		*gdb_output_radix = radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 	}
 
         print_struct(s, addr);
 
 	if (radix) {
-		output_radix = restore_radix;
-		output_format = (output_radix == 10) ? 0 : 'x';
+		*gdb_output_radix = restore_radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 	}
 }
 
@@ -4397,9 +4415,9 @@ dump_struct_member(char *s, ulong addr, unsigned radix)
 	}
  
         if (radix) {
-                restore_radix = output_radix; 
-                output_radix = radix;
-                output_format = (output_radix == 10) ? 0 : 'x';
+                restore_radix = *gdb_output_radix; 
+                *gdb_output_radix = radix;
+                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
         }
                 
         open_tmpfile();
@@ -4408,8 +4426,8 @@ dump_struct_member(char *s, ulong addr, unsigned radix)
         close_tmpfile();
                 
         if (radix) {
-                output_radix = restore_radix;
-                output_format = (output_radix == 10) ? 0 : 'x';
+                *gdb_output_radix = restore_radix;
+                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
         }
 
 	FREEBUF(buf);
@@ -4431,16 +4449,16 @@ dump_union(char *s, ulong addr, unsigned radix)
                 error(FATAL, "invalid union name: %s\n", s);
 
         if (radix) {
-                restore_radix = output_radix;
-                output_radix = radix;
-		output_format = (output_radix == 10) ? 0 : 'x';
+                restore_radix = *gdb_output_radix;
+                *gdb_output_radix = radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
         }
 
         print_union(s, addr);
 
         if (radix) {
-                output_radix = restore_radix;
-		output_format = (output_radix == 10) ? 0 : 'x';
+                *gdb_output_radix = restore_radix;
+		*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 	}
 }
 
@@ -4790,7 +4808,7 @@ do_datatype_declaration(struct datatype_member *dm, ulong flags)
         }
 
 	if (!dm->member) {
-		switch (output_radix)
+		switch (*gdb_output_radix)
 		{
 		default:
 		case 10:
@@ -5128,16 +5146,16 @@ cmd_p(void)
                 switch(c)
                 {
 		case 'd':
-			restore_radix = output_radix;
-			output_radix = 10;
-                	output_format = (output_radix == 10) ? 0 : 'x';
+			restore_radix = *gdb_output_radix;
+			*gdb_output_radix = 10;
+                	*gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 			break;
 
 		case 'h':
 		case 'x':
-                        restore_radix = output_radix;
-                        output_radix = 16;
-                        output_format = (output_radix == 10) ? 0 : 'x';
+                        restore_radix = *gdb_output_radix;
+                        *gdb_output_radix = 16;
+                        *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
                         break;
 
 		case 'u':
@@ -5158,7 +5176,7 @@ cmd_p(void)
 			return;
 		sprintf(buf2, "%s = ", args[optind]);
 		leader = strlen(buf2);
-		if (module_symbol(sp->value, NULL, NULL, NULL, output_radix))
+		if (module_symbol(sp->value, NULL, NULL, NULL, *gdb_output_radix))
 			do_load_module_filter = TRUE;
 	} else if (st->flags & LOAD_MODULE_SYMS)
 		do_load_module_filter = TRUE;
@@ -5199,8 +5217,8 @@ cmd_p(void)
 		close_tmpfile();
 
 	if (restore_radix) {
-                output_radix = restore_radix;
-                output_format = (output_radix == 10) ? 0 : 'x';
+                *gdb_output_radix = restore_radix;
+                *gdb_output_format = (*gdb_output_radix == 10) ? 0 : 'x';
 	}
 
 	if (!success) 
@@ -5691,7 +5709,7 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		dm->flags |= IN_STRUCT;
 	end_of_block =  STRNEQ(inbuf, "    } ");
 
-	switch (output_radix)
+	switch (*gdb_output_radix)
 	{
 	default:
 	case 10:
@@ -5750,7 +5768,7 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
 		goto do_empty_offset;
 
 	if (end_of_block && dm->member) {
-        	sprintf(buf1, output_radix == 10 ?  
+        	sprintf(buf1, *gdb_output_radix == 10 ?  
 			"  [%ld]" : "  [0x%lx]", offset);
         	sprintf(fmt, "%c%ds", '%', len+1);
         	fprintf(ofp, fmt, " ");
@@ -5768,7 +5786,7 @@ show_member_offset(FILE *ofp, struct datatype_member *dm, char *inbuf)
                 dm->flags &= ~(IN_UNION|IN_STRUCT);
 	}
 
-	sprintf(buf1, output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
+	sprintf(buf1, *gdb_output_radix == 10 ?  "  [%ld]" : "  [0x%lx]", offset);
 	sprintf(fmt, "%c%ds", '%', len);
 	fprintf(ofp, fmt, buf1);
 	fprintf(ofp, &inbuf[3]);
@@ -6413,6 +6431,27 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(module_symtab));
 	fprintf(fp, "                 module_strtab: %ld\n",
 		OFFSET(module_strtab));
+
+	fprintf(fp, "             module_sect_attrs: %ld\n",
+		OFFSET(module_sect_attrs));
+	fprintf(fp, "       module_sect_attrs_attrs: %ld\n",
+        	OFFSET(module_sect_attrs_attrs));
+	fprintf(fp, "   module_sect_attrs_nsections: %ld\n",
+        	OFFSET(module_sect_attrs_nsections));
+	fprintf(fp, "        module_sect_attr_mattr: %ld\n",
+        	OFFSET(module_sect_attr_mattr));
+	fprintf(fp, "         module_sect_attr_name: %ld\n",
+        	OFFSET(module_sect_attr_name));
+	fprintf(fp, "      module_sect_attr_address: %ld\n",
+        	OFFSET(module_sect_attr_address));
+	fprintf(fp, "               attribute_owner: %ld\n",
+        	OFFSET(attribute_owner));
+	fprintf(fp, "         module_sect_attr_attr: %ld\n",
+        	OFFSET(module_sect_attr_attr));
+	fprintf(fp, "         module_sections_attrs: %ld\n",
+        	OFFSET(module_sections_attrs));
+	fprintf(fp, "         module_attribute_attr: %ld\n",
+        	OFFSET(module_attribute_attr));
 
         fprintf(fp, "         module_kallsyms_start: %ld\n",
         	OFFSET(module_kallsyms_start));
@@ -7307,6 +7346,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(super_block)); 
 	fprintf(fp, "                       irqdesc: %ld\n", SIZE(irqdesc));
 	fprintf(fp, "                        module: %ld\n", SIZE(module));
+	fprintf(fp, "              module_sect_attr: %ld\n", SIZE(module_sect_attr));
 	fprintf(fp, "                     list_head: %ld\n", SIZE(list_head));
 	fprintf(fp, "                    hlist_head: %ld\n", SIZE(hlist_head));
 	fprintf(fp, "                    hlist_node: %ld\n", SIZE(hlist_node));
@@ -8008,7 +8048,7 @@ calculate_load_order_v2(struct load_module *lm, bfd *bfd, int dynamic,
 	    lm->mod_section_data[i].offset = sec_start - lm->mod_base;
             lm->mod_section_data[i].flags |= SEC_FOUND;
 
-	    if (CRASHDEBUG(1)) {
+	    if (CRASHDEBUG(2)) {
 		    fprintf(fp, "update sec offset sym %s @ %lx  val %lx  section %s\n",
 			    s1->name, s1->value, syminfo.value, secname);
 	    }
@@ -8143,7 +8183,7 @@ load_module_symbols(char *modref, char *namelist, ulong base_addr)
 		return TRUE;
 	}
 
-	if (CRASHDEBUG(1))
+	if (CRASHDEBUG(2))
 		fprintf(fp, "load_module_symbols: %s %s %lx %lx\n",
 			modref, namelist, base_addr, kt->flags);
 
@@ -8182,7 +8222,7 @@ load_module_symbols(char *modref, char *namelist, ulong base_addr)
 	else if (symcount == 0)
 		error(FATAL, "no symbols in object file: %s\n", namelist);
 
-        if (CRASHDEBUG(1)) {
+        if (CRASHDEBUG(2)) {
                 fprintf(fp, "%ld symbols found in obj file %s\n", symcount,
                     namelist);
         }
@@ -8203,7 +8243,7 @@ load_module_symbols(char *modref, char *namelist, ulong base_addr)
 add_symbols:
 	result = add_symbol_file(st->current);
 
-	if (CRASHDEBUG(1))
+	if (CRASHDEBUG(2))
 		check_for_dups(st->current);
 
 	st->current = NULL;
@@ -8222,6 +8262,14 @@ add_symbol_file(struct load_module *lm)
         int i, len;
         char *secname;
 
+	req = &request;
+	BZERO(req, sizeof(struct gnu_request));
+
+#ifdef GDB_7_0
+	if ((lm->mod_flags & MOD_KALLSYMS) &&
+	    add_symbol_file_kallsyms(lm, req))
+		return TRUE;
+#endif
 	for (i = len = 0; i < lm->mod_sections; i++)
 	{
 		secname = lm->mod_section_data[i].name;
@@ -8233,8 +8281,6 @@ add_symbol_file(struct load_module *lm)
 		}
 	}
 
-	req = &request;
-	BZERO(req, sizeof(struct gnu_request));
         req->command = GNU_ADD_SYMBOL_FILE;
 	req->addr = (ulong)lm;
 	req->buf = GETBUF(len+BUFSIZE);
@@ -8244,13 +8290,241 @@ add_symbol_file(struct load_module *lm)
 	st->flags |= ADD_SYMBOL_FILE;
 	gdb_interface(req);
 	st->flags &= ~ADD_SYMBOL_FILE;
-	FREEBUF(req->buf);
 
+	FREEBUF(req->buf);
 	sprintf(buf, "set complaints 0");
 	gdb_pass_through(buf, NULL, 0);
 
 	return(!(req->flags & GNU_COMMAND_FAILED));
 }
+
+#ifdef GDB_7_0
+/*
+ *  Gather the module section data from the in-kernel data structures.
+ */
+static int
+add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
+{
+	int len, buflen, done, nsections, retval;
+	ulong vaddr, array_entry, attribute, owner, name, address;
+	long name_type;
+	char buf[BUFSIZE];
+	char section_name[BUFSIZE];
+	ulong section_vaddr;
+
+	if (!(st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3|MODSECT_UNKNOWN))) {
+		STRUCT_SIZE_INIT(module_sect_attr, "module_sect_attr");
+		MEMBER_OFFSET_INIT(module_sect_attrs, 
+			"module", "sect_attrs");
+		MEMBER_OFFSET_INIT(module_sect_attrs_attrs, 
+			"module_sect_attrs", "attrs");
+		MEMBER_OFFSET_INIT(module_sect_attrs_nsections, 
+			"module_sect_attrs", "nsections");
+		MEMBER_OFFSET_INIT(module_sect_attr_mattr, 
+			"module_sect_attr", "mattr");
+		MEMBER_OFFSET_INIT(module_sect_attr_name, 
+			"module_sect_attr", "name");
+		MEMBER_OFFSET_INIT(module_sect_attr_address, 
+			"module_sect_attr", "address");
+		MEMBER_OFFSET_INIT(module_attribute_attr, 
+			"module_attribute", "attr");
+		MEMBER_OFFSET_INIT(module_sect_attr_attr, 
+			"module_sect_attr", "attr");
+		MEMBER_OFFSET_INIT(module_sections_attrs,
+			"module_sections", "attrs");
+		MEMBER_OFFSET_INIT(attribute_owner,
+			"attribute", "owner");
+
+		if (VALID_MEMBER(module_sect_attrs_attrs) &&
+		    VALID_MEMBER(module_sect_attr_mattr) &&
+		    VALID_MEMBER(module_attribute_attr) &&
+		    VALID_MEMBER(module_sect_attrs_nsections))
+			st->flags |= MODSECT_V3;
+		else if (VALID_MEMBER(module_sect_attrs_attrs) &&
+		    VALID_MEMBER(module_sect_attr_mattr) &&
+		    VALID_MEMBER(module_attribute_attr))
+			st->flags |= MODSECT_V2;
+		else if (VALID_MEMBER(module_sect_attr_attr) &&
+		    VALID_MEMBER(module_sections_attrs))
+			st->flags |= MODSECT_V1;
+		else
+			st->flags |= MODSECT_UNKNOWN;
+
+		if ((st->flags & MODSECT_UNKNOWN) || 
+		    !VALID_STRUCT(module_sect_attr) ||
+		    INVALID_MEMBER(attribute_owner) ||
+		    INVALID_MEMBER(module_sect_attrs) ||
+		    INVALID_MEMBER(module_sect_attr_name) ||
+		    INVALID_MEMBER(module_sect_attr_address)) {
+			if (CRASHDEBUG(1)) 
+				error(WARNING, 
+				    "module section data structures "
+				    "unrecognized or changed\n");
+			return FALSE;
+		}
+	} else if (st->flags & MODSECT_UNKNOWN)
+		return FALSE;
+
+	if (!readmem(lm->module_struct + OFFSET(module_sect_attrs),
+	    KVADDR, &vaddr, sizeof(void *), "module.sect_attrs", 
+	    RETURN_ON_ERROR|QUIET))
+		return FALSE;
+
+	array_entry = attribute = 0;
+
+	switch (st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3))
+	{
+	case MODSECT_V1:
+		array_entry = vaddr + OFFSET(module_sections_attrs);
+		nsections = UNUSED;
+		break;
+	case MODSECT_V2:
+		array_entry = vaddr + OFFSET(module_sect_attrs_attrs);
+		nsections = UNUSED;
+		break;
+	case MODSECT_V3:
+		array_entry = vaddr + OFFSET(module_sect_attrs_attrs);
+		if (!readmem(vaddr + OFFSET(module_sect_attrs_nsections),
+	    	    KVADDR, &nsections, sizeof(int), 
+		    "module_sect_attrs.nsections", RETURN_ON_ERROR|QUIET))
+			return FALSE;
+		if (CRASHDEBUG(2))
+			fprintf(fp, "nsections: %d\n", nsections);
+		break;
+	}
+
+	if (CRASHDEBUG(2))
+		fprintf(fp, "%s:\n", lm->mod_namelist);
+
+	name_type = MEMBER_TYPE("module_sect_attr", "name");
+	req->buf = GETBUF(buflen = 1024);
+	retval = FALSE;
+
+	for (done = FALSE; !done; array_entry += SIZE(module_sect_attr)) {
+
+		switch (st->flags & (MODSECT_V1|MODSECT_V2|MODSECT_V3))
+		{
+		case MODSECT_V1:
+			attribute = array_entry + OFFSET(module_sect_attr_attr);
+			break;
+		case MODSECT_V2:
+		case MODSECT_V3:
+			attribute = array_entry + OFFSET(module_sect_attr_mattr) 
+				+ OFFSET(module_attribute_attr);
+			break;
+		}
+	
+		owner = attribute + OFFSET(attribute_owner);
+		address = array_entry + OFFSET(module_sect_attr_address);
+		switch (name_type)
+		{
+		case TYPE_CODE_ARRAY:
+			name = array_entry + OFFSET(module_sect_attr_name);
+			break;
+		case TYPE_CODE_PTR:
+			if (!readmem(array_entry + OFFSET(module_sect_attr_name),
+			    KVADDR, &name, sizeof(void *), 
+		 	    "module_sect_attr.name", RETURN_ON_ERROR|QUIET)) {
+				done = TRUE;
+				retval = FALSE;
+				continue;
+			}
+			break;
+		default:
+			done = TRUE;
+			retval = FALSE;
+		}
+
+		if (CRASHDEBUG(2)) {
+			fprintf(fp, "attribute: %lx ", attribute);
+			fprintf(fp, "    owner: %lx ", owner);
+			fprintf(fp, "     name: %lx ", name);
+			fprintf(fp, "  address: %lx\n", address);
+		}
+	
+		if (nsections == UNUSED) {
+			if (!readmem(owner, KVADDR, &vaddr, sizeof(void *), 
+			    "attribute.owner", RETURN_ON_ERROR|QUIET)) {
+				done = TRUE;
+				continue;
+			}
+		
+			if (lm->module_struct != vaddr) {
+				done = TRUE;
+				continue;
+			}
+		}
+	
+		BZERO(section_name, BUFSIZE);
+		if (!read_string(name, section_name, 32)) {
+			done = TRUE;
+			retval = FALSE;
+			continue;
+		}
+
+		if (!readmem(address, KVADDR, &section_vaddr, sizeof(void *), 
+		    "module_sect_attr.address", RETURN_ON_ERROR|QUIET)) {
+			done = TRUE;
+			retval = FALSE;
+			continue;
+		}
+	
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%lx %s\n", section_vaddr, section_name);
+
+		len = strlen(req->buf);
+
+		if (STREQ(section_name, ".text")) {
+			sprintf(buf, "add-symbol-file %s 0x%lx", 
+				lm->mod_namelist, section_vaddr);
+			while ((len + strlen(buf)) >= buflen) {
+				RESIZEBUF(req->buf, buflen, buflen * 2);
+				buflen *= 2;
+			}
+			shift_string_right(req->buf, strlen(buf));
+			strncpy(req->buf, buf, strlen(buf));
+			retval = TRUE;
+		} else {
+			sprintf(buf, " -s %s 0x%lx", section_name, section_vaddr);
+			while ((len + strlen(buf)) >= buflen) {
+				RESIZEBUF(req->buf, buflen, buflen * 2);
+				buflen *= 2;
+			}
+			strcat(req->buf, buf);
+		}
+
+		if (nsections != UNUSED) {
+			if (--nsections == 0)
+				done = TRUE;
+		}
+	}
+
+	if (retval == FALSE) {
+		if (CRASHDEBUG(1))
+			fprintf(fp, "%s: add_symbol_file_kallsyms failed\n", 
+				lm->mod_namelist);
+		FREEBUF(req->buf);
+		req->buf = NULL;
+		return FALSE;
+	}
+
+	lm->mod_flags |= MOD_NOPATCH;
+        req->command = GNU_ADD_SYMBOL_FILE;
+	req->addr = (ulong)lm;
+	if (!CRASHDEBUG(1))
+		req->fp = pc->nullfp;
+
+	st->flags |= ADD_SYMBOL_FILE;
+	gdb_interface(req);
+	st->flags &= ~ADD_SYMBOL_FILE;
+
+	FREEBUF(req->buf);
+	sprintf(buf, "set complaints 0");
+	gdb_pass_through(buf, NULL, 0);
+
+	return(!(req->flags & GNU_COMMAND_FAILED));
+}
+#endif
 
 
 /*
@@ -8481,7 +8755,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
                                 namespace_ctl(NAMESPACE_INSTALL,
                                         &lm->mod_load_namespace, sp, name);
 
-                                if (CRASHDEBUG(1))
+                                if (CRASHDEBUG(2))
                                     fprintf(fp, "installing %c %08lx %s\n",  syminfo.type, sp->value,
                                         name);
 
@@ -8507,13 +8781,13 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 			if (STREQ(spx->name, nameptr)) {
 				found = TRUE;
 				if (spx->value == sp->value) {
-					if (CRASHDEBUG(1))
+					if (CRASHDEBUG(2))
 						fprintf(fp, 
 						    "%s: %s matches!\n",
 							lm->mod_name,
 							nameptr);
 				} else {
-					if (CRASHDEBUG(1))
+					if (CRASHDEBUG(2))
 						fprintf(fp, 
 				       "[%s] %s: %lx != extern'd value: %lx\n",
 							lm->mod_name,
@@ -8524,7 +8798,7 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 			}
 	    	}
 		if (!found) {
-			if (CRASHDEBUG(1))
+			if (CRASHDEBUG(2))
 				fprintf(fp, "append ext %s (%lx)\n",
                        			spx->name, spx->value);
 			/* append it here... */
@@ -8591,7 +8865,7 @@ delete_load_module(ulong base_addr)
 				unlink_module(lm);
 			lm->mod_symtable = lm->mod_ext_symtable;
 			lm->mod_symend = lm->mod_ext_symend;
-			lm->mod_flags &= ~(MOD_LOAD_SYMS|MOD_REMOTE);
+			lm->mod_flags &= ~(MOD_LOAD_SYMS|MOD_REMOTE|MOD_NOPATCH);
 			lm->mod_flags |= MOD_EXT_SYMS;
 			lm->mod_load_symtable = NULL;
 			lm->mod_load_symend = NULL;
@@ -8626,7 +8900,7 @@ delete_load_module(ulong base_addr)
 				unlink_module(lm);
 			lm->mod_symtable = lm->mod_ext_symtable;
 			lm->mod_symend = lm->mod_ext_symend;
-                        lm->mod_flags &= ~(MOD_LOAD_SYMS|MOD_REMOTE);
+                        lm->mod_flags &= ~(MOD_LOAD_SYMS|MOD_REMOTE|MOD_NOPATCH);
                         lm->mod_flags |= MOD_EXT_SYMS;
                         lm->mod_load_symtable = NULL;
                         lm->mod_load_symend = NULL;
