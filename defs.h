@@ -1988,6 +1988,10 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long sk_buff_len;
 	long sk_buff_data;
 	long nlmsghdr_nlmsg_type;
+	long module_arch;
+	long mod_arch_specific_num_orcs;
+	long mod_arch_specific_orc_unwind_ip;
+	long mod_arch_specific_orc_unwind;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2136,6 +2140,7 @@ struct size_table {         /* stash of commonly-used sizes */
 	long nlmsghdr_nlmsg_type;
 	long sk_buff_head_qlen;
 	long sk_buff_len;
+	long orc_entry;
 };
 
 struct array_table {
@@ -2999,6 +3004,7 @@ typedef signed int s32;
 #define IRQ_STACKS    (0x40)
 #define NEW_VMEMMAP   (0x80)
 #define VM_L4_4K      (0x100)
+#define UNW_4_14      (0x200)
 
 /*
  * Get kimage_voffset from /dev/crash
@@ -3110,6 +3116,7 @@ struct machine_specific {
 	ulong kimage_voffset;
 	ulong kimage_text;
 	ulong kimage_end;
+	ulong user_eframe_offset;
 };
 
 struct arm64_stackframe {
@@ -3289,6 +3296,15 @@ struct arm64_stackframe {
 #define MODULES_VADDR_2_6_31       0xffffffffa0000000
 #define MODULES_END_2_6_31         0xffffffffff000000
 
+#define USERSPACE_TOP_5LEVEL       0x0100000000000000
+#define PAGE_OFFSET_5LEVEL         0xff10000000000000
+#define VMALLOC_START_ADDR_5LEVEL  0xff92000000000000
+#define VMALLOC_END_5LEVEL         0xffd1ffffffffffff
+#define MODULES_VADDR_5LEVEL       0xffffffffa0000000
+#define MODULES_END_5LEVEL         0xffffffffff5fffff
+#define VMEMMAP_VADDR_5LEVEL       0xffd4000000000000
+#define VMEMMAP_END_5LEVEL         0xffd5ffffffffffff
+
 #define VSYSCALL_START             0xffffffffff600000
 #define VSYSCALL_END               0xffffffffffe00000
 
@@ -3304,8 +3320,16 @@ struct arm64_stackframe {
 #define PTRS_PER_PMD    512
 #define PTRS_PER_PTE    512
 
+#define PGDIR_SHIFT_5LEVEL    48
+#define PTRS_PER_PGD_5LEVEL  512
+#define P4D_SHIFT             39
+#define PTRS_PER_P4D         512
+
+#define __PGDIR_SHIFT  (machdep->machspec->pgdir_shift)
+ 
 #define pml4_index(address) (((address) >> PML4_SHIFT) & (PTRS_PER_PML4-1))
-#define pgd_index(address)  (((address) >> PGDIR_SHIFT) & (PTRS_PER_PGD-1))
+#define p4d_index(address)  (((address) >> P4D_SHIFT) & (PTRS_PER_P4D - 1))
+#define pgd_index(address)  (((address) >> __PGDIR_SHIFT) & (PTRS_PER_PGD-1))
 #define pmd_index(address)  (((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
 #define pte_index(address)  (((address) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
 
@@ -3341,11 +3365,23 @@ struct arm64_stackframe {
             machdep->machspec->last_upml_read = (ulong)(PML);                 \
     }								            
 
+#define IS_LAST_P4D_READ(p4d) ((ulong)(p4d) == machdep->machspec->last_p4d_read)
+
+#define FILL_P4D(P4D, TYPE, SIZE)                                             \
+    if (!IS_LAST_P4D_READ(P4D)) {                                             \
+	    readmem((ulonglong)((ulong)(P4D)), TYPE, machdep->machspec->p4d,  \
+		    SIZE, "p4d page", FAULT_ON_ERROR);                        \
+	    machdep->machspec->last_p4d_read = (ulong)(P4D);                  \
+    }
+
 /* 
  *  PHYSICAL_PAGE_MASK changed (enlarged) between 2.4 and 2.6, so
  *  for safety, use the 2.6 values to generate it.
  */ 
-#define __PHYSICAL_MASK_SHIFT  40
+#define __PHYSICAL_MASK_SHIFT_XEN     40
+#define __PHYSICAL_MASK_SHIFT_2_6     46
+#define __PHYSICAL_MASK_SHIFT_5LEVEL  52
+#define __PHYSICAL_MASK_SHIFT  (machdep->machspec->physical_mask_shift)
 #define __PHYSICAL_MASK        ((1UL << __PHYSICAL_MASK_SHIFT) - 1)
 #define __VIRTUAL_MASK_SHIFT   48
 #define __VIRTUAL_MASK         ((1UL << __VIRTUAL_MASK_SHIFT) - 1)
@@ -3410,6 +3446,7 @@ struct arm64_stackframe {
 #define _MAX_PHYSMEM_BITS	  40
 #define _MAX_PHYSMEM_BITS_2_6_26  44
 #define _MAX_PHYSMEM_BITS_2_6_31  46
+#define _MAX_PHYSMEM_BITS_5LEVEL  52
 
 #endif  /* X86_64 */
 
@@ -3884,8 +3921,9 @@ struct efi_memory_desc_t {
 #define PMD_MASKED_BITS_64K_4_6  0xc0000000000000ffUL
 
 #define PTE_RPN_MASK_DEFAULT  0xffffffffffffffffUL
-#define PTE_RPN_SIZE_L4_4_6   (PAGESIZE() == PPC64_64K_PAGE_SIZE ? 41 : 45)
-#define PTE_RPN_MASK_L4_4_6   (((1UL << PTE_RPN_SIZE_L4_4_6) - 1) << PAGESHIFT())
+#define PAGE_PA_MAX_L4_4_6    (THIS_KERNEL_VERSION >= LINUX(4,11,0) ? 53 : 57)
+#define PTE_RPN_MASK_L4_4_6   \
+	(((1UL << PAGE_PA_MAX_L4_4_6) - 1) & ~((1UL << PAGESHIFT()) - 1))
 #define PTE_RPN_SHIFT_L4_4_6  PAGESHIFT()
 
 #define PGD_MASKED_BITS_4_7  0xc0000000000000ffUL
@@ -5631,6 +5669,45 @@ struct x86_64_stkinfo {
 	char *exception_stacks[MAX_EXCEPTION_STACKS];
 };
 
+typedef struct __attribute__((__packed__)) {
+        signed short sp_offset;
+        signed short bp_offset;
+        unsigned int sp_reg:4;
+        unsigned int bp_reg:4;
+        unsigned int type:2;
+} kernel_orc_entry;
+
+struct ORC_data {
+	int module_ORC;
+	uint lookup_num_blocks;
+	ulong __start_orc_unwind_ip;
+	ulong __stop_orc_unwind_ip;
+	ulong __start_orc_unwind;
+	ulong __stop_orc_unwind;
+	ulong orc_lookup;
+	ulong ip_entry;
+	ulong orc_entry;
+	kernel_orc_entry kernel_orc_entry;
+};
+
+#define ORC_TYPE_CALL                   0
+#define ORC_TYPE_REGS                   1
+#define ORC_TYPE_REGS_IRET              2
+#define UNWIND_HINT_TYPE_SAVE           3
+#define UNWIND_HINT_TYPE_RESTORE        4
+
+#define ORC_REG_UNDEFINED               0
+#define ORC_REG_PREV_SP                 1
+#define ORC_REG_DX                      2
+#define ORC_REG_DI                      3
+#define ORC_REG_BP                      4
+#define ORC_REG_SP                      5
+#define ORC_REG_R10                     6
+#define ORC_REG_R13                     7
+#define ORC_REG_BP_INDIRECT             8
+#define ORC_REG_SP_INDIRECT             9
+#define ORC_REG_MAX                     15
+
 struct machine_specific {
 	ulong userspace_top;
 	ulong page_offset;
@@ -5657,6 +5734,11 @@ struct machine_specific {
 	ulong GART_start;
 	ulong GART_end;
 	ulong kernel_image_size;
+	ulong physical_mask_shift;
+	ulong pgdir_shift;
+        char *p4d;
+	ulong last_p4d_read;
+	struct ORC_data orc;
 };
 
 #define KSYMS_START    (0x1)
@@ -5672,8 +5754,10 @@ struct machine_specific {
 #define GART_REGION  (0x400)
 #define NESTED_NMI   (0x800)
 #define RANDOMIZED  (0x1000)
+#define VM_5LEVEL   (0x2000)
+#define ORC         (0x4000)
 
-#define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4)
+#define VM_FLAGS (VM_ORIG|VM_2_6_11|VM_XEN|VM_XEN_RHEL4|VM_5LEVEL)
 
 #define _2MB_PAGE_MASK (~((MEGABYTES(2))-1))
 

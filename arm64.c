@@ -484,6 +484,8 @@ arm64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sKDUMP_ENABLED", others++ ? "|" : "");
 	if (machdep->flags & IRQ_STACKS)
 		fprintf(fp, "%sIRQ_STACKS", others++ ? "|" : "");
+	if (machdep->flags & UNW_4_14)
+		fprintf(fp, "%sUNW_4_14", others++ ? "|" : "");
 	if (machdep->flags & MACHDEP_BT_TEXT)
 		fprintf(fp, "%sMACHDEP_BT_TEXT", others++ ? "|" : "");
 	if (machdep->flags & NEW_VMEMMAP)
@@ -608,6 +610,7 @@ arm64_dump_machdep_table(ulong arg)
 	fprintf(fp, "      exp_entry2_start: %lx\n", ms->exp_entry2_start);
 	fprintf(fp, "        exp_entry2_end: %lx\n", ms->exp_entry2_end);
 	fprintf(fp, "       panic_task_regs: %lx\n", (ulong)ms->panic_task_regs);
+	fprintf(fp, "    user_eframe_offset: %ld\n", ms->user_eframe_offset);
 	fprintf(fp, "         PTE_PROT_NONE: %lx\n", ms->PTE_PROT_NONE);
 	fprintf(fp, "              PTE_FILE: ");
 	if (ms->PTE_FILE)
@@ -1376,6 +1379,11 @@ arm64_stackframe_init(void)
 	MEMBER_OFFSET_INIT(elf_prstatus_pr_pid, "elf_prstatus", "pr_pid");
 	MEMBER_OFFSET_INIT(elf_prstatus_pr_reg, "elf_prstatus", "pr_reg");
 
+	if (MEMBER_EXISTS("pt_regs", "stackframe")) 
+		machdep->machspec->user_eframe_offset = SIZE(pt_regs);
+	else
+		machdep->machspec->user_eframe_offset = SIZE(pt_regs) + 16;
+
 	machdep->machspec->__exception_text_start = 
 		symbol_value("__exception_text_start");
 	machdep->machspec->__exception_text_end = 
@@ -1421,19 +1429,21 @@ arm64_stackframe_init(void)
 	 */
 	if (offsetof(struct arm64_stackframe, sp) != 
 	    MEMBER_OFFSET("stackframe", "sp")) {
-		error(INFO, "builtin stackframe.sp offset incorrect!\n");
-		return;
+		if (CRASHDEBUG(1))
+			error(INFO, "builtin stackframe.sp offset differs from kernel version\n");
 	}
 	if (offsetof(struct arm64_stackframe, fp) != 
 	    MEMBER_OFFSET("stackframe", "fp")) {
-		error(INFO, "builtin stackframe.fp offset incorrect!\n");
-		return;
+		if (CRASHDEBUG(1))
+			error(INFO, "builtin stackframe.fp offset differs from kernel version\n");
 	}
 	if (offsetof(struct arm64_stackframe, pc) != 
 	    MEMBER_OFFSET("stackframe", "pc")) {
-		error(INFO, "builtin stackframe.pc offset incorrect!\n");
-		return;
+		if (CRASHDEBUG(1))
+			error(INFO, "builtin stackframe.pc offset differs from kernel version\n");
 	}
+	if (!MEMBER_EXISTS("stackframe", "sp"))
+		machdep->flags |= UNW_4_14;
 
 	context_sp = MEMBER_OFFSET("cpu_context", "sp");
 	context_fp = MEMBER_OFFSET("cpu_context", "fp");
@@ -1461,7 +1471,7 @@ arm64_stackframe_init(void)
 #define KERNEL_MODE (1)
 #define USER_MODE   (2)
 
-#define USER_EFRAME_OFFSET (304)
+#define USER_EFRAME_OFFSET (machdep->machspec->user_eframe_offset)
 
 /*
  * PSR bits
@@ -1846,6 +1856,9 @@ arm64_unwind_frame(struct bt_info *bt, struct arm64_stackframe *frame)
 	frame->sp = fp + 0x10;
 	frame->fp = GET_STACK_ULONG(fp);
 	frame->pc = GET_STACK_ULONG(fp + 8);
+
+	if ((frame->fp == 0) && (frame->pc == 0))
+		return FALSE;
 
 	/*
 	 * The kernel's manner of determining the end of the IRQ stack:

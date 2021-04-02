@@ -10142,6 +10142,14 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(sk_buff_data));
 	fprintf(fp, "           nlmsghdr_nlmsg_type: %ld\n",
 		OFFSET(nlmsghdr_nlmsg_type));
+	fprintf(fp, "                   module_arch: %ld\n",
+		OFFSET(module_arch));
+	fprintf(fp, "    mod_arch_specific_num_orcs: %ld\n",
+		OFFSET(mod_arch_specific_num_orcs));
+	fprintf(fp, "mod_arch_specific_orc_unwind_ip: %ld\n",
+		OFFSET(mod_arch_specific_orc_unwind_ip));
+	fprintf(fp, "  mod_arch_specific_orc_unwind: %ld\n",
+		OFFSET(mod_arch_specific_orc_unwind));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -10383,6 +10391,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(sk_buff_head_qlen));
 	fprintf(fp, "                   sk_buff_len: %ld\n",
 		SIZE(sk_buff_len));
+	fprintf(fp, "                     orc_entry: %ld\n",
+		SIZE(orc_entry));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -12477,17 +12487,19 @@ int
 patch_kernel_symbol(struct gnu_request *req)
 {
 	int i, c;
+	long relocate_display;
 	struct syment *sp_array[1000], *sp;
 
 	if (req->name == PATCH_KERNEL_SYMBOLS_START) {
-		if (kt->flags & RELOC_FORCE)
+		if (kt->relocate) {
+			if ((long)kt->relocate < 0)
+				relocate_display = (kt->relocate * -1) >> 20;
+			else
+				relocate_display = kt->relocate >> 20;
 			error(WARNING, 
 			    "\nkernel relocated [%ldMB]: patching %ld gdb minimal_symbol values\n",
-				kt->relocate >> 20, st->symcnt);
-		if (kt->flags2 & RELOC_AUTO)
-			error(WARNING, 
-			    "\nkernel relocated [%ldMB]: patching %ld gdb minimal_symbol values\n",
-				(kt->relocate * -1) >> 20, st->symcnt);
+				relocate_display, st->symcnt);
+		}
                 fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ? "" :
                  "\nplease wait... (patching %ld gdb minimal_symbol values) ",
 			st->symcnt);
