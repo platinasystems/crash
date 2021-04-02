@@ -1056,8 +1056,10 @@ restore_sanity(void)
 	}
 
 	if (pc->flags & TTY) {
-		if ((fd = open("/dev/tty", O_RDONLY)) < 0) 
-			error(FATAL, "/dev/tty: %s\n", strerror(errno));
+		if ((fd = open("/dev/tty", O_RDONLY)) < 0) {
+			console("/dev/tty: %s\n", strerror(errno));
+			clean_exit(1);
+		}
 	        
 	        if (tcsetattr(fd, TCSANOW, &pc->termios_orig) == -1) 
                         error(FATAL, "tcsetattr /dev/tty: %s\n",

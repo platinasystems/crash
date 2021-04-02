@@ -466,6 +466,7 @@ db_get_value(addr, size, is_signed, bt)
 #ifndef MCLX
         db_read_bytes(addr, size, data);
 #else
+	BZERO(data, sizeof(int));
 	if (INSTACK(addr, bt)) {
 		if (size == sizeof(ulong)) 
 			return (db_expr_t)GET_STACK_ULONG(addr); 
@@ -1026,7 +1027,7 @@ int INT_EFRAME_ECX = 1;
 int INT_EFRAME_EBX = 0;
 int INT_EFRAME_GS = -1;
 
-#define MAX_USER_EFRAME_SIZE   (16)
+#define MAX_USER_EFRAME_SIZE   (17)
 #define KERNEL_EFRAME_SIZE (INT_EFRAME_EFLAGS+1)
 
 #define EFRAME_USER   (1)
@@ -1878,7 +1879,7 @@ eframe_init(void)
 {
 	if (INVALID_SIZE(pt_regs)) {
 		if (THIS_KERNEL_VERSION < LINUX(2,6,20))
-			ASSIGN_SIZE(pt_regs) = (MAX_USER_EFRAME_SIZE-1)*sizeof(ulong);
+			ASSIGN_SIZE(pt_regs) = (MAX_USER_EFRAME_SIZE-2)*sizeof(ulong);
 		else {
 			ASSIGN_SIZE(pt_regs) = MAX_USER_EFRAME_SIZE*sizeof(ulong);
 			INT_EFRAME_SS = 15;
@@ -3988,6 +3989,7 @@ static char *e820type[] = {
 	"E820_RESERVED",
 	"E820_ACPI",
 	"E820_NVS",
+	"E820_UNUSABLE",
 };
 
 static void
@@ -4014,8 +4016,11 @@ x86_display_memmap(void)
 		addr = ULONGLONG(e820entry_ptr + OFFSET(e820entry_addr));
 		size = ULONGLONG(e820entry_ptr + OFFSET(e820entry_size));
 		type = ULONG(e820entry_ptr + OFFSET(e820entry_type));
-		fprintf(fp, "%016llx - %016llx  %s\n", addr, addr+size, 
-			e820type[type]);
+		fprintf(fp, "%016llx - %016llx  ", addr, addr+size);
+		if (type >= (sizeof(e820type)/sizeof(char *)))
+			fprintf(fp, "type %ld\n", type);
+		else
+			fprintf(fp, "%s\n", e820type[type]);
 	}
 }
 

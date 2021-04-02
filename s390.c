@@ -37,7 +37,7 @@
 #define S390_PTE_INVALID_MASK   0x80000900
 #define S390_PTE_INVALID(x) ((x) & S390_PTE_INVALID_MASK)
 
-#define ASYNC_STACK_SIZE  STACKSIZE() // can be 4096 or 8192
+#define INT_STACK_SIZE    STACKSIZE() // can be 4096 or 8192
 #define KERNEL_STACK_SIZE STACKSIZE() // can be 4096 or 8192
 
 #define LOWCORE_SIZE 4096
@@ -570,20 +570,23 @@ s390_get_lowcore(int cpu, char* lowcore)
 		FAULT_ON_ERROR);
 }
 
-/* 
- * read in the async stack
+/*
+ * Read interrupt stack (either "async_stack" or "panic_stack");
  */
-static void
-s390_get_async_stack(char* lowcore, char* async_stack, unsigned long* start, unsigned long* end)
+static void s390_get_int_stack(char *stack_name, char* lc, char* int_stack,
+			       unsigned long* start, unsigned long* end)
 {
-	unsigned long async_stack_ptr;
+	unsigned long stack_addr;
 
-	async_stack_ptr = ULONG(lowcore + 
-				MEMBER_OFFSET("_lowcore","async_stack"));
-	readmem(async_stack_ptr-ASYNC_STACK_SIZE,KVADDR, async_stack, 
-		ASYNC_STACK_SIZE, "async_stack", FAULT_ON_ERROR);
-	*start=async_stack_ptr-ASYNC_STACK_SIZE;
-	*end=async_stack_ptr;
+	if (!MEMBER_EXISTS("_lowcore", stack_name))
+		return;
+	stack_addr = ULONG(lc + MEMBER_OFFSET("_lowcore", stack_name));
+	if (stack_addr == 0)
+		return;
+	readmem(stack_addr - INT_STACK_SIZE, KVADDR, int_stack,
+		INT_STACK_SIZE, stack_name, FAULT_ON_ERROR);
+	*start = stack_addr - INT_STACK_SIZE;
+	*end = stack_addr;
 }
 
 /*
@@ -593,16 +596,18 @@ static void
 s390_back_trace_cmd(struct bt_info *bt)
 {
 	char* stack;
-	char async_stack[ASYNC_STACK_SIZE];
+	char async_stack[INT_STACK_SIZE];
+	char panic_stack[INT_STACK_SIZE];
 	long ksp,backchain,old_backchain;
 	int i=0, r14_offset,bc_offset,r14, skip_first_frame=0;
-	unsigned long async_start,async_end, stack_end, stack_start, stack_base;
+	unsigned long async_start = 0, async_end = 0;
+	unsigned long panic_start = 0, panic_end = 0;
+	unsigned long stack_end, stack_start, stack_base;
 
 	if (bt->hp && bt->hp->eip) {
 		error(WARNING,
 		"instruction pointer argument ignored on this architecture!\n");
 	}
-	async_end = async_start = 0;
 	ksp = bt->stkptr;
 
 	/* print lowcore and get async stack when task has cpu */
@@ -622,9 +627,10 @@ s390_back_trace_cmd(struct bt_info *bt)
 				s390_print_lowcore(lowcore,bt,0);
 				return;
 		}
-
-		s390_get_async_stack(lowcore,async_stack,&async_start,
-				     &async_end);
+		s390_get_int_stack("async_stack", lowcore, async_stack,
+				   &async_start, &async_end);
+		s390_get_int_stack("panic_stack", lowcore, panic_stack,
+				   &panic_start, &panic_end);
 		s390_print_lowcore(lowcore,bt,1);
 		fprintf(fp,"\n");
 		skip_first_frame=1;
@@ -653,7 +659,7 @@ s390_back_trace_cmd(struct bt_info *bt)
 		unsigned long r14_stack_off;
 		int j;
 
-		/* Find stack: Either async stack or task stack */
+		/* Find stack: Either async, panic stack or task stack */
 		if((backchain > stack_start) && (backchain < stack_end)){
 			stack = bt->stackbuf;
 			stack_base = stack_start;
@@ -661,6 +667,10 @@ s390_back_trace_cmd(struct bt_info *bt)
 			  && s390_has_cpu(bt)){
 			stack = async_stack;
 			stack_base = async_start;
+		} else if((backchain > panic_start) && (backchain < panic_end)
+			  && s390_has_cpu(bt)){
+			stack = panic_stack;
+			stack_base = panic_start;
 		} else {
 			/* invalid stackframe */
 			break;

@@ -300,6 +300,8 @@ task_init(void)
 
         MEMBER_OFFSET_INIT(task_struct_start_time, "task_struct", "start_time");
         MEMBER_SIZE_INIT(task_struct_start_time, "task_struct", "start_time");
+        MEMBER_SIZE_INIT(task_struct_utime, "task_struct", "utime");
+        MEMBER_SIZE_INIT(task_struct_stime, "task_struct", "stime");
         MEMBER_OFFSET_INIT(task_struct_times, "task_struct", "times");
         MEMBER_OFFSET_INIT(tms_tms_utime, "tms", "tms_utime");
         MEMBER_OFFSET_INIT(tms_tms_stime, "tms", "tms_stime");
@@ -3335,16 +3337,18 @@ struct task_start_time {
         ulonglong start_time;
 	ulong tms_utime;
 	ulong tms_stime;
-	struct timeval utime;
-	struct timeval stime;
+	struct timeval old_utime;
+	struct timeval old_stime;
 	struct kernel_timeval kutime;
 	struct kernel_timeval kstime;
+	ulonglong utime;
+	ulonglong stime;
 };
 
 static void
 show_task_times(struct task_context *tcp, ulong flags)
 {
-	int i, tasks, use_kernel_timeval;
+	int i, tasks, use_kernel_timeval, use_utime_stime;
 	struct task_context *tc;
 	struct task_start_time *task_start_times, *tsp;
 	ulong jiffies;
@@ -3355,6 +3359,12 @@ show_task_times(struct task_context *tcp, ulong flags)
 		GETBUF(RUNNING_TASKS() * sizeof(struct task_start_time));
  
 	use_kernel_timeval = STRUCT_EXISTS("kernel_timeval");
+	if (VALID_MEMBER(task_struct_utime) &&
+	    (SIZE(task_struct_utime) == 
+	    (BITS32() ? sizeof(uint32_t) : sizeof(uint64_t))))
+		use_utime_stime = TRUE;
+	else
+		use_utime_stime = FALSE;
         get_symbol_data("jiffies", sizeof(long), &jiffies);
 	if (symbol_exists("jiffies_64"))
 		get_uptime(NULL, &jiffies_64);
@@ -3400,7 +3410,12 @@ show_task_times(struct task_context *tcp, ulong flags)
                         	OFFSET(task_struct_times) +
                         	OFFSET(tms_tms_stime));
 		} else if (VALID_MEMBER(task_struct_utime)) {
-			if (use_kernel_timeval) {
+			if (use_utime_stime) {
+				tsp->utime = ULONG(tt->task_struct +
+					OFFSET(task_struct_utime));
+				tsp->stime = ULONG(tt->task_struct +
+					OFFSET(task_struct_stime));
+			} else if (use_kernel_timeval) {
                                 BCOPY(tt->task_struct +
                                         OFFSET(task_struct_utime), &tsp->kutime,
 					sizeof(struct kernel_timeval));
@@ -3418,8 +3433,8 @@ show_task_times(struct task_context *tcp, ulong flags)
 						OFFSET(task_struct_stime), 
 						&stime_64, 8);
 					/* convert from micro-sec. to sec. */
-					tsp->utime.tv_sec = utime_64 / 1000000;
-					tsp->stime.tv_sec = stime_64 / 1000000;
+					tsp->old_utime.tv_sec = utime_64 / 1000000;
+					tsp->old_stime.tv_sec = stime_64 / 1000000;
 				} else {
 					uint32_t utime_32, stime_32;
 					BCOPY(tt->task_struct + 
@@ -3428,8 +3443,8 @@ show_task_times(struct task_context *tcp, ulong flags)
 					BCOPY(tt->task_struct + 
 						OFFSET(task_struct_stime), 
 						&stime_32, 4);
-					tsp->utime.tv_sec = utime_32;
-					tsp->stime.tv_sec = stime_32;
+					tsp->old_utime.tv_sec = utime_32;
+					tsp->old_stime.tv_sec = stime_32;
 				}
 			} else {
 				BCOPY(tt->task_struct + 
@@ -3461,16 +3476,21 @@ show_task_times(struct task_context *tcp, ulong flags)
 			fprintf(fp, "   USER TIME: %ld\n", tsp->tms_utime);
 			fprintf(fp, " SYSTEM TIME: %ld\n\n", tsp->tms_stime);
 		} else if (VALID_MEMBER(task_struct_utime)) {
-			if (use_kernel_timeval) {
+			if (use_utime_stime) {
+				fprintf(fp, "       UTIME: %lld\n", 
+					(ulonglong)tsp->utime);
+				fprintf(fp, "       STIME: %lld\n\n", 
+					(ulonglong)tsp->stime);
+			} else if (use_kernel_timeval) {
 				fprintf(fp, "   USER TIME: %d\n", 
 					tsp->kutime.tv_sec);
 				fprintf(fp, " SYSTEM TIME: %d\n\n", 
 					tsp->kstime.tv_sec);
 			} else {
 				fprintf(fp, "   USER TIME: %ld\n", 
-					tsp->utime.tv_sec);
+					tsp->old_utime.tv_sec);
 				fprintf(fp, " SYSTEM TIME: %ld\n\n", 
-					tsp->stime.tv_sec);
+					tsp->old_stime.tv_sec);
 			}
 		}
 	}

@@ -33,6 +33,7 @@ static void symbol_dump(ulong, char *);
 static void check_for_dups(struct load_module *);
 static int symbol_name_count(char *);
 static struct syment *symbol_search_next(char *, struct syment *);
+static struct syment *kallsyms_module_symbol(struct load_module *, symbol_info *);
 static void store_load_module_symbols \
 	(bfd *, int, void *, long, uint, ulong, char *);
 static int load_module_index(struct syment *);
@@ -2126,6 +2127,8 @@ compare_syms(const void *v1, const void *v2)
 		if (STRNEQ(s1->name, "__insmod"))
 			return -1;
 		if (STRNEQ(s2->name, "__insmod"))
+			return 1;
+		if (STRNEQ(s2->name, "_MODULE_START_"))
 			return 1;
 	}
 
@@ -7467,6 +7470,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(tss_struct));
 	fprintf(fp, "        task_struct_start_time: %ld\n", 
 		SIZE(task_struct_start_time));
+	fprintf(fp, "             task_struct_utime: %ld\n", 
+		SIZE(task_struct_utime));
+	fprintf(fp, "             task_struct_stime: %ld\n", 
+		SIZE(task_struct_stime));
 	fprintf(fp, "                     cputime_t: %ld\n", 
 		SIZE(cputime_t));
 	fprintf(fp, "                   mem_section: %ld\n", 
@@ -8320,7 +8327,7 @@ add_symbol_file(struct load_module *lm)
 
 	FREEBUF(req->buf);
 	sprintf(buf, "set complaints 0");
-	gdb_pass_through(buf, NULL, 0);
+	gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
 
 	return(!(req->flags & GNU_COMMAND_FAILED));
 }
@@ -8547,7 +8554,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 
 	FREEBUF(req->buf);
 	sprintf(buf, "set complaints 0");
-	gdb_pass_through(buf, NULL, 0);
+	gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
 
 	return(!(req->flags & GNU_COMMAND_FAILED));
 }
@@ -8579,6 +8586,47 @@ load_module_index(struct syment *sp)
 		sp->value, sp->name));
 }
 
+/*
+ *  Return the syment of a kallsyms-generated module symbol.
+ */
+static struct syment *
+kallsyms_module_symbol(struct load_module *lm, symbol_info *syminfo)
+{
+	struct syment *sp, *spx;
+	int cnt;
+
+	if (!(lm->mod_flags & MOD_KALLSYMS))
+		return NULL;
+
+	sp = NULL;
+	cnt = 0;
+	for (spx = lm->mod_ext_symtable; spx <= lm->mod_ext_symend; spx++) {
+		if (!STREQ(spx->name, syminfo->name))
+			continue;
+		if (spx->cnt) { 
+			cnt++;
+			continue;
+		} 
+
+		spx->cnt++;
+		sp = spx;
+		break;
+	}
+
+	if (CRASHDEBUG(2)) {
+		if (cnt)
+			fprintf(fp, "kallsyms [%s] %s: multiply defined\n", 
+				lm->mod_name, syminfo->name);
+		if (sp)
+			fprintf(fp, "kallsyms [%s] %s: %lx\n", 
+				lm->mod_name, syminfo->name, sp->value);
+		else
+			fprintf(fp, "kallsyms [%s] %s: NOT FOUND\n", 
+				lm->mod_name, syminfo->name);
+	}
+
+	return sp;
+}
 
 /*
  *  Replace the externally-defined module symbols found in store_load_modules() 
@@ -8656,6 +8704,8 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 	lm->mod_rodata_start = lm->mod_bss_start = 0;
 	lm->mod_load_symcnt = 0;
 	lm->mod_sections = 0;
+       	for (spx = lm->mod_ext_symtable; spx <= lm->mod_ext_symend; spx++)
+               	spx->cnt = 0;
 	sp = lm->mod_load_symtable;
 
 	if (!(lm->mod_section_data = (struct mod_section_data *)
@@ -8762,11 +8812,16 @@ store_load_module_symbols(bfd *bfd, int dynamic, void *minisyms,
 
                                 if ((st->flags & INSMOD_BUILTIN) &&
                                     (STREQ(name, "init_module") || 
-                                    STREQ(name, "cleanup_module"))) {
-                                        found = 0;
+                                    STREQ(name, "cleanup_module")))
+                                        found = FALSE;
+				else if (syminfo.name[0] == '.') 
+					found = FALSE;
+				else if ((spx = kallsyms_module_symbol(lm, &syminfo))) {
+					syminfo.value = spx->value;
+					found = TRUE;
                                 } else {
                                         syminfo.value += lm->mod_section_data[i].offset + lm->mod_base;
-                                        found = 1;
+                                        found = TRUE;
                                 }
                         }
                 }

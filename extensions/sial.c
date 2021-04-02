@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.9 2009/11/20 15:25:23 anderson Exp $
+ * $Id: sial.c,v 1.10 2010/03/02 13:53:43 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -291,6 +291,11 @@ int nidx=0;
 			sial_parsetype(tstr=TYPE_NAME(type), t, 0);
 			type=0;
 		break;
+
+		case TYPE_CODE_BOOL:
+			sial_parsetype("char", t, ref);
+			type=0;
+			break;
 
 		case TYPE_CODE_UNION: 
 			sial_type_mkunion(t);

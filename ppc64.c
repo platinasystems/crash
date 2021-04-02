@@ -51,6 +51,7 @@ static void ppc64_print_eframe(char *, struct ppc64_pt_regs *,
 static void parse_cmdline_args(void);
 static void ppc64_paca_init(void);
 static void ppc64_clear_machdep_cache(void);
+static void ppc64_vmemmap_init(void);
 
 struct machine_specific ppc64_machine_specific = { { 0 }, 0, 0 };
 
@@ -137,8 +138,11 @@ ppc64_init(int when)
 		machdep->line_number_hooks = ppc64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = NULL;
-		if (symbol_exists("vmemmap_populate"))
+		if (symbol_exists("vmemmap_populate")) {
 			machdep->flags |= VMEMMAP;
+			machdep->machspec->vmemmap_base = 
+				VMEMMAP_REGION_ID << REGION_SHIFT;
+		}
 		break;
 
 	case POST_GDB:
@@ -189,6 +193,9 @@ ppc64_init(int when)
 			m->l3_shift = m->l2_shift + m->l2_index_size;
 			m->l4_shift = m->l3_shift + m->l3_index_size;
 		}
+
+		if (machdep->flags & VMEMMAP)
+			ppc64_vmemmap_init();
 
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
@@ -328,6 +335,8 @@ ppc64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_4_LEVEL", others++ ? "|" : "");
 	if (machdep->flags & VMEMMAP)
 		fprintf(fp, "%sVMEMMAP", others++ ? "|" : "");
+	if (machdep->flags & VMEMMAP_AWARE)
+		fprintf(fp, "%sVMEMMAP_AWARE", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -419,6 +428,27 @@ ppc64_dump_machdep_table(ulong arg)
 	fprintf(fp, "             l1_shift: %d\n", machdep->machspec->l1_shift);
 	fprintf(fp, "            pte_shift: %d\n", machdep->machspec->pte_shift);
 	fprintf(fp, "       l2_masked_bits: %x\n", machdep->machspec->l2_masked_bits);
+	fprintf(fp, "         vmemmap_base: "); 
+	if (machdep->machspec->vmemmap_base)
+		fprintf(fp, "%lx\n", machdep->machspec->vmemmap_base);
+	else
+		fprintf(fp, "(unused)\n");
+	if (machdep->machspec->vmemmap_cnt) {
+		fprintf(fp, "          vmemmap_cnt: %d\n", 
+			machdep->machspec->vmemmap_cnt);
+		fprintf(fp, "        vmemmap_psize: %d\n", 
+			machdep->machspec->vmemmap_psize);
+		for (i = 0; i < machdep->machspec->vmemmap_cnt; i++) {
+			fprintf(fp, 
+			    "      vmemmap_list[%d]: virt: %lx  phys: %lx\n", i, 
+				machdep->machspec->vmemmap_list[i].virt,
+				machdep->machspec->vmemmap_list[i].phys);
+		}
+	} else {
+		fprintf(fp, "          vmemmap_cnt: (unused)\n");
+		fprintf(fp, "    vmemmap_page_size: (unused)\n");
+		fprintf(fp, "       vmemmap_list[]: (unused)\n");
+	}
 }
 
 /*
@@ -653,7 +683,8 @@ ppc64_kvtop(struct task_context *tc, ulong kvaddr,
         if (!IS_KVADDR(kvaddr))
                 return FALSE;
 
-	if (REGION_ID(kvaddr) == VMEMMAP_REGION_ID)
+	if ((machdep->flags & VMEMMAP) && 
+	    (kvaddr >= machdep->machspec->vmemmap_base))
 		return ppc64_vmemmap_to_phys(kvaddr, paddr, verbose);
 
 	if (!vt->vmalloc_start) {
@@ -673,34 +704,135 @@ ppc64_kvtop(struct task_context *tc, ulong kvaddr,
 }
 
 /*
+ *  Verify that the kernel has made the vmemmap list available,
+ *  and if so, stash the relevant data required to make vtop
+ *  translations.
+ */
+static
+void ppc64_vmemmap_init(void)
+{
+	int i, psize, shift, cnt;
+	struct list_data list_data, *ld;
+	long backing_size, virt_addr_offset, phys_offset, list_offset;
+	ulong *vmemmap_list;
+	char *vmemmap_buf;
+	struct machine_specific *ms;
+	
+	if (!(kernel_symbol_exists("vmemmap_list")) ||
+	    !(kernel_symbol_exists("mmu_psize_defs")) ||
+	    !(kernel_symbol_exists("mmu_vmemmap_psize")) ||
+	    !STRUCT_EXISTS("vmemmap_backing") ||
+	    !STRUCT_EXISTS("mmu_psize_def") ||
+	    !MEMBER_EXISTS("mmu_psize_def", "shift") ||
+	    !MEMBER_EXISTS("vmemmap_backing", "phys") ||
+	    !MEMBER_EXISTS("vmemmap_backing", "virt_addr") ||
+	    !MEMBER_EXISTS("vmemmap_backing", "list"))
+		return;
+
+	ms = machdep->machspec;
+
+	backing_size = STRUCT_SIZE("vmemmap_backing");
+	virt_addr_offset = MEMBER_OFFSET("vmemmap_backing", "virt_addr");
+	phys_offset = MEMBER_OFFSET("vmemmap_backing", "phys");
+	list_offset = MEMBER_OFFSET("vmemmap_backing", "list");
+
+	if (!readmem(symbol_value("mmu_vmemmap_psize"),
+	    KVADDR, &psize, sizeof(int), "mmu_vmemmap_psize", 
+	    RETURN_ON_ERROR))
+		return;
+	if (!readmem(symbol_value("mmu_psize_defs") +
+	    (STRUCT_SIZE("mmu_psize_def") * psize) +
+	    MEMBER_OFFSET("mmu_psize_def", "shift"),
+	    KVADDR, &shift, sizeof(int), "mmu_psize_def shift",
+	    RETURN_ON_ERROR))
+		return;
+
+	ms->vmemmap_psize = 1 << shift;
+
+        ld =  &list_data;
+        BZERO(ld, sizeof(struct list_data));
+	if (!readmem(symbol_value("vmemmap_list")+OFFSET(list_head_next),
+	    KVADDR, &ld->start, sizeof(void *), "vmemmap_list.next",
+	    RETURN_ON_ERROR))
+		return;
+        ld->end = symbol_value("vmemmap_list");
+        ld->list_head_offset = list_offset;
+
+        hq_open();
+	cnt = do_list(ld);
+        vmemmap_list = (ulong *)GETBUF(cnt * sizeof(ulong));
+        cnt = retrieve_list(vmemmap_list, cnt);
+	hq_close();
+
+	if ((ms->vmemmap_list = (struct ppc64_vmemmap *)malloc(cnt *
+	    sizeof(struct ppc64_vmemmap))) == NULL)
+		error(FATAL, "cannot malloc vmemmap list space");
+
+        vmemmap_buf = GETBUF(backing_size);
+	for (i = 0; i < cnt; i++) {
+		if (!readmem(vmemmap_list[i], KVADDR, vmemmap_buf, 
+		   backing_size, "vmemmap_backing", RETURN_ON_ERROR))
+			goto out;
+
+		ms->vmemmap_list[i].phys = ULONG(vmemmap_buf + phys_offset);
+		ms->vmemmap_list[i].virt = ULONG(vmemmap_buf + virt_addr_offset);
+	}
+
+	if (ms->vmemmap_base != ms->vmemmap_list[0].virt) {
+		ms->vmemmap_base = ms->vmemmap_list[0].virt;
+		if (CRASHDEBUG(1))
+			fprintf(fp, 
+			    "ppc64_vmemmap_init: vmemmap base: %lx\n",
+				ms->vmemmap_base);
+	}
+
+        ms->vmemmap_cnt = cnt;
+	machdep->flags |= VMEMMAP_AWARE;
+out:
+	FREEBUF(vmemmap_buf);
+	FREEBUF(vmemmap_list);
+	machdep->flags |= VMEMMAP_AWARE;
+}
+
+/*
  *  If the vmemmap address translation information is stored in the kernel,
  *  make the translation. 
  */
 static int
 ppc64_vmemmap_to_phys(ulong kvaddr, physaddr_t *paddr, int verbose)
 {
-	if (!(machdep->flags & VMEMMAP))
+	int i;
+	ulong offset;
+	struct machine_specific *ms;
+
+	if (!(machdep->flags & VMEMMAP_AWARE)) {
+		/*
+		 *  During runtime, just fail the command.
+		 */
+		if (vt->flags & VM_INIT)
+			error(FATAL, "cannot translate vmemmap address: %lx\n",
+				 kvaddr); 
+		/*
+		 *  During vm_init() initialization, print a warning message.
+		 */
+		error(WARNING, 
+		    "cannot translate vmemmap kernel virtual addresses:\n"
+		    "         commands requiring page structure contents"
+		    " will fail\n\n");
+	
 		return FALSE;
+	}
 
-	/*
-	 *  If possible, make the translation here.
-	 */
+	ms = machdep->machspec;
 
-		/* TBD -- kernel assist required */
-
-	/*
-	 *  During runtime, just fail the command.
-	 */
-	if (vt->flags & VM_INIT)
-		error(FATAL, "cannot translate vmemmap address: %lx\n",
-			 kvaddr); 
-
-	/*
-	 *  During vm_init() initialization, print a warning message.
-	 */
-	error(WARNING, 
-	    "cannot translate vmemmap kernel virtual addresses:\n"
-	    "         commands requiring page structure contents will fail\n\n");
+	for (i = 0; i < ms->vmemmap_cnt; i++) {
+		if ((kvaddr >= ms->vmemmap_list[i].virt) &&
+		    (kvaddr < (ms->vmemmap_list[i].virt + ms->vmemmap_psize))) {
+			offset = kvaddr - ms->vmemmap_list[i].virt;
+			*paddr = ms->vmemmap_list[i].phys + offset;
+			return TRUE;
+		}
+	}
 
 	return FALSE;
 }
@@ -742,7 +874,7 @@ static ulong
 ppc64_processor_speed(void)
 {
         ulong res, value, ppc_md, md_setup_res;
-        ulong we_have_of, prep_setup_res;
+        ulong prep_setup_res;
         ulong node, type, name, properties;
 	char str_buf[32];
 	uint len;
@@ -751,22 +883,7 @@ ppc64_processor_speed(void)
         if (machdep->mhz)
                 return(machdep->mhz);
 
-        /* first, check if the have_of variable a) exists, and b) is TRUE */
-        if(symbol_exists("have_of")) {
-                get_symbol_data("have_of", sizeof(void *), &we_have_of);
-        } else {
-                we_have_of = 0;
-        }
-
-        if(we_have_of) {
-                /* we have a machine with open firmware, so search the OF nodes
-                 * for cpu nodes.
-                 * Too bad we can't call kernel helper functions here :)
-                 */
-
-                if(!symbol_exists("allnodes"))
-                        return (machdep->mhz = 0);
-
+        if(symbol_exists("allnodes")) {
                 get_symbol_data("allnodes", sizeof(void *), &node);
                 while(node) {
                         readmem(node+OFFSET(device_node_type),
@@ -842,54 +959,54 @@ ppc64_processor_speed(void)
                         }
                         if(!properties) {
                                 /* didn't find the cpu speed for some reason */
-                                mhz = 0;
+				return (machdep->mhz = 0);
                         }
                 }
-        } else {
-                /* for machines w/o OF */
-                /* untested, but in theory this should work on prep machines */
+	} 
 
-                if (symbol_exists("res")) {
-                        get_symbol_data("res", sizeof(void *), &res);
+	/* for machines w/o OF */
+        /* untested, but in theory this should work on prep machines */
 
-                        if (symbol_exists("prep_setup_residual")) {
-                                get_symbol_data("prep_setup_residual",
-                                        sizeof(void *), &prep_setup_res);
-                                get_symbol_data("ppc_md", sizeof(void *),
-                                        &ppc_md);
-                                readmem(ppc_md +
-                                    OFFSET(machdep_calls_setup_residual),
-                                    KVADDR, &md_setup_res,
-                                    sizeof(ulong), "ppc_md setup_residual",
-                                    FAULT_ON_ERROR);
+        if (symbol_exists("res") && !mhz) {
+        	get_symbol_data("res", sizeof(void *), &res);
 
-                                if(prep_setup_res == md_setup_res) {
-                                /* PREP machine */
-                                        readmem(res+
-                                            OFFSET(RESIDUAL_VitalProductData)+
-                                            OFFSET(VPD_ProcessorHz),
-                                            KVADDR, &mhz, sizeof(ulong),
-                                            "res VitalProductData",
-                                            FAULT_ON_ERROR);
+                if (symbol_exists("prep_setup_residual")) {
+                	get_symbol_data("prep_setup_residual",
+                        	sizeof(void *), &prep_setup_res);
+                        get_symbol_data("ppc_md", sizeof(void *),
+                        	&ppc_md);
+                        readmem(ppc_md +
+                        	OFFSET(machdep_calls_setup_residual),
+                                KVADDR, &md_setup_res,
+                                sizeof(ulong), "ppc_md setup_residual",
+                                FAULT_ON_ERROR);
 
-                                        mhz = (mhz > 1024) ? mhz >> 20 : mhz;
-                                }
-                        }
+			if(prep_setup_res == md_setup_res) {
+                        	/* PREP machine */
+                                readmem(res+
+                                	OFFSET(RESIDUAL_VitalProductData)+
+                                        OFFSET(VPD_ProcessorHz),
+                                        KVADDR, &mhz, sizeof(ulong),
+                                        "res VitalProductData",
+                                        FAULT_ON_ERROR);
 
-                        if(!mhz) {
-                          /* everything else seems to do this the same way... */
-                                readmem(res +
-                                    OFFSET(bd_info_bi_intfreq),
-                                    KVADDR, &mhz, sizeof(ulong),
-                                    "bd_info bi_intfreq", FAULT_ON_ERROR);
+                        	mhz = (mhz > 1024) ? mhz >> 20 : mhz;
+                	}
+		}
 
-                                mhz /= 1000000;
-                        }
-                }
-                /* else...well, we don't have OF, or a residual structure, so
-                 * just print unknown MHz
-                */
-        }
+		if(!mhz) {
+                        /* everything else seems to do this the same way... */
+                        readmem(res +
+                        	OFFSET(bd_info_bi_intfreq),
+                                KVADDR, &mhz, sizeof(ulong),
+                                "bd_info bi_intfreq", FAULT_ON_ERROR);
+
+                	mhz /= 1000000;
+        	}
+	}
+        /* else...well, we don't have OF, or a residual structure, so
+         * just print unknown MHz
+         */
 
         return (machdep->mhz = (ulong)mhz);
 }
@@ -2215,7 +2332,7 @@ ppc64_display_machine_stats(void)
 
         fprintf(fp, "       MACHINE TYPE: %s\n", uts->machine);
         fprintf(fp, "        MEMORY SIZE: %s\n", get_memory_size(buf));
-        fprintf(fp, "               CPUS: %d\n", kt->cpus);
+	fprintf(fp, "               CPUS: %d\n", get_cpus_to_display());
         fprintf(fp, "    PROCESSOR SPEED: ");
         if ((mhz = machdep->processor_speed()))
                 fprintf(fp, "%ld Mhz\n", mhz);

@@ -481,7 +481,8 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	case KDUMP_ELF32:
 	case KDUMP_ELF64:
 		if (nd->num_pt_load_segments == 1) {
-			offset = (off_t)paddr + (off_t)nd->header_size;
+			offset = (off_t)paddr + (off_t)nd->header_size -
+				(off_t)nd->pt_load_segments[0].phys_start;
 			break;
 		}
 
