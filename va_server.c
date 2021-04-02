@@ -57,13 +57,15 @@ void set_vas_debug(ulong);
 
 extern int monitor_memory(long *, long *, long *, long *);
 
-int Page_Size = PAGE_SIZE;  /* temporary setting until disk header is read */
+int Page_Size;  
 ulong vas_debug = 0;
 
 extern void *malloc(size_t);
 
 int va_server_init(char *crash_file, u_long *start, u_long *end, u_long *stride)
 {
+	Page_Size = getpagesize();  /* temporary setting until disk header is read */
+
 	if(read_map(crash_file)) {
 		if(va_server_init_v1(crash_file, start, end, stride))
 			return -1;

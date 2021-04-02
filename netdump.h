@@ -35,3 +35,20 @@
 #endif
 
 #endif  /* NOTDEF */
+
+/*
+ *  Proposed ELF note for Xen (writable pagetable) per-vcpu CR3.
+ */
+#define NT_XEN_KDUMP_CR3 0x10000001
+
+struct xen_kdump_data {
+	ulong cr3;
+	char *page;
+	ulong last_mfn_read;
+	ulong cache_hits;
+	ulong accesses;
+	int p2m_frames;
+        ulong *p2m_mfn_frame_list;
+};
+
+#define P2M_FAILURE ((physaddr_t)(0xffffffffffffffffLL))

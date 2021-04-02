@@ -35,7 +35,7 @@
 #ifndef _DUMP_H
 #define _DUMP_H
 
-#include <linux/list.h>
+//#include <linux/list.h>
 
 /* define TRUE and FALSE for use in our dump modules */
 #ifndef FALSE

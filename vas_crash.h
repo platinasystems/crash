@@ -19,7 +19,7 @@
  */
 
 #include <sys/types.h>
-#include <asm/page.h>
+//#include <asm/page.h>
 
 void save_core(void);
 

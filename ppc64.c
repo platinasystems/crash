@@ -49,6 +49,7 @@ static void ppc64_print_eframe(char *, struct ppc64_pt_regs *,
 		struct bt_info *);
 static void parse_cmdline_arg(void);
 static void ppc64_paca_init(void);
+static void ppc64_clear_machdep_cache(void);
 
 struct machine_specific ppc64_machine_specific = { { 0 }, 0, 0 };
 
@@ -88,6 +89,7 @@ ppc64_init(int when)
 		machdep->flags |= MACHDEP_BT_TEXT;
                 if (machdep->cmdline_arg)
                         parse_cmdline_arg();
+		 machdep->clear_machdep_cache = ppc64_clear_machdep_cache;
 		break;
 
 	case PRE_GDB:
@@ -163,6 +165,8 @@ ppc64_init(int when)
 			m->l4_shift = m->l3_shift + m->l3_index_size;
 		}
 
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
 		ppc64_paca_init();
 		machdep->vmalloc_start = ppc64_vmalloc_start;
 		MEMBER_OFFSET_INIT(thread_struct_pg_tables,
@@ -326,14 +330,20 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+	fprintf(fp, " xendump_p2m_create: NULL\n");
+	fprintf(fp, "xen_kdump_p2m_create: NULL\n");
         fprintf(fp, "  line_number_hooks: ppc64_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
         fprintf(fp, "      last_pmd_read: %lx\n", machdep->last_pmd_read);
         fprintf(fp, "     last_ptbl_read: %lx\n", machdep->last_ptbl_read);
+        fprintf(fp, "clear_machdep_cache: ppc64_clear_machdep_cache()\n");
         fprintf(fp, "                pgd: %lx\n", (ulong)machdep->pgd);
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
+	fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
+        fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
+        fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
 	fprintf(fp, "     pgd_index_size: %d\n", machdep->machspec->l4_index_size);
 	fprintf(fp, "     pud_index_size: %d\n", machdep->machspec->l3_index_size);
@@ -1184,8 +1194,12 @@ ppc64_back_trace(struct gnu_request *req, struct bt_info *bt)
 				ms->hwstacksize + STACK_FRAME_OVERHEAD;
 			bt->stackbuf = ms->hwstackbuf;
 			alter_stackbuf(bt);
-		} else 
-			error(FATAL, "cannot find the stack info");
+		} else {
+			if (CRASHDEBUG(1)) {
+				fprintf(fp, "cannot find the stack info.\n");
+			}
+			return;
+		}
 	}
 	
 		
@@ -1493,9 +1507,19 @@ ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 		return FALSE;
 	}
 	*ksp = pt_regs->gpr[1];
-	readmem(*ksp+16, KVADDR, &unip, sizeof(ulong), "Regs NIP value",
-		FAULT_ON_ERROR);
-	*nip = unip;
+	if (IS_KVADDR(*ksp)) {
+		readmem(*ksp+16, KVADDR, &unip, sizeof(ulong), "Regs NIP value",
+			FAULT_ON_ERROR);
+		*nip = unip;
+	} else {
+		if (IN_TASK_VMA(bt_in->task, *ksp))
+			fprintf(fp, "%0lx: Task is running in user space\n",
+				bt_in->task);
+		else 
+			fprintf(fp, "%0lx: Invalid Stack Pointer %0lx\n",
+				bt_in->task, *ksp);
+		*nip = pt_regs->nip;
+	}
 
 	if (bt_in->flags && 
 	((BT_TEXT_SYMBOLS|BT_TEXT_SYMBOLS_PRINT|BT_TEXT_SYMBOLS_NOPRINT))) 
@@ -1505,7 +1529,9 @@ ppc64_kdump_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 	 * Print the collected regs for the active task
 	 */
 	ppc64_print_regs(pt_regs);
-
+	if (!IS_KVADDR(*ksp)) 
+		return FALSE;
+	
 	fprintf(fp, " NIP [%016lx] %s\n", pt_regs->nip,
 		closest_symbol(pt_regs->nip));
 	if (unip != pt_regs->link)
@@ -1538,7 +1564,7 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 	/* 
 	 * For the kdump vmcore, Use SP and IP values that are saved in ptregs.
 	 */ 
-	if (pc->flags && KDUMP)
+	if (pc->flags & KDUMP)
 		return ppc64_kdump_stack_frame(bt_in, nip, ksp);
 
         bt = &bt_local;
@@ -2279,47 +2305,71 @@ parse_cmdline_arg(void)
 		fprintf(fp, "\n");
 }
 
+/*
+ *  Updating any smp-related items that were possibly bypassed
+ *  or improperly initialized in kernel_init().
+ */
 static void
 ppc64_paca_init(void)
 {
+#define BITS_FOR_LONG sizeof(ulong)*8
 	int i, cpus, nr_paca;
 	char *cpu_paca_buf;
 	ulong data_offset;
-	ulong per_cpu_offset;
-	ulong cpuid_offset;
-	signed short cpuid;
+	ulong cpu_online_map[NR_CPUS/BITS_FOR_LONG];
 
 	if (!symbol_exists("paca"))
-		return;
+		error(FATAL, "PPC64: Could not find 'paca' symbol\n");
+
+	if (!symbol_exists("cpu_online_map"))
+		error(FATAL, "PPC64: Could not find 'cpu_online_map' symbol\n");
 
 	if (!MEMBER_EXISTS("paca_struct", "data_offset"))
 		return;
 	
 	STRUCT_SIZE_INIT(ppc64_paca, "paca_struct");
-	cpuid_offset = MEMBER_OFFSET("paca_struct", "hw_cpu_id");
 	data_offset = MEMBER_OFFSET("paca_struct", "data_offset");
 
 	cpu_paca_buf = GETBUF(SIZE(ppc64_paca));
 
-	if (!(nr_paca = get_array_length("paca", NULL, 0)))
+	if (!(nr_paca = get_array_length("paca", NULL, 0))) 
 		nr_paca = NR_CPUS;
 
+	if (nr_paca > NR_CPUS) {
+		error(WARNING, 
+			"PPC64: Number of paca entries (%d) greater than NR_CPUS (%d)\n", 
+			nr_paca, NR_CPUS);
+		error(FATAL, "Recompile crash with larger NR_CPUS\n");
+	}
+	
+	readmem(symbol_value("cpu_online_map"), KVADDR, &cpu_online_map[0],
+		nr_paca/8, "cpu_online_map", FAULT_ON_ERROR);
+
 	for (i = cpus = 0; i < nr_paca; i++) {
+		div_t val = div(i, BITS_FOR_LONG);
+		/*
+		 * CPU online?
+		 */
+		if (!(cpu_online_map[val.quot] & (0x1UL << val.rem)))
+			continue;
+
         	readmem(symbol_value("paca") + (i * SIZE(ppc64_paca)),
              		KVADDR, cpu_paca_buf, SIZE(ppc64_paca),
 			"paca entry", FAULT_ON_ERROR);
 
-		cpuid = SHORT(cpu_paca_buf + cpuid_offset);
-		if (cpuid == -1)
-			continue;
-
-		per_cpu_offset = ULONG(cpu_paca_buf + data_offset); 
-		kt->__per_cpu_offset[i] = per_cpu_offset;
+		kt->__per_cpu_offset[i] = ULONG(cpu_paca_buf + data_offset);
 		kt->flags |= PER_CPU_OFF;
 		cpus++;
 	}
 	kt->cpus = cpus;
 	if (kt->cpus > 1)
 		kt->flags |= SMP;
+}
+
+void
+ppc64_clear_machdep_cache(void)
+{
+	if (machdep->machspec->last_level4_read != vt->kernel_pgd[0])
+        	machdep->machspec->last_level4_read = 0;
 }
 #endif /* PPC64 */ 

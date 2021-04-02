@@ -3463,6 +3463,22 @@ get_symbol_data(char *symbol, long size, void *local)
 }
 
 /*
+ *  Same as above, but allow for failure.
+ */
+int
+try_get_symbol_data(char *symbol, long size, void *local)
+{
+        struct syment *sp;
+
+        if ((sp = symbol_search(symbol)) &&
+            readmem(sp->value, KVADDR, local,
+            size, symbol, RETURN_ON_ERROR|QUIET))
+			return TRUE;
+
+	return FALSE;
+}
+
+/*
  *  Return the value of a given symbol.
  */
 ulong
@@ -6497,7 +6513,20 @@ dump_offset_table(char *spec, ulong makestruct)
 
 	fprintf(fp, "                tss_struct_ist: %ld\n", 
 		OFFSET(tss_struct_ist));
+	fprintf(fp, "   mem_section_section_mem_map: %ld\n",
+		OFFSET(mem_section_section_mem_map));
 
+	fprintf(fp, "  vcpu_guest_context_user_regs: %ld\n",
+		OFFSET(vcpu_guest_context_user_regs));
+	fprintf(fp, "             cpu_user_regs_eip: %ld\n",
+		OFFSET(cpu_user_regs_eip));
+	fprintf(fp, "             cpu_user_regs_esp: %ld\n",
+		OFFSET(cpu_user_regs_esp));
+	fprintf(fp, "             cpu_user_regs_rip: %ld\n",
+		OFFSET(cpu_user_regs_rip));
+	fprintf(fp, "             cpu_user_regs_rsp: %ld\n",
+		OFFSET(cpu_user_regs_rsp));
+	
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -6636,7 +6665,10 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(task_struct_start_time));
 	fprintf(fp, "                     cputime_t: %ld\n", 
 		SIZE(cputime_t));
-
+	fprintf(fp, "                   mem_section: %ld\n", 
+		SIZE(mem_section));
+	fprintf(fp, "                      pid_link: %ld\n", 
+		SIZE(pid_link));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*

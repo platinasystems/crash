@@ -239,7 +239,7 @@ cmd_help(void)
 	oflag = 0;
 
         while ((c = getopt(argcnt, args, 
-	        "efNDdmM:ngcaBbHhksvVoptTzLxO")) != EOF) {
+	        "efNDdmM:ngcaBbHhkKsvVoptTzLxO")) != EOF) {
                 switch(c)
                 {
 		case 'e':
@@ -303,7 +303,11 @@ cmd_help(void)
  			return;
 
 		case 'k':
-			dump_kernel_table();
+			dump_kernel_table(!VERBOSE);
+			return;
+
+		case 'K':
+			dump_kernel_table(VERBOSE);
 			return;
 
 		case 's':
@@ -349,6 +353,7 @@ cmd_help(void)
 			fprintf(fp, " -D - dumpfile memory usage\n");
 			fprintf(fp, " -f - filesys table\n");
 			fprintf(fp, " -k - kernel_table\n");
+			fprintf(fp, " -K - kernel_table (verbose)\n");
 			fprintf(fp, " -M <num> machine specific\n");
 			fprintf(fp, " -m - machdep_table\n");
 			fprintf(fp, " -s - symbol table data\n");
@@ -3333,7 +3338,8 @@ char *help__list[] = {
 "linked list",
 "[[-o] offset] [-e end] [-s struct[.member]] [-H] start",
 "  This command dumps the contents of a linked list.  The entries in a linked",
-"  are typically data structures that are tied together in one of two formats:",
+"  list are typically data structures that are tied together in one of two",
+"  formats:",
 " ",
 "  1. A starting address points to a data structure; that structure contains",
 "     a member that is a pointer to the next structure, and so on.  The list",

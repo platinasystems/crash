@@ -46,6 +46,7 @@ struct meminfo {           /* general purpose memory information structure */
 	int *kmem_bufctl;
 	ulong *cpudata[NR_CPUS];
 	ulong *shared_array_cache;
+	int current_cache_index;
 	ulong found;
 	ulong retval;
 	char *ignore;
@@ -90,6 +91,7 @@ static ulong vaddr_to_slab(ulong);
 static void do_slab_chain(int, struct meminfo *);
 static void do_slab_chain_percpu_v1(long, struct meminfo *);
 static void do_slab_chain_percpu_v2(long, struct meminfo *);
+static void do_slab_chain_percpu_v2_nodes(long, struct meminfo *);
 static void save_slab_data(struct meminfo *);
 static int slab_data_saved(struct meminfo *);
 static void dump_saved_slab_data(void);
@@ -102,6 +104,7 @@ static void gather_slab_free_list(struct meminfo *);
 static void gather_slab_free_list_percpu(struct meminfo *);
 static void gather_cpudata_list_v1(struct meminfo *);
 static void gather_cpudata_list_v2(struct meminfo *);
+static void gather_cpudata_list_v2_nodes(struct meminfo *, int);
 static int check_cpudata_list(struct meminfo *, ulong);
 static int check_shared_list(struct meminfo *, ulong);
 static void gather_slab_cached_count(struct meminfo *);
@@ -131,9 +134,18 @@ static void node_table_init(void);
 static int compare_node_data(const void *, const void *);
 static void do_vm_flags(ulong);
 static void PG_reserved_flag_init(void);
+static void PG_slab_flag_init(void);
 static ulong nr_blockdev_pages(void);
-
-
+void sparse_mem_init(void);
+void list_mem_sections(void);
+ulong sparse_decode_mem_map(ulong, ulong);
+char *read_mem_section(ulong);
+ulong nr_to_section(ulong);
+int valid_section(ulong);
+int section_has_mem_map(ulong);
+ulong section_mem_map_addr(ulong);
+ulong valid_section_nr(ulong);
+ulong pfn_to_map(ulong);
 
 /*
  *  Memory display modes specific to this file.
@@ -347,13 +359,24 @@ vm_init(void)
 			MEMBER_OFFSET_INIT(kmem_cache_s_name, "kmem_cache", "name");
 			MEMBER_OFFSET_INIT(kmem_cache_s_colour_off, "kmem_cache", 
 				"colour_off");
-			MEMBER_OFFSET_INIT(kmem_cache_s_objsize,  "kmem_cache", 
-				"objsize");
+			if (MEMBER_EXISTS("kmem_cache", "objsize"))
+				MEMBER_OFFSET_INIT(kmem_cache_s_objsize, "kmem_cache", 
+					"objsize");
+			else if (MEMBER_EXISTS("kmem_cache", "buffer_size"))
+				MEMBER_OFFSET_INIT(kmem_cache_s_objsize, "kmem_cache", 
+					"buffer_size");
 			MEMBER_OFFSET_INIT(kmem_cache_s_flags, "kmem_cache", "flags");
 			MEMBER_OFFSET_INIT(kmem_cache_s_gfporder,  
 				"kmem_cache", "gfporder");
 
-			MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache", "lists");
+			if (MEMBER_EXISTS("kmem_cache", "lists"))
+				MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache", "lists");
+			else if (MEMBER_EXISTS("kmem_cache", "nodelists")) {
+                		vt->flags |= PERCPU_KMALLOC_V2_NODES;
+				MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache", "nodelists");
+				ARRAY_LENGTH_INIT(vt->kmem_cache_len_nodes, NULL, 
+					"kmem_cache.nodelists", NULL, 0);
+			}
 			MEMBER_OFFSET_INIT(kmem_cache_s_array, "kmem_cache", "array");
 			ARRAY_LENGTH_INIT(len, NULL, "kmem_cache.array", NULL, 0);
 		}
@@ -413,6 +436,16 @@ vm_init(void)
 			"kmem_slab_s", "s_magic");
 	}
 
+	kt->kernel_NR_CPUS = ARRAY_LENGTH(kmem_cache_s_cpudata) ?
+		ARRAY_LENGTH(kmem_cache_s_cpudata) : ARRAY_LENGTH(kmem_cache_s_array);
+		
+        if (kt->kernel_NR_CPUS > NR_CPUS) {
+		error(WARNING, 
+		    "kernel-configured NR_CPUS (%d) greater than compiled-in NR_CPUS (%d)\n",
+			kt->kernel_NR_CPUS, NR_CPUS);
+		error(FATAL, "recompile crash with larger NR_CPUS\n");
+	}
+
 	if (machdep->init_kernel_pgd)
 		machdep->init_kernel_pgd();
 	else if (symbol_exists("swapper_pg_dir")) {
@@ -447,10 +480,17 @@ vm_init(void)
 		error(FATAL, "no swapper_pg_dir or cpu_pgd symbols exist?\n");
 
 	get_symbol_data("high_memory", sizeof(ulong), &vt->high_memory);
-	if (kernel_symbol_exists("mem_map"))
+
+	if (kernel_symbol_exists("mem_map")) {
 		get_symbol_data("mem_map", sizeof(char *), &vt->mem_map);
+		vt->flags |= FLATMEM;
+	} else if (kernel_symbol_exists("mem_section"))
+		vt->flags |= SPARSEMEM;
 	else
 		vt->flags |= DISCONTIGMEM;
+
+	sparse_mem_init();
+
 	vt->vmalloc_start = machdep->vmalloc_start();
 	if (IS_VMALLOC_ADDR(vt->mem_map))
 		vt->flags |= V_MEM_MAP;
@@ -555,6 +595,7 @@ vm_init(void)
 		ARRAY_LENGTH_INIT(vt->nr_zones, pglist_data_node_zones,
 			"pglist_data.node_zones", NULL, 
 			SIZE_OPTION(zone_struct, zone));
+		vt->ZONE_HIGHMEM = vt->nr_zones - 1;
 
 		if (VALID_STRUCT(zone_struct)) {
 	                MEMBER_OFFSET_INIT(zone_struct_free_pages, 
@@ -673,13 +714,7 @@ vm_init(void)
 	kmem_cache_init();
 
 	PG_reserved_flag_init();
-
-        if (VALID_MEMBER(page_pte)) {
-		if (THIS_KERNEL_VERSION < LINUX(2,6,0))
-                	vt->PG_slab = 10;
-		else if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
-                	vt->PG_slab = 7;
-	}
+	PG_slab_flag_init();
 }
 
 /*
@@ -2148,6 +2183,8 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 		break;
         }
 
+	paddr = 0;
+
 	switch (memtype) {
 	case UVADDR: 
                 fprintf(fp, "%s  %s\n",
@@ -2161,9 +2198,12 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 			return;
 		}
 		if (!uvtop(tc, vaddr, &paddr, 0)) {
-			fprintf(fp, "%s  (not mapped)\n\n", 
+			fprintf(fp, "%s  %s\n\n", 
 				mkstring(buf1, UVADDR_PRLEN, LJUST|LONG_HEX,
-				    MKSTR(vaddr)));
+				    MKSTR(vaddr)),
+				(XEN() && (paddr == PADDR_NOT_AVAILABLE)) ?
+				"(page not available)" : "(not mapped)");
+
 			page_exists = FALSE;
 		} else {
 			fprintf(fp, "%s  %s\n\n",
@@ -2196,9 +2236,13 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 		}
 		if (vtop_flags & USE_USER_PGD) {
                 	if (!uvtop(tc, vaddr, &paddr, 0)) {
-                        	fprintf(fp, "%s  (not mapped)\n\n", 
+                        	fprintf(fp, "%s  %s\n\n", 
 					mkstring(buf1, UVADDR_PRLEN,
-                                        LJUST|LONG_HEX, MKSTR(vaddr)));
+                                        LJUST|LONG_HEX, MKSTR(vaddr)),
+					(XEN() && 
+					(paddr == PADDR_NOT_AVAILABLE)) ?
+					"(page not available)" :
+					"(not mapped)");
                         	page_exists = FALSE;
                 	} else {
                          	fprintf(fp, "%s  %s\n\n", 
@@ -2211,9 +2255,13 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
                 	uvtop(tc, vaddr, &paddr, VERBOSE);
 		} else {
 			if (!kvtop(tc, vaddr, &paddr, 0)) {
-				fprintf(fp, "%s  (not mapped)\n\n", 
+				fprintf(fp, "%s  %s\n\n", 
 					mkstring(buf1, VADDR_PRLEN,
-                                        LJUST|LONG_HEX, MKSTR(vaddr)));
+                                        LJUST|LONG_HEX, MKSTR(vaddr)),
+					(XEN() && 
+					(paddr == PADDR_NOT_AVAILABLE)) ?
+					"(page not available)" :
+					"(not mapped)");
 				page_exists = FALSE;
 			} else {
 				fprintf(fp, "%s  %s\n\n",
@@ -3199,7 +3247,7 @@ cmd_kmem(void)
 		cmd_usage(pc->curcmd, SYNOPSIS);
 	} 
 
-	if (sflag || Sflag)
+	if (sflag || Sflag || !(vt->flags & KMEM_CACHE_INIT))
 		kmem_cache_init();
 
 	while (args[optind]) {
@@ -3413,11 +3461,12 @@ PG_reserved_flag_init(void)
 	buf = (char *)GETBUF(SIZE(page));
 
 	if (!readmem(pageptr, KVADDR, buf, SIZE(page),
-            "reserved page", RETURN_ON_ERROR|QUIET))
+            "reserved page", RETURN_ON_ERROR|QUIET)) {
+		FREEBUF(buf);
 		return;
+	}
 
 	flags = ULONG(buf + OFFSET(page_flags));
-
 
 	if (count_bits_long(flags) == 1)
 		vt->PG_reserved = flags;
@@ -3426,10 +3475,48 @@ PG_reserved_flag_init(void)
 
 	if (CRASHDEBUG(2))
 		fprintf(fp, 
-		    "PG_reserved bit: vaddr: %lx page: %lx flags: %lx => %lx\n",
+		    "PG_reserved: vaddr: %lx page: %lx flags: %lx => %lx\n",
 			vaddr, pageptr, flags, vt->PG_reserved);
 
 	FREEBUF(buf);
+}
+
+static void 
+PG_slab_flag_init(void)
+{
+	int bit;
+        ulong pageptr;
+        ulong vaddr, flags;
+        char buf[BUFSIZE];  /* safe for a page struct */
+
+	/*
+	 *  Set the old defaults in case the search below fails.
+	 */
+        if (VALID_MEMBER(page_pte)) {
+                if (THIS_KERNEL_VERSION < LINUX(2,6,0))
+                        vt->PG_slab = 10;
+                else if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+                        vt->PG_slab = 7;
+        } else if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
+                vt->PG_slab = 7;
+
+       	if (try_get_symbol_data("vm_area_cachep", sizeof(void *), &vaddr) &&
+            phys_to_page((physaddr_t)VTOP(vaddr), &pageptr) &&
+            readmem(pageptr, KVADDR, buf, SIZE(page),
+            "vm_area_cachep page", RETURN_ON_ERROR|QUIET)) {
+
+        	flags = ULONG(buf + OFFSET(page_flags));
+
+	        if ((bit = ffsl(flags))) {
+	                vt->PG_slab = bit - 1;
+	
+	        	if (CRASHDEBUG(2))
+	                	fprintf(fp,
+	                    "PG_slab bit: vaddr: %lx page: %lx flags: %lx => %ld\n",
+	                        vaddr, pageptr, flags, vt->PG_slab);
+	
+		}
+	}
 }
 
 /*
@@ -3480,16 +3567,16 @@ PG_reserved_flag_init(void)
 static void
 dump_mem_map(struct meminfo *mi)
 {
-	long i, n;
+	ulong i;
+	long node;
 	long total_pages;
-	int others, page_not_mapped, phys_not_mapped;
+	int others, page_not_mapped, phys_not_mapped, page_mapping;
 	ulong pp, ppend;
 	physaddr_t phys, physend;
 	ulong tmp, reserved, shared, slabs;
         ulong PG_reserved_flag;
 	long buffers;
 	ulong inode, offset, flags, mapping, index;
-	ulong node_size;
 	uint count;
 	int print_hdr, pg_spec, phys_spec, done;
 	int v22;
@@ -3502,6 +3589,7 @@ dump_mem_map(struct meminfo *mi)
 	char buf4[BUFSIZE];
 	char *page_cache;
 	char *pcache;
+	ulong section, section_nr, nr_mem_sections, node_or_section_size;
 
 	v22 = VALID_MEMBER(page_inode);  /* page.inode vs. page.mapping */
 
@@ -3589,22 +3677,67 @@ dump_mem_map(struct meminfo *mi)
 	done = FALSE;
 	total_pages = 0;
 
-	for (n = 0; n < vt->numnodes; n++) {
+	if (IS_SPARSEMEM())
+		nr_mem_sections = NR_MEM_SECTIONS();
+	else
+		nr_mem_sections = 1;
+
+	/* 
+	 *  Iterate over all possible sections
+	 */
+	node = 0;
+        for (section_nr = 0; section_nr < nr_mem_sections ; section_nr++) {
+
+		if (CRASHDEBUG(2)) 
+			printf("section_nr = %ld\n", section_nr);
+
+		/* 
+		 *  If we are looking up a specific address, jump directly
+		 *  to the section with that page 
+		 */
+		if (IS_SPARSEMEM() && (mi->flags & ADDRESS_SPECIFIED)) {        
+			ulong pfn = mi->spec_addr >> PAGESHIFT();
+			section_nr = pfn_to_section_nr(pfn);
+		}
+
+                if (IS_SPARSEMEM() && 
+		    !(section = valid_section_nr(section_nr))) {
+#ifdef NOTDEF
+                        break;    /* On a real sparsemem system we need to check
+				   * every section as gaps may exist.  But this
+				   * can be slow.  If we know we don't have gaps
+				   * just stop validating sections when we 
+				   * get to the end of the valid ones.  
+				   * In the future find a way to short circuit
+				   * this loop.
+				   */
+#endif
+			continue;
+		}
+
 		if (print_hdr) {
-			fprintf(fp, "%s%s", n ? "\n" : "", hdr);
+			fprintf(fp, "%s%s", node ? "\n" : "", hdr);
 			print_hdr = FALSE;
 		}
 
-		nt = &vt->node_table[n];
-		total_pages += nt->size;
-		pp = nt->mem_map;
-		phys = nt->start_paddr;
-		if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
-			node_size = vt->max_mapnr;
-		else
-			node_size = nt->size;
+next_node:
+		if (IS_SPARSEMEM()) {
+			pp = section_mem_map_addr(section);
+			pp = sparse_decode_mem_map(pp, section_nr);
+			phys = section_nr * PAGES_PER_SECTION() * PAGESIZE();
+			node_or_section_size = PAGES_PER_SECTION();
+		} else {
+			nt = &vt->node_table[node];
+			total_pages += nt->size;
+			pp = nt->mem_map;
+			phys = nt->start_paddr;
+			if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
+				node_or_section_size = vt->max_mapnr;
+			else
+				node_or_section_size = nt->size;
+		}
 
-		for (i = 0; i < node_size; 
+		for (i = 0; i < node_or_section_size; 
 		     i++, pp += SIZE(page), phys += PAGESIZE()) {
 
 			if ((i % PGMM_CACHED) == 0) {
@@ -3693,11 +3826,12 @@ dump_mem_map(struct meminfo *mi)
 				}
 	                        continue;
 	                }
+			page_mapping = VALID_MEMBER(page_mapping);
 	
 			if (v22) {
 				inode = ULONG(pcache + OFFSET(page_inode));
 				offset = ULONG(pcache + OFFSET(page_offset));
-			} else { 
+			} else if (page_mapping) { 
 				mapping = ULONG(pcache + 
 					OFFSET(page_mapping));
 				index = ULONG(pcache + OFFSET(page_index));
@@ -3740,6 +3874,20 @@ dump_mem_map(struct meminfo *mi)
                                         space(MINSPACE),
 					mkstring(buf4, 8, CENTER|RJUST, " "),
                                         " ");
+				else if (!page_mapping)
+				 fprintf(fp, "%s%s%s%s%s%s%s %2d ",
+					 mkstring(buf0, VADDR_PRLEN,
+					 LJUST|LONG_HEX, MKSTR(pp)),
+					 space(MINSPACE),
+					 mkstring(buf1, MAX(PADDR_PRLEN,
+					 strlen("PHYSICAL")),
+					 RJUST|LONGLONG_HEX, MKSTR(&phys)),
+					 space(MINSPACE),
+					 mkstring(buf3, VADDR_PRLEN,
+					 CENTER|RJUST, "-------"),
+					 space(MINSPACE),
+					 mkstring(buf4, 8, CENTER|RJUST, "-----"),
+					 count);
 				else
                                 fprintf(fp, "%s%s%s%s%s%s%8ld %2d ",
 					mkstring(buf0, VADDR_PRLEN, 
@@ -3867,6 +4015,11 @@ dump_mem_map(struct meminfo *mi)
 
 		if (done)
 			break;
+
+		node++;
+
+		if ((node < vt->numnodes) && !IS_SPARSEMEM())
+			goto next_node;
 	}
 
 	switch (mi->flags)
@@ -4560,13 +4713,6 @@ dump_multidimensional_free_pages(struct meminfo *fi)
  */
 static char *zone_hdr = "ZONE  NAME        SIZE    FREE";
 
-/*
- *  From linux/mmzone.h
- */
-#define ZONE_DMA                0
-#define ZONE_NORMAL             1
-#define ZONE_HIGHMEM            2
-
 static void
 dump_free_pages_zones_v1(struct meminfo *fi)
 {
@@ -4650,7 +4796,7 @@ dump_free_pages_zones_v1(struct meminfo *fi)
 			}
 	
 	                if (fi->flags == GET_FREE_HIGHMEM_PAGES) {
-	                        if (i == ZONE_HIGHMEM) {
+	                        if (i == vt->ZONE_HIGHMEM) {
 	                                readmem(node_zones+
 						OFFSET(zone_struct_free_pages),
 						KVADDR, &value, sizeof(ulong),
@@ -4742,7 +4888,7 @@ dump_free_pages_zones_v1(struct meminfo *fi)
 
 	hq_close();
 
-        if (fi->flags & (GET_FREE_PAGES|GET_ZONE_SIZES|GET_FREE_HIGHMEM_PAGES)){
+        if (fi->flags & (GET_FREE_PAGES|GET_ZONE_SIZES|GET_FREE_HIGHMEM_PAGES)) {
                 fi->retval = sum;
                 return;
         }
@@ -4939,7 +5085,7 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 			}
 	
 	                if (fi->flags == GET_FREE_HIGHMEM_PAGES) {
-	                        if (i == ZONE_HIGHMEM) {
+	                        if (i == vt->ZONE_HIGHMEM) {
 	                                readmem(node_zones+
 						OFFSET(zone_free_pages),
 						KVADDR, &value, sizeof(ulong),
@@ -5037,7 +5183,7 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 
 	hq_close();
 
-        if (fi->flags & (GET_FREE_PAGES|GET_ZONE_SIZES|GET_FREE_HIGHMEM_PAGES)){
+        if (fi->flags & (GET_FREE_PAGES|GET_ZONE_SIZES|GET_FREE_HIGHMEM_PAGES)) {
                 fi->retval = sum;
                 return;
         }
@@ -5559,16 +5705,17 @@ nr_blockdev_pages(void)
 	ulong nrpages;
 	char *block_device_buf, *inode_buf, *address_space_buf;
 
+        ld = &list_data;
+        BZERO(ld, sizeof(struct list_data));
+	get_symbol_data("all_bdevs", sizeof(void *), &ld->start);
+	if (empty_list(ld->start))
+		return 0;
+	ld->end = symbol_value("all_bdevs");
+        ld->list_head_offset = OFFSET(block_device_bd_list);
+
 	block_device_buf = GETBUF(SIZE(block_device));
 	inode_buf = GETBUF(SIZE(inode));
 	address_space_buf = GETBUF(SIZE(address_space));
-
-        ld = &list_data;
-        BZERO(ld, sizeof(struct list_data));
-
-	get_symbol_data("all_bdevs", sizeof(void *), &ld->start);
-	ld->end = symbol_value("all_bdevs");
-        ld->list_head_offset = OFFSET(block_device_bd_list);
 
         hq_open();
         bdevcnt = do_list(ld);
@@ -6195,8 +6342,13 @@ kmem_cache_init(void)
 	if (vt->flags & KMEM_CACHE_UNAVAIL)
 		return;
 
+	if ((vt->flags & KMEM_CACHE_DELAY) && !(pc->flags & RUNTIME))
+		return;
+
 	if (DUMPFILE() && (vt->flags & KMEM_CACHE_INIT))
 		return; 
+
+	please_wait("gathering kmem slab cache data");
 
         if (!strlen(slab_hdr)) 
                 sprintf(slab_hdr, 
@@ -6239,7 +6391,8 @@ kmem_cache_init(void)
 			FREEBUF(cache_buf);
 			vt->flags |= KMEM_CACHE_UNAVAIL;
 			error(INFO, 
-		          "unable to initialize kmem slab cache subsystem\n\n");
+		          "%sunable to initialize kmem slab cache subsystem\n\n",
+				DUMPFILE() ? "\n" : "");
 			return;
 		}
 
@@ -6304,6 +6457,8 @@ kmem_cache_init(void)
 				NULL, 0);
 	}
 
+	please_wait_done();
+
 	vt->flags |= KMEM_CACHE_INIT;
 }
 
@@ -6318,11 +6473,15 @@ max_cpudata_limit(ulong cache, ulong *cpus)
 	int limit; 
 	ulong max_limit;
 	ulong shared; 
-
+	ulong *start_address;
+	
+	if (vt->flags & PERCPU_KMALLOC_V2_NODES)
+		goto kmem_cache_s_array_nodes;
+	
 	if (vt->flags & PERCPU_KMALLOC_V2)
 		goto kmem_cache_s_array;
-
-        if (INVALID_MEMBER(kmem_cache_s_cpudata)) {
+	
+	 if (INVALID_MEMBER(kmem_cache_s_cpudata)) {
 		*cpus = 0;
 		return 0;
 	}
@@ -6381,6 +6540,50 @@ kmem_cache_s_array:
 	}
 		   
 	*cpus = i;
+	return max_limit;
+
+kmem_cache_s_array_nodes:
+
+	if (!readmem(cache+OFFSET(kmem_cache_s_array),
+            KVADDR, &cpudata[0], 
+	    sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
+            "array cache array", RETURN_ON_ERROR))
+		goto bail_out;
+
+	for (i = max_limit = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
+	     cpudata[i]; i++) {
+                if (!readmem(cpudata[i]+OFFSET(array_cache_limit),
+                    KVADDR, &limit, sizeof(int),
+                    "array cache limit", RETURN_ON_ERROR))
+			goto bail_out;
+                if (limit > max_limit)
+                        max_limit = limit;
+        }
+
+	*cpus = i;
+
+	/*
+	 *  Check the shared list of all the nodes.
+	 */
+	start_address = (ulong *)GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
+	
+	if (VALID_MEMBER(kmem_list3_shared) && VALID_MEMBER(kmem_cache_s_lists) &&
+	    readmem(cache+OFFSET(kmem_cache_s_lists), KVADDR, &start_address[0], 
+	    sizeof(ulong) * vt->kmem_cache_len_nodes, "array nodelist array", 
+	    RETURN_ON_ERROR)) {  
+		for (i = 0; i < vt->kmem_cache_len_nodes && start_address[i]; i++) {
+			if (readmem(start_address[i] + OFFSET(kmem_list3_shared), 
+			    KVADDR, &shared, sizeof(void *),
+			    "kmem_list3 shared", RETURN_ON_ERROR|QUIET) &&
+			    readmem(shared + OFFSET(array_cache_limit),
+	       		    KVADDR, &limit, sizeof(int), "shared array_cache limit",
+		            RETURN_ON_ERROR|QUIET)) {
+				if (limit > max_limit)
+					max_limit = limit;
+			}
+		}
+	}
+	FREEBUF(start_address);
 	return max_limit;
 
 bail_out:
@@ -6951,8 +7154,13 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 	for (i = 0; i < vt->kmem_max_cpus; i++) 
 		si->cpudata[i] = (ulong *)
 			GETBUF(vt->kmem_max_limit * sizeof(ulong)); 
-	si->shared_array_cache = (ulong *)
-			GETBUF(vt->kmem_max_limit * sizeof(ulong)); 
+	if(vt->flags & PERCPU_KMALLOC_V2_NODES)
+		si->shared_array_cache = (ulong *)
+			GETBUF(vt->kmem_cache_len_nodes * 
+				(vt->kmem_max_limit+1) * sizeof(ulong)); 
+	else
+		si->shared_array_cache = (ulong *)
+			GETBUF((vt->kmem_max_limit+1) * sizeof(ulong)); 
 
 	cnt = 0;
 
@@ -7035,7 +7243,10 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
                 	"kmem_cache_s num", FAULT_ON_ERROR);
 		si->c_num = (ulong)tmp_val;
 
-		do_slab_chain_percpu_v2(SLAB_GET_COUNTS, si);
+		if( vt->flags & PERCPU_KMALLOC_V2_NODES )
+			do_slab_chain_percpu_v2_nodes(SLAB_GET_COUNTS, si);
+		else
+			do_slab_chain_percpu_v2(SLAB_GET_COUNTS, si);
 
 		if (!(si->flags & (ADDRESS_SPECIFIED|GET_SLAB_PAGES))) {
 			DUMP_KMEM_CACHE_INFO_V2();
@@ -7049,12 +7260,16 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 
 		if (si->flags & (VERBOSE|ADDRESS_SPECIFIED)) {
 
-			gather_cpudata_list_v2(si);
+			if (!(vt->flags & PERCPU_KMALLOC_V2_NODES))
+				gather_cpudata_list_v2(si);
 
                         si->slab = (si->flags & ADDRESS_SPECIFIED) ?
                         	vaddr_to_slab(si->spec_addr) : 0;
 
-			do_slab_chain_percpu_v2(SLAB_WALKTHROUGH, si);
+			if (vt->flags & PERCPU_KMALLOC_V2_NODES)
+				do_slab_chain_percpu_v2_nodes(SLAB_WALKTHROUGH, si);
+			else 
+				do_slab_chain_percpu_v2(SLAB_WALKTHROUGH, si);
 
 			if (si->found) {
 				fprintf(fp, kmem_cache_hdr);
@@ -7742,6 +7957,231 @@ do_slab_chain_percpu_v2(long cmd, struct meminfo *si)
 	}
 }
 
+
+/* 
+* Added To  Traverse the Nodelists 
+*/
+
+static void
+do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
+{
+	int i, tmp, s;
+	int list_borked;
+	char *slab_buf;
+	ulong specified_slab;
+	ulong last;
+	ulong slab_chains[SLAB_CHAINS];
+	ulong *start_address;
+	int index;
+
+	list_borked = 0;
+	si->slabsize = (power(2, si->order) * PAGESIZE());
+	si->cpucached_slab = 0;
+	start_address = (ulong *)GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
+
+	if (!readmem(si->cache+OFFSET(kmem_cache_s_lists), KVADDR, 
+            &start_address[0], sizeof(ulong) * vt->kmem_cache_len_nodes, 
+            "array nodelist array", RETURN_ON_ERROR)) 
+                    error(INFO, "cannot read kmem_cache nodelists array"); 
+
+	switch (cmd)
+	{
+	case SLAB_GET_COUNTS:
+		si->flags |= SLAB_GET_COUNTS;
+		si->flags &= ~SLAB_WALKTHROUGH;
+		si->cpucached_cache = 0;
+        	si->num_slabs = si->inuse = 0;
+		slab_buf = GETBUF(SIZE(slab));
+		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
+		{ 
+			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
+			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
+		        slab_chains[2] = start_address[index] + OFFSET(kmem_list3_slabs_free);
+			
+			gather_cpudata_list_v2_nodes(si, index); 
+	
+		        if (CRASHDEBUG(1)) {
+                		fprintf(fp, "[ %s: %lx ", si->curname, si->cache);
+	                	fprintf(fp, "partial: %lx full: %lx free: %lx ]\n",
+                        		slab_chains[0], slab_chains[1], slab_chains[2]);
+			}
+
+			for (s = 0; s < SLAB_CHAINS; s++) {
+				if (!slab_chains[s])
+					continue;
+	
+		                if (!readmem(slab_chains[s],
+	        	            KVADDR, &si->slab, sizeof(ulong),
+	                	    "first slab", QUIET|RETURN_ON_ERROR)) {
+	                                error(INFO, 
+					    "%s: %s list: bad slab pointer: %lx\n",
+                	                        si->curname,
+						slab_chain_name_v2[s],
+                                	        slab_chains[s]);
+					list_borked = 1;
+					continue;
+				}
+	
+				if (slab_data_saved(si)) {
+					FREEBUF(slab_buf);
+					FREEBUF(start_address);
+					return;
+				}
+			
+				if (si->slab == slab_chains[s]) 
+					continue;
+	
+				last = slab_chains[s];
+
+				do {
+	        	                if (received_SIGINT()) {
+						FREEBUF(slab_buf);
+						FREEBUF(start_address);
+	                        	        restart(0);
+					}
+
+					if (!verify_slab_v2(si, last, s)) {
+						list_borked = 1;
+						continue;
+					}
+					last = si->slab - OFFSET(slab_list);
+		
+		        	        readmem(si->slab, KVADDR, slab_buf, 
+						SIZE(slab), "slab buffer", 
+						FAULT_ON_ERROR);
+		
+					tmp = INT(slab_buf + OFFSET(slab_inuse));
+					si->inuse += tmp;
+	
+					if (ACTIVE())
+						gather_cpudata_list_v2_nodes(si, index); 
+
+					si->s_mem = ULONG(slab_buf + 
+						OFFSET(slab_s_mem));
+					gather_slab_cached_count(si);
+	
+					si->num_slabs++;
+		
+					si->slab = ULONG(slab_buf + 
+						OFFSET(slab_list));
+					si->slab -= OFFSET(slab_list);
+
+				/*
+				 *  Check for slab transition. (Tony Dziedzic)
+				 */
+					for (i = 0; i < SLAB_CHAINS; i++) {
+     						if ((i != s) && 
+						    (si->slab == slab_chains[i])) {
+       							error(NOTE, 
+		  	                      "%s: slab chain inconsistency: %s list\n",
+								si->curname,
+								slab_chain_name_v2[s]);
+       							list_borked = 1;
+     						}
+					}
+			
+				} while (si->slab != slab_chains[s] && !list_borked);
+			}
+		}
+
+		if (!list_borked)
+			save_slab_data(si);
+		break;
+
+	case SLAB_WALKTHROUGH:
+		specified_slab = si->slab;     
+		si->flags |= SLAB_WALKTHROUGH;
+		si->flags &= ~SLAB_GET_COUNTS;
+		slab_buf = GETBUF(SIZE(slab));
+		for (index=0; (index < vt->kmem_cache_len_nodes) && start_address[index]; index++)
+		{ 
+			slab_chains[0] = start_address[index] + OFFSET(kmem_list3_slabs_partial);
+			slab_chains[1] = start_address[index] + OFFSET(kmem_list3_slabs_full);
+		        slab_chains[2] = start_address[index] + OFFSET(kmem_list3_slabs_free);
+	
+			gather_cpudata_list_v2_nodes(si, index);
+ 
+		        if (CRASHDEBUG(1)) {
+                		fprintf(fp, "[ %s: %lx ", si->curname, si->cache);
+	                	fprintf(fp, "partial: %lx full: %lx free: %lx ]\n",
+                        		slab_chains[0], slab_chains[1], slab_chains[2]);
+			}
+
+			for (s = 0; s < SLAB_CHAINS; s++) {
+				if (!slab_chains[s])
+					continue;
+
+	        	if (!specified_slab) {
+	                	if (!readmem(slab_chains[s],
+	       	                    KVADDR, &si->slab, sizeof(ulong),
+	               	            "slabs", QUIET|RETURN_ON_ERROR)) {
+                               	        error(INFO,
+	                                        "%s: %s list: bad slab pointer: %lx\n",
+                                                si->curname,
+						slab_chain_name_v2[s],
+                       	                        slab_chains[s]);
+						list_borked = 1;
+						continue;
+					}
+					last = slab_chains[s];
+				} else
+					last = 0;
+			
+				if (si->slab == slab_chains[s])
+					continue;
+				
+				readmem(si->slab, KVADDR, slab_buf, 
+						SIZE(slab), "slab buffer", 
+						FAULT_ON_ERROR);
+		
+				si->s_mem = ULONG(slab_buf + 
+						OFFSET(slab_s_mem));
+
+				if (CRASHDEBUG(1)) {
+					fprintf(fp, "search cache: [%s] ", si->curname);
+					if (si->flags & ADDRESS_SPECIFIED) 
+						fprintf(fp, "for %llx", si->spec_addr);
+					fprintf(fp, "\n");
+				}
+	
+			        do {
+		                        if (received_SIGINT())
+					{
+						FREEBUF(start_address);
+						FREEBUF(slab_buf);
+	        	                        restart(0);
+					}
+	
+                        	        if (!verify_slab_v2(si, last, s)) {
+                                	        list_borked = 1;
+                                        	continue;
+	                                }
+        	                        last = si->slab - OFFSET(slab_list);
+	
+			                dump_slab_percpu_v2(si);
+					
+					if (si->found) {
+						FREEBUF(start_address);
+						FREEBUF(slab_buf);
+						return;
+					}
+		
+			                readmem(si->slab+OFFSET(slab_list),
+			                        KVADDR, &si->slab, sizeof(ulong),
+			                        "slab list", FAULT_ON_ERROR);
+			
+					si->slab -= OFFSET(slab_list);
+	
+			        } while (si->slab != slab_chains[s] && !list_borked);
+			}
+		}
+
+		break;
+	}
+	FREEBUF(slab_buf);
+	FREEBUF(start_address);
+}
+
 /*
  *  Try to preclude any attempt to translate a bogus slab structure.
  */
@@ -7949,7 +8389,7 @@ dump_slab(struct meminfo *si)
 
         if (si->flags & ADDRESS_SPECIFIED)  {
                 if (INSLAB(si->slab, si) && (si->spec_addr >= si->slab) &&
-                    (si->spec_addr < (si->slab+SIZE(kmem_slab_s)))){
+                    (si->spec_addr < (si->slab+SIZE(kmem_slab_s)))) {
                 	si->found = KMEM_SLAB_ADDR;
                         return;
                 }
@@ -8322,7 +8762,7 @@ dump_slab_objects(struct meminfo *si)
          */
 
         if (si->c_flags & SLAB_CFLGS_BUFCTL) {
-		for (i = 0, next = si->s_index; i < si->c_num; i++, next++){
+		for (i = 0, next = si->s_index; i < si->c_num; i++, next++) {
                 	obj = si->s_mem + 
 				((next - si->s_index) * si->c_offset);
 			DUMP_SLAB_OBJECT();
@@ -8663,6 +9103,115 @@ gather_cpudata_list_v2(struct meminfo *si)
                 	fprintf(fp, "  %lx (shared list)\n", si->shared_array_cache[j]);
 }
 
+
+
+/*
+ *  Updated gather_cpudata_list_v2 for per-node kmem_list3's in kmem_cache 
+ */
+static void
+gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
+{
+        int i, j;
+	int avail;
+        ulong cpudata[NR_CPUS];
+	ulong shared;
+	ulong *start_address;
+
+	start_address = (ulong *) GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
+        readmem(si->cache+OFFSET(kmem_cache_s_array),
+                KVADDR, &cpudata[0], 
+		sizeof(ulong) * ARRAY_LENGTH(kmem_cache_s_array),
+                "array_cache array", FAULT_ON_ERROR);
+
+        for (i = 0; (i < ARRAY_LENGTH(kmem_cache_s_array)) && 
+	     (cpudata[i]) && !(index); i++) {
+		BZERO(si->cpudata[i], sizeof(ulong) * vt->kmem_max_limit);
+
+                readmem(cpudata[i]+OFFSET(array_cache_avail),
+                        KVADDR, &avail, sizeof(int),
+                        "array cache avail", FAULT_ON_ERROR);
+
+		if (!avail) 
+			continue;
+
+		if (avail > vt->kmem_max_limit) {
+			error(INFO, 
+	  	  "\"%s\" cache: array_cache.avail %d greater than limit %ld\n",
+				si->curname, avail, vt->kmem_max_limit);
+			si->errors++;
+		}
+
+		if (CRASHDEBUG(2))
+			fprintf(fp, "%s: cpu[%d] avail: %d\n", 
+				si->curname, i, avail);
+		
+                readmem(cpudata[i]+SIZE(array_cache),
+                        KVADDR, si->cpudata[i],
+			sizeof(void *) * avail,
+                        "array_cache avail", FAULT_ON_ERROR);
+
+		if (CRASHDEBUG(2))
+			for (j = 0; j < avail; j++)
+				fprintf(fp, "  %lx (cpu %d)\n", si->cpudata[i][j], i);
+        }
+
+        /*
+         *  If the shared list contains anything, gather them as well.
+         */
+	if (!index) {
+		BZERO(si->shared_array_cache, sizeof(ulong) * 
+			vt->kmem_max_limit * vt->kmem_cache_len_nodes);
+		si->current_cache_index = 0;
+	}
+
+	if (!readmem(si->cache+OFFSET(kmem_cache_s_lists), KVADDR, &start_address[0], 
+	    sizeof(ulong) * vt->kmem_cache_len_nodes , "array nodelist array", 
+	    RETURN_ON_ERROR) ||  
+	    !readmem(start_address[index] + OFFSET(kmem_list3_shared), KVADDR, &shared,
+	     sizeof(void *), "kmem_list3 shared", RETURN_ON_ERROR|QUIET) ||
+	    !readmem(shared + OFFSET(array_cache_avail), KVADDR, &avail, sizeof(int), 
+	    "shared array_cache avail", RETURN_ON_ERROR|QUIET) || !avail) {
+		FREEBUF(start_address);
+		return;
+	}
+
+	if (avail > vt->kmem_max_limit) {
+		error(INFO, 
+  	  "\"%s\" cache: shared array_cache.avail %d greater than limit %ld\n",
+			si->curname, avail, vt->kmem_max_limit);
+		si->errors++;
+		FREEBUF(start_address);
+		return;
+	}
+
+	if (CRASHDEBUG(2))
+		fprintf(fp, "%s: shared avail: %d\n", 
+			si->curname, avail);
+
+        readmem(shared+SIZE(array_cache), KVADDR, si->shared_array_cache + si->current_cache_index,
+        	sizeof(void *) * avail, "shared array_cache avail", 
+		FAULT_ON_ERROR);
+
+	if ((si->current_cache_index + avail) > 
+	    (vt->kmem_max_limit * vt->kmem_cache_len_nodes)) {
+		error(INFO, 
+  	  "\"%s\" cache: total shared array_cache.avail %d greater than total limit %ld\n",
+			si->curname, 
+			si->current_cache_index + avail, 
+			vt->kmem_max_limit * vt->kmem_cache_len_nodes);
+		si->errors++;
+		FREEBUF(start_address);
+		return;
+	}
+
+        if (CRASHDEBUG(2))
+        	for (j = si->current_cache_index; j < (si->current_cache_index + avail); j++)
+                	fprintf(fp, "  %lx (shared list)\n", si->shared_array_cache[j]);
+	
+	si->current_cache_index += avail;
+	FREEBUF(start_address);
+}
+
 /*
  *  Check whether a given address is contained in the previously-gathered
  *  percpu object cache.
@@ -8698,7 +9247,7 @@ check_shared_list(struct meminfo *si, ulong obj)
 	    !si->shared_array_cache)
 		return FALSE;
 
-        for (i = 0; i < si->shared_array_cache[i]; i++) {
+        for (i = 0; si->shared_array_cache[i]; i++) {
 		if (si->shared_array_cache[i] == obj)
 			return TRUE;
 	}
@@ -8904,6 +9453,16 @@ phys_to_page(physaddr_t phys, ulong *pp)
 	physaddr_t pstart, pend;
 	ulong node_size;
 
+	if (IS_SPARSEMEM()) {
+		ulong map;
+		map = pfn_to_map(phys >> PAGESHIFT());
+		if (map) {
+			*pp = map;
+			return TRUE;
+		}
+		return FALSE;
+	}
+
         for (n = 0; n < vt->numnodes; n++) {
                 nt = &vt->node_table[n];
                 if ((vt->flags & V_MEM_MAP) && (vt->numnodes == 1))
@@ -9011,6 +9570,17 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sKMEM_CACHE_UNAVAIL", others++ ? "|" : "");
 	if (vt->flags & DISCONTIGMEM)
 		fprintf(fp, "%sDISCONTIGMEM", others++ ? "|" : "");
+	if (vt->flags & FLATMEM)
+		fprintf(fp, "%sFLATMEM", others++ ? "|" : "");
+	if (vt->flags & SPARSEMEM)
+		fprintf(fp, "%sSPARSEMEM", others++ ? "|" : "");\
+	if (vt->flags & SPARSEMEM_EX)
+		fprintf(fp, "%sSPARSEMEM_EX", others++ ? "|" : "");\
+	if (vt->flags & KMEM_CACHE_DELAY)
+		fprintf(fp, "%sKMEM_CACHE_DELAY", others++ ? "|" : "");\
+	if (vt->flags & PERCPU_KMALLOC_V2_NODES)
+		fprintf(fp, "%sPERCPU_KMALLOC_V2_NODES", others++ ? "|" : "");\
+
 	fprintf(fp, ")\n");
 	if (vt->kernel_pgd[0] == vt->kernel_pgd[1])
        		fprintf(fp, "     kernel_pgd[NR_CPUS]: %lx ...\n", 
@@ -9039,6 +9609,7 @@ dump_vm_table(int verbose)
 	fprintf(fp, "      kmem_max_cpus: %ld\n", vt->kmem_max_cpus);
 	fprintf(fp, "   kmem_cache_count: %ld\n", vt->kmem_cache_count);
 	fprintf(fp, " kmem_cache_namelen: %d\n", vt->kmem_cache_namelen);
+	fprintf(fp, "kmem_cache_nodelist_len: %ld\n", vt->kmem_cache_len_nodes);
 	fprintf(fp, "        PG_reserved: %lx\n", vt->PG_reserved);
 	fprintf(fp, "            PG_slab: %ld\n", vt->PG_slab);
 	fprintf(fp, "        paddr_prlen: %d\n", vt->paddr_prlen);
@@ -9083,6 +9654,8 @@ dump_vm_table(int verbose)
 	fprintf(fp, "       nr_swapfiles: %d\n", vt->nr_swapfiles);
 	fprintf(fp, "     last_swap_read: %lx\n", vt->last_swap_read);
 	fprintf(fp, "   swap_info_struct: %lx\n", (ulong)vt->swap_info_struct);
+	fprintf(fp, "            mem_sec: %lx\n", (ulong)vt->mem_sec);
+	fprintf(fp, "       ZONE_HIGHMEM: %d\n", vt->ZONE_HIGHMEM);
 
 	dump_vma_cache(VERBOSE);
 }
@@ -9700,7 +10273,7 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
 	totalswap = totalused = 0;
 
 	for (i = 0; i < vt->nr_swapfiles; i++, 
-	    swap_info += SIZE(swap_info_struct)){
+	    swap_info += SIZE(swap_info_struct)) {
 		fill_swap_info(swap_info);
 
 		flags = INT(vt->swap_info_struct + 
@@ -9725,8 +10298,12 @@ dump_swap_info(ulong swapflags, ulong *totalswap_pages, ulong *totalused_pages)
                 prio = INT(vt->swap_info_struct + 
 			OFFSET(swap_info_struct_prio));
 
-                max = ULONG(vt->swap_info_struct +
-                        OFFSET(swap_info_struct_max));
+		if (MEMBER_SIZE("swap_info_struct", "max") == sizeof(int))
+			max = UINT(vt->swap_info_struct +
+                                OFFSET(swap_info_struct_max));
+		else
+                	max = ULONG(vt->swap_info_struct +
+                        	OFFSET(swap_info_struct_max));
 
                 swap_map = ULONG(vt->swap_info_struct +
                         OFFSET(swap_info_struct_swap_map));
@@ -10001,7 +10578,7 @@ dump_memory_nodes(int initialize)
 	ulong node_start_pfn;
         ulong node_start_mapnr;
 	ulong node_spanned_pages;
-        ulong free_pages, zone_size, node_size;
+        ulong free_pages, zone_size, node_size, cum_zone_size;
 	ulong zone_start_paddr, zone_start_mapnr, zone_mem_map;
 	ulong zone_start_pfn;
 	ulong bdata;
@@ -10015,23 +10592,23 @@ dump_memory_nodes(int initialize)
 	char buf5[BUFSIZE];
 	struct node_table *nt;
 
-        if (!(vt->flags & NODES)) {
-		if (!initialize) 
-			error(FATAL, 
-			    "memory nodes not supported by this kernel\n\n");
-		else {
-			nt = &vt->node_table[0];
-			nt->node_id = 0;
-			if (symbol_exists("contig_page_data"))
-				nt->pgdat = symbol_value("contig_page_data");
-			else
-				nt->pgdat = 0;
-			nt->size = vt->total_pages;
-			nt->mem_map = vt->mem_map;
-			nt->start_paddr = 0;
-			nt->start_mapnr = 0;
-			return;
-		}
+	if (IS_SPARSEMEM() && !initialize) {
+		error(INFO,"Per node memory data is not available for this kernel\n");
+		return;
+	}
+
+        if (!(vt->flags & NODES) && initialize) {
+		nt = &vt->node_table[0];
+		nt->node_id = 0;
+		if (symbol_exists("contig_page_data"))
+			nt->pgdat = symbol_value("contig_page_data");
+                else
+			nt->pgdat = 0;
+		nt->size = vt->total_pages;
+		nt->mem_map = vt->mem_map;
+		nt->start_paddr = 0;
+		nt->start_mapnr = 0;
+		return;
 	}
 
 	if (initialize)
@@ -10054,12 +10631,6 @@ dump_memory_nodes(int initialize)
 				"node_mem_map", FAULT_ON_ERROR);
 		} else {
 			node_mem_map = BADADDR;
-			if (!badaddr && initialize) {
-				error(INFO, 
-  		 "pglist_data.node_mem_map structure member does not exist.\n");
-				error(INFO,
-       "certain memory-related commands will fail or display invalid data\n\n");
-			}
 			badaddr = TRUE;
 		}
 
@@ -10161,6 +10732,7 @@ dump_memory_nodes(int initialize)
 		}
 
        		node_zones = pgdat + OFFSET(pglist_data_node_zones);
+		cum_zone_size = 0;
 		for (i = 0; i < vt->nr_zones; i++) {
 			if (CRASHDEBUG(7))
 				fprintf(fp, "zone at %lx\n", node_zones);
@@ -10223,7 +10795,14 @@ dump_memory_nodes(int initialize)
                                         "node_zones zone_start_pfn",
                                         FAULT_ON_ERROR);
 				zone_start_paddr = PTOB(zone_start_pfn);
-                                readmem(node_zones+
+				if (!(vt->flags & NODES) && 
+				    INVALID_MEMBER(zone_zone_mem_map)) {
+					readmem(pgdat+OFFSET(pglist_data_node_mem_map),
+                                    	    KVADDR, &zone_mem_map, sizeof(void *),
+                                    	    "contig_page_data mem_map", FAULT_ON_ERROR);
+					if (zone_size)
+						zone_mem_map += cum_zone_size * SIZE(page);
+				} else readmem(node_zones+
                                         OFFSET(zone_zone_mem_map),
                                         KVADDR, &zone_mem_map,
                                         sizeof(ulong),
@@ -10236,15 +10815,27 @@ dump_memory_nodes(int initialize)
 				else
 					zone_start_mapnr = 0;
 			}
-                        readmem(node_zones+
-				OFFSET_OPTION(zone_struct_zone_mem_map,
-				zone_zone_mem_map), KVADDR, &zone_mem_map, 
-				sizeof(ulong), "node_zones zone_mem_map", 
-				FAULT_ON_ERROR);
+			if (!(vt->flags & NODES) && 
+			    INVALID_MEMBER(zone_struct_zone_mem_map) &&
+			    INVALID_MEMBER(zone_zone_mem_map)) {
+                		readmem(pgdat+OFFSET(pglist_data_node_mem_map),
+				    KVADDR, &zone_mem_map, sizeof(void *), 
+				    "contig_page_data mem_map", FAULT_ON_ERROR);
+				if (zone_size)
+					zone_mem_map += cum_zone_size * SIZE(page);
+				else
+					zone_mem_map = 0;
+			} else 
+				readmem(node_zones+
+				    OFFSET_OPTION(zone_struct_zone_mem_map,
+				    zone_zone_mem_map), KVADDR, &zone_mem_map, 
+				    sizeof(ulong), "node_zones zone_mem_map", 
+				    FAULT_ON_ERROR);
 
 			if (!initialize) {
 				fprintf(fp, " %2d   %-9s %7ld  ", 
 					i, buf1, zone_size);
+				cum_zone_size += zone_size;
 				fprintf(fp, "%s  %s  %s\n",
 	                    	    mkstring(buf1, VADDR_PRLEN,
 	                        	RJUST|LONG_HEX,MKSTR(zone_mem_map)),
@@ -10288,19 +10879,21 @@ node_table_init(void)
 	 *  Override numnodes -- some kernels may leave it at 1 on a system
 	 *  with multiple memory nodes.
 	 */
-        get_symbol_data("pgdat_list", sizeof(void *), &pgdat);
-
-        for (n = 0; pgdat; n++) {
-                readmem(pgdat + OFFSET_OPTION(pglist_data_node_next,
-                        pglist_data_pgdat_next), KVADDR,
-                        &pgdat, sizeof(void *), "pglist_data node_next",
-                        FAULT_ON_ERROR);
-	}
-	if (n != vt->numnodes) {
-		if (CRASHDEBUG(2))
-			error(NOTE, "changing numnodes from %d to %d\n",
-				vt->numnodes, n);
-		vt->numnodes = n;
+	if (vt->flags & NODES) {
+	        get_symbol_data("pgdat_list", sizeof(void *), &pgdat);
+	
+	        for (n = 0; pgdat; n++) {
+	                readmem(pgdat + OFFSET_OPTION(pglist_data_node_next,
+	                        pglist_data_pgdat_next), KVADDR,
+	                        &pgdat, sizeof(void *), "pglist_data node_next",
+	                        FAULT_ON_ERROR);
+		}
+		if (n != vt->numnodes) {
+			if (CRASHDEBUG(2))
+				error(NOTE, "changing numnodes from %d to %d\n",
+					vt->numnodes, n);
+			vt->numnodes = n;
+		}
 	}
 
        	if (!(vt->node_table = (struct node_table *)
@@ -10360,6 +10953,10 @@ memory_page_size(void)
 	case DISKDUMP:
 		psz = diskdump_page_size();
 		break;
+
+        case XENDUMP:
+                psz = xendump_page_size();
+                break;
 
 	case KDUMP:
 		psz = kdump_page_size();
@@ -10514,6 +11111,8 @@ dumpfile_memory(int cmd)
         		retval = netdump_memory_used();
 		else if (pc->flags & KDUMP)
         		retval = kdump_memory_used();
+		else if (pc->flags & XENDUMP)
+        		retval = xendump_memory_used();
 		else if (pc->flags & DISKDUMP)
         		retval = diskdump_memory_used();
 		else if (pc->flags & LKCD)
@@ -10531,6 +11130,8 @@ dumpfile_memory(int cmd)
 			retval = netdump_free_memory();
                 else if (pc->flags & KDUMP)
 			retval = kdump_free_memory();
+                else if (pc->flags & XENDUMP)
+			retval = xendump_free_memory();
                 else if (pc->flags & DISKDUMP)
 			retval = diskdump_free_memory();
                 else if (pc->flags & LKCD)
@@ -10548,6 +11149,8 @@ dumpfile_memory(int cmd)
                         retval = netdump_memory_dump(fp);
                 else if (pc->flags & KDUMP) 
                         retval = kdump_memory_dump(fp);
+                else if (pc->flags & XENDUMP) 
+                        retval = xendump_memory_dump(fp);
                 else if (pc->flags & DISKDUMP) 
                         retval = diskdump_memory_dump(fp);
                 else if (pc->flags & LKCD) 
@@ -10570,3 +11173,197 @@ dumpfile_memory(int cmd)
 	return retval;
 }
 
+/* 
+ *  Functions for sparse mem support 
+ */
+ulong 
+sparse_decode_mem_map(ulong coded_mem_map, ulong section_nr)
+{
+        return coded_mem_map + 
+	    (section_nr_to_pfn(section_nr) * SIZE(page));
+}
+
+void
+sparse_mem_init(void)
+{
+	ulong addr;
+	ulong mem_section_size;
+
+	if (!IS_SPARSEMEM())
+		return;
+
+	MEMBER_OFFSET_INIT(mem_section_section_mem_map, "mem_section",
+		"section_mem_map");
+	STRUCT_SIZE_INIT(mem_section, "mem_section");
+
+	if (!MAX_PHYSMEM_BITS())
+		error(FATAL, 
+		    "CONFIG_SPARSEMEM kernels not supported for this architecture\n");
+		
+	if (get_array_length("mem_section", NULL, 0) ==
+	    (NR_MEM_SECTIONS() / _SECTIONS_PER_ROOT_EXTREME()))
+		vt->flags |= SPARSEMEM_EX;
+
+	if (IS_SPARSEMEM_EX()) {
+		machdep->sections_per_root = _SECTIONS_PER_ROOT_EXTREME();
+		mem_section_size = sizeof(void *) * NR_SECTION_ROOTS();
+	} else {
+		machdep->sections_per_root = _SECTIONS_PER_ROOT();
+		mem_section_size = SIZE(mem_section) * NR_SECTION_ROOTS();
+	}
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "PAGESIZE=%d\n",PAGESIZE());
+		fprintf(fp,"mem_section_size = %ld\n", mem_section_size);
+		fprintf(fp, "NR_SECTION_ROOTS = %ld\n", NR_SECTION_ROOTS());
+		fprintf(fp, "NR_MEM_SECTIONS = %ld\n", NR_MEM_SECTIONS());
+		fprintf(fp, "SECTIONS_PER_ROOT = %ld\n", SECTIONS_PER_ROOT() );
+		fprintf(fp, "SECTION_ROOT_MASK = 0x%lx\n", SECTION_ROOT_MASK());
+		fprintf(fp, "PAGES_PER_SECTION = %ld\n", PAGES_PER_SECTION());
+	}
+
+	if (!(vt->mem_sec = malloc(mem_section_size)))
+		error(FATAL, "cannot malloc mem_sec cache\n");
+
+	addr = symbol_value("mem_section");
+	readmem(addr, KVADDR,vt->mem_sec ,mem_section_size,
+		"memory section root table", FAULT_ON_ERROR);
+}
+
+char
+*read_mem_section(ulong addr)
+{
+	static char *mem_section;
+
+	if (!mem_section) {
+		mem_section = GETBUF(SIZE(mem_section));
+	}
+
+	if (!IS_KVADDR(addr))
+		return 0;
+	
+	readmem(addr, KVADDR, mem_section, SIZE(mem_section),
+		"memory section", FAULT_ON_ERROR);
+
+	return mem_section;
+}
+
+ulong
+nr_to_section(ulong nr)
+{
+	ulong addr;
+	ulong *mem_sec = vt->mem_sec;
+
+	if (!IS_KVADDR(mem_sec[SECTION_NR_TO_ROOT(nr)]))
+		return 0;
+
+	if (IS_SPARSEMEM_EX())
+		addr = mem_sec[SECTION_NR_TO_ROOT(nr)] + 
+		    (nr & SECTION_ROOT_MASK()) * SIZE(mem_section);
+	else
+		addr = mem_sec[0] + (nr & SECTION_ROOT_MASK()) * SIZE(mem_section);
+
+	if (!IS_KVADDR(addr))
+		return 0;
+
+	return addr;
+}
+
+/*
+ * We use the lower bits of the mem_map pointer to store
+ * a little bit of information.  There should be at least
+ * 3 bits here due to 32-bit alignment.
+ */
+#define SECTION_MARKED_PRESENT	(1UL<<0)
+#define SECTION_HAS_MEM_MAP	(1UL<<1)
+#define SECTION_MAP_LAST_BIT	(1UL<<2)
+#define SECTION_MAP_MASK	(~(SECTION_MAP_LAST_BIT-1))
+
+
+int 
+valid_section(ulong addr)
+{
+	char *mem_section;
+
+	if ((mem_section = read_mem_section(addr)))
+        	return (ULONG(mem_section + 
+			OFFSET(mem_section_section_mem_map)) && 
+			SECTION_MARKED_PRESENT);
+	return 0;
+}
+
+int 
+section_has_mem_map(ulong addr)
+{
+	char *mem_section;
+
+	if ((mem_section = read_mem_section(addr)))
+		return (ULONG(mem_section + 
+			OFFSET(mem_section_section_mem_map))
+			&& SECTION_HAS_MEM_MAP);
+	return 0;
+}
+
+ulong 
+section_mem_map_addr(ulong addr)
+{   
+	char *mem_section;
+	ulong map;
+
+	if ((mem_section = read_mem_section(addr))) {
+		map = ULONG(mem_section + 
+			OFFSET(mem_section_section_mem_map));
+		map &= SECTION_MAP_MASK;
+		return map;
+	}
+	return 0;
+}
+
+
+ulong 
+valid_section_nr(ulong nr)
+{
+	ulong addr = nr_to_section(nr);
+
+	if (valid_section(addr))
+		return addr;
+
+	return 0;
+}
+
+ulong 
+pfn_to_map(ulong pfn)
+{
+	ulong section, page_offset;
+
+	section = pfn_to_section_nr(pfn);
+
+	if (section_has_mem_map(section)) {
+		page_offset = pfn - section_nr_to_pfn(section);
+		return (section_mem_map_addr(section) + 
+			(page_offset * PAGESIZE()));
+	}
+
+	return 0;
+}
+
+void 
+list_mem_sections(void)
+{
+	ulong nr,addr;
+	ulong nr_mem_sections = NR_MEM_SECTIONS();
+	ulong coded_mem_map;
+
+	for (nr = 0; nr <= nr_mem_sections ; nr++) {
+		if ((addr = valid_section_nr(nr))) {
+			coded_mem_map = section_mem_map_addr(addr);
+			fprintf(fp,
+			    "nr=%ld section = %lx coded_mem_map=%lx pfn=%ld mem_map=%lx\n",
+				nr,
+				addr,
+				coded_mem_map,
+				section_nr_to_pfn(nr),
+				sparse_decode_mem_map(coded_mem_map,nr));
+		}
+	}
+}

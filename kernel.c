@@ -21,7 +21,6 @@
 static void do_module_cmd(ulong, char *, ulong, char *, char *);
 static char *find_module_objfile(char *, char *, char *);
 static char *module_objfile_search(char *, char *, char *);
-static char *get_uptime(char *);
 static char *get_loadavg(char *);
 static void get_lkcd_regs(struct bt_info *, ulong *, ulong *);
 static void dump_sys_call_table(char *, int);
@@ -43,6 +42,7 @@ static int verify_modules(void);
 static void verify_namelist(void);
 static char *debug_kernel_version(char *);
 static int restore_stack(struct bt_info *);
+static ulong __xen_machine_to_pseudo(ulonglong, ulong);
 
 
 /*
@@ -70,6 +70,26 @@ kernel_init(int when)
 		}
 		kt->end = symbol_value("_end");
 	
+		/*
+		 *  If Xen architecture, default to a guest kernel running
+		 *  with writable page tables; for now it can be overridden
+		 *  with the --hypervisor and --shared_page_tables command
+		 *  line options.
+		 */ 
+		if (symbol_exists("xen_start_info")) {
+			kt->flags |= ARCH_XEN;
+			if (!(kt->xen_flags & (SHADOW_PAGE_TABLES|CANONICAL_PAGE_TABLES)))
+				kt->xen_flags |= WRITABLE_PAGE_TABLES;
+             		get_symbol_data("phys_to_machine_mapping", sizeof(ulong),
+                        	&kt->phys_to_machine_mapping);
+			if (machine_type("X86"))
+                		get_symbol_data("max_pfn", sizeof(ulong), &kt->p2m_table_size);
+			if (machine_type("X86_64"))
+                		get_symbol_data("end_pfn", sizeof(ulong), &kt->p2m_table_size);
+                	if ((kt->machine_to_pseudo = (char *)malloc(PAGESIZE())) == NULL)
+                        	error(FATAL, "cannot malloc machine_to_pseudo space.");
+		}
+
 		if (symbol_exists("smp_num_cpus")) {
 			kt->flags |= SMP;
 			get_symbol_data("smp_num_cpus", sizeof(int), &kt->cpus);
@@ -97,9 +117,17 @@ kernel_init(int when)
 			clean_exit(0);
 		}
 	
-	        readmem(symbol_value("system_utsname"), KVADDR, &kt->utsname,
-	                sizeof(struct new_utsname), "system_utsname", 
-			FAULT_ON_ERROR);
+		if (symbol_exists("system_utsname"))
+	        	readmem(symbol_value("system_utsname"), KVADDR, &kt->utsname,
+	                	sizeof(struct new_utsname), "system_utsname", 
+				RETURN_ON_ERROR);
+		else if (symbol_exists("init_uts_ns"))
+			readmem(symbol_value("init_uts_ns") + sizeof(int),
+				KVADDR,  &kt->utsname, sizeof(struct new_utsname), 
+				"init_uts_ns", RETURN_ON_ERROR);
+		else
+			error(INFO, "cannot access utsname information\n\n");
+
 		strncpy(buf, kt->utsname.release, MIN(strlen(kt->utsname.release), 65));
 		if (ascii_string(kt->utsname.release)) {
 			p1 = p2 = buf;
@@ -118,6 +146,7 @@ kernel_init(int when)
 			*p2 = NULLCHAR;
 			kt->kernel_version[2] = atoi(p1);
 		}
+
 		break;
 
 	case POST_GDB:
@@ -129,7 +158,8 @@ kernel_init(int when)
 			kt->flags |= PER_CPU_OFF;
 		}
 		MEMBER_OFFSET_INIT(runqueue_cpu, "runqueue", "cpu");
-		if (VALID_MEMBER(runqueue_cpu)) {
+		if (VALID_MEMBER(runqueue_cpu) &&
+		    (get_array_length("runqueue.cpu", NULL, 0) > 0)) {
 			MEMBER_OFFSET_INIT(cpu_s_curr, "cpu_s", "curr");
 			MEMBER_OFFSET_INIT(cpu_s_idle, "cpu_s", "idle");
 		 	STRUCT_SIZE_INIT(cpu_s, "cpu_s"); 
@@ -154,6 +184,7 @@ kernel_init(int when)
 		} else {
 			MEMBER_OFFSET_INIT(runqueue_idle, "runqueue", "idle");
 			MEMBER_OFFSET_INIT(runqueue_curr, "runqueue", "curr");
+			ASSIGN_OFFSET(runqueue_cpu) = INVALID_OFFSET;
 		}
 		MEMBER_OFFSET_INIT(runqueue_active, "runqueue", "active");
 		MEMBER_OFFSET_INIT(runqueue_expired, "runqueue", "expired");
@@ -471,6 +502,9 @@ verify_version(void)
 			break;
 		}
 	}
+
+	if (CRASHDEBUG(1))
+		gdb_readnow_warning();
 
 	return;
 
@@ -1464,6 +1498,9 @@ back_trace(struct bt_info *bt)
 		     i < LONGS_PER_STACK; i++, up++) {
 			if (is_kernel_text(*up))
 				fprintf(fp, "%lx: %s\n", 
+					tt->flags & THREAD_INFO ?
+					bt->tc->thread_info + 
+					(i * sizeof(long)) :
 					bt->task + (i * sizeof(long)),
 					value_to_symstr(*up, buf, 0));
 		}
@@ -1506,6 +1543,8 @@ back_trace(struct bt_info *bt)
                 get_diskdump_regs(bt, &eip, &esp);
         else if (LKCD_DUMPFILE())
                 get_lkcd_regs(bt, &eip, &esp);
+	else if (XENDUMP_DUMPFILE())
+		get_xendump_regs(bt, &eip, &esp);
         else
                 machdep->get_stack_frame(bt, &eip, &esp);
 
@@ -1918,6 +1957,8 @@ module_init(void)
 	kallsymsbuf = kt->flags & KALLSYMS_V1 ?
 		GETBUF(SIZE(kallsyms_header)) : NULL;
 
+	please_wait("gathering module symbol data");
+
         for (mod = kt->module_list; mod != kt->kernel_module; mod = mod_next) {
 		if (CRASHDEBUG(7))
 			fprintf(fp, "module: %lx\n", mod);
@@ -1925,7 +1966,8 @@ module_init(void)
                 if (!readmem(mod, KVADDR, modbuf, SIZE(module), 
 		    "module struct", RETURN_ON_ERROR|QUIET)) {
                         error(WARNING,
-                            "cannot access vmalloc'd module memory\n\n");
+                            "%scannot access vmalloc'd module memory\n\n",
+				DUMPFILE() ? "\n" : "");
                         kt->mods_installed = 0;
                         kt->flags |= NO_MODULE_ACCESS;
                         FREEBUF(modbuf); 
@@ -1959,7 +2001,8 @@ module_init(void)
 				    kallsymsbuf, SIZE(kallsyms_header), 
 				    "kallsyms_header", RETURN_ON_ERROR|QUIET)) {
 	                        	error(WARNING,
-                                      "cannot access module kallsyms_header\n");
+                                      "%scannot access module kallsyms_header\n",
+					    DUMPFILE() ? "\n" : "");
 				} else {
 					nsyms = UINT(kallsymsbuf +
 				 	    OFFSET(kallsyms_header_symbols));
@@ -1992,6 +2035,8 @@ module_init(void)
 		store_module_symbols_v2(total, kt->mods_installed);
 		break;
 	}
+
+	please_wait_done();
 }
 
 
@@ -2947,7 +2992,7 @@ display_sys_stats(void)
         	get_symbol_data("xtime", sizeof(struct timespec), &kt->date);
         fprintf(fp, "        DATE: %s\n", 
 		strip_linefeeds(ctime(&kt->date.tv_sec))); 
-        fprintf(fp, "      UPTIME: %s\n", get_uptime(buf)); 
+        fprintf(fp, "      UPTIME: %s\n", get_uptime(buf, NULL)); 
         fprintf(fp, "LOAD AVERAGE: %s\n", get_loadavg(buf)); 
 	fprintf(fp, "       TASKS: %ld\n", RUNNING_TASKS());
 	fprintf(fp, "    NODENAME: %s\n", uts->nodename); 
@@ -2962,6 +3007,9 @@ display_sys_stats(void)
 #ifdef WHO_CARES
 	fprintf(fp, "  DOMAINNAME: %s\n", uts->domainname);
 #endif
+	if (XENDUMP_DUMPFILE() && (kt->xen_flags & XEN_SUSPEND))
+		return;
+
 	if (DUMPFILE()) {
 		fprintf(fp, "       PANIC: ");
 		if (machdep->flags & HWRESET)
@@ -3023,27 +3071,41 @@ debug_kernel_version(char *namelist)
 /*
  *  Calculate and return the uptime.
  */
-
-static char *
-get_uptime(char *buf)
+char *
+get_uptime(char *buf, ulonglong *j64p)
 {
-	ulong jiffies; 
+	ulong jiffies, tmp1, tmp2;
+	ulonglong jiffies_64, wrapped;
 
-	get_symbol_data("jiffies", sizeof(long), &jiffies);
-
-	if ((machine_type("S390") || machine_type("S390X")) &&
-	    (THIS_KERNEL_VERSION >= LINUX(2,6,0))) 
-		jiffies -= ((unsigned long)(unsigned int)(-300*machdep->hz));
-	else if (symbol_exists("jiffies_64") && BITS64() && 
-		(((ulonglong)jiffies & 0xffffffff00000000ULL) == 
-		0x100000000ULL))
-		jiffies &= 0xffffffff;
-
-	convert_time((ulonglong)jiffies, buf);
+	if (symbol_exists("jiffies_64")) {
+		get_symbol_data("jiffies_64", sizeof(ulonglong), &jiffies_64);
+		if (THIS_KERNEL_VERSION >= LINUX(2,6,0)) {
+			wrapped = (jiffies_64 & 0xffffffff00000000ULL);
+			if (wrapped) {
+				wrapped -= 0x100000000ULL;
+				jiffies_64 &= 0x00000000ffffffffULL;
+				jiffies_64 |= wrapped;
+                		jiffies_64 += (ulonglong)(300*machdep->hz);
+			} else {
+				tmp1 = (ulong)(uint)(-300*machdep->hz);
+				tmp2 = (ulong)jiffies_64;
+				jiffies_64 = (ulonglong)(tmp2 - tmp1);
+			}
+		}
+		if (buf)
+			convert_time(jiffies_64, buf);
+		if (j64p)
+			*j64p = jiffies_64;
+	} else {
+		get_symbol_data("jiffies", sizeof(long), &jiffies);
+		if (buf)
+			convert_time((ulonglong)jiffies, buf);
+		if (j64p)
+			*j64p = (ulonglong)jiffies;
+	}
 
 	return buf;
 }
-
 
 #define FSHIFT          11              /* nr of bits of precision */
 #define FIXED_1 (1<<FSHIFT)
@@ -3252,9 +3314,9 @@ get_NR_syscalls(void)
  *  "help -k" output
  */
 void
-dump_kernel_table(void)
+dump_kernel_table(int verbose)
 {
-	int i;
+	int i, nr_cpus;
         struct new_utsname *uts;
         int others;
 
@@ -3298,6 +3360,8 @@ dump_kernel_table(void)
 		fprintf(fp, "%sKALLSYMS_V2", others++ ? "|" : "");
 	if (kt->flags & USE_OLD_BT)
 		fprintf(fp, "%sUSE_OLD_BT", others++ ? "|" : "");
+	if (kt->flags & ARCH_XEN)
+		fprintf(fp, "%sARCH_XEN", others++ ? "|" : "");
 	fprintf(fp, ")\n");
         fprintf(fp, "         stext: %lx\n", kt->stext);
         fprintf(fp, "         etext: %lx\n", kt->etext);
@@ -3309,6 +3373,7 @@ dump_kernel_table(void)
         fprintf(fp, "          cpus: %d\n", kt->cpus);
         fprintf(fp, "       NR_CPUS: %d (compiled-in to this version of %s)\n",
 		NR_CPUS, pc->program_name); 
+	fprintf(fp, "kernel_NR_CPUS: %d\n", kt->kernel_NR_CPUS);
 	if (kt->display_bh == display_bh_1)
         	fprintf(fp, "    display_bh: display_bh_1()\n");
 	else if (kt->display_bh == display_bh_2)
@@ -3338,19 +3403,50 @@ dump_kernel_table(void)
 		kt->gcc_version[1], kt->gcc_version[2]);
 	fprintf(fp, " runq_siblings: %d\n", kt->runq_siblings);
 	fprintf(fp, "  __rq_idx[NR_CPUS]: ");
-	for (i = 0; i < NR_CPUS; i++) 
+	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : NR_CPUS;
+	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%ld ", kt->__rq_idx[i]);
 	fprintf(fp, "\n __cpu_idx[NR_CPUS]: ");
-	for (i = 0; i < NR_CPUS; i++) 
+	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%ld ", kt->__cpu_idx[i]);
 	fprintf(fp, "\n __per_cpu_offset[NR_CPUS]:");
-	for (i = 0; i < NR_CPUS; i++) 
+	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%s%.*lx ", (i % 4) == 0 ? "\n    " : "",
 			LONG_PRLEN, kt->__per_cpu_offset[i]);
 	fprintf(fp, "\n cpu_flags[NR_CPUS]:");
-	for (i = 0; i < NR_CPUS; i++) 
+	for (i = 0; i < nr_cpus; i++) 
 		fprintf(fp, "%lx ", kt->cpu_flags[i]);
-	fprintf(fp, "\n");
+	others = 0;
+	fprintf(fp, "\n     xen_flags: %lx (", kt->xen_flags);
+        if (kt->xen_flags & WRITABLE_PAGE_TABLES)
+                fprintf(fp, "%sWRITABLE_PAGE_TABLES", others++ ? "|" : "");
+        if (kt->xen_flags & SHADOW_PAGE_TABLES)
+                fprintf(fp, "%sSHADOW_PAGE_TABLES", others++ ? "|" : "");
+        if (kt->xen_flags & CANONICAL_PAGE_TABLES)
+                fprintf(fp, "%sCANONICAL_PAGE_TABLES", others++ ? "|" : "");
+        if (kt->xen_flags & XEN_SUSPEND)
+                fprintf(fp, "%sXEN_SUSPEND", others++ ? "|" : "");
+	fprintf(fp, ")\n");
+	fprintf(fp, "      machine_to_pseudo: %lx\n", (ulong)kt->machine_to_pseudo);
+        fprintf(fp, "phys_to_machine_mapping: %lx\n", kt->phys_to_machine_mapping);
+        fprintf(fp, "         p2m_table_size: %ld\n", kt->p2m_table_size);
+	fprintf(fp, " p2m_mapping_cache[%d]: %s\n", P2M_MAPPING_CACHE,
+		 verbose ? "" : "(use \"help -K\" to view cache contents)");
+	for (i = 0; verbose && (i < P2M_MAPPING_CACHE); i++) {
+		if (!kt->p2m_mapping_cache[i].mapping)
+			continue;
+		fprintf(fp, "       [%d] mapping: %lx mfn: %lx\n",
+			i, kt->p2m_mapping_cache[i].mapping,
+			kt->p2m_mapping_cache[i].mfn);
+        }
+	fprintf(fp, "      last_mapping_read: %lx\n", kt->last_mapping_read);
+	fprintf(fp, "        p2m_cache_index: %ld\n", kt->p2m_cache_index);
+	fprintf(fp, "     p2m_pages_searched: %ld\n", kt->p2m_pages_searched);
+	fprintf(fp, "         p2m_cache_hits: %ld ", kt->p2m_cache_hits);
+	if (kt->p2m_pages_searched)
+		fprintf(fp, "(%ld%%)\n", kt->p2m_cache_hits * 100 / kt->p2m_pages_searched);
+	else
+		fprintf(fp, "\n");
 }
 
 /*
@@ -4788,6 +4884,8 @@ clear_machdep_cache(void)
 		machdep->last_pgd_read = 0;
 		machdep->last_pmd_read = 0;
 		machdep->last_ptbl_read = 0;
+		if (machdep->clear_machdep_cache)
+			machdep->clear_machdep_cache();
 	}
 }
 
@@ -4805,4 +4903,132 @@ get_cpus_online()
 	get_symbol_data("cpu_online_map", sizeof(ulong), &cpu_online_map);
 
 	return count_bits_long(cpu_online_map);
+}
+
+/*
+ *  xen machine-address to pseudo-physical-address translators.
+ */ 
+ulong
+xen_machine_to_pseudo(ulong machine)
+{
+	ulong mfn, pfn;
+
+	mfn = XEN_MACHINE_TO_MFN(machine);
+	pfn = __xen_machine_to_pseudo((ulonglong)machine, mfn);
+
+	if (pfn == XEN_MFN_NOT_FOUND)
+		return XEN_MFN_NOT_FOUND;
+	
+	return XEN_PFN_TO_PSEUDO(pfn);
+
+}
+
+ulonglong
+xen_machine_to_pseudo_PAE(ulonglong machine)
+{
+	ulong mfn, pfn;
+
+	mfn = XEN_MACHINE_TO_MFN_PAE(machine);
+	pfn = __xen_machine_to_pseudo(machine, mfn);
+
+	if (pfn == XEN_MFN_NOT_FOUND)
+		return XEN_MFN_NOT_FOUND_PAE;
+
+	return XEN_PFN_TO_PSEUDO_PAE(pfn);
+}
+
+static ulong
+__xen_machine_to_pseudo(ulonglong machine, ulong mfn)
+{
+	ulong mapping, kmfn, pfn, p, i, c;
+	ulong *mp;
+
+	mp = (ulong *)kt->machine_to_pseudo;
+	mapping = kt->phys_to_machine_mapping;
+
+	/*
+	 *  Check the FIFO cache first.
+	 */
+	for (c = 0; c < P2M_MAPPING_CACHE; c++) {
+		if (kt->p2m_mapping_cache[c].mapping &&
+		    (kt->p2m_mapping_cache[c].mfn == mfn)) {
+
+			if (kt->p2m_mapping_cache[c].mapping != kt->last_mapping_read) {
+                        	if (!readmem(kt->p2m_mapping_cache[c].mapping, KVADDR, 
+			       	    mp, PAGESIZE(), "phys_to_machine_mapping page (cached)", 
+			    	    RETURN_ON_ERROR))
+                                	error(FATAL, "cannot access "
+                                    	    "phys_to_machine_mapping page\n");
+				else
+					kt->last_mapping_read = kt->p2m_mapping_cache[c].mapping;
+			}
+
+                	for (i = 0; i < XEN_PFNS_PER_PAGE; i++) {
+				kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
+                        	if (kmfn == mfn) {
+					p = P2M_MAPPING_TO_PAGE_INDEX(c);
+					pfn = p + i;
+
+                                	if (CRASHDEBUG(1))
+                                    	    console("(cached) mfn: %lx (%llx) p: %ld"
+                                        	" i: %ld pfn: %lx (%lx)\n",
+						mfn, machine, p,
+						i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+					kt->p2m_cache_hits++;
+
+					return pfn;
+				}
+			}
+			/*
+			 *  Stale entry -- clear it out.
+			 */
+			kt->p2m_mapping_cache[c].mapping = 0;
+		}
+	}
+
+	/*
+	 *  The machine address was not cached, so search from the
+	 *  beginning of the phys_to_machine_mapping array, caching
+	 *  only the found machine address.
+	 */
+	for (p = 0; p < kt->p2m_table_size; p += XEN_PFNS_PER_PAGE) 
+	{
+		if (mapping != kt->last_mapping_read) {
+			if (!readmem(mapping, KVADDR, mp, PAGESIZE(), 
+		    	    "phys_to_machine_mapping page", RETURN_ON_ERROR))
+				error(FATAL, 
+			     	    "cannot access phys_to_machine_mapping page\n");
+			else
+				kt->last_mapping_read = mapping;
+		}
+
+		kt->p2m_pages_searched++;
+
+		for (i = 0; i < XEN_PFNS_PER_PAGE; i++)
+		{
+			kmfn = (*(mp+i)) & ~XEN_FOREIGN_FRAME;
+			if (kmfn == mfn) {
+				pfn = p + i;
+				if (CRASHDEBUG(1))
+				    console("pages: %d mfn: %lx (%llx) p: %ld"
+					" i: %ld pfn: %lx (%lx)\n",
+					(p/XEN_PFNS_PER_PAGE)+1, mfn, machine,
+					p, i, pfn, XEN_PFN_TO_PSEUDO(pfn));
+
+				c = kt->p2m_cache_index;
+				kt->p2m_mapping_cache[c].mfn = mfn;
+				kt->p2m_mapping_cache[c].mapping = mapping;
+				kt->p2m_cache_index = (c+1) % P2M_MAPPING_CACHE;
+
+				return pfn;
+			}
+		}
+
+		mapping += PAGESIZE();
+	}
+
+	if (CRASHDEBUG(1))
+		console("machine address %llx not found\n", machine);
+
+	return (XEN_MFN_NOT_FOUND);
 }

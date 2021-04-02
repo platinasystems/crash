@@ -2006,6 +2006,8 @@ cmd_set(void)
 					pc->flags |= NETDUMP;
 				else if (is_kdump(args[optind], KDUMP_LOCAL))
 					pc->flags |= KDUMP;
+				else if (is_xendump(args[optind]))
+					pc->flags |= XENDUMP;
 				else if (is_diskdump(args[optind]))
 					pc->flags |= DISKDUMP;
 				else if (is_lkcd_compressed_dump(args[optind])) 
@@ -4227,6 +4229,9 @@ convert_time(ulonglong count, char *buf)
 {
 	ulonglong total, days, hours, minutes, seconds;
 
+	if (CRASHDEBUG(2))
+		error(INFO, "convert_time: %lld (%llx)\n", count, count);
+
         total = (count)/(ulonglong)machdep->hz;
 
         days = total / SEC_DAYS;
@@ -4325,4 +4330,26 @@ option_not_supported(int c)
 {
 	error(FATAL, "-%c option not supported on this architecture or kernel\n", 
 		(char)c);
+}
+
+void
+please_wait(char *s)
+{
+	if ((pc->flags & SILENT) || !(pc->flags & TTY) || 
+	    !DUMPFILE() || (pc->flags & RUNTIME))
+		return;
+
+        fprintf(fp, "\rplease wait... (%s)", s);
+        fflush(fp);
+}
+
+void
+please_wait_done(void)
+{
+	if ((pc->flags & SILENT) || !(pc->flags & TTY) || 
+	    !DUMPFILE() || (pc->flags & RUNTIME))
+		return;
+
+	fprintf(fp, "\r                                                \r");
+	fflush(fp);
 }

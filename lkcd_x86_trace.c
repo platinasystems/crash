@@ -1120,7 +1120,9 @@ valid_ra_function(kaddr_t ra, char *funcname)
 }
 
 #include <asm/ptrace.h>
+#ifndef REDHAT
 #include <asm/segment.h>
+#endif
 #define KERNEL_EFRAME		0
 #define USER_EFRAME		1
 #define KERNEL_EFRAME_SZ	13	/* no ss and esp */
@@ -1155,6 +1157,9 @@ int eframe_type(struct pt_regs *regs)
         else if (((regs->xcs & 0xffff) == 0x60) &&
                         ((regs->xds & 0xffff) == 0x7b))
                 return KERNEL_EFRAME;
+	else if (XEN() && ((regs->xcs & 0xffff) == 0x61) &&
+                        ((regs->xds & 0xffff) == 0x7b))
+		return KERNEL_EFRAME;
 #endif
 	else if (((regs->xcs & 0xffff) == __USER_CS) && 
 			((regs->xds & 0xffff) == __USER_DS))
@@ -1342,6 +1347,7 @@ find_trace(
 	int flag;
 	int interrupted_system_call = FALSE;
 	struct bt_info *bt = trace->bt;
+	struct pt_regs *pt;
 #endif
 	sbp = trace->stack[curstkidx].ptr;
 	sbase = trace->stack[curstkidx].addr;
@@ -1662,6 +1668,22 @@ find_trace(
 			}
 		}
 
+		/*
+		 *  Check for hypervisor_callback from user-space.
+		 */
+                if ((bt->flags & BT_XEN_STOP_THIS_CPU) && bt->tc->mm_struct &&
+                    STREQ(kl_funcname(curframe->pc), "hypervisor_callback")) {
+                	pt = (struct pt_regs *)(curframe->asp+1);
+                        if (eframe_type(pt) == USER_EFRAME) {
+				if (program_context.debug >= 1)  /* pc above */
+                        		error(INFO, 
+					    "hypervisor_callback from user space\n");
+                                curframe->asp++;
+                                curframe->flag |= EX_FRAME;
+                                return(trace->nframes);
+                        }
+                }
+
 		/* Make sure our next frame pointer is valid (in the stack).
 		 */
 		if ((bp < sbase) || (bp >= saddr)) {
@@ -1774,8 +1796,15 @@ print_trace(trace_t *trace, int flags, FILE *ofp)
 				(bt->flags & (BT_HARDIRQ|BT_SOFTIRQ))) 
 				return;
 
-			print_stack_entry(trace->bt, 
-				trace->bt->flags & BT_BUMP_FRAME_LEVEL ?
+			if ((frmp->level == 0) && (bt->flags & BT_XEN_STOP_THIS_CPU)) {
+				print_stack_entry(trace->bt, 0, trace->bt->stkptr,
+				symbol_value("stop_this_cpu"), 
+				value_symbol(symbol_value("stop_this_cpu")),
+				frmp, ofp);
+			}
+
+			print_stack_entry(trace->bt, (trace->bt->flags & 
+				(BT_BUMP_FRAME_LEVEL|BT_XEN_STOP_THIS_CPU)) ?
                                 frmp->level + 1 : frmp->level,
 				fp ? (ulong)fp : trace->bt->stkptr,
 				(ulong)frmp->pc, frmp->funcname, frmp, ofp);
@@ -1882,6 +1911,114 @@ task_trace(kaddr_t task, int flags, FILE *ofp)
 
 	if (kt->flags & RA_SEEK)
 		bt->flags |= BT_SPECULATE;
+
+	if (XENDUMP_DUMPFILE() && is_task_active(bt->task) && 
+    	    STREQ(kl_funcname(bt->instptr), "stop_this_cpu")) {
+		/*
+		 *  bt->instptr of "stop_this_cpu" is not a return
+		 *  address -- replace it with the actual return
+		 *  address found at the bt->stkptr location.
+		 */
+		if (readmem((ulong)bt->stkptr, KVADDR, &eip,
+                    sizeof(ulong), "xendump eip", RETURN_ON_ERROR))
+			bt->instptr = eip;
+		bt->flags |= BT_XEN_STOP_THIS_CPU;
+		if (CRASHDEBUG(1))
+			error(INFO, "replacing stop_this_cpu with %s\n",
+				kl_funcname(bt->instptr));
+	}
+
+	if (XENDUMP_DUMPFILE() && is_idle_thread(bt->task) &&
+	    is_task_active(bt->task) && 
+	    !(kt->xen_flags & XEN_SUSPEND) &&
+    	    STREQ(kl_funcname(bt->instptr), "schedule")) {
+		/*
+		 *  This is an invalid (stale) schedule reference
+		 *  left in the task->thread.  Move down the stack 
+		 *  until the smp_call_function_interrupt return 
+		 *  address is found.
+		 */
+		saddr = bt->stkptr;
+		while (readmem(saddr, KVADDR, &eip,
+                    sizeof(ulong), "xendump esp", RETURN_ON_ERROR)) {
+			if (STREQ(kl_funcname(eip), "smp_call_function_interrupt")) {
+				bt->instptr = eip;
+				bt->stkptr = saddr;
+				bt->flags |= BT_XEN_STOP_THIS_CPU;
+				if (CRASHDEBUG(1))
+					error(INFO,
+					    "switch schedule to smp_call_function_interrupt\n");
+				break;
+			}
+			saddr -= sizeof(void *);
+			if (saddr <= bt->stackbase)
+				break;
+		}
+	}
+
+        if (XENDUMP_DUMPFILE() && is_idle_thread(bt->task) &&
+            is_task_active(bt->task) &&
+            (kt->xen_flags & XEN_SUSPEND) &&
+            STREQ(kl_funcname(bt->instptr), "schedule")) {
+		int framesize = 0;
+                /*
+                 *  This is an invalid (stale) schedule reference
+                 *  left in the task->thread.  Move down the stack
+                 *  until the hypercall_page() return address is
+                 *  found, and fix up its framesize as we go.
+                 */
+                saddr = bt->stacktop;
+                while (readmem(saddr, KVADDR, &eip,
+                    sizeof(ulong), "xendump esp", RETURN_ON_ERROR)) {
+
+                        if (STREQ(kl_funcname(eip), "xen_idle")) 
+				framesize += sizeof(ulong);
+			else if (framesize)
+				framesize += sizeof(ulong);
+
+                        if (STREQ(kl_funcname(eip), "hypercall_page")) {
+				int framesize = 24;
+                                bt->instptr = eip;
+                                bt->stkptr = saddr;
+                                if (CRASHDEBUG(1))
+                                        error(INFO,
+                                            "switch schedule to hypercall_page (framesize: %d)\n",
+						framesize);
+				FRAMESIZE_CACHE_ENTER(eip, &framesize);
+                                break;
+                        }
+                        saddr -= sizeof(void *);
+                        if (saddr <= bt->stackbase)
+                                break;
+                }
+        }
+
+	if (XENDUMP_DUMPFILE() && !is_idle_thread(bt->task) &&
+	    is_task_active(bt->task) && 
+    	    STREQ(kl_funcname(bt->instptr), "schedule")) {
+		/*
+		 *  This is an invalid (stale) schedule reference
+		 *  left in the task->thread.  Move down the stack 
+		 *  until the smp_call_function_interrupt return 
+		 *  address is found.
+		 */
+		saddr = bt->stacktop;
+		while (readmem(saddr, KVADDR, &eip,
+                    sizeof(ulong), "xendump esp", RETURN_ON_ERROR)) {
+			if (STREQ(kl_funcname(eip), "smp_call_function_interrupt")) {
+				bt->instptr = eip;
+				bt->stkptr = saddr;
+				bt->flags |= BT_XEN_STOP_THIS_CPU;
+				if (CRASHDEBUG(1))
+					error(INFO,
+					    "switch schedule to smp_call_function_interrupt\n");
+				break;
+			}
+			saddr -= sizeof(void *);
+			if (saddr <= bt->stackbase)
+				break;
+		}
+	}
 
 	if (!verify_back_trace(bt) && !recoverable(bt, ofp) && 
 	    !BT_REFERENCE_CHECK(bt))

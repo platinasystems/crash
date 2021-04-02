@@ -446,6 +446,8 @@ ia64_dump_machdep_table(ulong arg)
 		(machdep->verify_paddr == ia64_verify_paddr) ?
 		"ia64_verify_paddr" : "generic_verify_paddr");
         fprintf(fp, "    init_kernel_pgd: NULL\n");
+	fprintf(fp, " xendump_p2m_create: NULL\n");
+	fprintf(fp, "xen_kdump_p2m_create: NULL\n");
 	fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
         fprintf(fp, "  line_number_hooks: ia64_line_number_hooks\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);

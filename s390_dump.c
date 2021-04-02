@@ -16,7 +16,7 @@
  * GNU General Public License for more details.
  */
 #include "defs.h"
-#include <asm/page.h>
+//#include <asm/page.h>
 #include "ibm_common.h"
 
 static FILE * s390_file;
@@ -69,10 +69,13 @@ write_s390_dumpfile(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	return WRITE_ERROR;
 }
 
+#define S390_PAGE_SHIFT   12
+#define S390_PAGE_SIZE    (1UL << S390_PAGE_SHIFT)
+
 uint
 s390_page_size(void)
 {
-	return PAGE_SIZE;
+	return S390_PAGE_SIZE;
 }
 
 int 

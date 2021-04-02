@@ -27,6 +27,7 @@ static void refresh_unlimited_task_table(void);
 static void refresh_pidhash_task_table(void);
 static void refresh_pid_hash_task_table(void);
 static void refresh_hlist_task_table(void);
+static void refresh_hlist_task_table_v2(void);
 static struct task_context *store_context(struct task_context *, ulong, char *);
 static void refresh_context(ulong, ulong);
 static void parent_list(ulong);
@@ -193,6 +194,8 @@ task_init(void)
 	MEMBER_OFFSET_INIT(pid_link_pid, "pid_link", "pid");
 	MEMBER_OFFSET_INIT(pid_hash_chain, "pid", "hash_chain");
 
+	STRUCT_SIZE_INIT(pid_link, "pid_link");
+
 	MEMBER_OFFSET_INIT(pid_pid_chain, "pid", "pid_chain");
 
 	STRUCT_SIZE_INIT(task_struct, "task_struct");
@@ -219,15 +222,7 @@ task_init(void)
 	MEMBER_OFFSET_INIT(sigpending_signal, "sigpending", "signal");
 
 	STRUCT_SIZE_INIT(sigqueue, "sigqueue");
-	if (VALID_STRUCT(sigqueue)) {
-        	MEMBER_OFFSET_INIT(sigqueue_next, "sigqueue", "next");
-        	MEMBER_OFFSET_INIT(sigqueue_list, "sigqueue", "list");
-        	MEMBER_OFFSET_INIT(sigqueue_info, "sigqueue", "info");
-	} else {
-        	STRUCT_SIZE_INIT(signal_queue, "signal_queue");
-                MEMBER_OFFSET_INIT(signal_queue_next, "signal_queue", "next");
-                MEMBER_OFFSET_INIT(signal_queue_info, "signal_queue", "info");
-        }
+       	STRUCT_SIZE_INIT(signal_queue, "signal_queue");
 
 	STRUCT_SIZE_INIT(sighand_struct, "sighand_struct");
 	if (VALID_STRUCT(sighand_struct))
@@ -248,6 +243,19 @@ task_init(void)
 	MEMBER_OFFSET_INIT(task_struct_stime, "task_struct", "stime");
 
 	STRUCT_SIZE_INIT(cputime_t, "cputime_t");
+
+	if (symbol_exists("cfq_slice_async")) {
+		uint cfq_slice_async;
+
+		get_symbol_data("cfq_slice_async", sizeof(int), 
+			&cfq_slice_async);
+		machdep->hz = cfq_slice_async * 25; 
+
+		if (CRASHDEBUG(2))
+			fprintf(fp, 
+			    "cfq_slice_async exitsts: setting hz to %d\n", 
+				machdep->hz);
+	}
 
 	if (VALID_MEMBER(runqueue_arrays)) 
 		MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
@@ -302,7 +310,11 @@ task_init(void)
                 	tt->refresh_task_table = refresh_pid_hash_task_table;
 		} else {
                 	tt->pidhash_addr = symbol_value("pid_hash");
-                	tt->refresh_task_table = refresh_hlist_task_table;
+			if (!get_array_length("pid_hash", NULL, sizeof(void *)) &&
+			    VALID_STRUCT(pid_link))
+                		tt->refresh_task_table = refresh_hlist_task_table_v2;
+			else
+                		tt->refresh_task_table = refresh_hlist_task_table;
 		}
 
                 tt->flags |= PID_HASH;
@@ -987,9 +999,7 @@ refresh_pid_hash_task_table(void)
                 return;
 
         if (DUMPFILE()) {                                 /* impossible */
-                fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ?
-                        "" : "\rplease wait... (gathering task table data)");
-                fflush(fp);
+		please_wait("gathering task table data");
                 if (!symbol_exists("panic_threads"))
                         tt->flags |= POPULATE_PANIC;
         }
@@ -1152,11 +1162,7 @@ retry_pid_hash:
 
         FREEBUF(pid_hash);
 
-	if (DUMPFILE()) {
-		fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ? "" :
-                        "\r                                                \r");
-                fflush(fp);
-	}
+	please_wait_done();
 
         if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) 
 		refresh_context(curtask, curpid);
@@ -1192,9 +1198,7 @@ refresh_hlist_task_table(void)
                 return;
 
         if (DUMPFILE()) {                                 /* impossible */
-                fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ?
-                        "" : "\rplease wait... (gathering task table data)");
-                fflush(fp);
+		please_wait("gathering task table data");
                 if (!symbol_exists("panic_threads"))
                         tt->flags |= POPULATE_PANIC;
         }
@@ -1394,11 +1398,228 @@ retry_pid_hash:
         FREEBUF(pid_hash);
 	FREEBUF(nodebuf);
 
-	if (DUMPFILE()) {
-		fprintf(fp, (pc->flags & SILENT) || !(pc->flags & TTY) ? "" :
-                        "\r                                                \r");
-                fflush(fp);
+	please_wait_done();
+
+        if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) 
+		refresh_context(curtask, curpid);
+
+	tt->retries = MAX(tt->retries, retries);
+}
+
+/*
+ *  2.6.17 replaced:
+ *    static struct hlist_head *pid_hash[PIDTYPE_MAX];
+ *  with
+ *     static struct hlist_head *pid_hash;
+ */
+static void
+refresh_hlist_task_table_v2(void)
+{
+	int i;
+	ulong *pid_hash;
+	ulong pidhash_array;
+	ulong kpp;
+	char *tp; 
+	ulong next, pnext, pprev;
+	char *nodebuf;
+	int len, cnt;
+        struct task_context *tc;
+        ulong curtask;
+        ulong curpid;
+        ulong retries;
+	ulong *tlp;
+
+        if (DUMPFILE() && (tt->flags & TASK_INIT_DONE))   /* impossible */
+                return;
+
+        if (DUMPFILE()) {                                 /* impossible */
+		please_wait("gathering task table data");
+                if (!symbol_exists("panic_threads"))
+                        tt->flags |= POPULATE_PANIC;
+        }
+
+        if (ACTIVE() && !(tt->flags & TASK_REFRESH))
+                return;
+
+        /*
+         *  The current task's task_context entry may change,
+         *  or the task may not even exist anymore.
+         */
+        if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) {
+                curtask = CURRENT_TASK();
+                curpid = CURRENT_PID();
+        }
+
+	get_symbol_data("pid_hash", sizeof(void *), &pidhash_array);
+
+	len = tt->pidhash_len;
+	pid_hash = (ulong *)GETBUF(len * SIZE(hlist_head));
+	nodebuf = GETBUF(SIZE(pid_link));
+        retries = 0;
+
+retry_pid_hash:
+	if (retries && DUMPFILE())
+		error(FATAL,
+			"\ncannot gather a stable task list via pid_hash\n");
+
+        if ((retries == MAX_UNLIMITED_TASK_RETRIES) &&
+            !(tt->flags & TASK_INIT_DONE)) 
+                error(FATAL, 
+	       "\ncannot gather a stable task list via pid_hash (%d retries)\n",
+			retries);
+
+        if (!readmem(pidhash_array, KVADDR, pid_hash, 
+	    len * SIZE(hlist_head), "pid_hash contents", RETURN_ON_ERROR)) 
+		error(FATAL, "\ncannot read pid_hash array\n");
+
+        if (!hq_open()) {
+                error(INFO, "cannot hash task_struct entries\n");
+                if (!(tt->flags & TASK_INIT_DONE))
+                        clean_exit(1);
+                error(INFO, "using stale task_structs\n");
+                FREEBUF(pid_hash);
+                return;
+        }
+
+	/*
+	 *  Get the idle threads first. 
+	 */
+	cnt = 0;
+	for (i = 0; i < kt->cpus; i++) {
+		if (hq_enter(tt->idle_threads[i]))
+			cnt++;
+		else
+			error(WARNING, "%sduplicate idle tasks?\n",
+				DUMPFILE() ? "\n" : "");
 	}
+
+	for (i = 0; i < len; i++) {
+		if (!pid_hash[i])
+			continue;
+
+        	if (!readmem(pid_hash[i], KVADDR, nodebuf, 
+	    	    SIZE(pid_link), "pid_hash node pid_link", RETURN_ON_ERROR|QUIET)) { 
+			error(INFO, "\ncannot read pid_hash node pid_link\n");
+                        if (DUMPFILE())
+                                continue;
+                        hq_close();
+                        retries++;
+                        goto retry_pid_hash;
+		}
+
+		kpp = pid_hash[i];
+		next = ULONG(nodebuf + OFFSET(pid_link_pid)); 
+		if (next)
+			next -= OFFSET(task_struct_pids);
+		pnext = ULONG(nodebuf + OFFSET(hlist_node_next));
+		pprev = ULONG(nodebuf + OFFSET(hlist_node_pprev));
+
+		if (CRASHDEBUG(1)) 
+			console("pid_hash[%d]: %lx task: %lx (node: %lx) next: %lx pprev: %lx\n",
+				i, pid_hash[i], next, kpp, pnext, pprev);
+
+		while (next) {
+                        if (!IS_TASK_ADDR(next)) {
+                                error(INFO,
+                                    "%sinvalid task address in pid_hash: %lx\n",
+                                        DUMPFILE() ? "\n" : "", next);
+                                if (DUMPFILE())
+                                        break;
+                                hq_close();
+                                retries++;
+                                goto retry_pid_hash;
+
+                        }
+
+                        if (!is_idle_thread(next) && !hq_enter(next)) {
+                                error(INFO,
+                                    "%sduplicate task in pid_hash: %lx\n",
+                                        DUMPFILE() ? "\n" : "", next);
+                                if (DUMPFILE())
+                                        break;
+                                hq_close();
+                                retries++;
+                                goto retry_pid_hash;
+                        }
+
+                        cnt++;
+
+			if (!pnext) 
+				break;
+
+                        if (!readmem((ulonglong)pnext, KVADDR, nodebuf,
+                                SIZE(pid_link), "task hlist_node pid_link", RETURN_ON_ERROR|QUIET)) {
+                                error(INFO, "\ncannot read hlist_node pid_link from node next\n");
+                                if (DUMPFILE())
+                                        break;
+                                hq_close();
+                                retries++;
+                                goto retry_pid_hash;
+                        }
+
+			kpp = (ulong)pnext;
+			next = ULONG(nodebuf + OFFSET(pid_link_pid));
+			if (next)
+				next -= OFFSET(task_struct_pids);
+			pnext = ULONG(nodebuf + OFFSET(hlist_node_next));
+			pprev = ULONG(nodebuf + OFFSET(hlist_node_pprev));
+
+			if (CRASHDEBUG(1)) 
+				console("  chained task: %lx (node: %lx) next: %lx pprev: %lx\n",
+					next, kpp, pnext, pprev);
+		}
+	}
+
+        BZERO(tt->task_local, tt->max_tasks * sizeof(void *));
+        cnt = retrieve_list((ulong *)tt->task_local, cnt);
+
+	hq_close();
+
+	clear_task_cache();
+
+        for (i = 0, tlp = (ulong *)tt->task_local, 
+             tt->running_tasks = 0, tc = tt->context_array;
+             i < tt->max_tasks; i++, tlp++) {
+		if (!(*tlp))
+			continue;
+
+		if (!IS_TASK_ADDR(*tlp)) {
+			error(WARNING, 
+		            "%sinvalid task address found in task list: %lx\n", 
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE()) 
+				continue;
+			retries++;
+			goto retry_pid_hash;
+		}	
+	
+		if (task_exists(*tlp)) {
+			error(WARNING, 
+		           "%sduplicate task address found in task list: %lx\n",
+				DUMPFILE() ? "\n" : "", *tlp);
+			if (DUMPFILE())
+				continue;
+			retries++;
+			goto retry_pid_hash;
+		}
+
+		if (!(tp = fill_task_struct(*tlp))) {
+                        if (DUMPFILE())
+                                continue;
+                        retries++;
+                        goto retry_pid_hash;
+                }
+
+		if (store_context(tc, *tlp, tp)) {
+			tc++;
+			tt->running_tasks++;
+		}
+	}
+
+        FREEBUF(pid_hash);
+	FREEBUF(nodebuf);
+
+	please_wait_done();
 
         if (ACTIVE() && (tt->flags & TASK_INIT_DONE)) 
 		refresh_context(curtask, curpid);
@@ -2229,11 +2450,8 @@ show_task_times(struct task_context *tcp, ulong flags)
  
 	use_kernel_timeval = STRUCT_EXISTS("kernel_timeval");
         get_symbol_data("jiffies", sizeof(long), &jiffies);
-	if (symbol_exists("jiffies_64")) {
-        	get_symbol_data("jiffies_64", sizeof(long long), &jiffies_64);
-		if ((jiffies_64 & 0xffffffff00000000ULL) == 0x100000000ULL) 
-			jiffies_64 &= 0xffffffffULL;
-	}
+	if (symbol_exists("jiffies_64"))
+		get_uptime(NULL, &jiffies_64);
 	tsp = task_start_times;
 	tc = tcp ? tcp : FIRST_CONTEXT();
 
@@ -2330,8 +2548,7 @@ show_task_times(struct task_context *tcp, ulong flags)
         for (i = 0, tsp = task_start_times; i < tasks; i++, tsp++) {
 		print_task_header(fp, tsp->tc, 0);
 		fprintf(fp, "    RUN TIME: %s\n", symbol_exists("jiffies_64") ? 
-			convert_time(jiffies_64 - 
-			convert_start_time(tsp->start_time, jiffies_64), buf1) :
+			convert_time(convert_start_time(tsp->start_time, jiffies_64), buf1) :
 			convert_time(jiffies - tsp->start_time, buf1));
 		fprintf(fp, "  START TIME: %llu\n", tsp->start_time); 
 		if (VALID_MEMBER(task_struct_times)) {
@@ -2397,15 +2614,33 @@ start_time_timespec(void)
 static ulonglong
 convert_start_time(ulonglong start_time, ulonglong current)
 {
+	ulong tmp1, tmp2;
+	ulonglong wrapped;
+
         switch(tt->flags & (TIMESPEC | NO_TIMESPEC))
         {
         case TIMESPEC:
-		if ((start_time * (ulonglong)machdep->hz) > current) 
-			return current;
+		if ((start_time * (ulonglong)machdep->hz) > current)
+			return 0;
 		else
-                	return start_time * (ulonglong)machdep->hz; 
+                	return current - (start_time * (ulonglong)machdep->hz); 
 
         case NO_TIMESPEC:
+                if (THIS_KERNEL_VERSION >= LINUX(2,6,0)) {
+                        wrapped = (start_time & 0xffffffff00000000ULL);
+                        if (wrapped) {
+                                wrapped -= 0x100000000ULL;
+                                start_time &= 0x00000000ffffffffULL;
+                                start_time |= wrapped;
+                                start_time += (ulonglong)(300*machdep->hz);
+                        } else {
+                                tmp1 = (ulong)(uint)(-300*machdep->hz);
+                                tmp2 = (ulong)start_time;
+                                start_time = (ulonglong)(tmp2 - tmp1);
+                        }
+                }
+		break;
+
         default:
                 break;
         }
@@ -2946,6 +3181,9 @@ show_context(struct task_context *tc)
 		        (tc->processor < NR_CPUS) && 
 			(kt->cpu_flags[tc->processor] & NMI))
 			fprintf(fp, "(NMI)");
+		else if ((tc->task == tt->panic_task) &&
+			XENDUMP_DUMPFILE() && (kt->xen_flags & XEN_SUSPEND))
+			fprintf(fp, "(SUSPEND)");
 		else if (tc->task == tt->panic_task)
 			fprintf(fp, "(PANIC)");
 		else
@@ -4299,6 +4537,10 @@ get_dumpfile_panic_task(void)
                 task = get_diskdump_panic_task();
                 if (task)
                         return task;
+	} else if (XENDUMP_DUMPFILE()) {
+                task = get_xendump_panic_task();
+                if (task)
+                        return task;
         } else if (LKCD_DUMPFILE())
 		return(get_lkcd_panic_task());
 
@@ -4379,7 +4621,7 @@ print_task_header(FILE *out, struct task_context *tc, int newline)
 void
 dump_task_table(int verbose)
 {
-	int i;
+	int i, nr_cpus;
 	struct task_context *tc;
 	char buf[BUFSIZE];
 	int others, wrap, flen;
@@ -4411,6 +4653,8 @@ dump_task_table(int verbose)
                 fprintf(fp, "refresh_pid_hash_task_table()\n");
         else if (tt->refresh_task_table == refresh_hlist_task_table)
                 fprintf(fp, "refresh_hlist_task_table()\n");
+        else if (tt->refresh_task_table == refresh_hlist_task_table_v2)
+                fprintf(fp, "refresh_hlist_task_table_v2()\n");
 	else
 		fprintf(fp, "%lx\n", (ulong)tt->refresh_task_table);
 
@@ -4491,7 +4735,9 @@ dump_task_table(int verbose)
 	wrap = sizeof(void *) == SIZEOF_32BIT ? 8 : 4;
 	flen = sizeof(void *) == SIZEOF_32BIT ? 8 : 16;
 
-        for (i = 0; i < NR_CPUS; i++) {
+	nr_cpus = kt->kernel_NR_CPUS ? kt->kernel_NR_CPUS : nr_cpus;
+
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->panic_threads[i]); 
@@ -4499,7 +4745,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "         panic_ksp:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->panic_ksp[i]);
@@ -4507,7 +4753,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "       hardirq_ctx:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->hardirq_ctx[i]);
@@ -4515,7 +4761,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "     hardirq_tasks:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->hardirq_tasks[i]);
@@ -4523,7 +4769,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "       softirq_ctx:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->softirq_ctx[i]);
@@ -4531,7 +4777,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "     softirq_tasks:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->softirq_tasks[i]);
@@ -4539,7 +4785,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
         fprintf(fp, "      idle_threads:");
-        for (i = 0; i < NR_CPUS; i++) {
+        for (i = 0; i < nr_cpus; i++) {
                 if ((i % wrap) == 0)
                         fprintf(fp, "\n        ");
                 fprintf(fp, "%.*lx ", flen, tt->idle_threads[i]);
@@ -4547,7 +4793,7 @@ dump_task_table(int verbose)
         fprintf(fp, "\n");
 
 	fprintf(fp, "        active_set:");
-	for (i = 0; i < NR_CPUS; i++) {
+	for (i = 0; i < nr_cpus; i++) {
 		if ((i % wrap) == 0)
 	        	fprintf(fp, "\n        ");
 	        fprintf(fp, "%.*lx ", flen, tt->active_set[i]);
@@ -4848,6 +5094,20 @@ clear_active_set(void)
 }
 
 #define RESOLVE_PANIC_AND_DIE_CALLERS()               		\
+	if (xen_panic_task) {					\
+                if (CRASHDEBUG(1))                              \
+                        error(INFO,                             \
+         "get_active_set_panic_task: %lx (xen_panic_event)\n",  \
+                                xen_panic_task);		\
+		return xen_panic_task;				\
+	}							\
+	if (crash_kexec_task) {					\
+		if (CRASHDEBUG(1))				\
+			error(INFO,				\
+	    "get_active_set_panic_task: %lx (crash_kexec)\n",   \
+				crash_kexec_task);	  	\
+		return crash_kexec_task;			\
+	}							\
         if ((panic_task > (NO_TASK+1)) && !die_task) {		\
 		if (CRASHDEBUG(1))				\
 			fprintf(fp, 				\
@@ -4891,6 +5151,8 @@ clear_active_set(void)
                         {                               \
                         case NO_TASK:                   \
                                 panic_task = task;      \
+				if (XENDUMP_DUMPFILE()) \
+					xendump_panic_hook(buf); \
                                 break;                  \
                         default:                        \
                                 panic_task = NO_TASK+1; \
@@ -4901,6 +5163,11 @@ clear_active_set(void)
                     strstr(buf, " .crash_kexec+")) {    \
 			crash_kexec_task = task;	\
                 }                                       \
+                if (strstr(buf, " xen_panic_event+") || \
+                    strstr(buf, " .xen_panic_event+")){ \
+			xen_panic_task = task;	        \
+			xendump_panic_hook(buf);	\
+		}					\
 	}
 
 /*
@@ -4913,10 +5180,11 @@ get_active_set_panic_task()
 	ulong task;
 	char buf[BUFSIZE];
 	ulong panic_task, die_task, crash_kexec_task;
+	ulong xen_panic_task;
 	char *tp;
 	struct task_context *tc;
 
-	panic_task = die_task = crash_kexec_task = NO_TASK;
+	panic_task = die_task = crash_kexec_task = xen_panic_task = NO_TASK;
 
         for (i = 0; i < NR_CPUS; i++) {
                 if (!(task = tt->active_set[i]))
@@ -5491,6 +5759,15 @@ dump_signal_data(struct task_context *tc)
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 	char buf4[BUFSIZE];
+
+        if (VALID_STRUCT(sigqueue) && !VALID_MEMBER(sigqueue_next)) {
+                MEMBER_OFFSET_INIT(sigqueue_next, "sigqueue", "next");
+                MEMBER_OFFSET_INIT(sigqueue_list, "sigqueue", "list");
+                MEMBER_OFFSET_INIT(sigqueue_info, "sigqueue", "info");
+        } else if (!VALID_MEMBER(signal_queue_next)) {
+                MEMBER_OFFSET_INIT(signal_queue_next, "signal_queue", "next");
+                MEMBER_OFFSET_INIT(signal_queue_info, "signal_queue", "info");
+        }
 
 	sigset = task_signal(tc->task);
 	if (!tt->last_task_read)

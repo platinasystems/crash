@@ -18,8 +18,10 @@
 #ifdef X86_64
 
 static int x86_64_kvtop(struct task_context *, ulong, physaddr_t *, int);
+static int x86_64_kvtop_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
 static int x86_64_uvtop(struct task_context *, ulong, physaddr_t *, int);
 static int x86_64_uvtop_level4(struct task_context *, ulong, physaddr_t *, int);
+static int x86_64_uvtop_level4_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
 static ulong x86_64_vmalloc_start(void);
 static int x86_64_is_task_addr(ulong);
 static int x86_64_verify_symbol(const char *, ulong, char);
@@ -67,6 +69,16 @@ static void x86_64_cpu_pda_init(void);
 static void x86_64_ist_init(void);
 static void x86_64_post_init(void);
 static void parse_cmdline_arg(void);
+static void x86_64_clear_machdep_cache(void);
+static int x86_64_xendump_p2m_create(struct xendump_data *);
+static char *x86_64_xendump_load_page(ulong, struct xendump_data *);
+static int x86_64_xendump_page_index(ulong, struct xendump_data *);
+static int x86_64_xen_kdump_p2m_create(struct xen_kdump_data *);
+static char *x86_64_xen_kdump_load_page(ulong, char *);
+static ulong x86_64_xen_kdump_page_mfn(ulong);
+static void x86_64_debug_dump_page(FILE *, char *, char *);
+static void x86_64_get_xendump_regs(struct xendump_data *, struct bt_info *, ulong *, ulong *);
+static ulong x86_64_xendump_panic_task(struct xendump_data *);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
@@ -98,9 +110,10 @@ x86_64_init(int when)
                 if ((machdep->ptbl = (char *)malloc(PAGESIZE())) == NULL)
                         error(FATAL, "cannot malloc ptbl space.");
 		if ((machdep->machspec->pml4 = 
-			(char *)malloc(PAGESIZE())) == NULL)
+			(char *)malloc(PAGESIZE()*2)) == NULL)
                         error(FATAL, "cannot malloc pml4 space.");
                 machdep->machspec->last_upml_read = 0;
+                machdep->machspec->last_pml4_read = 0;
                 machdep->last_pgd_read = 0;
                 machdep->last_pmd_read = 0;
                 machdep->last_ptbl_read = 0;
@@ -112,13 +125,16 @@ x86_64_init(int when)
 		break;
 
 	case PRE_GDB:
-		if (!(machdep->flags & (VM_ORIG|VM_2_6_11))) {
+		if (!(machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN))) {
 			if (symbol_exists("boot_vmalloc_pgt"))
 				machdep->flags |= VM_ORIG;
+			else if (symbol_exists("xen_start_info"))
+				machdep->flags |= VM_XEN;
 			else
 				machdep->flags |= VM_2_6_11;
 		}
-		switch (machdep->flags & (VM_ORIG|VM_2_6_11)) 
+
+		switch (machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN)) 
 		{
 		case VM_ORIG:
 		        /* pre-2.6.11 layout */
@@ -143,10 +159,19 @@ x86_64_init(int when)
 			machdep->machspec->vmalloc_end = VMALLOC_END_2_6_11;
 			machdep->machspec->modules_vaddr = MODULES_VADDR_2_6_11;
 			machdep->machspec->modules_end = MODULES_END_2_6_11;
-			machdep->flags |= VM_2_6_11;
 
 	        	machdep->uvtop = x86_64_uvtop_level4;
 			break;
+
+                case VM_XEN:
+                        /* Xen layout */
+                        machdep->machspec->userspace_top = USERSPACE_TOP_XEN;
+                        machdep->machspec->page_offset = PAGE_OFFSET_XEN;
+                        machdep->machspec->vmalloc_start_addr = VMALLOC_START_ADDR_XEN;
+                        machdep->machspec->vmalloc_end = VMALLOC_END_XEN;
+                        machdep->machspec->modules_vaddr = MODULES_VADDR_XEN;
+                        machdep->machspec->modules_end = MODULES_END_XEN;
+                        break;
 		}
 	        machdep->kvbase = (ulong)PAGE_OFFSET;
 		machdep->identity_map_base = (ulong)PAGE_OFFSET;
@@ -169,6 +194,11 @@ x86_64_init(int when)
 		machdep->line_number_hooks = x86_64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = x86_64_init_kernel_pgd;
+		machdep->clear_machdep_cache = x86_64_clear_machdep_cache;
+		machdep->xendump_p2m_create = x86_64_xendump_p2m_create;
+		machdep->get_xendump_regs = x86_64_get_xendump_regs;
+		machdep->xen_kdump_p2m_create = x86_64_xen_kdump_p2m_create;
+		machdep->xendump_panic_task = x86_64_xendump_panic_task;
 		break;
 
 	case POST_GDB:
@@ -211,6 +241,20 @@ x86_64_init(int when)
 		machdep->hz = HZ;
 		if (THIS_KERNEL_VERSION >= LINUX(2,6,0))
 			machdep->hz = 1000;
+		machdep->section_size_bits = _SECTION_SIZE_BITS;
+		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+                if (XEN()) {
+			if (kt->xen_flags & WRITABLE_PAGE_TABLES)
+                        	machdep->uvtop = x86_64_uvtop_level4_xen_wpt;
+			else
+                        	machdep->uvtop = x86_64_uvtop_level4;
+                        MEMBER_OFFSET_INIT(vcpu_guest_context_user_regs,
+                                "vcpu_guest_context", "user_regs");
+			ASSIGN_OFFSET(cpu_user_regs_rsp) = 
+				MEMBER_OFFSET("cpu_user_regs", "ss") - sizeof(ulong);
+			ASSIGN_OFFSET(cpu_user_regs_rip) = 
+				MEMBER_OFFSET("cpu_user_regs", "cs") - sizeof(ulong);
+                }
 		break;
 
 	case POST_INIT:
@@ -240,6 +284,12 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%sVM_ORIG", others++ ? "|" : "");
 	if (machdep->flags & VM_2_6_11)
 		fprintf(fp, "%sVM_2_6_11", others++ ? "|" : "");
+	if (machdep->flags & VM_XEN)
+		fprintf(fp, "%sVM_XEN", others++ ? "|" : "");
+	if (machdep->flags & NO_TSS)
+		fprintf(fp, "%sNO_TSS", others++ ? "|" : "");
+	if (machdep->flags & SCHED_TEXT)
+		fprintf(fp, "%sSCHED_TEXT", others++ ? "|" : "");
         fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -265,7 +315,14 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "         back_trace: %lx\n",
 			(ulong)machdep->back_trace);
         fprintf(fp, "    processor_speed: x86_64_processor_speed()\n");
-        fprintf(fp, "              uvtop: x86_64_uvtop()\n");
+	if (machdep->uvtop == x86_64_uvtop)
+        	fprintf(fp, "              uvtop: x86_64_uvtop()\n");
+	else if (machdep->uvtop == x86_64_uvtop_level4)
+        	fprintf(fp, "              uvtop: x86_64_uvtop_level4()\n");
+	else if (machdep->uvtop == x86_64_uvtop_level4_xen_wpt)
+        	fprintf(fp, "              uvtop: x86_64_uvtop_level4_xen_wpt()\n");
+	else
+        	fprintf(fp, "              uvtop: %lx\n", (ulong)machdep->uvtop);
         fprintf(fp, "              kvtop: x86_64_kvtop()\n");
         fprintf(fp, "       get_task_pgd: x86_64_get_task_pgd()\n");
 	fprintf(fp, "           dump_irq: x86_64_dump_irq()\n");
@@ -284,6 +341,11 @@ x86_64_dump_machdep_table(ulong arg)
         fprintf(fp, "          is_uvaddr: x86_64_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
         fprintf(fp, "    init_kernel_pgd: x86_64_init_kernel_pgd()\n");
+        fprintf(fp, "clear_machdep_cache: x86_64_clear_machdep_cache()\n");
+	fprintf(fp, " xendump_p2m_create: x86_64_xendump_p2m_create()\n");
+	fprintf(fp, "   get_xendump_regs: x86_64_get_xendump_regs()\n");
+	fprintf(fp, " xendump_panic_task: x86_64_xendump_panic_task()\n");
+	fprintf(fp, "xen_kdump_p2m_create: x86_64_xen_kdump_p2m_create()\n");
         fprintf(fp, "  line_number_hooks: x86_64_line_number_hooks\n");
         fprintf(fp, "    value_to_symbol: generic_machdep_value_to_symbol()\n");
         fprintf(fp, "      last_pgd_read: %lx\n", machdep->last_pgd_read);
@@ -293,6 +355,9 @@ x86_64_dump_machdep_table(ulong arg)
         fprintf(fp, "                pmd: %lx\n", (ulong)machdep->pmd);
         fprintf(fp, "               ptbl: %lx\n", (ulong)machdep->ptbl);
 	fprintf(fp, "       ptrs_per_pgd: %d\n", machdep->ptrs_per_pgd);
+	fprintf(fp, "  section_size_bits: %ld\n", machdep->section_size_bits);
+        fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
+        fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 
 	fprintf(fp, "           machspec: %016lx\n", (ulong)machdep->machspec);
 	fprintf(fp, "            userspace_top: %016lx\n", (ulong)ms->userspace_top);
@@ -302,6 +367,7 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "            modules_vaddr: %016lx\n", (ulong)ms->modules_vaddr);
 	fprintf(fp, "              modules_end: %016lx\n", (ulong)ms->modules_end);
 	fprintf(fp, "                     pml4: %lx\n", (ulong)ms->pml4);
+	fprintf(fp, "           last_pml4_read: %lx\n", (ulong)ms->last_pml4_read);
 	if (ms->upml) {
 		fprintf(fp, "                     upml: %lx\n", (ulong)ms->upml);
 		fprintf(fp, "           last_upml_read: %lx\n", (ulong)ms->last_upml_read);
@@ -335,8 +401,10 @@ x86_64_dump_machdep_table(ulong arg)
 	fprintf(fp, "                           rsp: %ld\n", ms->pto.rsp);
 	fprintf(fp, "                            ss: %ld\n", ms->pto.ss);
 	}
-	fprintf(fp, "                  stkinfo: esize: %d isize: %d\n", 
-		ms->stkinfo.esize, ms->stkinfo.isize);
+	fprintf(fp, "                  stkinfo: esize: %d%sisize: %d\n", 
+		ms->stkinfo.esize, 
+		machdep->flags & NO_TSS ? " (NO TSS) " : " ",
+		ms->stkinfo.isize);
 	fprintf(fp, "                           ebase[%s][7]:",
 		arg ? "NR_CPUS" : "cpus");
 	cpus = arg ? NR_CPUS : kt->cpus;
@@ -525,6 +593,13 @@ x86_64_ist_init(void)
                         if (ms->stkinfo.ebase[c][0] == 0)
                                 break;
 		}
+	} else if (!symbol_exists("boot_exception_stacks")) {
+		machdep->flags |= NO_TSS;
+
+		if (CRASHDEBUG(1))
+			error(NOTE, "CONFIG_X86_NO_TSS\n");
+
+		return;
 	}
 
 	if (ms->stkinfo.ebase[0][0] && ms->stkinfo.ebase[0][1])
@@ -612,6 +687,10 @@ x86_64_post_init(void)
 		if (clues >= 2) 
 			kt->cpu_flags[c] |= NMI;
         }
+
+	if (symbol_exists("__sched_text_start") && 
+	    (symbol_value("__sched_text_start") == symbol_value("schedule")))
+		machdep->flags |= SCHED_TEXT;
 }
 
 /*
@@ -745,7 +824,7 @@ x86_64_uvtop_level4(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, in
 	pgd = ((ulong *)pgd_paddr) + pgd_index(uvaddr); 
 	pgd_pte = ULONG(machdep->pgd + PAGEOFFSET(pgd));
 	if (verbose) 
-                fprintf(fp, "   PGD: %lx => %lx\n", (ulong)pgd, pgd_pte);
+                fprintf(fp, "   PUD: %lx => %lx\n", (ulong)pgd, pgd_pte);
 	if (!(pgd_pte & _PAGE_PRESENT))
 		goto no_upage;
 
@@ -806,6 +885,149 @@ no_upage:
 	return FALSE;
 }
 
+static int
+x86_64_uvtop_level4_xen_wpt(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
+{
+	ulong mm;
+	ulong *pml;
+	ulong pml_paddr;
+	ulong pml_pte;
+	ulong *pgd;
+	ulong pgd_paddr;
+	ulong pgd_pte;
+	ulong *pmd;
+	ulong pmd_paddr;
+	ulong pmd_pte;
+	ulong pseudo_pmd_pte;
+	ulong *ptep;
+	ulong pte_paddr;
+	ulong pte;
+	ulong pseudo_pte;
+	physaddr_t physpage;
+	char buf[BUFSIZE];
+
+	if (!tc)
+		error(FATAL, "current context invalid\n");
+
+	*paddr = 0;
+
+	if (IS_KVADDR(uvaddr))
+		return x86_64_kvtop(tc, uvaddr, paddr, verbose);
+
+	if ((mm = task_mm(tc->task, TRUE)))
+		pml = ULONG_PTR(tt->mm_struct + OFFSET(mm_struct_pgd));
+	else
+		readmem(tc->mm_struct + OFFSET(mm_struct_pgd), KVADDR, &pml,
+			sizeof(long), "mm_struct pgd", FAULT_ON_ERROR);
+
+	pml_paddr = x86_64_VTOP((ulong)pml);
+	FILL_UPML(pml_paddr, PHYSADDR, PAGESIZE());
+	pml = ((ulong *)pml_paddr) + pml4_index(uvaddr); 
+	pml_pte = ULONG(machdep->machspec->upml + PAGEOFFSET(pml));
+	if (verbose) 
+		fprintf(fp, "   PML: %lx => %lx [machine]\n", (ulong)pml, pml_pte);
+	if (!(pml_pte & _PAGE_PRESENT))
+		goto no_upage;
+
+	pgd_paddr = pml_pte & PHYSICAL_PAGE_MASK;
+	pgd_paddr = xen_machine_to_pseudo(pgd_paddr);
+	if (verbose)
+		fprintf(fp, "   PML: %lx\n", pgd_paddr);
+	FILL_PGD(pgd_paddr, PHYSADDR, PAGESIZE());
+	pgd = ((ulong *)pgd_paddr) + pgd_index(uvaddr); 
+	pgd_pte = ULONG(machdep->pgd + PAGEOFFSET(pgd));
+	if (verbose) 
+                fprintf(fp, "   PUD: %lx => %lx [machine]\n", (ulong)pgd, pgd_pte);
+	if (!(pgd_pte & _PAGE_PRESENT))
+		goto no_upage;
+
+	/*
+         *  pmd = pmd_offset(pgd, address);
+	 */
+	pmd_paddr = pgd_pte & PHYSICAL_PAGE_MASK;
+	pmd_paddr = xen_machine_to_pseudo(pmd_paddr);
+	if (verbose)
+                fprintf(fp, "   PUD: %lx\n", pmd_paddr);
+	FILL_PMD(pmd_paddr, PHYSADDR, PAGESIZE());
+	pmd = ((ulong *)pmd_paddr) + pmd_index(uvaddr);
+	pmd_pte = ULONG(machdep->pmd + PAGEOFFSET(pmd));
+        if (verbose) 
+                fprintf(fp, "   PMD: %lx => %lx [machine]\n", (ulong)pmd, pmd_pte);
+	if (!(pmd_pte & _PAGE_PRESENT))
+		goto no_upage;
+        if (pmd_pte & _PAGE_PSE) {
+                if (verbose)
+                        fprintf(fp, "  PAGE: %lx  (2MB) [machine]\n", 
+				PAGEBASE(pmd_pte) & PHYSICAL_PAGE_MASK);
+
+		pseudo_pmd_pte = xen_machine_to_pseudo(PAGEBASE(pmd_pte));
+
+                if (pseudo_pmd_pte == XEN_MFN_NOT_FOUND) {
+                        if (verbose)
+                                fprintf(fp, " PAGE: page not available\n");
+                        *paddr = PADDR_NOT_AVAILABLE;
+                        return FALSE;
+                }
+
+		pseudo_pmd_pte |= PAGEOFFSET(pmd_pte);
+
+                if (verbose) {
+                        fprintf(fp, " PAGE: %s  (2MB)\n\n",
+                                mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX,
+                                MKSTR(PAGEBASE(pseudo_pmd_pte) & 
+				PHYSICAL_PAGE_MASK)));
+
+                        x86_64_translate_pte(pseudo_pmd_pte, 0, 0);
+                }
+
+                physpage = (PAGEBASE(pseudo_pmd_pte) & PHYSICAL_PAGE_MASK) + 
+			(uvaddr & ~_2MB_PAGE_MASK);
+
+                *paddr = physpage;
+                return TRUE;
+        }
+
+        /*
+	 *  ptep = pte_offset_map(pmd, address);
+	 *  pte = *ptep;
+	 */
+	pte_paddr = pmd_pte & PHYSICAL_PAGE_MASK;
+	pte_paddr = xen_machine_to_pseudo(pte_paddr);
+	if (verbose)
+		fprintf(fp, "   PMD: %lx\n", pte_paddr);
+	FILL_PTBL(pte_paddr, PHYSADDR, PAGESIZE());
+	ptep = ((ulong *)pte_paddr) + pte_index(uvaddr);
+	pte = ULONG(machdep->ptbl + PAGEOFFSET(ptep));
+	if (verbose)
+		fprintf(fp, "   PTE: %lx => %lx [machine]\n", (ulong)ptep, pte);
+	if (!(pte & (_PAGE_PRESENT))) {
+		if (pte && verbose) {
+			fprintf(fp, "\n");
+			x86_64_translate_pte(pte, 0, 0);
+		}
+		goto no_upage;
+	}
+	
+	pseudo_pte = xen_machine_to_pseudo(pte & PHYSICAL_PAGE_MASK);
+	if (verbose)
+		fprintf(fp, "   PTE: %lx\n", pseudo_pte + PAGEOFFSET(pte));
+
+	*paddr = (PAGEBASE(pseudo_pte) & PHYSICAL_PAGE_MASK) + PAGEOFFSET(uvaddr);
+
+	if (verbose) {
+		fprintf(fp, "  PAGE: %lx [machine]\n", 
+			PAGEBASE(pte) & PHYSICAL_PAGE_MASK);
+		fprintf(fp, "  PAGE: %lx\n\n", 
+			PAGEBASE(*paddr) & PHYSICAL_PAGE_MASK);
+		x86_64_translate_pte(pseudo_pte + PAGEOFFSET(pte), 0, 0);
+	}
+
+	return TRUE;
+
+no_upage:
+
+	return FALSE;
+}
 
 static int
 x86_64_uvtop(struct task_context *tc, ulong uvaddr, physaddr_t *paddr, int verbose)
@@ -940,6 +1162,9 @@ x86_64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbo
                         return TRUE;
         }
 	
+	if (XEN() && (kt->xen_flags & WRITABLE_PAGE_TABLES))
+		return (x86_64_kvtop_xen_wpt(tc, kvaddr, paddr, verbose));
+
  	/*	
 	 *  pgd = pgd_offset_k(addr);
 	 */
@@ -956,7 +1181,7 @@ x86_64_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbo
 	pgd = ((ulong *)pgd_paddr) + pgd_index(kvaddr); 
 	pgd_pte = ULONG(machdep->pgd + PAGEOFFSET(pgd));
         if (verbose) 
-                fprintf(fp, "   PGD: %lx => %lx\n", (ulong)pgd, pgd_pte);
+                fprintf(fp, "   PUD: %lx => %lx\n", (ulong)pgd, pgd_pte);
 	if (!(pgd_pte & _PAGE_PRESENT))
 		goto no_kpage;
 
@@ -1016,6 +1241,136 @@ no_kpage:
         return FALSE;
 }
 
+
+static int
+x86_64_kvtop_xen_wpt(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
+{
+	ulong *pml4;
+        ulong *pgd;
+	ulong pgd_paddr;
+	ulong pgd_pte;
+	ulong *pmd;
+	ulong pmd_paddr;
+	ulong pmd_pte;
+	ulong pseudo_pmd_pte;
+	ulong *ptep;
+	ulong pte_paddr;
+	ulong pte;
+	ulong pseudo_pte;
+	physaddr_t physpage;
+	char buf[BUFSIZE];
+
+ 	/*	
+	 *  pgd = pgd_offset_k(addr);
+	 */
+	FILL_PML4();
+	pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);  
+        if (verbose) {
+		fprintf(fp, "PML4 DIRECTORY: %lx\n", vt->kernel_pgd[0]);
+                fprintf(fp, "PAGE DIRECTORY: %lx [machine]\n", *pml4);
+	}
+	if (!(*pml4) & _PAGE_PRESENT)
+		goto no_kpage;
+	pgd_paddr = (*pml4) & PHYSICAL_PAGE_MASK;
+	pgd_paddr = xen_machine_to_pseudo(pgd_paddr);
+	if (verbose)
+                fprintf(fp, "PAGE DIRECTORY: %lx\n", pgd_paddr);
+	FILL_PGD(pgd_paddr, PHYSADDR, PAGESIZE());
+	pgd = ((ulong *)pgd_paddr) + pgd_index(kvaddr); 
+	pgd_pte = ULONG(machdep->pgd + PAGEOFFSET(pgd));
+        if (verbose) 
+                fprintf(fp, "   PUD: %lx => %lx [machine]\n", (ulong)pgd, pgd_pte);
+	if (!(pgd_pte & _PAGE_PRESENT))
+		goto no_kpage;
+
+	/*
+	 *  pmd = pmd_offset(pgd, addr); 
+	 */
+	pmd_paddr = pgd_pte & PHYSICAL_PAGE_MASK;
+	pmd_paddr = xen_machine_to_pseudo(pmd_paddr);
+	if (verbose)
+                fprintf(fp, "   PUD: %lx\n", pmd_paddr);
+	FILL_PMD(pmd_paddr, PHYSADDR, PAGESIZE());
+	pmd = ((ulong *)pmd_paddr) + pmd_index(kvaddr);
+	pmd_pte = ULONG(machdep->pmd + PAGEOFFSET(pmd));
+        if (verbose) 
+                fprintf(fp, "   PMD: %lx => %lx [machine]\n", (ulong)pmd, pmd_pte);
+	if (!(pmd_pte & _PAGE_PRESENT))
+		goto no_kpage;
+	if (pmd_pte & _PAGE_PSE) {
+		if (verbose)
+			fprintf(fp, "  PAGE: %lx  (2MB) [machine]\n", 
+				PAGEBASE(pmd_pte) & PHYSICAL_PAGE_MASK);
+
+                pseudo_pmd_pte = xen_machine_to_pseudo(PAGEBASE(pmd_pte));
+
+                if (pseudo_pmd_pte == XEN_MFN_NOT_FOUND) {
+                        if (verbose)
+                                fprintf(fp, " PAGE: page not available\n");
+                        *paddr = PADDR_NOT_AVAILABLE;
+                        return FALSE;
+                }
+
+                pseudo_pmd_pte |= PAGEOFFSET(pmd_pte);
+
+                if (verbose) {
+                        fprintf(fp, " PAGE: %s  (2MB)\n\n",
+                                mkstring(buf, VADDR_PRLEN, RJUST|LONG_HEX,
+                                MKSTR(PAGEBASE(pseudo_pmd_pte) &
+                                PHYSICAL_PAGE_MASK)));
+
+                        x86_64_translate_pte(pseudo_pmd_pte, 0, 0);
+                }
+
+                physpage = (PAGEBASE(pseudo_pmd_pte) & PHYSICAL_PAGE_MASK) +
+                        (kvaddr & ~_2MB_PAGE_MASK);
+
+                *paddr = physpage;
+                return TRUE;
+	}
+
+	/*
+	 *  ptep = pte_offset_map(pmd, addr);
+	 *  pte = *ptep;
+	 */
+	pte_paddr = pmd_pte & PHYSICAL_PAGE_MASK;
+	pte_paddr = xen_machine_to_pseudo(pte_paddr);
+	if (verbose)
+		fprintf(fp, "   PMD: %lx\n", pte_paddr); 
+	FILL_PTBL(pte_paddr, PHYSADDR, PAGESIZE());
+	ptep = ((ulong *)pte_paddr) + pte_index(kvaddr);
+	pte = ULONG(machdep->ptbl + PAGEOFFSET(ptep));
+        if (verbose) 
+                fprintf(fp, "   PTE: %lx => %lx [machine]\n", (ulong)ptep, pte);
+        if (!(pte & (_PAGE_PRESENT))) {
+                if (pte && verbose) {
+                        fprintf(fp, "\n");
+                        x86_64_translate_pte(pte, 0, 0);
+                }
+                goto no_kpage;
+        }
+
+	pseudo_pte = xen_machine_to_pseudo(pte & PHYSICAL_PAGE_MASK);
+	if (verbose)
+                fprintf(fp, "   PTE: %lx\n", pseudo_pte + PAGEOFFSET(pte));
+
+        *paddr = (PAGEBASE(pseudo_pte) & PHYSICAL_PAGE_MASK) + PAGEOFFSET(kvaddr);
+
+        if (verbose) {
+                fprintf(fp, "  PAGE: %lx [machine]\n", 
+			PAGEBASE(pte) & PHYSICAL_PAGE_MASK);
+                fprintf(fp, "  PAGE: %lx\n\n", 
+			PAGEBASE(*paddr) & PHYSICAL_PAGE_MASK);
+                x86_64_translate_pte(pseudo_pte + PAGEOFFSET(pte), 0, 0);
+        }
+
+        return TRUE;
+
+no_kpage:
+        return FALSE;
+}
+
+
 /*
  *  Determine where vmalloc'd memory starts.
  */
@@ -1044,13 +1399,13 @@ x86_64_is_task_addr(ulong task)
 static ulong
 x86_64_processor_speed(void)
 {
-        unsigned long cpu_khz;
+        unsigned long cpu_khz = 0;
 
         if (machdep->mhz)
                 return (machdep->mhz);
 
         if (symbol_exists("cpu_khz")) {
-                get_symbol_data("cpu_khz", sizeof(long), &cpu_khz);
+                get_symbol_data("cpu_khz", sizeof(int), &cpu_khz);
                 if (cpu_khz)
                         return(machdep->mhz = cpu_khz/1000);
         }
@@ -1070,7 +1425,6 @@ x86_64_verify_symbol(const char *name, ulong value, char type)
 
         if (!name || !strlen(name) || !(machdep->flags & KSYMS_START))
                 return FALSE;
-
 	return TRUE;
 }
 
@@ -1891,6 +2245,10 @@ in_exception_stack:
 						    	bt->call_target);
 					continue;
 				}
+			} else if ((machdep->flags & SCHED_TEXT) &&
+				STREQ(bt->call_target, "schedule") &&
+				STREQ(sp->name, "__sched_text_start")) {
+				;  /*  bait and switch */
 			} else if (!STREQ(sp->name, bt->call_target)) {
 				/*
 				 *  We got function called by the text routine,
@@ -2291,6 +2649,18 @@ x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
                         return TRUE;
         }
 
+        if (XEN() && ((cs == 0x33) || (cs == 0xe033)) && 
+	    ((ss == 0x2b) || (ss == 0xe02b))) {
+                if (IS_UVADDR(rip, bt->tc) && IS_UVADDR(rsp, bt->tc))
+                        return TRUE;
+        }
+
+	if (XEN() && ((cs == 0x10000e030) || (cs == 0xe030)) && 
+	    (ss == 0xe02b)) {
+                if (is_kernel_text(rip) && IS_KVADDR(rsp))
+                        return TRUE;
+	}
+
 	/* 
 	 *  32-bit segments 
 	 */
@@ -2530,7 +2900,7 @@ x86_64_get_pc(struct bt_info *bt)
 {
         ulong offset, rip;
 
-	if (INVALID_MEMBER(thread_struct_rip)) 
+	if (INVALID_MEMBER(thread_struct_rip))
 		return symbol_value("thread_return");
 
         if (tt->flags & THREAD_INFO) {
@@ -3034,6 +3404,9 @@ parse_cmdline_arg(void)
 				} else if (STREQ(p, "2.6.11")) {
 					machdep->flags |= VM_2_6_11;
 					continue;
+				} else if (STREQ(p, "xen")) {
+					machdep->flags |= VM_XEN;
+					continue;
 				}
 			}
 		}
@@ -3042,8 +3415,11 @@ parse_cmdline_arg(void)
 		lines++;
 	} 
 
-	switch (machdep->flags & (VM_ORIG|VM_2_6_11))
+	switch (machdep->flags & (VM_ORIG|VM_2_6_11|VM_XEN))
 	{
+	case 0:
+		break;
+
 	case VM_ORIG:
 		error(NOTE, "using original x86_64 VM address ranges\n");
 		lines++;
@@ -3054,14 +3430,565 @@ parse_cmdline_arg(void)
 		lines++;
 		break;
 
-	case (VM_ORIG|VM_2_6_11):
-		error(WARNING, "cannot set both vm=orig and vm=2.6.11\n");
+	case VM_XEN:
+		error(NOTE, "using xen x86_64 VM address ranges\n");
 		lines++;
-		machdep->flags &= ~(VM_ORIG|VM_2_6_11);
+		break;
+
+	default:
+		error(WARNING, "cannot set multiple vm values\n");
+		lines++;
+		machdep->flags &= ~(VM_ORIG|VM_2_6_11|VM_XEN);
 		break;
 	} 
 
 	if (lines)
 		fprintf(fp, "\n");
+}
+
+void
+x86_64_clear_machdep_cache(void)
+{
+	machdep->machspec->last_upml_read = 0;
+}
+
+#include "netdump.h"
+
+/*
+ *  From the xen vmcore, create an index of mfns for each page that makes
+ *  up the dom0 kernel's complete phys_to_machine_mapping[max_pfn] array.
+ */
+static int
+x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
+{
+        int i;
+        ulong kvaddr;
+        ulong *up;
+
+        if (CRASHDEBUG(1))
+                fprintf(fp, "x86_64_xen_kdump_p2m_create: cr3: %lx\n", xkd->cr3);
+
+        /*
+         *  Temporarily read only physical addresses from vmcore by
+         *  going directly to read_netdump() instead of via read_kdump().
+         */
+        pc->readmem = read_netdump;
+
+        if (!readmem(PTOB(xkd->cr3), PHYSADDR, machdep->machspec->pml4, 
+	    PAGESIZE(), "xen kdump cr3 page", RETURN_ON_ERROR))
+                error(FATAL, "cannot read xen kdump cr3 page\n");
+
+        if (CRASHDEBUG(7))
+                x86_64_debug_dump_page(fp, machdep->machspec->pml4,
+                        "contents of PML4 page:");
+
+	kvaddr = symbol_value("end_pfn");
+        if (!x86_64_xen_kdump_load_page(kvaddr, xkd->page))
+                return FALSE;
+        up = (ulong *)(xkd->page + PAGEOFFSET(kvaddr));
+
+        xkd->p2m_frames = (*up/(PAGESIZE()/sizeof(ulong))) +
+                ((*up%(PAGESIZE()/sizeof(ulong))) ? 1 : 0);
+
+        if (CRASHDEBUG(1))
+                fprintf(fp, "end_pfn at %lx: %lx (%ld) -> %d p2m_frames\n",
+                        kvaddr, *up, *up, xkd->p2m_frames);
+
+        if ((xkd->p2m_mfn_frame_list = (ulong *)
+            malloc(xkd->p2m_frames * sizeof(ulong))) == NULL)
+                error(FATAL, "cannot malloc p2m_frame_index_list");
+
+        kvaddr = symbol_value("phys_to_machine_mapping");
+        if (!x86_64_xen_kdump_load_page(kvaddr, xkd->page))
+                return FALSE;
+        up = (ulong *)(xkd->page + PAGEOFFSET(kvaddr));
+        kvaddr = *up;
+        if (CRASHDEBUG(1))
+                fprintf(fp, "phys_to_machine_mapping: %lx\n", kvaddr);
+
+        machdep->last_pgd_read = BADADDR;
+        machdep->last_pmd_read = BADADDR;
+        machdep->last_ptbl_read = BADADDR;
+
+        for (i = 0; i < xkd->p2m_frames; i++) {
+                xkd->p2m_mfn_frame_list[i] = x86_64_xen_kdump_page_mfn(kvaddr);
+                kvaddr += PAGESIZE();
+        }
+
+        if (CRASHDEBUG(1)) {
+                for (i = 0; i < xkd->p2m_frames; i++)
+                        fprintf(fp, "%lx ", xkd->p2m_mfn_frame_list[i]);
+                fprintf(fp, "\n");
+        }
+
+	machdep->last_pgd_read = 0;
+        machdep->last_ptbl_read = 0;
+        machdep->last_pmd_read = 0;
+        pc->readmem = read_kdump;
+
+        return TRUE;
+}
+
+static char *
+x86_64_xen_kdump_load_page(ulong kvaddr, char *pgbuf)
+{
+	ulong mfn;
+	ulong *pml4, *pgd, *pmd, *ptep;
+
+        pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);
+	mfn = ((*pml4) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(fp, 
+		    "[%lx] pml4: %lx  mfn: %lx  pml4_index: %lx\n", 
+			kvaddr, *pml4, mfn, pml4_index(kvaddr));
+
+        if (!readmem(PTOB(mfn), PHYSADDR, machdep->pgd, PAGESIZE(),
+            "xen kdump pud page", RETURN_ON_ERROR))
+		error(FATAL, "cannot read/find pud page\n");
+        
+        if (CRASHDEBUG(7))
+		x86_64_debug_dump_page(fp, machdep->pgd, 
+                	"contents of page upper directory page:");
+
+        pgd = ((ulong *)machdep->pgd) + pgd_index(kvaddr);
+	mfn = ((*pgd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(fp, 
+		    "[%lx] pgd: %lx  mfn: %lx  pgd_index: %lx\n", 
+			kvaddr, *pgd, mfn, pgd_index(kvaddr));
+
+	if (!readmem(PTOB(mfn), PHYSADDR, machdep->pmd, PAGESIZE(),
+            "xen kdump pmd page", RETURN_ON_ERROR))
+                error(FATAL, "cannot read/find pmd page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(fp, machdep->pmd, 
+			"contents of page middle directory page:");
+
+        pmd = ((ulong *)machdep->pmd) + pmd_index(kvaddr);
+	mfn = ((*pmd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(fp, 
+		    "[%lx] pmd: %lx  mfn: %lx  pmd_index: %lx\n", 
+			kvaddr, *pmd, mfn, pmd_index(kvaddr));
+
+       if (!readmem(PTOB(mfn), PHYSADDR, machdep->ptbl, PAGESIZE(),
+            "xen kdump page table page", RETURN_ON_ERROR))
+                error(FATAL, "cannot read/find page table page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(fp, machdep->ptbl, 
+			"contents of page table page:");
+
+        ptep = ((ulong *)machdep->ptbl) + pte_index(kvaddr);
+	mfn = ((*ptep) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(fp, 
+		    "[%lx] ptep: %lx  mfn: %lx  pte_index: %lx\n", 
+			kvaddr, *ptep, mfn, pte_index(kvaddr));
+
+       if (!readmem(PTOB(mfn), PHYSADDR, pgbuf, PAGESIZE(),
+            "xen kdump page table page", RETURN_ON_ERROR))
+                error(FATAL, "cannot read/find pte page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(fp, pgbuf, 
+			"contents of page:");
+
+	return pgbuf;
+}
+
+static ulong 
+x86_64_xen_kdump_page_mfn(ulong kvaddr)
+{
+	ulong mfn;
+	ulong *pml4, *pgd, *pmd, *ptep;
+
+        pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);
+	mfn = ((*pml4) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_pgd_read) && 
+	    !readmem(PTOB(mfn), PHYSADDR, machdep->pgd, PAGESIZE(),
+            "xen kdump pud entry", RETURN_ON_ERROR))
+		error(FATAL, "cannot read/find pud page\n");
+        machdep->last_pgd_read = mfn;
+
+        pgd = ((ulong *)machdep->pgd) + pgd_index(kvaddr);
+	mfn = ((*pgd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_pmd_read) && 
+            !readmem(PTOB(mfn), PHYSADDR, machdep->pmd, PAGESIZE(),
+            "xen kdump pmd entry", RETURN_ON_ERROR))
+                error(FATAL, "cannot read/find pmd page\n");
+        machdep->last_pmd_read = mfn;
+
+        pmd = ((ulong *)machdep->pmd) + pmd_index(kvaddr);
+	mfn = ((*pmd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_ptbl_read) && 
+            !readmem(PTOB(mfn), PHYSADDR, machdep->ptbl, PAGESIZE(),
+            "xen kdump page table page", RETURN_ON_ERROR))
+                error(FATAL, "cannot read/find page table page\n");
+        machdep->last_ptbl_read = mfn;
+
+        ptep = ((ulong *)machdep->ptbl) + pte_index(kvaddr);
+	mfn = ((*ptep) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	return mfn;
+}
+
+#include "xendump.h"
+
+/*
+ *  Create an index of mfns for each page that makes up the
+ *  kernel's complete phys_to_machine_mapping[max_pfn] array.
+ */
+static int 
+x86_64_xendump_p2m_create(struct xendump_data *xd)
+{
+	int i, idx;
+	ulong mfn, kvaddr, ctrlreg[8], ctrlreg_offset;
+	ulong *up;
+	off_t offset; 
+
+	if ((ctrlreg_offset = MEMBER_OFFSET("vcpu_guest_context", "ctrlreg")) ==
+	     INVALID_OFFSET)
+		error(FATAL, 
+		    "cannot determine vcpu_guest_context.ctrlreg offset\n");
+	else if (CRASHDEBUG(1))
+		fprintf(xd->ofp, 
+		    "MEMBER_OFFSET(vcpu_guest_context, ctrlreg): %ld\n",
+			ctrlreg_offset);
+
+	offset = (off_t)xd->xc_core.header.xch_ctxt_offset + 
+		(off_t)ctrlreg_offset;
+
+	if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+		error(FATAL, "cannot lseek to xch_ctxt_offset\n");
+
+	if (read(xd->xfd, &ctrlreg, sizeof(ctrlreg)) !=
+	    sizeof(ctrlreg))
+		error(FATAL, "cannot read vcpu_guest_context ctrlreg[8]\n");
+
+	for (i = 0; CRASHDEBUG(1) && (i < 8); i++)
+		fprintf(xd->ofp, "ctrlreg[%d]: %lx\n", i, ctrlreg[i]);
+
+	mfn = ctrlreg[3] >> PAGESHIFT();
+
+	if (!xc_core_mfn_to_page(mfn, machdep->machspec->pml4))
+		error(FATAL, "cannot read/find cr3 page\n");
+
+	if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(xd->ofp, machdep->machspec->pml4, 
+                	"contents of PML4 page:");
+
+	kvaddr = symbol_value("end_pfn");
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		return FALSE;
+
+	up = (ulong *)(xd->page + PAGEOFFSET(kvaddr));
+	if (CRASHDEBUG(1))
+		fprintf(xd->ofp, "end_pfn: %lx\n", *up);
+
+	xd->xc_core.p2m_frames = (*up/(PAGESIZE()/sizeof(ulong))) +
+                ((*up%(PAGESIZE()/sizeof(ulong))) ? 1 : 0);
+
+	if ((xd->xc_core.p2m_frame_index_list = (ulong *)
+	    malloc(xd->xc_core.p2m_frames * sizeof(ulong))) == NULL)
+        	error(FATAL, "cannot malloc p2m_frame_list");
+
+	kvaddr = symbol_value("phys_to_machine_mapping");
+	if (!x86_64_xendump_load_page(kvaddr, xd))
+		return FALSE;
+
+	up = (ulong *)(xd->page + PAGEOFFSET(kvaddr));
+	if (CRASHDEBUG(1))
+		fprintf(fp, "phys_to_machine_mapping: %lx\n", *up);
+
+	kvaddr = *up;
+	machdep->last_ptbl_read = BADADDR;
+
+	for (i = 0; i < xd->xc_core.p2m_frames; i++) {
+		if ((idx = x86_64_xendump_page_index(kvaddr, xd)) == MFN_NOT_FOUND)
+			return FALSE;
+		xd->xc_core.p2m_frame_index_list[i] = idx; 
+		kvaddr += PAGESIZE();
+	}
+
+	machdep->last_ptbl_read = 0;
+
+	return TRUE;
+}
+
+static void
+x86_64_debug_dump_page(FILE *ofp, char *page, char *name)
+{
+	int i;
+	ulong *up;
+
+        fprintf(ofp, "%s\n", name);
+
+        up = (ulong *)page;
+        for (i = 0; i < 256; i++) {
+        	fprintf(ofp, "%016lx: %016lx %016lx\n",
+                        (ulong)((i * 2) * sizeof(ulong)),
+                        *up, *(up+1));
+                up += 2;
+        }
+}
+
+/*
+ *  Find the page associate with the kvaddr, and read its contents
+ *  into the passed-in buffer.
+ */
+static char *
+x86_64_xendump_load_page(ulong kvaddr, struct xendump_data *xd)
+{
+	ulong mfn;
+	ulong *pml4, *pgd, *pmd, *ptep;
+
+        pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);
+	mfn = ((*pml4) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(xd->ofp, 
+		    "[%lx] pml4: %lx  mfn: %lx  pml4_index: %lx\n", 
+			kvaddr, *pml4, mfn, pml4_index(kvaddr));
+
+	if (!xc_core_mfn_to_page(mfn, machdep->pgd))
+		error(FATAL, "cannot read/find pud page\n");
+
+        if (CRASHDEBUG(7))
+		x86_64_debug_dump_page(xd->ofp, machdep->pgd, 
+                	"contents of page upper directory page:");
+
+        pgd = ((ulong *)machdep->pgd) + pgd_index(kvaddr);
+	mfn = ((*pgd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(xd->ofp, 
+		    "[%lx] pgd: %lx  mfn: %lx  pgd_index: %lx\n", 
+			kvaddr, *pgd, mfn, pgd_index(kvaddr));
+
+        if (!xc_core_mfn_to_page(mfn, machdep->pmd))
+                error(FATAL, "cannot read/find pmd page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(xd->ofp, machdep->pmd, 
+			"contents of page middle directory page:");
+
+        pmd = ((ulong *)machdep->pmd) + pmd_index(kvaddr);
+	mfn = ((*pmd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(xd->ofp, 
+		    "[%lx] pmd: %lx  mfn: %lx  pmd_index: %lx\n", 
+			kvaddr, *pmd, mfn, pmd_index(kvaddr));
+
+        if (!xc_core_mfn_to_page(mfn, machdep->ptbl))
+                error(FATAL, "cannot read/find page table page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(xd->ofp, machdep->ptbl, 
+			"contents of page table page:");
+
+        ptep = ((ulong *)machdep->ptbl) + pte_index(kvaddr);
+	mfn = ((*ptep) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+	if (CRASHDEBUG(3))
+		fprintf(xd->ofp, 
+		    "[%lx] ptep: %lx  mfn: %lx  pte_index: %lx\n", 
+			kvaddr, *ptep, mfn, pte_index(kvaddr));
+
+        if (!xc_core_mfn_to_page(mfn, xd->page))
+                error(FATAL, "cannot read/find pte page\n");
+
+        if (CRASHDEBUG(7)) 
+		x86_64_debug_dump_page(xd->ofp, xd->page, 
+			"contents of page:");
+
+	return xd->page;
+}
+
+/*
+ *  Find the dumpfile page index associated with the kvaddr.
+ */
+static int 
+x86_64_xendump_page_index(ulong kvaddr, struct xendump_data *xd)
+{
+        int idx;
+	ulong mfn;
+	ulong *pml4, *pgd, *pmd, *ptep;
+
+        pml4 = ((ulong *)machdep->machspec->pml4) + pml4_index(kvaddr);
+	mfn = ((*pml4) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_pgd_read) && 
+	    !xc_core_mfn_to_page(mfn, machdep->pgd))
+		error(FATAL, "cannot read/find pud page\n");
+        machdep->last_pgd_read = mfn;
+
+        pgd = ((ulong *)machdep->pgd) + pgd_index(kvaddr);
+	mfn = ((*pgd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_pmd_read) && 
+            !xc_core_mfn_to_page(mfn, machdep->pmd))
+                error(FATAL, "cannot read/find pmd page\n");
+
+        machdep->last_pmd_read = mfn;
+
+        pmd = ((ulong *)machdep->pmd) + pmd_index(kvaddr);
+	mfn = ((*pmd) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((mfn != machdep->last_ptbl_read) && 
+	    !xc_core_mfn_to_page(mfn, machdep->ptbl))
+                error(FATAL, "cannot read/find page table page\n");
+        machdep->last_ptbl_read = mfn;
+
+        ptep = ((ulong *)machdep->ptbl) + pte_index(kvaddr);
+	mfn = ((*ptep) & PHYSICAL_PAGE_MASK) >> PAGESHIFT();
+
+        if ((idx = xc_core_mfn_to_page_index(mfn)) == MFN_NOT_FOUND)
+                error(INFO, "cannot determine page index for %lx\n",
+                        kvaddr);
+
+	return idx;
+}
+
+/*
+ *  Pull the rsp from the cpu_user_regs struct in the header
+ *  turn it into a task, and match it with the active_set.
+ *  Unfortunately, the registers in the vcpu_guest_context 
+ *  are not necessarily those of the panic task, so for now
+ *  let get_active_set_panic_task() get the right task.
+ */
+static ulong 
+x86_64_xendump_panic_task(struct xendump_data *xd)
+{
+	int i;
+	ulong rsp;
+	off_t offset;
+	ulong task;
+
+	if (INVALID_MEMBER(vcpu_guest_context_user_regs) ||
+	    INVALID_MEMBER(cpu_user_regs_esp))
+		return NO_TASK;
+
+        offset = (off_t)xd->xc_core.header.xch_ctxt_offset +
+                (off_t)OFFSET(vcpu_guest_context_user_regs) +
+		(off_t)OFFSET(cpu_user_regs_rsp);
+
+        if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+		return NO_TASK;
+
+        if (read(xd->xfd, &rsp, sizeof(ulong)) != sizeof(ulong))
+		return NO_TASK;
+
+        if (IS_KVADDR(rsp) && (task = stkptr_to_task(rsp))) {
+
+                for (i = 0; i < NR_CPUS; i++) {
+                	if (task == tt->active_set[i]) {
+                        	if (CRASHDEBUG(0))
+                                	error(INFO,
+                            "x86_64_xendump_panic_task: rsp: %lx -> task: %lx\n",
+                                        	rsp, task);
+                        	return task;
+			}
+		}               
+
+               	error(WARNING,
+		    "x86_64_xendump_panic_task: rsp: %lx -> task: %lx (not active)\n",
+			rsp);
+        }
+
+	return NO_TASK;
+}
+
+/*
+ *  Because of an off-by-one vcpu bug in early xc_domain_dumpcore()
+ *  instantiations, the registers in the vcpu_guest_context are not 
+ *  necessarily those of the panic task.  Furthermore, the rsp is
+ *  seemingly unassociated with the task, presumably due a hypervisor
+ *  callback, so only accept the contents if they retfer to the panic
+ *  task's stack. 
+ */
+static void 
+x86_64_get_xendump_regs(struct xendump_data *xd, struct bt_info *bt, ulong *rip, ulong *rsp)
+{
+	ulong task, xrip, xrsp;
+	off_t offset;
+	struct syment *sp;
+	int cpu;
+
+        if (INVALID_MEMBER(vcpu_guest_context_user_regs) ||
+            INVALID_MEMBER(cpu_user_regs_rip) ||
+            INVALID_MEMBER(cpu_user_regs_rsp))
+                goto generic;
+
+        offset = (off_t)xd->xc_core.header.xch_ctxt_offset +
+                (off_t)OFFSET(vcpu_guest_context_user_regs) +
+                (off_t)OFFSET(cpu_user_regs_rsp);
+        if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+                goto generic;
+        if (read(xd->xfd, &xrsp, sizeof(ulong)) != sizeof(ulong))
+                goto generic;
+
+        offset = (off_t)xd->xc_core.header.xch_ctxt_offset +
+                (off_t)OFFSET(vcpu_guest_context_user_regs) +
+                (off_t)OFFSET(cpu_user_regs_rip);
+        if (lseek(xd->xfd, offset, SEEK_SET) == -1)
+                goto generic;
+        if (read(xd->xfd, &xrip, sizeof(ulong)) != sizeof(ulong))
+                goto generic;
+
+	/*
+	 *  This works -- comes from smp_send_stop call in panic.
+	 *  But xendump_panic_hook() will forestall this function 
+	 *  from being called (for now).
+	 */
+        if (IS_KVADDR(xrsp) && (task = stkptr_to_task(xrsp)) &&
+	    (task == bt->task)) {
+		if (CRASHDEBUG(1))
+			fprintf(xd->ofp, 
+		"hooks from vcpu_guest_context: rip: %lx rsp: %lx\n", xrip, xrsp);
+		*rip = xrip;
+		*rsp = xrsp;
+		return;
+	}
+
+generic:
+
+	machdep->get_stack_frame(bt, rip, rsp);
+
+	/*
+	 *  If this is an active task showing itself in schedule(), 
+	 *  then the thread_struct rsp is stale.  It has to be coming 
+	 *  from a callback via the interrupt stack.
+	 */
+	if (is_task_active(bt->task) && (symbol_value("thread_return") == *rip)) {
+		cpu = bt->tc->processor;
+		xrsp = machdep->machspec->stkinfo.ibase[cpu] + 
+			machdep->machspec->stkinfo.isize - sizeof(ulong);
+
+                while (readmem(xrsp, KVADDR, &xrip,
+                    sizeof(ulong), "xendump rsp", RETURN_ON_ERROR)) {
+        		if ((sp = value_search(xrip, (ulong *)&offset)) && 
+			    STREQ(sp->name, "smp_really_stop_cpu") && offset) {
+                                *rip = xrip;
+                                *rsp = xrsp;
+                                if (CRASHDEBUG(1))
+                                        error(INFO,
+                                            "switch thread_return to smp_call_function_interrupt\n");
+                                break;
+                        }
+                        xrsp -= sizeof(ulong);
+                        if (xrsp <= machdep->machspec->stkinfo.ibase[cpu])
+                                break;
+                }
+	}
 }
 #endif  /* X86_64 */ 

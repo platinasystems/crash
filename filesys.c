@@ -194,6 +194,10 @@ memory_source_init(void)
                         if (!kdump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",
                                         pc->dumpfile);
+		} else if (pc->flags & XENDUMP) {
+                        if (!xendump_init(pc->dumpfile, fp))
+                                error(FATAL, "%s: initialization failed\n",
+                                        pc->dumpfile);
 		} else if (pc->flags & DISKDUMP) {
                         if (!diskdump_init(pc->dumpfile, fp))
                                 error(FATAL, "%s: initialization failed\n",
@@ -257,7 +261,11 @@ match_proc_version(void)
 		return;
 	}
 
-	if (find_booted_system_map()) 
+	error(WARNING, "%s%sand /proc/version do not match!\n\n", 
+		pc->namelist, 
+		strlen(pc->namelist) > 39 ? "\n         " : " ");
+
+	if (find_booted_system_map())
                 pc->flags |= SYSMAP;
 }
 
