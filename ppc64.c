@@ -1,7 +1,7 @@
 /* ppc64.c -- core analysis suite
  *
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2004, 2006 Haren Myneni, IBM Corporation
  *
  * This program is free software; you can redistribute it and/or modify
@@ -147,6 +147,8 @@ ppc64_init(int when)
 			machdep->machspec->vmemmap_base = 
 				VMEMMAP_REGION_ID << REGION_SHIFT;
 		}
+		machdep->get_irq_affinity = generic_get_irq_affinity;
+		machdep->show_interrupts = generic_show_interrupts;
 		break;
 
 	case POST_GDB:
@@ -378,6 +380,8 @@ ppc64_dump_machdep_table(ulong arg)
         fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
         fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
         fprintf(fp, "  get_kvaddr_ranges: ppc64_get_kvaddr_ranges()\n");
+	fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
+	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
 	fprintf(fp, " xendump_p2m_create: NULL\n");
 	fprintf(fp, "xen_kdump_p2m_create: NULL\n");
         fprintf(fp, "  line_number_hooks: ppc64_line_number_hooks\n");

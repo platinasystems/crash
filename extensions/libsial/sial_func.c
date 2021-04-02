@@ -810,8 +810,7 @@ char *ed=getenv("EDITOR");
 
 	if(!ed) ed="vi";
 	snprintf(buf, sizeof(buf), "%s +%d %s", ed, line, fname);
-	system(buf);
-	sial_load(fname);
+	if(!system(buf)) sial_load(fname);
 }
 
 /*

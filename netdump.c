@@ -1,7 +1,7 @@
 /* netdump.c 
  *
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -33,6 +33,7 @@ static size_t dump_Elf32_Nhdr(Elf32_Off offset, int);
 static void dump_Elf64_Ehdr(Elf64_Ehdr *);
 static void dump_Elf64_Phdr(Elf64_Phdr *, int);
 static size_t dump_Elf64_Nhdr(Elf64_Off offset, int);
+static void get_netdump_regs_ppc(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_ppc64(struct bt_info *, ulong *, ulong *);
 static void get_netdump_regs_arm(struct bt_info *, ulong *, ulong *);
 static physaddr_t xen_kdump_p2m(physaddr_t);
@@ -52,7 +53,7 @@ static void kdump_get_osrelease(void);
  * which can differ from the host machine's page size.
  */
 #define READ_PAGESIZE_FROM_VMCOREINFO() \
-	(machine_type("IA64") || machine_type("PPC64"))
+	(machine_type("IA64") || machine_type("PPC64") || machine_type("PPC"))
 
 /*
  * kdump installs NT_PRSTATUS elf notes only to the cpus
@@ -179,6 +180,12 @@ is_netdump(char *file, ulong source_query)
 
 		case EM_ARM:
 			if (machine_type_mismatch(file, "ARM", NULL,
+			    source_query))
+				goto bailout;
+			break;
+
+		case EM_PPC:
+			if (machine_type_mismatch(file, "PPC", NULL,
 			    source_query))
 				goto bailout;
 			break;
@@ -531,24 +538,51 @@ read_netdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 			if (pls->zero_fill && (paddr >= pls->phys_end) &&
 			    (paddr < pls->zero_fill)) {
 				memset(bufptr, 0, cnt);
+				if (CRASHDEBUG(8))
+					fprintf(fp, "read_netdump: zero-fill: "
+					    "addr: %lx paddr: %llx cnt: %d\n",
+						addr, (ulonglong)paddr, cnt);
                 		return cnt;
 			}
 		}
 	
-		if (!offset) 
+		if (!offset) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_netdump: READ_ERROR: "
+				    "offset not found for paddr: %llx\n",
+					(ulonglong)paddr);
 	                return READ_ERROR;
+		}
 		
 		break;
 	}	
 
+	if (CRASHDEBUG(8))
+		fprintf(fp, "read_netdump: addr: %lx paddr: %llx cnt: %d offset: %llx\n",
+			addr, (ulonglong)paddr, cnt, (ulonglong)offset);
+
 	if (FLAT_FORMAT()) {
-		if (!read_flattened_format(nd->ndfd, offset, bufptr, cnt))
+		if (!read_flattened_format(nd->ndfd, offset, bufptr, cnt)) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_netdump: READ_ERROR: "
+				    "read_flattened_format failed for offset:"
+				    " %llx\n",
+					(ulonglong)offset);
 			return READ_ERROR;
+		}
 	} else {
-		if (lseek(nd->ndfd, offset, SEEK_SET) == -1)
+		if (lseek(nd->ndfd, offset, SEEK_SET) == -1) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_netdump: SEEK_ERROR: "
+				    "offset: %llx\n", (ulonglong)offset);
 			return SEEK_ERROR;
-		if (read(nd->ndfd, bufptr, cnt) != cnt)
+		}
+		if (read(nd->ndfd, bufptr, cnt) != cnt) {
+			if (CRASHDEBUG(8))
+				fprintf(fp, "read_netdump: READ_ERROR: "
+				    "offset: %llx\n", (ulonglong)offset);
 			return READ_ERROR;
+		}
 	}
 
         return cnt;
@@ -1689,6 +1723,8 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 				}
 			}
 		}
+		if (machine_type("PPC") && (nd->num_prstatus_notes > 0))
+			pc->flags2 |= ELF_NOTES;
 		break;
 	case NT_PRPSINFO:
 		netdump_print("(NT_PRPSINFO)\n");
@@ -1740,6 +1776,9 @@ dump_Elf32_Nhdr(Elf32_Off offset, int store)
 			netdump_print("(unused)\n");
 			nd->vmcoreinfo = (char *)(ptr + note->n_namesz + 1);
 			nd->size_vmcoreinfo = note->n_descsz;
+			if (READ_PAGESIZE_FROM_VMCOREINFO() && store)
+				nd->page_size = (uint)
+					vmcoreinfo_read_integer("PAGESIZE", 0);
 		} else if (eraseinfo) {
 			netdump_print("(unused)\n");
 			if (note->n_descsz)
@@ -2166,6 +2205,10 @@ get_netdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		machdep->get_stack_frame(bt, eip, esp);
 		break;
 
+	case EM_PPC:
+		return get_netdump_regs_ppc(bt, eip, esp);
+		break;
+
 	case EM_PPC64:
 		return get_netdump_regs_ppc64(bt, eip, esp);
 		break;
@@ -2545,6 +2588,40 @@ next_sysrq:
 }
 
 static void
+get_netdump_regs_ppc(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	Elf32_Nhdr *note;
+	size_t len;
+
+	if ((bt->task == tt->panic_task) ||
+		(is_task_active(bt->task) && nd->num_prstatus_notes > 1)) {
+		/*	
+		 * Registers are saved during the dump process for the 
+		 * panic task. Whereas in kdump, regs are captured for all 
+		 * CPUs if they responded to an IPI.
+		 */
+                if (nd->num_prstatus_notes > 1) {
+			if (!nd->nt_prstatus_percpu[bt->tc->processor])
+				error(FATAL, 
+		          	    "cannot determine NT_PRSTATUS ELF note "
+				    "for %s task: %lx\n", 
+					(bt->task == tt->panic_task) ?
+					"panic" : "active", bt->task);	
+                        note = (Elf32_Nhdr *)
+                                nd->nt_prstatus_percpu[bt->tc->processor];
+		} else
+			note = (Elf32_Nhdr *)nd->nt_prstatus;
+
+		len = sizeof(Elf32_Nhdr);
+		len = roundup(len + note->n_namesz, 4);
+		bt->machdep = (void *)((char *)note + len + 
+			MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+	}
+
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
+static void
 get_netdump_regs_ppc64(struct bt_info *bt, ulong *eip, ulong *esp)
 {
 	Elf64_Nhdr *note;
@@ -2618,6 +2695,8 @@ get_kdump_panic_task(void)
 int
 read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 {
+	physaddr_t paddr_in = paddr;
+
 	if (XEN_CORE_DUMPFILE() && !XEN_HYPER_MODE()) {
 	    	if (!(nd->xen_kdump_data->flags & KDUMP_P2M_INIT)) {
         		if (!machdep->xen_kdump_p2m_create)
@@ -2636,8 +2715,15 @@ read_kdump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
         		nd->xen_kdump_data->flags |= KDUMP_P2M_INIT;
 		}
 
-		if ((paddr = xen_kdump_p2m(paddr)) == P2M_FAILURE)
+		if ((paddr = xen_kdump_p2m(paddr)) == P2M_FAILURE) {
+			if (CRASHDEBUG(8)) 
+				fprintf(fp, "read_kdump: xen_kdump_p2m(%llx): "
+					"P2M_FAILURE\n", (ulonglong)paddr_in);
 			return READ_ERROR;
+		}
+		if (CRASHDEBUG(8))
+			fprintf(fp, "read_kdump: xen_kdump_p2m(%llx): %llx\n",
+				(ulonglong)paddr_in, (ulonglong)paddr);
 	}
 
 	return read_netdump(fd, bufptr, cnt, addr, paddr);
@@ -2714,15 +2800,26 @@ xen_kdump_p2m(physaddr_t pseudo)
 	pfn = (ulong)BTOP(pseudo);
 	mfn_idx = pfn / (PAGESIZE()/sizeof(ulong));
 	frame_idx = pfn % (PAGESIZE()/sizeof(ulong));
-	if (mfn_idx >= xkd->p2m_frames)
+	if (mfn_idx >= xkd->p2m_frames) {
+		if (CRASHDEBUG(8))
+			fprintf(fp, "xen_kdump_p2m: paddr/pfn: %llx/%lx: "
+			    "mfn_idx nonexistent\n",
+				(ulonglong)pseudo, pfn);
 		return P2M_FAILURE;
+	}
 	mfn_frame = xkd->p2m_mfn_frame_list[mfn_idx];
 
 	if (mfn_frame == xkd->last_mfn_read)
 		xkd->cache_hits++;
-	else if (read_netdump(0, xkd->page, PAGESIZE(), 0, 
-	    	(physaddr_t)PTOB(mfn_frame)) != PAGESIZE())
-		return P2M_FAILURE;
+	else {
+		if (CRASHDEBUG(8))
+			fprintf(fp, "xen_kdump_p2m: paddr/pfn: %llx/%lx: "
+			    "read mfn_frame: %llx\n",
+				(ulonglong)pseudo, pfn, PTOB(mfn_frame));
+		if (read_netdump(0, xkd->page, PAGESIZE(), 0, 
+		    (physaddr_t)PTOB(mfn_frame)) != PAGESIZE())
+			return P2M_FAILURE;
+	}
 
 	xkd->last_mfn_read = mfn_frame;
 
@@ -2732,7 +2829,7 @@ xen_kdump_p2m(physaddr_t pseudo)
 
 	if (CRASHDEBUG(7))
 		fprintf(fp, 
-		    "xen_dump_p2m(%llx): mfn_idx: %ld frame_idx: %ld"
+		    "xen_kdump_p2m(%llx): mfn_idx: %ld frame_idx: %ld"
 		    " mfn_frame: %lx mfn: %lx => %llx\n",
 			(ulonglong)pseudo, mfn_idx, frame_idx, 
 			mfn_frame, *mfnptr, (ulonglong)paddr);
@@ -2832,6 +2929,7 @@ xen_minor_version(void)
  *  Contributed by: Sharyathi Nagesh (sharyath@in.ibm.com)
  */
 
+static void *get_ppc_regs_from_elf_notes(struct task_context *);
 static void *get_ppc64_regs_from_elf_notes(struct task_context *);
 static void *get_x86_regs_from_elf_notes(struct task_context *);
 static void *get_x86_64_regs_from_elf_notes(struct task_context *);
@@ -2870,6 +2968,7 @@ get_regs_from_elf_notes(struct task_context *tc)
 	switch (e_machine)
 	{
 	case EM_386:
+	case EM_PPC:
 	case EM_PPC64:
 	case EM_X86_64:
 	case EM_ARM:
@@ -2889,6 +2988,8 @@ get_regs_from_elf_notes(struct task_context *tc)
 	{
 	case EM_386:
 		return get_x86_regs_from_elf_notes(tc);
+	case EM_PPC:
+		return get_ppc_regs_from_elf_notes(tc);
 	case EM_PPC64:
 		return get_ppc64_regs_from_elf_notes(tc);
 	case EM_X86_64:
@@ -2950,6 +3051,34 @@ get_x86_64_regs_from_elf_notes(struct task_context *tc)
 		note = (Elf64_Nhdr *)nd->nt_prstatus;
 
 	len = sizeof(Elf64_Nhdr);
+	len = roundup(len + note->n_namesz, 4);
+	pt_regs = (void *)((char *)note + len +
+			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));
+
+	return pt_regs;
+}
+
+static void * 
+get_ppc_regs_from_elf_notes(struct task_context *tc)
+{
+	Elf32_Nhdr *note;
+	size_t len;
+	void *pt_regs;
+	extern struct vmcore_data *nd;
+
+	pt_regs = NULL;
+
+	/*
+	 * Registers are always saved during the dump process for the
+	 * panic task.  Kdump also captures registers for all CPUs if
+	 * they responded to an IPI.
+	 */
+	if (nd->num_prstatus_notes > 1) {
+		note = (Elf32_Nhdr *)nd->nt_prstatus_percpu[tc->processor];
+	} else
+		note = (Elf32_Nhdr *)nd->nt_prstatus;
+
+	len = sizeof(Elf32_Nhdr);
 	len = roundup(len + note->n_namesz, 4);
 	pt_regs = (void *)((char *)note + len +
 			   MEMBER_OFFSET("elf_prstatus", "pr_reg"));

@@ -1,8 +1,8 @@
 /* memory.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  * Copyright (C) 2002 Silicon Graphics, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -87,6 +87,8 @@ struct meminfo {           /* general purpose memory information structure */
 struct searchinfo {
 	int mode;
 	int vcnt;
+	int context;
+	int memtype;
 	union {
 		/* default ulong search */
 		struct {
@@ -176,6 +178,7 @@ static int dump_page_lists(struct meminfo *);
 static void dump_kmeminfo(void);
 static int page_to_phys(ulong, physaddr_t *); 
 static void display_memory(ulonglong, long, ulong, int, void *); 
+static void display_with_pre_and_post(void *, ulonglong, struct searchinfo *);
 static ulong search_ulong(ulong *, ulong, int, struct searchinfo *);
 static ulong search_uint(ulong *, ulong, int, struct searchinfo *);
 static ulong search_ushort(ulong *, ulong, int, struct searchinfo *);
@@ -246,6 +249,7 @@ static int switch_to_proc_kcore(void);
 static int verify_pfn(ulong);
 static void dump_per_cpu_offsets(void);
 static void dump_page_flags(ulonglong);
+static ulong kmem_cache_nodelists(ulong);
 
 /*
  *  Memory display modes specific to this file.
@@ -265,6 +269,7 @@ static void dump_page_flags(ulonglong);
 #define DISPLAY_ASCII (0x2000)
 #define NET_ENDIAN    (0x4000)
 #define DISPLAY_RAW   (0x8000)
+#define NO_ERROR     (0x10000)
 #define DISPLAY_TYPES (DISPLAY_RAW|DISPLAY_ASCII|DISPLAY_8|\
 		       DISPLAY_16|DISPLAY_32|DISPLAY_64)
 
@@ -373,6 +378,8 @@ vm_init(void)
 		ANON_MEMBER_OFFSET_INIT(page_index, "page", "index");
         MEMBER_OFFSET_INIT(page_buffers, "page", "buffers");
 	MEMBER_OFFSET_INIT(page_lru, "page", "lru");
+	if (INVALID_MEMBER(page_lru))
+		ANON_MEMBER_OFFSET_INIT(page_lru, "page", "lru");
 	MEMBER_OFFSET_INIT(page_pte, "page", "pte");
 
 	MEMBER_OFFSET_INIT(mm_struct_pgd, "mm_struct", "pgd");
@@ -501,8 +508,24 @@ vm_init(void)
 			else if (MEMBER_EXISTS("kmem_cache", "nodelists")) {
                 		vt->flags |= PERCPU_KMALLOC_V2_NODES;
 				MEMBER_OFFSET_INIT(kmem_cache_s_lists, "kmem_cache", "nodelists");
-				ARRAY_LENGTH_INIT(vt->kmem_cache_len_nodes, NULL, 
-					"kmem_cache.nodelists", NULL, 0);
+				if (MEMBER_TYPE("kmem_cache", "nodelists") == TYPE_CODE_PTR) {
+					int nr_node_ids;
+					/* 
+					 * nodelists now a pointer to an outside array 
+					 */
+					vt->flags |= NODELISTS_IS_PTR;
+					if (kernel_symbol_exists("nr_node_ids")) {
+						get_symbol_data("nr_node_ids", sizeof(int),
+							&nr_node_ids);
+						vt->kmem_cache_len_nodes = nr_node_ids;
+					} else {
+						error(INFO, "nr_node_ids: symbol does not exist\n");
+						error(INFO, "unable to initialize kmem slab cache subsystem\n\n");
+						vt->flags |= KMEM_CACHE_UNAVAIL;
+					}
+				} else
+					ARRAY_LENGTH_INIT(vt->kmem_cache_len_nodes, NULL, 
+						"kmem_cache.nodelists", NULL, 0);
 			}
 			MEMBER_OFFSET_INIT(kmem_cache_s_array, "kmem_cache", "array");
 			ARRAY_LENGTH_INIT(len, NULL, "kmem_cache.array", NULL, 0);
@@ -1224,13 +1247,14 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 	char *addrtype;
 	struct memloc mem;
 	int displayed, per_line;
-	int hx;
+	int hx, lost;
 	char hexchars[MAX_HEXCHARS_PER_LINE+1];
 	char ch;
 	int linelen;
 	char buf[BUFSIZE];
 	char slab[BUFSIZE];
 	int ascii_start;
+	ulong error_handle;
 	char *hex_64_fmt = BITS32() ? "%.*llx " : "%.*lx ";
 	char *dec_64_fmt = BITS32() ? "%12lld " : "%15ld ";
 	char *dec_u64_fmt = BITS32() ? "%12llu " : "%20lu ";
@@ -1282,7 +1306,7 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 	}
 
 	BZERO(&mem, sizeof(struct memloc));
-	hx = linelen = typesz = per_line = ascii_start = 0;
+	hx = lost = linelen = typesz = per_line = ascii_start = 0;
 	location = NULL;
 
 	switch (flag & (DISPLAY_TYPES))
@@ -1330,12 +1354,21 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 		break;
 	}
 
-	for (i = a = 0; i < count; i++) {
-		readmem(addr, memtype, location, typesz, 
-			readtype, FAULT_ON_ERROR);
+	if (flag & NO_ERROR)
+		error_handle = RETURN_ON_ERROR|QUIET;
+	else
+		error_handle = FAULT_ON_ERROR;
 
-                if (!(flag & DISPLAY_ASCII) && ((i % per_line) == 0)) {
-                        if (i) {
+	for (i = a = 0; i < count; i++) {
+		if(!readmem(addr, memtype, location, typesz,
+			readtype, error_handle)) {
+			addr += typesz;
+			lost += 1;
+			continue;
+		}
+
+                if (!(flag & DISPLAY_ASCII) && (((i - lost) % per_line) == 0)) {
+                        if ((i - lost)) {
 				if (flag & ASCII_ENDLINE) {
 					fprintf(fp, "  %s", hexchars);
 				}
@@ -1532,7 +1565,8 @@ display_memory(ulonglong addr, long count, ulong flag, int memtype, void *opt)
 		fprintf(fp, "  %s", hexchars);
 	}
 
-	fprintf(fp,"\n");
+	if (lost != count )
+		fprintf(fp,"\n");
 }
 
 /*
@@ -1991,9 +2025,10 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                 if (cnt > size)
                         cnt = size;
 
-		if (CRASHDEBUG(8))
-			fprintf(fp, "    addr: %llx  paddr: %llx  cnt: %ld\n", 
-				addr, (unsigned long long)paddr, cnt);
+		if (CRASHDEBUG(4))
+			fprintf(fp, "<%s: addr: %llx paddr: %llx cnt: %ld>\n", 
+				readmem_function_name(), addr, 
+				(unsigned long long)paddr, cnt);
 
 		if (memtype == KVADDR)
 			pc->curcmd_flags |= MEMTYPE_KVADDR;
@@ -2776,7 +2811,7 @@ void
 do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 {
 	physaddr_t paddr; 
-	ulong vma;
+	ulong vma, page;
 	int page_exists;
         struct meminfo meminfo;
         char buf1[BUFSIZE];
@@ -2910,7 +2945,7 @@ do_vtop(ulong vaddr, struct task_context *tc, ulong vtop_flags)
 
 	fprintf(fp, "\n");
 
-	if (page_exists) { 
+	if (page_exists && phys_to_page(paddr, &page)) { 
 		if ((pc->flags & DEVMEM) && (paddr >= VTOP(vt->high_memory)))
 			return;
 		BZERO(&meminfo, sizeof(struct meminfo));
@@ -3886,6 +3921,7 @@ get_task_mem_usage(ulong task, struct task_mem_usage *tm)
 #define GET_SLUB_OBJECTS       (ADDRESS_SPECIFIED << 20)
 #define VMLIST_VERIFY          (ADDRESS_SPECIFIED << 21)
 #define SLAB_FIRST_NODE        (ADDRESS_SPECIFIED << 22)
+#define CACHE_SET              (ADDRESS_SPECIFIED << 23)
 
 #define GET_ALL \
 	(GET_SHARED_PAGES|GET_TOTALRAM_PAGES|GET_BUFFERS_PAGES|GET_SLAB_PAGES)
@@ -3901,12 +3937,13 @@ cmd_kmem(void)
 	ulonglong value[MAXARGS];
 	char buf[BUFSIZE];
 	char *p1;
-	int spec_addr;
+	int spec_addr, escape;
 
 	spec_addr = 0;
         sflag =	Sflag = pflag = fflag = Fflag = Pflag = zflag = oflag = 0;
 	vflag = Cflag = cflag = iflag = nflag = lflag = Lflag = Vflag = 0;
 	gflag = 0;
+	escape = FALSE;
 	BZERO(&meminfo, sizeof(struct meminfo));
 	BZERO(&value[0], sizeof(ulonglong)*MAXARGS);
 
@@ -4038,6 +4075,11 @@ cmd_kmem(void)
                                 error(FATAL,
                                   "only one kmem_cache reference is allowed\n");
                         meminfo.reqname = args[optind];
+			if (args[optind][0] == '\\') {
+				meminfo.reqname = &args[optind][1]; 
+				escape = TRUE;
+			} else
+				meminfo.reqname = args[optind];
                         if (!sflag && !Sflag)
                                 cmd_usage(pc->curcmd, SYNOPSIS);
                 }
@@ -4091,11 +4133,14 @@ cmd_kmem(void)
 					error(FATAL, 
 				  "only one kmem_cache reference is allowed\n");
 				meminfo.reqname = p1;
+				meminfo.cache = value[i];
+				meminfo.flags |= CACHE_SET;
                         	if ((i+1) == spec_addr) { /* done? */ 
 					if (meminfo.calls++)
 						fprintf(fp, "\n");
                         		vt->dump_kmem_cache(&meminfo);
 				}
+				meminfo.flags &= ~CACHE_SET;
 			} else {
                         	meminfo.spec_addr = value[i];
                         	meminfo.flags = ADDRESS_SPECIFIED;
@@ -4182,7 +4227,7 @@ cmd_kmem(void)
 	}
 
 	if (sflag == 1) {
-		if (STREQ(meminfo.reqname, "list"))
+		if (!escape && STREQ(meminfo.reqname, "list"))
 			kmem_cache_list();
                 else if (vt->flags & KMEM_CACHE_UNAVAIL)
                      	error(FATAL, 
@@ -4423,7 +4468,6 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 	int print_hdr, pg_spec, phys_spec, done;
 	int v22;
 	char hdr[BUFSIZE];
-	char buf0[BUFSIZE];
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
@@ -4431,6 +4475,49 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 	char *page_cache;
 	char *pcache;
 	ulong section, section_nr, nr_mem_sections, section_size;
+	long buffersize;
+	char *outputbuffer;
+	int bufferindex;
+
+	buffersize = 1024 * 1024;
+	outputbuffer = GETBUF(buffersize + 512);
+
+	char style1[100];
+	char style2[100];
+	char style3[100];
+	char style4[100];
+
+	sprintf((char *)&style1, "%%lx%s%%%dllx%s%%%dlx%s%%8lx %%2d%s",
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			VADDR_PRLEN,
+			space(MINSPACE),
+			space(MINSPACE));
+	sprintf((char *)&style2, "%%-%dlx%s%%%dllx%s%s%s%s %2s ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, " "),
+			space(MINSPACE),
+			mkstring(buf4, 8, CENTER|RJUST, " "),
+			" ");
+	sprintf((char *)&style3, "%%-%dlx%s%%%dllx%s%s%s%s %%2d ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, "-------"),
+			space(MINSPACE),
+			mkstring(buf4, 8, CENTER|RJUST, "-----"));
+	sprintf((char *)&style4, "%%-%dlx%s%%%dllx%s%%%dlx%s%%8lx %%2d ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			VADDR_PRLEN,
+			space(MINSPACE));
 
 	v22 = VALID_MEMBER(page_inode);  /* page.inode vs. page.mapping */
 
@@ -4521,6 +4608,8 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 	total_pages = 0;
 
 	nr_mem_sections = NR_MEM_SECTIONS();
+
+	bufferindex = 0;
 
 	/* 
 	 *  Iterate over all possible sections
@@ -4681,19 +4770,9 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 			page_not_mapped = phys_not_mapped = FALSE;
 
 			if (v22) {
-				fprintf(fp, "%lx%s%s%s%s%s%8lx %2d%s",
-					pp,
-					space(MINSPACE),
-                    			mkstring(buf1, MAX(PADDR_PRLEN, 
-					    strlen("PHYSICAL")), 
-					    RJUST|LONGLONG_HEX, MKSTR(&phys)),
-					space(MINSPACE),
-				        mkstring(buf2, VADDR_PRLEN, 
-						RJUST|LONG_HEX, MKSTR(inode)),
-					space(MINSPACE),
-					offset,
-					count,
-					space(MINSPACE));
+				bufferindex += sprintf(outputbuffer+bufferindex,
+						(char *)&style1, pp, phys, inode,
+						offset, count);
 			} else {
 				if ((vt->flags & V_MEM_MAP)) {
 				    	if (!machdep->verify_paddr(phys)) 
@@ -4702,152 +4781,96 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 						page_not_mapped = TRUE;
 				}
 				if (page_not_mapped)
-                                fprintf(fp, "%s%s%s%s%s%s%s %2s ", 
-					mkstring(buf0, VADDR_PRLEN, 
-					LJUST|LONG_HEX, MKSTR(pp)),
-                                       	space(MINSPACE),
-                                       	mkstring(buf1, MAX(PADDR_PRLEN,
-                                        strlen("PHYSICAL")),
-                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
-                                        space(MINSPACE),
-					mkstring(buf3, VADDR_PRLEN, 
-					CENTER|RJUST, " "),
-                                        space(MINSPACE),
-					mkstring(buf4, 8, CENTER|RJUST, " "),
-                                        " ");
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style2, pp, phys);
 				else if (!page_mapping)
-				 fprintf(fp, "%s%s%s%s%s%s%s %2d ",
-					 mkstring(buf0, VADDR_PRLEN,
-					 LJUST|LONG_HEX, MKSTR(pp)),
-					 space(MINSPACE),
-					 mkstring(buf1, MAX(PADDR_PRLEN,
-					 strlen("PHYSICAL")),
-					 RJUST|LONGLONG_HEX, MKSTR(&phys)),
-					 space(MINSPACE),
-					 mkstring(buf3, VADDR_PRLEN,
-					 CENTER|RJUST, "-------"),
-					 space(MINSPACE),
-					 mkstring(buf4, 8, CENTER|RJUST, "-----"),
-					 count);
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style3, pp, phys, count);
 				else
-                                fprintf(fp, "%s%s%s%s%s%s%8lx %2d ",
-					mkstring(buf0, VADDR_PRLEN, 
-					LJUST|LONG_HEX, MKSTR(pp)),
-                                       	space(MINSPACE),
-                                       	mkstring(buf1, MAX(PADDR_PRLEN,
-                                        strlen("PHYSICAL")),
-                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
-                                        space(MINSPACE),
-                                        mkstring(buf2, VADDR_PRLEN,
-                                        RJUST|LONG_HEX, MKSTR(mapping)),
-                                        space(MINSPACE),
-                                        index,
-                                        count);
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style4, pp, phys,
+							mapping, index, count);
 			}
 	
 			others = 0;
 	
+#define sprintflag(X) sprintf(outputbuffer + bufferindex, X, others++ ? "," : "")
+
 			if (v22) {
 		                if ((flags >> v22_PG_DMA) & 1)
-		                        fprintf(fp, "%sDMA", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sDMA");
 				if ((flags >> v22_PG_locked) & 1)
-					fprintf(fp, "%slocked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%slocked");
 				if ((flags >> v22_PG_error) & 1)
-					fprintf(fp, "%serror", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%serror");
 				if ((flags >> v22_PG_referenced) & 1)
-					fprintf(fp, "%sreferenced", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreferenced");
 				if ((flags >> v22_PG_dirty) & 1)
-					fprintf(fp, "%sdirty", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdirty");
 				if ((flags >> v22_PG_uptodate) & 1)
-					fprintf(fp, "%suptodate", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%suptodate");
 				if ((flags >> v22_PG_free_after) & 1)
-					fprintf(fp, "%sfree_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sfree_after");
 				if ((flags >> v22_PG_decr_after) & 1)
-					fprintf(fp, "%sdecr_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdecr_after");
 				if ((flags >> v22_PG_swap_unlock_after) & 1)
-					fprintf(fp, "%sswap_unlock_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_unlock_after");
 				if ((flags >> v22_PG_Slab) & 1)
-					fprintf(fp, "%sslab", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sslab");
 				if ((flags >> v22_PG_swap_cache) & 1)
-					fprintf(fp, "%sswap_cache", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_cache");
 				if ((flags >> v22_PG_skip) & 1)
-					fprintf(fp, "%sskip", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sskip");
 	                        if ((flags >> v22_PG_reserved) & 1)
-	                                fprintf(fp, "%sreserved", 
-						others++ ? "," : "");
-				fprintf(fp, "\n");
+					bufferindex += sprintflag("%sreserved");
+				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
 			} else if (THIS_KERNEL_VERSION > LINUX(2,4,9)) {
-				fprintf(fp, "%lx\n", flags);
+				bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
 			} else {
 	
 		                if ((flags >> v24_PG_locked) & 1)
-		                        fprintf(fp, "%slocked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%slocked");
 				if ((flags >> v24_PG_error) & 1)
-					fprintf(fp, "%serror", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%serror");
 				if ((flags >> v24_PG_referenced) & 1)
-					fprintf(fp, "%sreferenced", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreferenced");
 				if ((flags >> v24_PG_uptodate) & 1)
-					fprintf(fp, "%suptodate", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%suptodate");
                                 if ((flags >> v24_PG_dirty) & 1)
-                                        fprintf(fp, "%sdirty",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sdirty");
 				if ((flags >> v24_PG_decr_after) & 1)
-					fprintf(fp, "%sdecr_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdecr_after");
                                 if ((flags >> v24_PG_active) & 1)
-                                        fprintf(fp, "%sactive",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sactive");
                                 if ((flags >> v24_PG_inactive_dirty) & 1)
-                                        fprintf(fp, "%sinactive_dirty",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sinactive_dirty");
 				if ((flags >> v24_PG_slab) & 1)
-					fprintf(fp, "%sslab", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sslab");
 				if ((flags >> v24_PG_swap_cache) & 1)
-					fprintf(fp, "%sswap_cache", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_cache");
 				if ((flags >> v24_PG_skip) & 1)
-					fprintf(fp, "%sskip", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sskip");
 				if ((flags >> v24_PG_inactive_clean) & 1)
-					fprintf(fp, "%sinactive_clean", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sinactive_clean");
 				if ((flags >> v24_PG_highmem) & 1)
-					fprintf(fp, "%shighmem", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%shighmem");
 				if ((flags >> v24_PG_checked) & 1)
-					fprintf(fp, "%schecked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%schecked");
 				if ((flags >> v24_PG_bigpage) & 1)
-					fprintf(fp, "%sbigpage", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sbigpage");
                                 if ((flags >> v24_PG_arch_1) & 1)
-                                        fprintf(fp, "%sarch_1",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sarch_1");
 				if ((flags >> v24_PG_reserved) & 1)
-					fprintf(fp, "%sreserved", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreserved");
 				if (phys_not_mapped)
-					fprintf(fp, "%s[NOT MAPPED]", 
-						others++ ? " " : "");
+					bufferindex += sprintflag("%s[NOT MAPPED]");
 
-				fprintf(fp, "\n");
+				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
+			}
+
+			if (bufferindex > buffersize) {
+				fprintf(fp, "%s", outputbuffer);
+				bufferindex = 0;
 			}
 	
 			if (done)
@@ -4856,6 +4879,10 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 
 		if (done)
 			break;
+	}
+
+	if (bufferindex > 0) {
+		fprintf(fp, "%s", outputbuffer);
 	}
 
 	switch (mi->flags)
@@ -4888,6 +4915,7 @@ dump_mem_map_SPARSEMEM(struct meminfo *mi)
 		break; 
 	}
 
+	FREEBUF(outputbuffer);
 	FREEBUF(page_cache);
 }
 
@@ -4909,18 +4937,60 @@ dump_mem_map(struct meminfo *mi)
 	int v22;
 	struct node_table *nt;
 	char hdr[BUFSIZE];
-	char buf0[BUFSIZE];
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
 	char buf3[BUFSIZE];
 	char buf4[BUFSIZE];
 	char *page_cache;
 	char *pcache;
+	long buffersize;
+	char *outputbuffer;
+	int bufferindex;
+
+	buffersize = 1024 * 1024;
+	outputbuffer = GETBUF(buffersize + 512);
+
+	char style1[100];
+	char style2[100];
+	char style3[100];
+	char style4[100];
 
 	if (IS_SPARSEMEM()) {
 		dump_mem_map_SPARSEMEM(mi);
 		return;
 	}
+
+	sprintf((char *)&style1, "%%lx%s%%%dllx%s%%%dlx%s%%8lx %%2d%s",
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			VADDR_PRLEN,
+			space(MINSPACE),
+			space(MINSPACE));
+	sprintf((char *)&style2, "%%-%dlx%s%%%dllx%s%s%s%s %2s ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, " "),
+			space(MINSPACE),
+			mkstring(buf4, 8, CENTER|RJUST, " "),
+			" ");
+	sprintf((char *)&style3, "%%-%dlx%s%%%dllx%s%s%s%s %%2d ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			mkstring(buf3, VADDR_PRLEN, CENTER|RJUST, "-------"),
+			space(MINSPACE),
+			mkstring(buf4, 8, CENTER|RJUST, "-----"));
+	sprintf((char *)&style4, "%%-%dlx%s%%%dllx%s%%%dlx%s%%8lx %%2d ",
+			VADDR_PRLEN,
+			space(MINSPACE),
+			(int)MAX(PADDR_PRLEN, strlen("PHYSICAL")),
+			space(MINSPACE),
+			VADDR_PRLEN,
+			space(MINSPACE));
 
 	v22 = VALID_MEMBER(page_inode);  /* page.inode vs. page.mapping */
 
@@ -5009,6 +5079,8 @@ dump_mem_map(struct meminfo *mi)
 	page_cache = GETBUF(SIZE(page) * PGMM_CACHED);
 	done = FALSE;
 	total_pages = 0;
+
+	bufferindex = 0;
 
 	for (n = 0; n < vt->numnodes; n++) {
 		if (print_hdr) {
@@ -5133,19 +5205,9 @@ dump_mem_map(struct meminfo *mi)
 			page_not_mapped = phys_not_mapped = FALSE;
 
 			if (v22) {
-				fprintf(fp, "%lx%s%s%s%s%s%8lx %2d%s",
-					pp,
-					space(MINSPACE),
-                    			mkstring(buf1, MAX(PADDR_PRLEN, 
-					    strlen("PHYSICAL")), 
-					    RJUST|LONGLONG_HEX, MKSTR(&phys)),
-					space(MINSPACE),
-				        mkstring(buf2, VADDR_PRLEN, 
-						RJUST|LONG_HEX, MKSTR(inode)),
-					space(MINSPACE),
-					offset,
-					count,
-					space(MINSPACE));
+				bufferindex += sprintf(outputbuffer+bufferindex,
+						(char *)&style1, pp, phys, inode,
+						offset, count);
 			} else {
 				if ((vt->flags & V_MEM_MAP)) {
 				    	if (!machdep->verify_paddr(phys)) 
@@ -5154,160 +5216,108 @@ dump_mem_map(struct meminfo *mi)
 						page_not_mapped = TRUE;
 				}
 				if (page_not_mapped)
-                                fprintf(fp, "%s%s%s%s%s%s%s %2s ", 
-					mkstring(buf0, VADDR_PRLEN, 
-					LJUST|LONG_HEX, MKSTR(pp)),
-                                       	space(MINSPACE),
-                                       	mkstring(buf1, MAX(PADDR_PRLEN,
-                                        strlen("PHYSICAL")),
-                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
-                                        space(MINSPACE),
-					mkstring(buf3, VADDR_PRLEN, 
-					CENTER|RJUST, " "),
-                                        space(MINSPACE),
-					mkstring(buf4, 8, CENTER|RJUST, " "),
-                                        " ");
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style2, pp, phys);
 				else if (!page_mapping)
-                                fprintf(fp, "%s%s%s%s%s%s%s %2d ",
-                                        mkstring(buf0, VADDR_PRLEN,
-                                        LJUST|LONG_HEX, MKSTR(pp)),
-                                        space(MINSPACE),
-                                        mkstring(buf1, MAX(PADDR_PRLEN,
-                                        strlen("PHYSICAL")),
-                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
-                                        space(MINSPACE),
-                                        mkstring(buf3, VADDR_PRLEN, 
-                                        CENTER|RJUST, "-------"),
-                                        space(MINSPACE),
-                                        mkstring(buf4, 8, CENTER|RJUST, "-----"),
-                                        count);
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style3, pp, phys, count);
 				else
-                                fprintf(fp, "%s%s%s%s%s%s%8lx %2d ",
-					mkstring(buf0, VADDR_PRLEN, 
-					LJUST|LONG_HEX, MKSTR(pp)),
-                                       	space(MINSPACE),
-                                       	mkstring(buf1, MAX(PADDR_PRLEN,
-                                        strlen("PHYSICAL")),
-                                        RJUST|LONGLONG_HEX, MKSTR(&phys)),
-                                        space(MINSPACE),
-                                        mkstring(buf2, VADDR_PRLEN,
-                                        RJUST|LONG_HEX, MKSTR(mapping)),
-                                        space(MINSPACE),
-                                        index,
-                                        count);
+					bufferindex += sprintf(outputbuffer+bufferindex,
+							(char *)&style4, pp, phys,
+							mapping, index, count);
 			}
 	
 			others = 0;
 	
+#define sprintflag(X) sprintf(outputbuffer + bufferindex, X, others++ ? "," : "")
+
 			if (v22) {
 		                if ((flags >> v22_PG_DMA) & 1)
-		                        fprintf(fp, "%sDMA", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sDMA");
 				if ((flags >> v22_PG_locked) & 1)
-					fprintf(fp, "%slocked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%slocked");
 				if ((flags >> v22_PG_error) & 1)
-					fprintf(fp, "%serror", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%serror");
 				if ((flags >> v22_PG_referenced) & 1)
-					fprintf(fp, "%sreferenced", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreferenced");
 				if ((flags >> v22_PG_dirty) & 1)
-					fprintf(fp, "%sdirty", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdirty");
 				if ((flags >> v22_PG_uptodate) & 1)
-					fprintf(fp, "%suptodate", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%suptodate");
 				if ((flags >> v22_PG_free_after) & 1)
-					fprintf(fp, "%sfree_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sfree_after");
 				if ((flags >> v22_PG_decr_after) & 1)
-					fprintf(fp, "%sdecr_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdecr_after");
 				if ((flags >> v22_PG_swap_unlock_after) & 1)
-					fprintf(fp, "%sswap_unlock_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_unlock_after");
 				if ((flags >> v22_PG_Slab) & 1)
-					fprintf(fp, "%sslab", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sslab");
 				if ((flags >> v22_PG_swap_cache) & 1)
-					fprintf(fp, "%sswap_cache", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_cache");
 				if ((flags >> v22_PG_skip) & 1)
-					fprintf(fp, "%sskip", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sskip");
 	                        if ((flags >> v22_PG_reserved) & 1)
-	                                fprintf(fp, "%sreserved", 
-						others++ ? "," : "");
-				fprintf(fp, "\n");
+					bufferindex += sprintflag("%sreserved");
+				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
 			} else if (THIS_KERNEL_VERSION > LINUX(2,4,9)) {
-				fprintf(fp, "%lx\n", flags);
+				bufferindex += sprintf(outputbuffer+bufferindex, "%lx\n", flags);
 			} else {
 	
 		                if ((flags >> v24_PG_locked) & 1)
-		                        fprintf(fp, "%slocked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%slocked");
 				if ((flags >> v24_PG_error) & 1)
-					fprintf(fp, "%serror", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%serror");
 				if ((flags >> v24_PG_referenced) & 1)
-					fprintf(fp, "%sreferenced", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreferenced");
 				if ((flags >> v24_PG_uptodate) & 1)
-					fprintf(fp, "%suptodate", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%suptodate");
                                 if ((flags >> v24_PG_dirty) & 1)
-                                        fprintf(fp, "%sdirty",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sdirty");
 				if ((flags >> v24_PG_decr_after) & 1)
-					fprintf(fp, "%sdecr_after", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sdecr_after");
                                 if ((flags >> v24_PG_active) & 1)
-                                        fprintf(fp, "%sactive",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sactive");
                                 if ((flags >> v24_PG_inactive_dirty) & 1)
-                                        fprintf(fp, "%sinactive_dirty",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sinactive_dirty");
 				if ((flags >> v24_PG_slab) & 1)
-					fprintf(fp, "%sslab", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sslab");
 				if ((flags >> v24_PG_swap_cache) & 1)
-					fprintf(fp, "%sswap_cache", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sswap_cache");
 				if ((flags >> v24_PG_skip) & 1)
-					fprintf(fp, "%sskip", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sskip");
 				if ((flags >> v24_PG_inactive_clean) & 1)
-					fprintf(fp, "%sinactive_clean", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sinactive_clean");
 				if ((flags >> v24_PG_highmem) & 1)
-					fprintf(fp, "%shighmem", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%shighmem");
 				if ((flags >> v24_PG_checked) & 1)
-					fprintf(fp, "%schecked", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%schecked");
 				if ((flags >> v24_PG_bigpage) & 1)
-					fprintf(fp, "%sbigpage", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sbigpage");
                                 if ((flags >> v24_PG_arch_1) & 1)
-                                        fprintf(fp, "%sarch_1",
-                                                others++ ? "," : "");
+					bufferindex += sprintflag("%sarch_1");
 				if ((flags >> v24_PG_reserved) & 1)
-					fprintf(fp, "%sreserved", 
-						others++ ? "," : "");
+					bufferindex += sprintflag("%sreserved");
 				if (phys_not_mapped)
-					fprintf(fp, "%s[NOT MAPPED]", 
-						others++ ? " " : "");
+					bufferindex += sprintflag("%s[NOT MAPPED]");
 
-				fprintf(fp, "\n");
+				bufferindex += sprintf(outputbuffer+bufferindex, "\n");
 			}
 	
+			if (bufferindex > buffersize) {
+				fprintf(fp, "%s", outputbuffer);
+				bufferindex = 0;
+			}
+
 			if (done)
 				break;
 		}
 
 		if (done)
 			break;
+	}
+
+	if (bufferindex > 0) {
+		fprintf(fp, "%s", outputbuffer);
 	}
 
 	switch (mi->flags)
@@ -5340,6 +5350,7 @@ dump_mem_map(struct meminfo *mi)
 		break; 
 	}
 
+	FREEBUF(outputbuffer);
 	FREEBUF(page_cache);
 }
 
@@ -6378,6 +6389,13 @@ dump_free_pages_zones_v2(struct meminfo *fi)
 			}
 	
 	                if (fi->flags == GET_FREE_HIGHMEM_PAGES) {
+				readmem(node_zones+OFFSET(zone_name), KVADDR,
+					&value, sizeof(void *),
+					"node_zones name", FAULT_ON_ERROR);
+				if (read_string(value, buf, BUFSIZE-1) &&
+				    STREQ(buf, "HighMem"))
+					vt->ZONE_HIGHMEM = i;
+
 	                        if (i == vt->ZONE_HIGHMEM) {
 	                                readmem(node_zones+
 						OFFSET(zone_free_pages),
@@ -7569,7 +7587,6 @@ is_kmem_cache_addr(ulong vaddr, char *kbuf)
 {
         ulong cache, cache_cache, name;
 	long next_offset, name_offset;
-	char *cache_buf;
 
 	if (vt->flags & KMEM_CACHE_UNAVAIL) {
 		error(INFO, "kmem cache slab subsystem not available\n");
@@ -7586,18 +7603,12 @@ is_kmem_cache_addr(ulong vaddr, char *kbuf)
 
         cache = cache_cache = symbol_value("cache_cache");
 
-	cache_buf = GETBUF(SIZE(kmem_cache_s));
-
         do {
-	        readmem(cache, KVADDR, cache_buf, SIZE(kmem_cache_s),
-	        	"kmem_cache buffer", FAULT_ON_ERROR);
-
 		if (cache == vaddr) {
 	                if (vt->kmem_cache_namelen) {
-				BCOPY(cache_buf+name_offset, kbuf, 
-					vt->kmem_cache_namelen);
+				readmem(cache+name_offset, KVADDR, kbuf, vt->kmem_cache_namelen, "name array", FAULT_ON_ERROR);
 	                } else {
-				name = ULONG(cache_buf + name_offset);
+				readmem(cache+name_offset, KVADDR, &name, sizeof(name), "name", FAULT_ON_ERROR);
 	                        if (!read_string(name, kbuf, BUFSIZE-1)) {
 					if (vt->flags & 
 					  (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2))
@@ -7611,18 +7622,17 @@ is_kmem_cache_addr(ulong vaddr, char *kbuf)
 					sprintf(kbuf, "(unknown)");
 				}
 	                }
-			FREEBUF(cache_buf);
 			return kbuf;
 		}
 
-		cache = ULONG(cache_buf + next_offset);
+		readmem(cache+next_offset, KVADDR, &cache, sizeof(long),
+			"kmem_cache_s next", FAULT_ON_ERROR);
 
 		if (vt->flags & (PERCPU_KMALLOC_V1|PERCPU_KMALLOC_V2))
 			cache -= next_offset;
 
         } while (cache != cache_cache);
 
-	FREEBUF(cache_buf);
 	return NULL;
 }
 
@@ -7958,18 +7968,55 @@ kmem_cache_init(void)
 	vt->flags |= KMEM_CACHE_INIT;
 }
 
+static ulong
+kmem_cache_nodelists(ulong cache)
+{
+	ulong nodelists = 0;
+
+	if (vt->flags & NODELISTS_IS_PTR) {
+		/* 
+		 * nodelists is pointer to the array 
+		 */
+                if (!readmem(cache+OFFSET(kmem_cache_s_lists), KVADDR,
+                    &nodelists, sizeof(ulong), "nodelists pointer",
+                    RETURN_ON_ERROR))
+                        error(WARNING, "cannot read kmem_cache nodelists pointer");
+		return nodelists;
+	} else 
+		return cache+OFFSET(kmem_cache_s_lists);
+}
+
 static void
 kmem_cache_downsize(void)
 {
 	char *cache_buf;
 	uint buffer_size; 
 	int nr_node_ids;
+	int nr_cpu_ids;
 
 	if ((THIS_KERNEL_VERSION < LINUX(2,6,22)) ||
 	    !(vt->flags & PERCPU_KMALLOC_V2_NODES) ||
 	    !kernel_symbol_exists("cache_cache") ||
 	    !MEMBER_EXISTS("kmem_cache", "buffer_size"))
 		return;
+
+	if (vt->flags & NODELISTS_IS_PTR) {
+		/* 
+		 * kmem_cache.array[] is actually sized by 
+		 * the number of cpus; real value is nr_cpu_ids, 
+		 * but fallback is kt->cpus.
+		 */
+		if (kernel_symbol_exists("nr_cpu_ids"))
+			get_symbol_data("nr_cpu_ids", sizeof(int), 
+				&nr_cpu_ids);
+		else 
+			nr_cpu_ids = kt->cpus;
+	
+		ARRAY_LENGTH(kmem_cache_s_array) = nr_cpu_ids;
+		ASSIGN_SIZE(kmem_cache_s) = OFFSET(kmem_cache_s_array) +
+			sizeof(ulong) * nr_cpu_ids;
+		return;
+	}
 
 	cache_buf = GETBUF(SIZE(kmem_cache_s));
 
@@ -8121,9 +8168,9 @@ kmem_cache_s_array_nodes:
 	start_address = (ulong *)GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
 	
 	if (VALID_MEMBER(kmem_list3_shared) && VALID_MEMBER(kmem_cache_s_lists) &&
-	    readmem(cache+OFFSET(kmem_cache_s_lists), KVADDR, &start_address[0], 
-	    sizeof(ulong) * vt->kmem_cache_len_nodes, "array nodelist array", 
-	    RETURN_ON_ERROR)) {  
+	    readmem(kmem_cache_nodelists(cache), KVADDR, &start_address[0],
+	    sizeof(ulong) * vt->kmem_cache_len_nodes, "array nodelist array",
+	    RETURN_ON_ERROR)) {
 		for (i = 0; i < vt->kmem_cache_len_nodes; i++) {
 			if (start_address[i] == 0)
 				continue;
@@ -8304,7 +8351,12 @@ dump_kmem_cache(struct meminfo *si)
 
 	si->addrlist = (ulong *)GETBUF((vt->kmem_max_c_num+1) * sizeof(ulong));
 	cnt = 0;
-	si->cache = cache_cache = symbol_value("cache_cache");
+	if (si->flags & CACHE_SET) {
+		readmem(si->cache+OFFSET(kmem_cache_s_c_nextp),
+			KVADDR, &cache_cache, sizeof(ulong),
+			"kmem_cache next", FAULT_ON_ERROR);
+	} else
+		si->cache = cache_cache = symbol_value("cache_cache");
 
 	if (si->flags & ADDRESS_SPECIFIED) {
 	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
@@ -8510,7 +8562,12 @@ dump_kmem_cache_percpu_v1(struct meminfo *si)
 			GETBUF(vt->kmem_max_limit * sizeof(ulong)); 
 
 	cnt = 0;
-	si->cache = cache_cache = symbol_value("cache_cache");
+	if (si->flags & CACHE_SET) {
+		readmem(si->cache+OFFSET(kmem_cache_s_next), 
+			KVADDR, &cache_cache, sizeof(ulong),
+			"kmem_cache_s next", FAULT_ON_ERROR);
+	} else
+		si->cache = cache_cache = symbol_value("cache_cache");
 
 	if (si->flags & ADDRESS_SPECIFIED) {
 	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
@@ -8733,9 +8790,15 @@ dump_kmem_cache_percpu_v2(struct meminfo *si)
 
 	cnt = 0;
 
-        get_symbol_data("cache_chain", sizeof(ulong), &si->cache);
-        si->cache -= OFFSET(kmem_cache_s_next);
-        cache_end = symbol_value("cache_chain");
+	if (si->flags & CACHE_SET)
+		readmem(si->cache+OFFSET(kmem_cache_s_next), 
+			KVADDR, &cache_end, sizeof(ulong),
+			"kmem_cache_s next", FAULT_ON_ERROR);
+	else {
+		get_symbol_data("cache_chain", sizeof(ulong), &si->cache);
+		si->cache -= OFFSET(kmem_cache_s_next);
+		cache_end = symbol_value("cache_chain");
+	}
 
 	if (si->flags & ADDRESS_SPECIFIED) {
 	        if (!(p1 = vaddr_to_kmem_cache(si->spec_addr, kbuf, VERBOSE))) {
@@ -9555,7 +9618,7 @@ do_slab_chain_percpu_v2_nodes(long cmd, struct meminfo *si)
 	si->cpucached_slab = 0;
 	start_address = (ulong *)GETBUF(sizeof(ulong) * vt->kmem_cache_len_nodes);
 
-	if (!readmem(si->cache+OFFSET(kmem_cache_s_lists), KVADDR, 
+	if (!readmem(kmem_cache_nodelists(si->cache), KVADDR, 
             &start_address[0], sizeof(ulong) * vt->kmem_cache_len_nodes, 
             "array nodelist array", RETURN_ON_ERROR)) 
                     error(INFO, "cannot read kmem_cache nodelists array"); 
@@ -10769,7 +10832,7 @@ gather_cpudata_list_v2_nodes(struct meminfo *si, int index)
 		si->current_cache_index = 0;
 	}
 
-	if (!readmem(si->cache+OFFSET(kmem_cache_s_lists), KVADDR, &start_address[0], 
+	if (!readmem(kmem_cache_nodelists(si->cache), KVADDR, &start_address[0], 
 	    sizeof(ulong) * vt->kmem_cache_len_nodes , "array nodelist array", 
 	    RETURN_ON_ERROR) ||  
 	    !readmem(start_address[index] + OFFSET(kmem_list3_shared), KVADDR, &shared,
@@ -11268,6 +11331,8 @@ dump_vm_table(int verbose)
 		fprintf(fp, "%sSWAPINFO_V1", others++ ? "|" : "");\
 	if (vt->flags & SWAPINFO_V2)
 		fprintf(fp, "%sSWAPINFO_V2", others++ ? "|" : "");\
+	if (vt->flags & NODELISTS_IS_PTR)
+		fprintf(fp, "%sNODELISTS_IS_PTR", others++ ? "|" : "");\
 	if (vt->flags & VM_INIT)
 		fprintf(fp, "%sVM_INIT", others++ ? "|" : "");\
 
@@ -11585,7 +11650,7 @@ generic_get_kvaddr_ranges(struct vaddr_range *rp)
 void
 cmd_search(void)
 {
-        int i, c, ranges;
+        int i, c, ranges, context, max;
 	ulonglong start, end;
 	ulong mask, memtype, len;
 	ulong uvaddr_start, uvaddr_end;
@@ -11599,6 +11664,7 @@ cmd_search(void)
 
 #define vaddr_overflow(ADDR) (BITS32() && ((ADDR) > 0xffffffffULL))
 
+	context = max = 0;
 	start = end = mask = sflag = pflag = Kflag = Vflag = memtype = len = 0;
 	kvaddr_start = kvaddr_end = 0;
 	uvaddr_start = UNINITIALIZED;
@@ -11636,7 +11702,7 @@ cmd_search(void)
 
 	searchinfo.mode = SEARCH_ULONG;	/* default search */
 
-        while ((c = getopt(argcnt, args, "l:ukKVps:e:v:m:hwc")) != EOF) {
+        while ((c = getopt(argcnt, args, "l:ukKVps:e:v:m:hwcx:")) != EOF) {
                 switch(c)
                 {
 		case 'u':
@@ -11737,6 +11803,10 @@ cmd_search(void)
 			searchinfo.mode = SEARCH_CHARS;
 			break;
 
+		case 'x':
+			context = dtoi(optarg, FAULT_ON_ERROR, NULL);
+			break;
+
                 default:
                         argerrs++;
                         break;
@@ -11757,6 +11827,8 @@ cmd_search(void)
 
         if (argerrs || !sflag || !args[optind] || (len && end) || !memtype)
                 cmd_usage(pc->curcmd, SYNOPSIS);
+
+	searchinfo.memtype = memtype;
 
 	/*
 	 *  Verify starting address.
@@ -11884,6 +11956,30 @@ cmd_search(void)
 		}
 	}
 			
+	if (context) {
+		switch (searchinfo.mode)
+		{
+		case SEARCH_ULONG:
+			max = PAGESIZE()/sizeof(long);
+			break;
+		case SEARCH_UINT:
+			max = PAGESIZE()/sizeof(int);
+			break;
+		case SEARCH_USHORT:
+			max = PAGESIZE()/sizeof(short);
+			break;
+		case SEARCH_CHARS:
+			error(FATAL, "-x option is not allowed with -c\n");
+			break;
+		}
+
+		if (context > max)
+			error(FATAL, 
+			    "context value %d is too large: maximum is %d\n",
+				context, max);
+
+		searchinfo.context = context;
+	}
 		
 	searchinfo.vcnt = 0;
 	while (args[optind]) {
@@ -11981,6 +12077,72 @@ cmd_search(void)
 
 #define SEARCHMASK(X) ((X) | mask) 
 
+static void
+display_with_pre_and_post(void *bufptr, ulonglong addr, struct searchinfo *si)
+{
+	int ctx, memtype, t, amount;
+	ulonglong addr_d;
+	ulong flag;
+	char buf[BUFSIZE];
+
+	ctx = si->context;
+	memtype = si->memtype;
+	flag = HEXADECIMAL|NO_ERROR|ASCII_ENDLINE;
+
+	switch (si->mode)
+	{
+	case SEARCH_USHORT:
+		t = sizeof(ushort);
+		break;
+	case SEARCH_UINT:
+		t = sizeof(uint);
+		break;
+	case SEARCH_ULONG:
+	default:
+		t = sizeof(ulong);
+		break;
+	}
+
+	switch (t)
+	{
+	case 8:
+		flag |= DISPLAY_64;
+		break;
+	case 4:
+		flag |= DISPLAY_32;
+		break;
+	case 2:
+		flag |= DISPLAY_16;
+		break;
+	}
+
+	amount = ctx * t;
+	addr_d = addr - amount < 0 ? 0 : addr - amount;
+
+	display_memory(addr_d, ctx, flag, memtype, NULL);
+
+	BZERO(buf, BUFSIZE);
+	fprintf(fp, "%s:  ", mkstring(buf, VADDR_PRLEN,
+				RJUST|LONGLONG_HEX, MKSTR(&addr)));
+
+	switch(si->mode)
+	{
+	case SEARCH_ULONG:
+		fprintf(fp, "%lx\n", *((ulong *)bufptr));
+		break;
+	case SEARCH_UINT:
+		fprintf(fp, "%x\n", *((uint *)bufptr));
+		break;
+	case SEARCH_USHORT:
+		fprintf(fp, "%x\n", *((ushort *)bufptr));
+		break;
+	}
+
+	addr_d = addr + t;
+	display_memory(addr_d, ctx, flag, memtype, NULL);
+	fprintf(fp, "\n");
+}
+
 static ulong
 search_ulong(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 {
@@ -11988,8 +12150,12 @@ search_ulong(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 	ulong mask = si->s_parms.s_ulong.mask;
 	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j]))
-				fprintf(fp, "%lx: %lx\n", addr, *bufptr);
+			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(bufptr, addr, si);
+				else
+					fprintf(fp, "%lx: %lx\n", addr, *bufptr);
+			}
                 }
 	}
 	return addr;
@@ -12003,8 +12169,12 @@ search_ulong_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si
 	ulong mask = si->s_parms.s_ulong.mask;
 	for (i = 0; i < longcnt; i++, bufptr++, addr += sizeof(long)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j]))
-				fprintf(fp, "%llx: %lx\n", addr, *bufptr);
+			if (SEARCHMASK(*bufptr) == SEARCHMASK(si->s_parms.s_ulong.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(bufptr, addr, si);
+				else
+					fprintf(fp, "%llx: %lx\n", addr, *bufptr);
+			}
                 }
 	}
 	return addr;
@@ -12020,8 +12190,12 @@ search_uint(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j]))
-				fprintf(fp, "%lx: %x\n", addr, *ptr);
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(ptr, addr, si);
+				else
+					fprintf(fp, "%lx: %x\n", addr, *ptr);
+			}
                 }
 	}
 	return addr;
@@ -12038,8 +12212,12 @@ search_uint_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *si)
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(int)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j]))
-				fprintf(fp, "%llx: %x\n", addr, *ptr);
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_uint.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(ptr, addr, si);
+				else
+					fprintf(fp, "%llx: %x\n", addr, *ptr);
+			}
                 }
 	}
 	return addr;
@@ -12055,8 +12233,12 @@ search_ushort(ulong *bufptr, ulong addr, int longcnt, struct searchinfo *si)
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j]))
-				fprintf(fp, "%lx: %x\n", addr, *ptr);
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(ptr, addr, si);
+				else
+					fprintf(fp, "%lx: %x\n", addr, *ptr);
+			}
                 }
 	}
 	return addr;
@@ -12073,8 +12255,12 @@ search_ushort_p(ulong *bufptr, ulonglong addr, int longcnt, struct searchinfo *s
 
 	for (i = 0; i < cnt; i++, ptr++, addr += sizeof(short)) {
 		for (j = 0; j < si->vcnt; j++) {
-			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j]))
-				fprintf(fp, "%llx: %x\n", addr, *ptr);
+			if (SEARCHMASK(*ptr) == SEARCHMASK(si->s_parms.s_ushort.value[j])) {
+				if (si->context)
+					display_with_pre_and_post(ptr, addr, si);
+				else
+					fprintf(fp, "%llx: %x\n", addr, *ptr);
+			}
                 }
 	}
 	return addr;
@@ -13192,7 +13378,8 @@ dump_memory_nodes(int initialize)
 	int i, j;
 	int n, id, node, flen, slen, badaddr;
 	ulong node_mem_map;
-        ulong node_start_paddr;
+	ulong temp_node_start_paddr;
+	ulonglong node_start_paddr;
 	ulong node_start_pfn;
         ulong node_start_mapnr;
 	ulong node_spanned_pages, node_present_pages;
@@ -13286,10 +13473,12 @@ dump_memory_nodes(int initialize)
 			badaddr = TRUE;
 		}
 
-		if (VALID_MEMBER(pglist_data_node_start_paddr))
+		if (VALID_MEMBER(pglist_data_node_start_paddr)) {
 			readmem(pgdat+OFFSET(pglist_data_node_start_paddr), 
-				KVADDR, &node_start_paddr, sizeof(ulong), 
+				KVADDR, &temp_node_start_paddr, sizeof(ulong), 
 				"pglist node_start_paddr", FAULT_ON_ERROR);
+			node_start_paddr = temp_node_start_paddr;
+		}
 		else if (VALID_MEMBER(pglist_data_node_start_pfn)) {
 			readmem(pgdat+OFFSET(pglist_data_node_start_pfn), 
 				KVADDR, &node_start_pfn, sizeof(ulong), 
@@ -13394,14 +13583,14 @@ dump_memory_nodes(int initialize)
 				fprintf(fp, "%lx\n", node_zones);
 			}
 	
-	                fprintf(fp, "%s  START_PADDR  START_MAPNR\n",
+			fprintf(fp, "%s     START_PADDR    START_MAPNR\n",
 	                    mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, 
 				"MEM_MAP"));
 	                fprintf(fp, "%s  %s  %s\n",
 	                    mkstring(buf1, VADDR_PRLEN,
 	                        CENTER|LONG_HEX, MKSTR(node_mem_map)),
-	                    mkstring(buf2, strlen("START_PADDR"),
-	                        CENTER|LONG_HEX|RJUST, MKSTR(node_start_paddr)),
+			    mkstring(buf2, strlen("   START_PADDR  "),
+	                        CENTER|LONGLONG_HEX|RJUST, MKSTR(&node_start_paddr)),
 	                    mkstring(buf3, strlen("START_MAPNR"),
 	                        CENTER|LONG_DEC|RJUST, 
 				    MKSTR(node_start_mapnr)));
@@ -14388,7 +14577,8 @@ dump_mem_sections(void)
 	pad_line(fp, BITS32() ? 59 : 67, '-');
         fprintf(fp, "\n\nNR  %s  %s  %s  PFN\n",
                 mkstring(buf1, VADDR_PRLEN, CENTER|LJUST, "SECTION"),
-                mkstring(buf2, VADDR_PRLEN, CENTER|LJUST, "CODED_MEM_MAP"),
+                mkstring(buf2, MAX(VADDR_PRLEN,strlen("CODED_MEM_MAP")), 
+		CENTER|LJUST, "CODED_MEM_MAP"),
                 mkstring(buf3, VADDR_PRLEN, CENTER|LJUST, "MEM_MAP"));
 
 	for (nr = 0; nr < nr_mem_sections ; nr++) {
@@ -14401,7 +14591,8 @@ dump_mem_sections(void)
                 		nr,
                 		mkstring(buf1, VADDR_PRLEN,
                         	CENTER|LONG_HEX, MKSTR(addr)),
-                		mkstring(buf2, VADDR_PRLEN,
+                		mkstring(buf2, MAX(VADDR_PRLEN,
+				strlen("CODED_MEM_MAP")),
                         	CENTER|LONG_HEX|RJUST, MKSTR(coded_mem_map)),
                 		mkstring(buf3, VADDR_PRLEN,
                         	CENTER|LONG_HEX|RJUST, MKSTR(mem_map)),

@@ -104,11 +104,11 @@ for:
 	;
 
 if:
-	IF '(' {VARON} term {VAROFF} ')'		{ $$ = $4; }
+	IF '(' {VARON;} term {VAROFF;} ')'		{ $$ = $4; }
 	;
 
 switch :
-	SWITCH '(' {VARON} term {VAROFF} ')' '{' caselist '}'
+	SWITCH '(' {VARON;} term {VAROFF;} ')' '{' caselist '}'
 
 					{ $$ = sial_newstat(SWITCH, 2, $4, $8); }
 	;
@@ -421,7 +421,7 @@ tdef:
 	;
 
 while:
-	WHILE '(' {VARON} term {VAROFF} ')'  { $$ = $4; }
+	WHILE '(' {VARON;} term {VAROFF;} ')'  { $$ = $4; }
 	;
 
 %%

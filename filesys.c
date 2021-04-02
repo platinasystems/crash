@@ -1,8 +1,8 @@
 /* filesys.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -136,6 +136,18 @@ fd_init(void)
 	}
 
 	memory_source_init();
+
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "readmem: %s() ", readmem_function_name());
+		if (ACTIVE()) {
+			fprintf(fp, "-> %s ", pc->live_memsrc);
+			if (pc->flags & MEMMOD)
+				fprintf(fp, "(module)");
+			else if (pc->flags & CRASHBUILTIN)
+				fprintf(fp, "(built-in)");
+		}
+		fprintf(fp, "\n");
+	}
 }
 
 /*

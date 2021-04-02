@@ -1,5 +1,5 @@
 /*
- * $Id: sial.c,v 1.14 2011/11/29 20:31:06 anderson Exp $
+ * $Id: sial.c,v 1.15 2012/01/04 14:46:57 anderson Exp $
  *
  * This file is part of lcrash, an analysis tool for Linux memory dumps.
  *
@@ -937,7 +937,6 @@ char **help=malloc(sizeof *help * 5);
             }
             else rm_sial_cmd(name);
         }
-        sial_free(help_str);
     }
     free(help);
     return;

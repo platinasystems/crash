@@ -1,8 +1,8 @@
 /* kernel.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -27,6 +27,7 @@ static void get_lkcd_regs(struct bt_info *, ulong *, ulong *);
 static void dump_sys_call_table(char *, int);
 static int get_NR_syscalls(int *);
 static ulong get_irq_desc_addr(int);
+static void display_cpu_affinity(ulong *);
 static void display_bh_1(void);
 static void display_bh_2(void);
 static void display_bh_3(void);
@@ -346,13 +347,24 @@ kernel_init()
 		irq_desc_type_name = "irq_desc";
 
 	STRUCT_SIZE_INIT(irq_desc_t, irq_desc_type_name);
+	if (MEMBER_EXISTS(irq_desc_type_name, "irq_data"))
+		MEMBER_OFFSET_INIT(irq_desc_t_irq_data, irq_desc_type_name, "irq_data");
+	else
+		MEMBER_OFFSET_INIT(irq_desc_t_affinity, irq_desc_type_name, "affinity");
+	if (MEMBER_EXISTS(irq_desc_type_name, "kstat_irqs"))
+		MEMBER_OFFSET_INIT(irq_desc_t_kstat_irqs, irq_desc_type_name, "kstat_irqs");
+	MEMBER_OFFSET_INIT(irq_desc_t_name, irq_desc_type_name, "name");
 	MEMBER_OFFSET_INIT(irq_desc_t_status, irq_desc_type_name, "status");
 	if (MEMBER_EXISTS(irq_desc_type_name, "handler"))
 		MEMBER_OFFSET_INIT(irq_desc_t_handler, irq_desc_type_name, "handler");
-	else
+	else if (MEMBER_EXISTS(irq_desc_type_name, "chip"))
 		MEMBER_OFFSET_INIT(irq_desc_t_chip, irq_desc_type_name, "chip");
 	MEMBER_OFFSET_INIT(irq_desc_t_action, irq_desc_type_name, "action");
 	MEMBER_OFFSET_INIT(irq_desc_t_depth, irq_desc_type_name, "depth");
+
+	STRUCT_SIZE_INIT(kernel_stat, "kernel_stat");
+	MEMBER_OFFSET_INIT(kernel_stat_irqs, "kernel_stat", "irqs");
+
 	if (STRUCT_EXISTS("hw_interrupt_type")) {
 		MEMBER_OFFSET_INIT(hw_interrupt_type_typename,
 			"hw_interrupt_type", "typename");
@@ -417,6 +429,10 @@ kernel_init()
 	if (kernel_symbol_exists("irq_desc_tree"))
 		kt->flags |= IRQ_DESC_TREE;
 	STRUCT_SIZE_INIT(irq_data, "irq_data");
+	if (VALID_STRUCT(irq_data)) {
+		MEMBER_OFFSET_INIT(irq_data_chip, "irq_data", "chip");
+		MEMBER_OFFSET_INIT(irq_data_affinity, "irq_data", "affinity");
+	}
 
         STRUCT_SIZE_INIT(irq_cpustat_t, "irq_cpustat_t");
         MEMBER_OFFSET_INIT(irq_cpustat_t___softirq_active, 
@@ -3063,7 +3079,7 @@ irregularity:
 void
 cmd_mod(void)
 {
-	int c;
+	int c, ctmp;
 	char *p, *objfile, *modref, *tree, *symlink;
 	ulong flag, address;
 	char buf[BUFSIZE];
@@ -3087,26 +3103,56 @@ cmd_mod(void)
 			continue;
 
 		if (STREQ(args[c], "-g")) {
+			ctmp = c;
 			pc->curcmd_flags |= MOD_SECTIONS;
-			while (c < argcnt) {
-				args[c] = args[c+1];
-				c++;
+			while (ctmp < argcnt) {
+				args[ctmp] = args[ctmp+1];
+				ctmp++;
 			}
 			argcnt--;
-		} else if ((p = strstr(args[c], "g"))) {
-			pc->curcmd_flags |= MOD_SECTIONS;
-			shift_string_left(p, 1);
+			c--;
+		} else if (STREQ(args[c], "-r")) {
+			ctmp = c;
+			pc->curcmd_flags |= MOD_READNOW;
+			while (ctmp < argcnt) {
+				args[ctmp] = args[ctmp+1];
+				ctmp++;
+			}
+			argcnt--;
+			c--;
+		} else {
+			if ((p = strstr(args[c], "g"))) {
+				pc->curcmd_flags |= MOD_SECTIONS;
+				shift_string_left(p, 1);
+			} 
+			if ((p = strstr(args[c], "r"))) {
+				pc->curcmd_flags |= MOD_READNOW;
+				shift_string_left(p, 1);
+			}
+			/* if I've removed everything but the '-', toss it */
+			if (STREQ(args[c], "-")) {
+				ctmp = c;
+				while (ctmp < argcnt) {
+					args[ctmp] = args[ctmp+1];
+					ctmp++;
+				}
+				argcnt--;
+				c--;
+			}
 		}
 	}
+
+	if (pc->flags & READNOW)
+		pc->curcmd_flags |= MOD_READNOW;
 
 	modref = objfile = tree = symlink = NULL;
 	address = 0;
 	flag = LIST_MODULE_HDR;
 
-        while ((c = getopt(argcnt, args, "rd:Ds:So")) != EOF) {
+        while ((c = getopt(argcnt, args, "Rd:Ds:So")) != EOF) {
                 switch(c)
 		{
-                case 'r':
+                case 'R':
                         if (flag)
                                 cmd_usage(pc->curcmd, SYNOPSIS);
                         flag = REINIT_MODULES;
@@ -4725,8 +4771,17 @@ cmd_irq(void)
 {
         int i, c;
 	int nr_irqs;
+	ulong *cpus;
+	int len;
+	int show_intr, choose_cpu;
+	char buf[10];
+	char arg_buf[BUFSIZE];
 
-        while ((c = getopt(argcnt, args, "dbu")) != EOF) {
+	cpus = NULL;
+	show_intr = 0;
+	choose_cpu = 0;
+
+        while ((c = getopt(argcnt, args, "dbuasc:")) != EOF) {
                 switch(c)
                 {
 		case 'd':
@@ -4773,7 +4828,43 @@ cmd_irq(void)
        "irq: -u option ignored: \"no_irq_chip\" or \"no_irq_type\" symbols do not exist\n");
 			break;
 
-                default:
+		case 'a':
+			if (!machdep->get_irq_affinity)
+				option_not_supported(c);
+
+			if (VALID_STRUCT(irq_data)) {
+				if (INVALID_MEMBER(irq_data_affinity))
+					option_not_supported(c);
+			} else if (INVALID_MEMBER(irq_desc_t_affinity))
+				option_not_supported(c);
+
+			if ((nr_irqs = machdep->nr_irqs) == 0)
+				error(FATAL, "cannot determine number of IRQs\n");
+
+			fprintf(fp, "IRQ NAME                 AFFINITY\n");
+			for (i = 0; i < nr_irqs; i++)
+				machdep->get_irq_affinity(i);
+
+			return;
+
+		case 's':
+			if (!machdep->show_interrupts)
+				option_not_supported(c);
+			show_intr = 1;
+			break;
+
+		case 'c':
+			if (choose_cpu) {
+				error(INFO, "only one -c option allowed\n");
+				argerrs++;
+			} else {
+				choose_cpu = 1;
+				BZERO(arg_buf, BUFSIZE);
+				strncpy(arg_buf, optarg, strlen(optarg));
+			}
+			break;
+
+		default:
                         argerrs++;
                         break;
                 }
@@ -4787,6 +4878,36 @@ cmd_irq(void)
 
 	if ((nr_irqs = machdep->nr_irqs) == 0)
 		error(FATAL, "cannot determine number of IRQs\n");
+
+	if (show_intr) {
+		if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+			len = DIV_ROUND_UP(kt->cpus, BITS_PER_LONG) * sizeof(ulong);
+		cpus = (ulong *)GETBUF(len);
+
+		if (choose_cpu) {
+			make_cpumask(arg_buf, cpus, FAULT_ON_ERROR, NULL);
+		} else {
+			for (i = 0; i < kt->cpus; i++)
+				SET_BIT(cpus, i);
+		}
+
+		fprintf(fp, "     ");
+		BZERO(buf, 10);
+		for (i = 0; i < kt->cpus; i++) {
+			if (NUM_IN_BITMAP(cpus, i)) {
+				sprintf(buf, "CPU%d", i);
+				fprintf(fp, "%10s ", buf);
+			}
+		}
+		fprintf(fp, "\n");
+
+		for (i = 0; i < nr_irqs; i++)
+			machdep->show_interrupts(i, cpus);
+
+		if (choose_cpu)
+			FREEBUF(cpus);
+		return;
+	}
 
 	if (!args[optind]) {
 		for (i = 0; i < nr_irqs; i++)
@@ -4810,34 +4931,100 @@ static ulong
 get_irq_desc_addr(int irq)
 {
 	int c;
-	ulong cnt, addr;
+	ulong cnt, addr, ptr;
+	long len;
 	struct radix_tree_pair *rtp;
 
 	addr = 0;
+	rtp = NULL;
 
-	if (kt->highest_irq && (irq > kt->highest_irq))
-		return addr;
+	if (!VALID_STRUCT(irq_desc_t))
+		error(FATAL, "cannot determine size of irq_desc_t\n");
+	len = SIZE(irq_desc_t);
 
- 	cnt = do_radix_tree(symbol_value("irq_desc_tree"), RADIX_TREE_COUNT, NULL);
-	rtp = (struct radix_tree_pair *)GETBUF(sizeof(struct radix_tree_pair) * (cnt+1));
-	rtp[0].index = cnt;
-	cnt = do_radix_tree(symbol_value("irq_desc_tree"), RADIX_TREE_GATHER, rtp);
+        if (symbol_exists("irq_desc"))
+		addr = symbol_value("irq_desc") + (len * irq);
+        else if (symbol_exists("_irq_desc"))
+		addr = symbol_value("_irq_desc") + (len * irq);
+	else if (symbol_exists("irq_desc_ptrs")) {
+		if (get_symbol_type("irq_desc_ptrs", NULL, NULL) == TYPE_CODE_PTR)
+			get_symbol_data("irq_desc_ptrs", sizeof(void *), &ptr);
+		else
+			ptr = symbol_value("irq_desc_ptrs");
+		ptr += (irq * sizeof(void *));
+		readmem(ptr, KVADDR, &addr,
+                        sizeof(void *), "irq_desc_ptrs entry",
+                        FAULT_ON_ERROR);
+	} else if (kt->flags & IRQ_DESC_TREE) {
+		if (kt->highest_irq && (irq > kt->highest_irq))
+			return addr;
 
-	if (kt->highest_irq == 0)
-		kt->highest_irq = rtp[cnt-1].index;
+		cnt = do_radix_tree(symbol_value("irq_desc_tree"),
+				RADIX_TREE_COUNT, NULL);
+		len = sizeof(struct radix_tree_pair) * (cnt+1);
+		rtp = (struct radix_tree_pair *)GETBUF(len);
+		rtp[0].index = cnt;
+		cnt = do_radix_tree(symbol_value("irq_desc_tree"),
+				RADIX_TREE_GATHER, rtp);
 
-	for (c = 0; c < cnt; c++) {
-		if (rtp[c].index == irq) {
-			if (CRASHDEBUG(1))
-				fprintf(fp, "index: %ld value: %lx\n", 
-					rtp[c].index, (ulong)rtp[c].value);
-			addr = (ulong)rtp[c].value;
-			break;
+		if (kt->highest_irq == 0)
+			kt->highest_irq = rtp[cnt-1].index;
+
+		for (c = 0; c < cnt; c++) {
+			if (rtp[c].index == irq) {
+				if (CRASHDEBUG(1))
+					fprintf(fp, "index: %ld value: %lx\n",
+						rtp[c].index, (ulong)rtp[c].value);
+				addr = (ulong)rtp[c].value;
+				break;
+			}
+		}
+
+		FREEBUF(rtp);
+	} else {
+		error(FATAL,
+		    "neither irq_desc, _irq_desc, irq_desc_ptrs "
+		    "or irq_desc_tree symbols exist\n");
+	}
+
+	return addr;
+}
+
+static void
+display_cpu_affinity(ulong *mask)
+{
+	int cpu, seq, start, count;
+
+	seq = FALSE;
+	start = 0;
+	count = 0;
+
+	for (cpu = 0; cpu < kt->cpus; ++cpu) {
+		if (NUM_IN_BITMAP(mask, cpu)) {
+			if (seq)
+				continue;
+			start = cpu;
+			seq = TRUE;
+		} else if (seq) {
+			if (count)
+				fprintf(fp, ",");
+			if (start == cpu - 1)
+				fprintf(fp, "%d", cpu - 1);
+			else
+				fprintf(fp, "%d-%d", start, cpu - 1);
+			count++;
+			seq = FALSE;
 		}
 	}
 
-	FREEBUF(rtp);
-	return addr;
+	if (seq) {
+		if (count)
+			fprintf(fp, ",");
+		if (start == kt->cpus - 1)
+			fprintf(fp, "%d", kt->cpus - 1);
+		else
+			fprintf(fp, "%d-%d", start, kt->cpus - 1);
+	}
 }
 
 /*
@@ -4847,8 +5034,6 @@ void
 generic_dump_irq(int irq)
 {
 	ulong irq_desc_addr;
-	ulong irq_desc_ptr;
-	long len;
 	char buf[BUFSIZE];
 	char buf1[BUFSIZE];
 	char buf2[BUFSIZE];
@@ -4859,35 +5044,11 @@ generic_dump_irq(int irq)
 
 	handler = UNINITIALIZED;
 	
-	if (!VALID_STRUCT(irq_desc_t))
-		error(FATAL, "cannot determine size of irq_desc_t\n");
-	len = SIZE(irq_desc_t);
-
-        if (symbol_exists("irq_desc"))
-		irq_desc_addr = symbol_value("irq_desc") + (len * irq);
-        else if (symbol_exists("_irq_desc"))
-		irq_desc_addr = symbol_value("_irq_desc") + (len * irq);
-	else if (symbol_exists("irq_desc_ptrs")) {
-		if (get_symbol_type("irq_desc_ptrs", NULL, NULL) == TYPE_CODE_PTR)
-			get_symbol_data("irq_desc_ptrs", sizeof(void *), &irq_desc_ptr);
-		else
-			irq_desc_ptr = symbol_value("irq_desc_ptrs");
-		irq_desc_ptr += (irq * sizeof(void *));
-		readmem(irq_desc_ptr, KVADDR, &irq_desc_addr,
-                        sizeof(void *), "irq_desc_ptrs entry",
-                        FAULT_ON_ERROR);
-		if (!irq_desc_addr) {
-			if (!(pc->curcmd_flags & IRQ_IN_USE))
-				fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
-			return;
-		}
-	} else if (kt->flags & IRQ_DESC_TREE) {
-		irq_desc_addr = get_irq_desc_addr(irq);
-	} else {
-		irq_desc_addr = 0;
-		error(FATAL, 
-		    "neither irq_desc, _irq_desc, irq_desc_ptrs "
-		    "or irq_desc_tree symbols exist\n");
+	irq_desc_addr = get_irq_desc_addr(irq);
+	if (!irq_desc_addr && symbol_exists("irq_desc_ptrs")) {
+		if (!(pc->curcmd_flags & IRQ_IN_USE))
+			fprintf(fp, "    IRQ: %d (unused)\n\n", irq);
+		return;
 	}
 
 	if (irq_desc_addr) {
@@ -5379,6 +5540,207 @@ do_linked_action_v2:
 		
 
 	fprintf(fp, "\n");
+}
+
+void
+generic_get_irq_affinity(int irq)
+{
+	ulong irq_desc_addr;
+	long len;
+	ulong affinity_ptr;
+	ulong *affinity;
+	ulong tmp_addr;
+	ulong action, name;
+	char buf[BUFSIZE];
+	char name_buf[BUFSIZE];
+
+	affinity = NULL;
+
+	irq_desc_addr = get_irq_desc_addr(irq);
+	if (!irq_desc_addr)
+		return;
+
+	readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR,
+	        &action, sizeof(long), "irq_desc action", FAULT_ON_ERROR);
+
+	if (!action)
+		return;
+
+	if ((len = STRUCT_SIZE("cpumask_t")) < 0)
+		len = DIV_ROUND_UP(kt->cpus, BITS_PER_LONG) * sizeof(ulong);
+
+	affinity = (ulong *)GETBUF(len);
+	if (VALID_STRUCT(irq_data))
+		tmp_addr = irq_desc_addr + \
+			   OFFSET(irq_data_affinity);
+	else
+		tmp_addr = irq_desc_addr + \
+			   OFFSET(irq_desc_t_affinity);
+
+	if (symbol_exists("alloc_cpumask_var")) /* pointer member */
+		readmem(tmp_addr,KVADDR, &affinity_ptr, sizeof(ulong),
+		        "irq_desc affinity", FAULT_ON_ERROR);
+	else /* array member */
+		affinity_ptr = tmp_addr;
+
+	readmem(affinity_ptr, KVADDR, affinity, len,
+	        "irq_desc affinity", FAULT_ON_ERROR);
+
+	fprintf(fp, "%3d ", irq);
+
+	BZERO(name_buf, BUFSIZE);
+
+	while (action) {
+		readmem(action+OFFSET(irqaction_name), KVADDR,
+		        &name, sizeof(void *),
+		        "irqaction name", FAULT_ON_ERROR);
+		BZERO(buf, BUFSIZE);
+		if (read_string(name, buf, BUFSIZE-1)) {
+			if (strlen(name_buf) != 0)
+				strncat(name_buf, ",", 2);
+			strncat(name_buf, buf, strlen(buf));
+		}
+
+		readmem(action+OFFSET(irqaction_next), KVADDR,
+		        &action, sizeof(void *),
+		        "irqaction dev_id", FAULT_ON_ERROR);
+	}
+
+	fprintf(fp, "%-20s ", name_buf);
+	display_cpu_affinity(affinity);
+	fprintf(fp, "\n");
+
+	FREEBUF(affinity);
+}
+
+void
+generic_show_interrupts(int irq, ulong *cpus)
+{
+	int i;
+	ulong irq_desc_addr;
+	ulong handler, action, name;
+	uint kstat_irq;
+	uint kstat_irqs[kt->cpus];
+	ulong kstat_irqs_ptr;
+	struct syment *percpu_sp;
+	ulong tmp, tmp1;
+	char buf[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char name_buf[BUFSIZE];
+
+	handler = UNINITIALIZED;
+
+	irq_desc_addr = get_irq_desc_addr(irq);
+	if (!irq_desc_addr)
+		return;
+
+	readmem(irq_desc_addr + OFFSET(irq_desc_t_action), KVADDR,
+	        &action, sizeof(long), "irq_desc action", FAULT_ON_ERROR);
+
+	if (!action)
+		return;
+
+	if (!symbol_exists("kstat_irqs_cpu")) { /* for RHEL5 or earlier */
+		if (!(percpu_sp = per_cpu_symbol_search("kstat")))
+			return;
+
+		for (i = 0; i < kt->cpus; i++) {
+			if (!(NUM_IN_BITMAP(cpus, i)))
+				continue;
+
+			tmp = percpu_sp->value + kt->__per_cpu_offset[i];
+			readmem(tmp + OFFSET(kernel_stat_irqs) + sizeof(uint) * irq,
+			        KVADDR, &kstat_irq, sizeof(uint),
+			        "kernel_stat irqs", FAULT_ON_ERROR);
+			kstat_irqs[i] = kstat_irq;
+		}
+	} else {
+		readmem(irq_desc_addr + OFFSET(irq_desc_t_kstat_irqs),
+		        KVADDR, &kstat_irqs_ptr, sizeof(long),
+		        "irq_desc kstat_irqs", FAULT_ON_ERROR);
+		if (THIS_KERNEL_VERSION > LINUX(2,6,37)) {
+			for (i = 0; i < kt->cpus; i++) {
+				if (!(NUM_IN_BITMAP(cpus, i)))
+					continue;
+
+				tmp = kstat_irqs_ptr + kt->__per_cpu_offset[i];
+				readmem(tmp, KVADDR, &kstat_irq, sizeof(uint),
+				        "kernel_stat irqs", FAULT_ON_ERROR);
+				kstat_irqs[i] = kstat_irq;
+			}
+		} else
+			readmem(kstat_irqs_ptr, KVADDR, kstat_irqs,
+			        sizeof(kstat_irqs), "kstat_irqs",
+			        FAULT_ON_ERROR);
+	}
+	if (VALID_MEMBER(irq_desc_t_handler))
+		readmem(irq_desc_addr + OFFSET(irq_desc_t_handler),
+		        KVADDR, &handler, sizeof(long), "irq_desc handler",
+		        FAULT_ON_ERROR);
+	else if (VALID_MEMBER(irq_desc_t_chip))
+		readmem(irq_desc_addr + OFFSET(irq_desc_t_chip), KVADDR,
+		        &handler, sizeof(long), "irq_desc chip",
+		        FAULT_ON_ERROR);
+	else if (VALID_MEMBER(irq_data_chip))
+		readmem(irq_desc_addr + OFFSET(irq_data_chip), KVADDR,
+		        &handler, sizeof(long), "irq_data chip",
+		        FAULT_ON_ERROR);
+
+	fprintf(fp, "%3d: ", irq);
+
+	for (i = 0; i < kt->cpus; i++) {
+		if (NUM_IN_BITMAP(cpus, i))
+			fprintf(fp, "%10u ", kstat_irqs[i]);
+	}
+
+	if (handler != UNINITIALIZED) {
+		if (VALID_MEMBER(hw_interrupt_type_typename)) {
+			readmem(handler+OFFSET(hw_interrupt_type_typename),
+			        KVADDR,	&tmp, sizeof(void *),
+			        "hw_interrupt_type typename", FAULT_ON_ERROR);
+
+			BZERO(buf, BUFSIZE);
+			if (read_string(tmp, buf, BUFSIZE-1))
+				fprintf(fp, "%14s", buf);
+		}
+		else if (VALID_MEMBER(irq_chip_typename)) {
+			readmem(handler+OFFSET(irq_chip_typename),
+			        KVADDR,	&tmp, sizeof(void *),
+			        "hw_interrupt_type typename", FAULT_ON_ERROR);
+
+			BZERO(buf, BUFSIZE);
+			if (read_string(tmp, buf, BUFSIZE-1))
+				fprintf(fp, "%8s", buf);
+			BZERO(buf1, BUFSIZE);
+			if (VALID_MEMBER(irq_desc_t_name))
+				readmem(irq_desc_addr+OFFSET(irq_desc_t_name),
+				        KVADDR,	&tmp1, sizeof(void *),
+				        "irq_desc name", FAULT_ON_ERROR);
+			if (read_string(tmp1, buf1, BUFSIZE-1))
+				fprintf(fp, "-%-8s", buf1);
+		}
+	}
+
+	BZERO(name_buf, BUFSIZE);
+
+	while (action) {
+		readmem(action+OFFSET(irqaction_name), KVADDR,
+		        &name, sizeof(void *),
+		        "irqaction name", FAULT_ON_ERROR);
+		BZERO(buf2, BUFSIZE);
+		if (read_string(name, buf2, BUFSIZE-1)) {
+			if (strlen(name_buf) != 0)
+				strncat(name_buf, ",", 2);
+			strncat(name_buf, buf2, strlen(buf2));
+		}
+
+		readmem(action+OFFSET(irqaction_next), KVADDR,
+		        &action, sizeof(void *),
+		        "irqaction dev_id", FAULT_ON_ERROR);
+	}
+
+	fprintf(fp, " %s\n", name_buf);
 }
 
 /*

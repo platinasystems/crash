@@ -1,8 +1,8 @@
 /* symbols.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -480,14 +480,14 @@ no_debugging_data(int error_type)
 void
 get_text_init_space(void)
 {
-	asection *section;
+	asection *section = NULL;
 
 	if (pc->flags & SYSMAP)
 		return;
 
 	if (machine_type("ARM"))
 		section = get_kernel_section(".init");
-	else if ((section = get_kernel_section(".text.init")) == NULL) 
+	if (!section && !(section = get_kernel_section(".text.init")))
 		section = get_kernel_section(".init.text");
 	if (!section) {
 		error(WARNING, "cannot determine text init space\n");
@@ -2748,6 +2748,8 @@ dump_symbol_table(void)
 			fprintf(fp, "%sMOD_NOPATCH", others++ ? "|" : "");
 		if (lm->mod_flags & MOD_INIT)
 			fprintf(fp, "%sMOD_INIT", others++ ? "|" : "");
+		if (lm->mod_flags & MOD_DO_READNOW)
+			fprintf(fp, "%sMOD_DO_READNOW", others++ ? "|" : "");
 		fprintf(fp, ")\n");
 
         	fprintf(fp, "          mod_symtable: %lx\n",
@@ -7769,6 +7771,19 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "                 irqdesc_level: %ld\n",
 		OFFSET(irqdesc_level));
 
+	fprintf(fp, "           irq_desc_t_irq_data: %ld\n",
+		OFFSET(irq_desc_t_irq_data));
+	fprintf(fp, "         irq_desc_t_kstat_irqs: %ld\n",
+		OFFSET(irq_desc_t_kstat_irqs));
+	fprintf(fp, "           irq_desc_t_affinity: %ld\n",
+		OFFSET(irq_desc_t_affinity));
+	fprintf(fp, "                 irq_data_chip: %ld\n",
+		OFFSET(irq_data_chip));
+	fprintf(fp, "             irq_data_affinity: %ld\n",
+		OFFSET(irq_data_affinity));
+	fprintf(fp, "              kernel_stat_irqs: %ld\n",
+		OFFSET(kernel_stat_irqs));
+
 	fprintf(fp, "             irqaction_handler: %ld\n",
 		OFFSET(irqaction_handler));
 	fprintf(fp, "               irqaction_flags: %ld\n",
@@ -8136,6 +8151,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(sock_sk_type));
         fprintf(fp, "        sock_common_skc_family: %ld\n", 
 		OFFSET(sock_common_skc_family));
+	fprintf(fp, "        socket_alloc_vfs_inode: %ld\n",
+		OFFSET(socket_alloc_vfs_inode));
         fprintf(fp, "                inet_sock_inet: %ld\n", 
 		OFFSET(inet_sock_inet));
         fprintf(fp, "                inet_opt_daddr: %ld\n", 
@@ -8532,6 +8549,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(rq_cfs));
 	fprintf(fp, "                         rq_rt: %ld\n",
 		OFFSET(rq_rt));
+	fprintf(fp, "                   cfs_rq_curr: %ld\n",
+		OFFSET(cfs_rq_curr));
 	fprintf(fp, "                 rq_nr_running: %ld\n",
 		OFFSET(rq_nr_running));
 	fprintf(fp, "                task_struct_se: %ld\n",
@@ -8593,6 +8612,46 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(unwind_idx_addr));
 	fprintf(fp, "               unwind_idx_insn: %ld\n",
 		OFFSET(unwind_idx_insn));
+	fprintf(fp, "                 class_devices: %ld\n",
+		OFFSET(class_devices));
+	fprintf(fp, "                       class_p: %ld\n",
+		OFFSET(class_p));
+	fprintf(fp, "         class_private_devices: %ld\n",
+		OFFSET(class_private_devices));
+	fprintf(fp, "            device_knode_class: %ld\n",
+		OFFSET(device_knode_class));
+	fprintf(fp, "                   device_node: %ld\n",
+		OFFSET(device_node));
+	fprintf(fp, "                   gendisk_dev: %ld\n",
+		OFFSET(gendisk_dev));
+	fprintf(fp, "                  gendisk_kobj: %ld\n",
+		OFFSET(gendisk_kobj));
+	fprintf(fp, "                 gendisk_part0: %ld\n",
+		OFFSET(gendisk_part0));
+	fprintf(fp, "                 gendisk_queue: %ld\n",
+		OFFSET(gendisk_queue));
+	fprintf(fp, "                 hd_struct_dev: %ld\n",
+		OFFSET(hd_struct_dev));
+	fprintf(fp, "                  klist_k_list: %ld\n",
+		OFFSET(klist_k_list));
+	fprintf(fp, "            klist_node_n_klist: %ld\n",
+		OFFSET(klist_node_n_klist));
+	fprintf(fp, "             klist_node_n_node: %ld\n",
+		OFFSET(klist_node_n_node));
+	fprintf(fp, "                 kobject_entry: %ld\n",
+		OFFSET(kobject_entry));
+	fprintf(fp, "                     kset_list: %ld\n",
+		OFFSET(kset_list));
+	fprintf(fp, "            request_list_count: %ld\n",
+		OFFSET(request_list_count));
+	fprintf(fp, "       request_queue_in_flight: %ld\n",
+		OFFSET(request_queue_in_flight));
+	fprintf(fp, "              request_queue_rq: %ld\n",
+		OFFSET(request_queue_rq));
+	fprintf(fp, "  subsys_private_klist_devices: %ld\n",
+		OFFSET(subsys_private_klist_devices));
+	fprintf(fp, "                subsystem_kset: %ld\n",
+		OFFSET(subsystem_kset));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -8783,6 +8842,16 @@ dump_offset_table(char *spec, ulong makestruct)
 		SIZE(percpu_data));
 	fprintf(fp, "                  sched_entity: %ld\n",
 		SIZE(sched_entity));
+	fprintf(fp, "                   kernel_stat: %ld\n",
+		SIZE(kernel_stat));
+	fprintf(fp, "                     subsystem: %ld\n",
+		SIZE(subsystem));
+	fprintf(fp, "                 class_private: %ld\n",
+		SIZE(class_private));
+	fprintf(fp, "                  rq_in_flight: %ld\n",
+		SIZE(rq_in_flight));
+	fprintf(fp, "         class_private_devices: %ld\n",
+		SIZE(class_private_devices));
 
         fprintf(fp, "\n                   array_table:\n");
 	/*
@@ -9628,6 +9697,9 @@ add_symbol_file(struct load_module *lm)
 		}
 	}
 
+	if (pc->curcmd_flags & MOD_READNOW)
+		lm->mod_flags |= MOD_DO_READNOW;
+
         req->command = GNU_ADD_SYMBOL_FILE;
 	req->addr = (ulong)lm;
 	req->buf = GETBUF(len+BUFSIZE);
@@ -9859,8 +9931,9 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 		len = strlen(req->buf);
 
 		if (STREQ(section_name, ".text")) {
-			sprintf(buf, "add-symbol-file %s 0x%lx", 
-				lm->mod_namelist, section_vaddr);
+			sprintf(buf, "add-symbol-file %s 0x%lx %s", 
+				lm->mod_namelist, section_vaddr,
+				pc->curcmd_flags & MOD_READNOW ? "-readnow" : "");
 			while ((len + strlen(buf)) >= buflen) {
 				RESIZEBUF(req->buf, buflen, buflen * 2);
 				buflen *= 2;

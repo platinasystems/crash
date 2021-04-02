@@ -419,10 +419,10 @@ hex_ascii_format_fn(debug_info_t * id, debug_view_t *view,
 	rc += sprintf(out_buf + rc, "| ");
 	for (i = 0; i < id->buf_size; i++) {
 		unsigned char c = in_buf[i];
-		if (!isprint(c))
-			rc += sprintf(out_buf + rc, ".");
-		else
+		if (isascii(c) && isprint(c))
 			rc += sprintf(out_buf + rc, "%c", c);
+		else
+			rc += sprintf(out_buf + rc, ".");
 	}
 	rc += sprintf(out_buf + rc, "\n");
       out:

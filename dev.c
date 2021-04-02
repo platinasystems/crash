@@ -1,8 +1,8 @@
 /* dev.c - core analysis suite 
  *
  * Copyright (C) 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +30,8 @@ static void do_resource_list(ulong, char *, int);
 static const char *pci_strclass (uint, char *); 
 static const char *pci_strvendor(uint, char *); 
 static const char *pci_strdev(uint, uint, char *); 
+
+static void diskio_option(void);
  
 static struct dev_table {
         ulong flags;
@@ -37,7 +39,8 @@ static struct dev_table {
 
 struct dev_table *dt = &dev_table;
 
-#define DEV_INIT  0x1
+#define DEV_INIT    0x1
+#define DISKIO_INIT 0x2
 
 void
 dev_init(void)
@@ -90,9 +93,13 @@ cmd_dev(void)
 
 	flags = 0;
 
-        while ((c = getopt(argcnt, args, "pi")) != EOF) {
+        while ((c = getopt(argcnt, args, "dpi")) != EOF) {
                 switch(c)
                 {
+		case 'd':
+			diskio_option();
+			return;
+
 		case 'i':
 			if (machine_type("S390X"))
 				option_not_supported(c);
@@ -767,6 +774,8 @@ dump_dev_table(void)
 	fprintf(fp, "        flags: %lx (", dt->flags);
 	if (dt->flags & DEV_INIT)
 		fprintf(fp, "%sDEV_INIT", others++ ? "|" : "");
+	if (dt->flags & DISKIO_INIT)
+		fprintf(fp, "%sDISKIO_INIT", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 }
 
@@ -3579,4 +3588,484 @@ pci_strdev(unsigned int vendor, unsigned int device, char *buf)
 		sprintf(buf, "[PCI_DEVICE %x]", device);
 		return buf;
 	}
+}
+
+/*
+ * If the disk's name is started with these strings, we will skip it and do not
+ * display its statistics.
+ */
+static char *skipped_disk_name[] = {
+	"ram",
+	"loop",
+	NULL
+};
+
+static int 
+is_skipped_disk(char *name)
+{
+	char **p = skipped_disk_name;
+
+	while (*p) {
+		if (strncmp(name, *p, strlen(*p)) == 0)
+			return TRUE;
+		p++;
+	}
+
+	return FALSE;
+}
+
+struct diskio {
+    int read;
+    int write;
+};
+
+struct iter {
+	/* If the kernel uses klist, the address should be klist.k_list */
+	long head_address;
+	long current_address;
+	long type_address; /* the address of symbol "disk_type" */
+
+	/*
+	 * If it is true, it means request_list.count[2] contains async/sync
+	 * requests.
+	 */
+	int sync_count;
+	int diskname_len;
+
+	unsigned long (*next_disk)(struct iter *);
+
+	/*
+	 * The argument is the address of request_queue, and the function
+	 * returns the total requests in the driver(not ended)
+	 */
+	unsigned int (*get_in_flight)(unsigned long);
+
+	/*
+	 * this function reads request_list.count[2], and the first argument
+	 * is the address of request_queue.
+	 */
+	void (*get_diskio)(unsigned long , struct diskio *);
+
+	/*
+	 * check if device.type == &disk_type
+	 *
+	 * old kernel(version <= 2.6.24) does not have the symbol "disk_type",
+	 * and this callback should be null.
+	 */
+	int (*match)(struct iter *, unsigned long);
+
+	/*
+	 * If the kernel uses list, the argument is the address of list_head,
+	 * otherwise, the argument is the address of klist_node.
+	 */
+	unsigned long (*get_gendisk)(unsigned long);
+};
+
+/* kernel version <= 2.6.24 */
+static unsigned long 
+get_gendisk_1(unsigned long entry)
+{
+	return entry - OFFSET(kobject_entry) - OFFSET(gendisk_kobj);
+}
+
+/* 2.6.24 < kernel version <= 2.6.27 */
+static unsigned long 
+get_gendisk_2(unsigned long entry)
+{
+	return entry - OFFSET(device_node) - OFFSET(gendisk_dev);
+}
+
+/* kernel version > 2.6.27 && struct gendisk contains dev/__dev */
+static unsigned long 
+get_gendisk_3(unsigned long entry)
+{
+	return entry - OFFSET(device_knode_class) - OFFSET(gendisk_dev);
+}
+
+/* kernel version > 2.6.27 && struct gendisk does not contain dev/__dev */
+static unsigned long 
+get_gendisk_4(unsigned long entry)
+{
+	return entry - OFFSET(device_knode_class) - OFFSET(hd_struct_dev) -
+		OFFSET(gendisk_part0);
+}
+
+/* 2.6.24 < kernel version <= 2.6.27 */
+static int 
+match_list(struct iter *i, unsigned long entry)
+{
+	unsigned long device_address;
+	unsigned long device_type;
+
+	device_address = entry - OFFSET(device_node);
+	readmem(device_address + OFFSET(device_type), KVADDR, &device_type,
+		sizeof(device_type), "device.type", FAULT_ON_ERROR);
+	if (device_type != i->type_address)
+		return FALSE;
+
+	return TRUE;
+}
+
+/* kernel version > 2.6.27 */
+static int 
+match_klist(struct iter *i, unsigned long entry)
+{
+	unsigned long device_address;
+	unsigned long device_type;
+
+	device_address = entry - OFFSET(device_knode_class);
+	readmem(device_address + OFFSET(device_type), KVADDR, &device_type,
+		sizeof(device_type), "device.type", FAULT_ON_ERROR);
+	if (device_type != i->type_address)
+		return FALSE;
+
+	return TRUE;
+}
+
+/* old kernel(version <= 2.6.27): list */
+static unsigned long 
+next_disk_list(struct iter *i)
+{
+	unsigned long list_head_address, next_address;
+
+	if (i->current_address) {
+		list_head_address = i->current_address;
+	} else {
+		list_head_address = i->head_address;
+	}
+
+again:
+	/* read list_head.next */
+	readmem(list_head_address + OFFSET(list_head_next), KVADDR,
+		&next_address, sizeof(next_address), "list_head.next",
+		FAULT_ON_ERROR);
+
+	if (next_address == i->head_address)
+		return 0;
+
+	if (i->match && !i->match(i, next_address)) {
+		list_head_address = next_address;
+		goto again;
+	}
+
+	i->current_address = next_address;
+	return i->get_gendisk(next_address);
+}
+
+/* new kernel(version > 2.6.27): klist */
+static unsigned long 
+next_disk_klist(struct iter* i)
+{
+	unsigned long klist_node_address, list_head_address, next_address;
+	unsigned long n_klist;
+
+	if (i->current_address) {
+		list_head_address = i->current_address;
+	} else {
+		list_head_address = i->head_address;
+	}
+
+again:
+	/* read list_head.next */
+	readmem(list_head_address + OFFSET(list_head_next), KVADDR,
+		&next_address, sizeof(next_address), "list_head.next",
+		FAULT_ON_ERROR);
+
+	/* skip dead klist_node */
+	while(next_address != i->head_address) {
+		klist_node_address = next_address - OFFSET(klist_node_n_node);
+		readmem(klist_node_address + OFFSET(klist_node_n_klist), KVADDR,
+			&n_klist, sizeof(n_klist), "klist_node.n_klist",
+			FAULT_ON_ERROR);
+		if (!(n_klist & 1))
+			break;
+
+		/* the klist_node is dead, skip to next klist_node */
+		readmem(next_address + OFFSET(list_head_next), KVADDR,
+			&next_address, sizeof(next_address), "list_head.next",
+			FAULT_ON_ERROR);
+	}
+
+	if (next_address == i->head_address)
+		return 0;
+
+	if (i->match && !i->match(i, klist_node_address)) {
+		list_head_address = next_address;
+		goto again;
+	}
+
+	i->current_address = next_address;
+	return i->get_gendisk(klist_node_address);
+}
+
+/* read request_queue.rq.count[2] */
+static void 
+get_diskio_1(unsigned long rq, struct diskio *io)
+{
+	int count[2];
+
+	readmem(rq + OFFSET(request_queue_rq) + OFFSET(request_list_count),
+		KVADDR, count, sizeof(int) * 2, "request_list.count",
+		FAULT_ON_ERROR);
+
+	io->read = count[0];
+	io->write = count[1];
+}
+
+/* request_queue.in_flight contains total requests */
+static unsigned int 
+get_in_flight_1(unsigned long rq)
+{
+	unsigned int in_flight;
+
+	readmem(rq+ OFFSET(request_queue_in_flight), KVADDR, &in_flight,
+		sizeof(uint), "request_queue.in_flight", FAULT_ON_ERROR);
+	return in_flight;
+}
+
+/* request_queue.in_flight[2] contains read/write requests */
+static unsigned int 
+get_in_flight_2(unsigned long rq)
+{
+	unsigned int in_flight[2];
+
+	readmem(rq+ OFFSET(request_queue_in_flight), KVADDR, in_flight,
+		sizeof(uint) * 2, "request_queue.in_flight", FAULT_ON_ERROR);
+	return in_flight[0] + in_flight[1];
+}
+
+static void 
+init_iter(struct iter *i)
+{
+	ARRAY_LENGTH_INIT(i->diskname_len, gendisk.disk_name,
+		"gendisk.disk_name", NULL, sizeof(char));
+	if (i->diskname_len < 0 || i->diskname_len > BUFSIZE) {
+		option_not_supported('d');
+		return;
+	}
+
+	i->current_address = 0;
+
+	/* check whether BLK_RW_SYNC exists */
+	i->sync_count =
+		get_symbol_type("BLK_RW_SYNC", NULL, NULL) == TYPE_CODE_ENUM;
+
+	if (SIZE(rq_in_flight) == sizeof(int)) {
+		i->get_in_flight = get_in_flight_1;
+	} else if (SIZE(rq_in_flight) == sizeof(int) * 2) {
+		i->get_in_flight = get_in_flight_2;
+	} else {
+		option_not_supported('d');
+		return;
+	}
+	i->get_diskio = get_diskio_1;
+
+	if (symbol_exists("block_subsys") || symbol_exists("block_kset")) {
+		/* kernel version <= 2.6.24 */
+		unsigned long block_subsys_addr;
+
+		if (symbol_exists("block_subsys"))
+			block_subsys_addr = symbol_value("block_subsys");
+		else
+			block_subsys_addr = symbol_value("block_kset");
+		if (VALID_STRUCT(subsystem))
+			i->head_address = block_subsys_addr +
+				OFFSET(subsystem_kset) + OFFSET(kset_list);
+		else
+			i->head_address = block_subsys_addr + OFFSET(kset_list);
+		i->type_address = 0;
+		i->next_disk = next_disk_list;
+		i->match = NULL;
+		i->get_gendisk = get_gendisk_1;
+	} else if (symbol_exists("block_class")) {
+		unsigned long block_class_addr = symbol_value("block_class");
+
+		i->type_address = symbol_value("disk_type");
+		if (VALID_MEMBER(class_devices) ||
+		   (VALID_MEMBER(class_private_devices) &&
+		      SIZE(class_private_devices) == SIZE(list_head))) {
+			/* 2.6.24 < kernel version <= 2.6.27, list */
+			if (!VALID_STRUCT(class_private)) {
+				/* 2.6.24 < kernel version <= 2.6.26 */
+				i->head_address = block_class_addr +
+					OFFSET(class_devices);
+			} else {
+				/* kernel version is 2.6.27 */
+				unsigned long class_private_addr;
+
+				readmem(block_class_addr + OFFSET(class_p),
+					KVADDR, &class_private_addr,
+					sizeof(class_private_addr), "class.p",
+					FAULT_ON_ERROR);
+				i->head_address = class_private_addr +
+					OFFSET(class_private_devices);
+			}
+			i->next_disk = next_disk_list;
+			i->match = match_list;
+			i->get_gendisk = get_gendisk_2;
+		} else {
+			/* kernel version > 2.6.27, klist */
+			unsigned long class_private_addr;
+			readmem(block_class_addr + OFFSET(class_p), KVADDR,
+				&class_private_addr, sizeof(class_private_addr),
+				"class.p", FAULT_ON_ERROR);
+
+			if (VALID_STRUCT(class_private)) {
+				/* 2.6.27 < kernel version <= 2.6.37-rc2 */
+				i->head_address = class_private_addr +
+					OFFSET(class_private_devices);
+			} else {
+				/* kernel version > 2.6.37-rc2 */
+				i->head_address = class_private_addr +
+					OFFSET(subsys_private_klist_devices);
+			}
+			i->head_address += OFFSET(klist_k_list);
+			i->next_disk = next_disk_klist;
+			i->match = match_klist;
+			if (VALID_MEMBER(gendisk_dev))
+				i->get_gendisk = get_gendisk_3;
+			else
+				i->get_gendisk = get_gendisk_4;
+		}
+	} else {
+		option_not_supported('d');
+		return;
+	}
+}
+
+static void 
+display_one_diskio(struct iter *i, unsigned long gendisk)
+{
+	char disk_name[BUFSIZE + 1];
+	char buf0[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+	char buf5[BUFSIZE];
+	int major;
+	unsigned long queue_addr;
+	unsigned int in_flight;
+	struct diskio io;
+
+	memset(disk_name, 0, BUFSIZE + 1);
+	readmem(gendisk + OFFSET(gendisk_disk_name), KVADDR, disk_name,
+		i->diskname_len, "gen_disk.disk_name", FAULT_ON_ERROR);
+	if (is_skipped_disk(disk_name))
+		return;
+
+	readmem(gendisk + OFFSET(gendisk_queue), KVADDR, &queue_addr,
+		sizeof(ulong), "gen_disk.queue", FAULT_ON_ERROR);
+	readmem(gendisk + OFFSET(gendisk_major), KVADDR, &major, sizeof(int),
+		"gen_disk.major", FAULT_ON_ERROR);
+	i->get_diskio(queue_addr, &io);
+	in_flight = i->get_in_flight(queue_addr);
+
+	fprintf(fp, "%s%s0x%s%s%s%s0x%s%s%5d%s%s%s%s%s%5u\n",
+		mkstring(buf0, 5, RJUST|INT_DEC, (char *)(unsigned long)major),
+		space(MINSPACE),
+		mkstring(buf1, VADDR_PRLEN, LJUST|LONG_HEX, (char *)gendisk),
+		space(MINSPACE),
+		mkstring(buf2, 10, LJUST, disk_name),
+		space(MINSPACE),
+		mkstring(buf3, VADDR_PRLEN <= 11 ? 11 : VADDR_PRLEN,
+			 LJUST|LONG_HEX, (char *)queue_addr),
+		space(MINSPACE),
+		io.read + io.write,
+		space(MINSPACE),
+		mkstring(buf4, 5, RJUST|INT_DEC,
+			(char *)(unsigned long)io.read),
+		space(MINSPACE),
+		mkstring(buf5, 5, RJUST|INT_DEC,
+			(char *)(unsigned long)io.write),
+		space(MINSPACE),
+		in_flight);
+}
+
+static void 
+display_all_diskio(void)
+{
+	struct iter i;
+	unsigned long gendisk;
+	char buf0[BUFSIZE];
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	char buf3[BUFSIZE];
+	char buf4[BUFSIZE];
+	char buf5[BUFSIZE];
+
+	init_iter(&i);
+
+	fprintf(fp, "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+		"MAJOR",
+		space(MINSPACE),
+		mkstring(buf0, VADDR_PRLEN + 2, LJUST, "GENDISK"),
+		space(MINSPACE),
+		"NAME      ",
+		space(MINSPACE),
+		mkstring(buf1, VADDR_PRLEN <= 11 ? 13 : VADDR_PRLEN + 2, LJUST,
+			"REQUEST QUEUE"),
+		space(MINSPACE),
+		mkstring(buf2, 5, RJUST, "TOTAL"),
+		space(MINSPACE),
+		i.sync_count ? mkstring(buf3, 5, RJUST, "ASYNC") :
+			mkstring(buf3, 5, RJUST, "READ"),
+		space(MINSPACE),
+		i.sync_count ? mkstring(buf4, 5, RJUST, "SYNC") :
+			mkstring(buf4, 5, RJUST, "WRITE"),
+		space(MINSPACE),
+		mkstring(buf5, 5, RJUST, "DRV"));
+
+	while ((gendisk = i.next_disk(&i)) != 0)
+		display_one_diskio(&i, gendisk);
+}
+
+static 
+void diskio_init(void)
+{
+	if (dt->flags & DISKIO_INIT)
+		return;
+
+	MEMBER_OFFSET_INIT(class_devices, "class", "class_devices");
+	if (INVALID_MEMBER(class_devices))
+		MEMBER_OFFSET_INIT(class_devices, "class", "devices");
+	MEMBER_OFFSET_INIT(class_p, "class", "p");
+	MEMBER_OFFSET_INIT(class_private_devices, "class_private",
+		"class_devices");
+	MEMBER_OFFSET_INIT(device_knode_class, "device", "knode_class");
+	MEMBER_OFFSET_INIT(device_node, "device", "node");
+	MEMBER_OFFSET_INIT(device_type, "device", "type");
+	MEMBER_OFFSET_INIT(gendisk_dev, "gendisk", "dev");
+	if (INVALID_MEMBER(gendisk_dev))
+		MEMBER_OFFSET_INIT(gendisk_dev, "gendisk", "__dev");
+	MEMBER_OFFSET_INIT(gendisk_kobj, "gendisk", "kobj");
+	MEMBER_OFFSET_INIT(gendisk_part0, "gendisk", "part0");
+	MEMBER_OFFSET_INIT(gendisk_queue, "gendisk", "queue");
+	MEMBER_OFFSET_INIT(hd_struct_dev, "hd_struct", "__dev");
+	MEMBER_OFFSET_INIT(klist_k_list, "klist", "k_list");
+	MEMBER_OFFSET_INIT(klist_node_n_klist, "klist_node", "n_klist");
+	MEMBER_OFFSET_INIT(klist_node_n_node, "klist_node", "n_node");
+	MEMBER_OFFSET_INIT(kobject_entry, "kobject", "entry");
+	MEMBER_OFFSET_INIT(kset_list, "kset", "list");
+	MEMBER_OFFSET_INIT(request_list_count, "request_list", "count");
+	MEMBER_OFFSET_INIT(request_queue_in_flight, "request_queue",
+		"in_flight");
+	MEMBER_OFFSET_INIT(request_queue_rq, "request_queue", "rq");
+	MEMBER_OFFSET_INIT(subsys_private_klist_devices, "subsys_private",
+		"klist_devices");
+	MEMBER_OFFSET_INIT(subsystem_kset, "subsystem", "kset");
+	STRUCT_SIZE_INIT(subsystem, "subsystem");
+	STRUCT_SIZE_INIT(class_private, "class_private");
+	MEMBER_SIZE_INIT(rq_in_flight, "request_queue", "in_flight");
+	MEMBER_SIZE_INIT(class_private_devices, "class_private",
+		"class_devices");
+
+	dt->flags |= DISKIO_INIT;
+}
+
+static void 
+diskio_option(void)
+{
+	diskio_init();
+	display_all_diskio();
 }

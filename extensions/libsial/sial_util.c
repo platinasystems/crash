@@ -102,7 +102,7 @@ sial_tabs(int tabs, char *t, int lf)
 int i;
 
 	if(lf) fprintf(ofile, "\n");
-	for(i=0;i <tabs; i++) fprintf(ofile, t);
+	for(i=0;i <tabs; i++) fprintf(ofile, "%s", t);
 	return tabs*4;
 }
 

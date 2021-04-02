@@ -1,8 +1,8 @@
 /* ia64.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -197,6 +197,8 @@ ia64_init(int when)
 		machdep->line_number_hooks = ia64_line_number_hooks;
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
                 machdep->init_kernel_pgd = NULL;
+		machdep->get_irq_affinity = generic_get_irq_affinity;
+		machdep->show_interrupts = generic_show_interrupts;
 
 		if ((sp = symbol_search("_stext"))) {
 			machdep->machspec->kernel_region = 
@@ -583,6 +585,8 @@ ia64_dump_machdep_table(ulong arg)
         fprintf(fp, "       verify_paddr: %s()\n",
 		(machdep->verify_paddr == ia64_verify_paddr) ?
 		"ia64_verify_paddr" : "generic_verify_paddr");
+	fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
+	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
         fprintf(fp, "    init_kernel_pgd: NULL\n");
 	fprintf(fp, "xen_kdump_p2m_create: ia64_xen_kdump_p2m_create()\n");
         fprintf(fp, " xendump_p2m_create: ia64_xendump_p2m_create()\n");
@@ -3947,8 +3951,10 @@ ia64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	 */
 	pc->readmem = read_netdump;
 
-	if (CRASHDEBUG(1))
+	if (CRASHDEBUG(1)) {
+		fprintf(fp, "readmem (temporary): read_netdump()\n");
 		fprintf(fp, "ia64_xen_kdump_p2m_create: p2m_mfn: %lx\n", xkd->p2m_mfn);
+	}
 
 	if ((xkd->p2m_mfn_frame_list = (ulong *)malloc(PAGESIZE())) == NULL)
 		error(FATAL, "cannot malloc p2m_frame_list");
@@ -3960,6 +3966,8 @@ ia64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	xkd->p2m_frames = PAGESIZE()/sizeof(ulong);
 
 	pc->readmem = read_kdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (restore): read_kdump()\n");
 
 	return TRUE;
 }
@@ -3976,6 +3984,8 @@ ia64_xen_kdump_p2m(struct xen_kdump_data *xkd, physaddr_t pseudo)
 	 *  going directly to read_netdump() instead of via read_kdump().
 	 */
 	pc->readmem = read_netdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (temporary): read_netdump()\n");
 
 	xkd->accesses += 2;
 
@@ -4028,6 +4038,9 @@ ia64_xen_kdump_p2m(struct xen_kdump_data *xkd, physaddr_t pseudo)
 
 out:
 	pc->readmem = read_kdump;
+	if (CRASHDEBUG(1))
+		fprintf(fp, "readmem (restore): read_kdump()\n");
+
 	return paddr;
 }
 

@@ -1,8 +1,8 @@
 /* task.c - core analysis suite
  *
  * Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -62,7 +62,7 @@ static struct rb_node *rb_parent(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_right(struct rb_node *, struct rb_node *);
 static struct rb_node *rb_left(struct rb_node *, struct rb_node *);
 static void dump_task_runq_entry(struct task_context *);
-static int dump_tasks_in_cfs_rq(ulong, ulong);
+static int dump_tasks_in_cfs_rq(ulong);
 static void dump_on_rq_tasks(void);
 static void dump_CFS_runqueues(void);
 static void dump_RT_prio_array(int, ulong, char *);
@@ -7019,21 +7019,31 @@ dump_task_runq_entry(struct task_context *tc)
 }
 
 static int
-dump_tasks_in_cfs_rq(ulong cfs_rq, ulong skip)
+dump_tasks_in_cfs_rq(ulong cfs_rq)
 {
 	struct task_context *tc;
 	struct rb_root *root;
 	struct rb_node *node;
-	ulong my_q, leftmost;
+	ulong my_q, leftmost, curr, curr_my_q;
 	int total;
 
-	if (cfs_rq == skip)
-		return 0;
+	total = 0;
+
+	if (VALID_MEMBER(sched_entity_my_q)) {
+		readmem(cfs_rq + OFFSET(cfs_rq_curr), KVADDR, &curr, 
+			sizeof(ulong), "curr", FAULT_ON_ERROR);
+		if (curr) {
+			readmem(curr + OFFSET(sched_entity_my_q), KVADDR, 
+				&curr_my_q, sizeof(ulong), "curr->my_q", 
+				FAULT_ON_ERROR);
+			if (curr_my_q)
+				total += dump_tasks_in_cfs_rq(curr_my_q);
+		}
+	}
 
 	readmem(cfs_rq + OFFSET(cfs_rq_rb_leftmost), KVADDR, &leftmost,
 		sizeof(ulong), "rb_leftmost", FAULT_ON_ERROR);
 	root = (struct rb_root *)(cfs_rq + OFFSET(cfs_rq_tasks_timeline));
-	total = 0;
 
 	for (node = rb_first(root); leftmost && node; node = rb_next(node)) {
 		if (VALID_MEMBER(sched_entity_my_q)) {
@@ -7041,7 +7051,7 @@ dump_tasks_in_cfs_rq(ulong cfs_rq, ulong skip)
 				+ OFFSET(sched_entity_my_q), KVADDR, &my_q,
 				sizeof(ulong), "my_q", FAULT_ON_ERROR);
 			if (my_q) {
-				total += dump_tasks_in_cfs_rq(my_q, skip);
+				total += dump_tasks_in_cfs_rq(my_q);
 				continue;
 			}
 		}
@@ -7050,7 +7060,13 @@ dump_tasks_in_cfs_rq(ulong cfs_rq, ulong skip)
 				     OFFSET(sched_entity_run_node));
 		if (!tc)
 			continue;
-		dump_task_runq_entry(tc);
+		if (hq_enter((ulong)tc))
+			dump_task_runq_entry(tc);
+		else {
+			error(WARNING, "duplicate CFS runqueue node: task %lx\n",
+				tc->task);
+			return total;
+		}
 		total++;
 	}
 
@@ -7115,7 +7131,7 @@ static void
 dump_CFS_runqueues(void)
 {
 	int tot, cpu;
-	ulong runq, cfs_rq, curr_cfs_rq;
+	ulong runq, cfs_rq;
 	char *runqbuf, *cfs_rq_buf;
 	ulong tasks_timeline ATTRIBUTE_UNUSED;
 	struct task_context *tc;
@@ -7140,6 +7156,7 @@ dump_CFS_runqueues(void)
 		MEMBER_OFFSET_INIT(cfs_rq_nr_running, "cfs_rq", "nr_running");
 		MEMBER_OFFSET_INIT(cfs_rq_tasks_timeline, "cfs_rq", 
 			"tasks_timeline");
+		MEMBER_OFFSET_INIT(cfs_rq_curr, "cfs_rq", "curr");
 		MEMBER_OFFSET_INIT(rt_rq_active, "rt_rq", "active");
                 MEMBER_OFFSET_INIT(task_struct_run_list, "task_struct",
                         "run_list");
@@ -7203,24 +7220,15 @@ dump_CFS_runqueues(void)
 				OFFSET(cfs_rq_tasks_timeline));
 		}
 
-		if (tt->active_set[cpu] && VALID_MEMBER(sched_entity_cfs_rq)) {
-			readmem(tt->active_set[cpu] + OFFSET(task_struct_se) +
-				OFFSET(sched_entity_cfs_rq), KVADDR, &curr_cfs_rq,
-				sizeof(ulong), "current cfs_rq", FAULT_ON_ERROR);
-		} else
-			curr_cfs_rq = 0;
-
 		dump_RT_prio_array(nr_running != cfs_rq_nr_running,
 			runq + OFFSET(rq_rt) + OFFSET(rt_rq_active), 
 			&runqbuf[OFFSET(rq_rt) + OFFSET(rt_rq_active)]);
 
 		fprintf(fp, "  CFS RB_ROOT: %lx\n", (ulong)root);
 
-		tot = 0;
-		if (curr_cfs_rq)
-			tot += dump_tasks_in_cfs_rq(curr_cfs_rq, 0);
-		if (cfs_rq != curr_cfs_rq)
-			tot += dump_tasks_in_cfs_rq(cfs_rq, curr_cfs_rq);
+		hq_open();
+		tot = dump_tasks_in_cfs_rq(cfs_rq);
+		hq_close();
 		if (!tot) {
 			INDENT(5);
 			fprintf(fp, "[no tasks queued]\n");

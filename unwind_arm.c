@@ -94,7 +94,6 @@ enum regs {
 };
 
 static int init_kernel_unwind_table(void);
-static void free_kernel_unwind_table(void);
 static int read_module_unwind_table(struct unwind_table *, ulong);
 static int init_module_unwind_tables(void);
 static int unwind_get_insn(struct unwind_ctrl_block *);
@@ -105,6 +104,7 @@ static int is_core_kernel_text(ulong);
 static struct unwind_table *search_table(ulong);
 static struct unwind_idx *search_index(const struct unwind_table *, ulong);
 static ulong prel31_to_addr(ulong, ulong);
+static void index_prel31_to_addr(struct unwind_table *);
 static int unwind_frame(struct stackframe *, ulong);
 
 /*
@@ -148,8 +148,6 @@ init_unwind_tables(void)
 	if (!init_module_unwind_tables()) {
 		error(WARNING,
 		      "UNWIND: failed to initialize module unwind tables\n");
-		free_kernel_unwind_table();
-		return FALSE;
 	}
 
 	/*
@@ -190,12 +188,28 @@ init_kernel_unwind_table(void)
 		goto fail;
 	}
 
+	/*
+	 * Kernel versions before v3.2 (specifically, before commit
+	 * de66a979012db "ARM: 7187/1: fix unwinding for XIP kernels")
+	 * converted the prel31 offsets in the unwind index table to absolute
+	 * addresses on startup.  Newer kernels don't perform this conversion,
+	 * and have a slightly more involved search algorithm.
+	 *
+	 * We always just use the older search method (a straightforward binary
+	 * search) and convert the index table offsets ourselves if we detect
+	 * that the kernel didn't do it.
+	 */
+	machdep->machspec->unwind_index_prel31 = !is_kernel_text(kernel_unwind_table->idx[0].addr);
+
 	kernel_unwind_table->start = kernel_unwind_table->idx;
 	kernel_unwind_table->end = (struct unwind_idx *)
 		((char *)kernel_unwind_table->idx + idx_size);
 	kernel_unwind_table->begin_addr = kernel_unwind_table->start->addr;
 	kernel_unwind_table->end_addr = (kernel_unwind_table->end - 1)->addr;
 	kernel_unwind_table->kv_base = idx_start;
+
+	if (machdep->machspec->unwind_index_prel31)
+		index_prel31_to_addr(kernel_unwind_table);
 
 	if (CRASHDEBUG(1)) {
 		fprintf(fp, "UNWIND: master kernel table start\n");
@@ -216,12 +230,6 @@ fail:
 	return FALSE;
 }
 
-static void
-free_kernel_unwind_table(void)
-{
-	free(kernel_unwind_table->idx);
-	free(kernel_unwind_table);
-}
 
 /*
  * Read single module unwind table from addr.
@@ -269,6 +277,9 @@ read_module_unwind_table(struct unwind_table *tbl, ulong addr)
 	tbl->begin_addr = TABLE_VALUE(buf, unwind_table_begin_addr);
 	tbl->end_addr = TABLE_VALUE(buf, unwind_table_end_addr);
 	tbl->kv_base = idx_start;
+
+	if (machdep->machspec->unwind_index_prel31)
+		index_prel31_to_addr(tbl);
 
 	if (CRASHDEBUG(1)) {
 		fprintf(fp, "UNWIND: module table start\n");
@@ -347,6 +358,7 @@ fail:
 	}
 
 	free(module_unwind_tables);
+	module_unwind_tables = NULL;
 	return FALSE;
 }
 
@@ -536,7 +548,7 @@ search_table(ulong ip)
 	 */
 	if (is_core_kernel_text(ip)) {
 		return kernel_unwind_table;
-	} else {
+	} else if (module_unwind_tables) {
 		struct unwind_table *tbl;
 
 		for (tbl = &module_unwind_tables[0]; tbl->idx; tbl++) {
@@ -578,6 +590,16 @@ prel31_to_addr(ulong addr, ulong insn)
 	/* sign extend to 32 bits */
 	long offset = ((long)insn << 1) >> 1;
 	return addr + offset;
+}
+
+static void
+index_prel31_to_addr(struct unwind_table *tbl)
+{
+	struct unwind_idx *idx = tbl->start;
+	ulong kvaddr = tbl->kv_base;
+
+	for (; idx < tbl->end; idx++, kvaddr += sizeof(struct unwind_idx))
+		idx->addr = prel31_to_addr(kvaddr, idx->addr);
 }
 
 static int

@@ -245,6 +245,8 @@ arm_init(int when)
 		machdep->value_to_symbol = generic_machdep_value_to_symbol;
 		machdep->init_kernel_pgd = NULL;
 		machdep->dump_irq = generic_dump_irq;
+		machdep->show_interrupts = generic_show_interrupts;
+		machdep->get_irq_affinity = generic_get_irq_affinity;
 
 		arm_init_machspec();
 		break;
@@ -373,6 +375,9 @@ arm_dump_machdep_table(ulong arg)
 	fprintf(fp, "          is_kvaddr: generic_is_kvaddr()\n");
 	fprintf(fp, "          is_uvaddr: generic_is_uvaddr()\n");
 	fprintf(fp, "       verify_paddr: generic_verify_paddr()\n");
+	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
+        fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
+
 	fprintf(fp, " xendump_p2m_create: NULL\n");
 	fprintf(fp, "xen_kdump_p2m_create: NULL\n");
 	fprintf(fp, "  line_number_hooks: arm_line_number_hooks\n");
@@ -406,6 +411,7 @@ arm_dump_machdep_table(ulong arg)
 	fprintf(fp, "exception_text_start: %lx\n", ms->exception_text_start);
 	fprintf(fp, " exception_text_end: %lx\n", ms->exception_text_end);
 	fprintf(fp, "    crash_task_regs: %lx\n", (ulong)ms->crash_task_regs);
+	fprintf(fp, "unwind_index_prel31: %d\n", ms->unwind_index_prel31);
 }
 
 /*
@@ -497,8 +503,6 @@ arm_get_crash_notes(void)
 	ulong offset;
 	char *buf, *p;
 	ulong *notes_ptrs;
-	ulong per_cpu_offsets_addr;
-	ulong *per_cpu_offsets;
 	ulong i;
 
 	if (!symbol_exists("crash_notes"))
@@ -522,23 +526,9 @@ arm_get_crash_notes(void)
 
 	if (symbol_exists("__per_cpu_offset")) {
 
-		/* Get the __per_cpu_offset array */
-		per_cpu_offsets_addr = symbol_value("__per_cpu_offset");
-		
-		per_cpu_offsets = (ulong *)GETBUF(kt->cpus*sizeof(*per_cpu_offsets));
-		
-		if (!readmem(per_cpu_offsets_addr, KVADDR, per_cpu_offsets, 
-		    kt->cpus*sizeof(*per_cpu_offsets), "per_cpu_offsets",
-			     RETURN_ON_ERROR)) {
-			error(WARNING, "cannot read per_cpu_offsets\n");
-			FREEBUF(per_cpu_offsets);
-			return FALSE;
-		}
-
 		/* Add __per_cpu_offset for each cpu to form the pointer to the notes */
 		for (i = 0; i<kt->cpus; i++)
-			notes_ptrs[i] = notes_ptrs[kt->cpus-1] + per_cpu_offsets[i];
-		FREEBUF(per_cpu_offsets);
+			notes_ptrs[i] = notes_ptrs[kt->cpus-1] + kt->__per_cpu_offset[i];	
 	}
 
 	buf = GETBUF(SIZE(note_buf));
@@ -979,9 +969,9 @@ arm_vtop(ulong vaddr, ulong *pgd, physaddr_t *paddr, int verbose)
 	/*
 	 * pte_offset_map(pmd, vaddr)
 	 */
-	page_table = (ulong *)PTOV(pmd_page_addr(pmd_pte)) + PTE_OFFSET(vaddr);
+	page_table = pmd_page_addr(pmd_pte) + PTE_OFFSET(vaddr);
 
-	FILL_PTBL(PAGEBASE(page_table), KVADDR, PAGESIZE());
+	FILL_PTBL(PAGEBASE(page_table), PHYSADDR, PAGESIZE());
 	pte = ULONG(machdep->ptbl + PAGEOFFSET(page_table));
 
 	if (verbose) {

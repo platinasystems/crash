@@ -129,7 +129,7 @@ int i,j,k;
 	/* create the array from within which the runtime functions
 	   will indexed to get a function pointer */
 
-	printf("void (*opfuncs[%d][%d][%d])()={\n", NTYPS, NTYPS, NOPS);
+	printf("void (*opfuncs[%lu][%lu][%lu])()={\n", NTYPS, NTYPS, NOPS);
 
 	for(i=0;i<NTYPS;i++) {
 	
@@ -151,7 +151,7 @@ int i,j,k;
 	printf("};\n");
 
 	/* output a ops lut */
-	printf("\nstatic int opslut[%d]={\n", NOPS);
+	printf("\nstatic int opslut[%lu]={\n", NOPS);
 
 	for(i=0;i<NOPS;i++) {
 
@@ -167,12 +167,12 @@ sial_baseop(int op, value_t *v1, value_t *v2, value_t *ret)\n\
 {\n\
 int i;\n\
 \n\
-	for(i=0;i<%d;i++) {\n\
+	for(i=0;i<%lu;i++) {\n\
 \n\
 		if(opslut[i]==op) break;\n\
 \n\
 	}\n\
-	if(i==%d) sial_error(\"Oops!ops!\");\n\
+	if(i==%lu) sial_error(\"Oops!ops!\");\n\
 	(opfuncs[v1->type.idx][v2->type.idx][i])(v1,v2,ret);\n\
 }\n", NOPS, NOPS);
 	exit(0);

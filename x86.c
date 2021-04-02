@@ -1,8 +1,8 @@
 /* x86.c - core analysis suite
  *
  * Portions Copyright (C) 1999, 2000, 2001, 2002 Mission Critical Linux, Inc.
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 David Anderson
- * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 David Anderson
+ * Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -998,6 +998,7 @@ static int x86_uvtop_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
 static int x86_kvtop_xen_wpt(struct task_context *, ulong, physaddr_t *, int);
 static int x86_uvtop_xen_wpt_PAE(struct task_context *, ulong, physaddr_t *, int);
 static int x86_kvtop_xen_wpt_PAE(struct task_context *, ulong, physaddr_t *, int);
+static int x86_kvtop_remap(ulong, physaddr_t *);
 static ulong x86_get_task_pgd(ulong);
 static ulong x86_processor_speed(void);
 static ulong x86_get_pc(struct bt_info *);
@@ -1008,6 +1009,7 @@ static uint64_t x86_memory_size(void);
 static ulong x86_vmalloc_start(void);
 static ulong *read_idt_table(int);
 static void eframe_init(void);
+static int remap_init(void);
 #define READ_IDT_INIT     1
 #define READ_IDT_RUNTIME  2
 static char *extract_idt_function(ulong *, char *, ulong *);
@@ -1801,6 +1803,8 @@ x86_init(int when)
 	        machdep->processor_speed = x86_processor_speed;
 	        machdep->get_task_pgd = x86_get_task_pgd;
 		machdep->dump_irq = generic_dump_irq;
+		machdep->get_irq_affinity = generic_get_irq_affinity;
+		machdep->show_interrupts = generic_show_interrupts;
 		machdep->get_stack_frame = x86_get_stack_frame;
 		machdep->get_stackbase = generic_get_stackbase;
 		machdep->get_stacktop = generic_get_stacktop;
@@ -2016,6 +2020,9 @@ x86_init(int when)
 				   "pr_reg");
 		STRUCT_SIZE_INIT(percpu_data, "percpu_data");
 
+		if (!remap_init())
+			machdep->machspec->max_numnodes = -1;
+
 		break;
 
 	case POST_INIT:
@@ -2083,6 +2090,76 @@ eframe_init(void)
 		INT_EFRAME_ECX = MEMBER_OFFSET("pt_regs", "cx") / 4;
 		INT_EFRAME_EBX = MEMBER_OFFSET("pt_regs", "bx") / 4;
 	}
+}
+
+/*
+ *  Locate regions remapped by the remap allocator
+ */
+static int
+remap_init(void)
+{
+	ulong start_vaddr, end_vaddr, start_pfn;
+	int max_numnodes;
+	struct machine_specific *ms;
+	struct syment *sp;
+
+	if (! (sp = symbol_search("node_remap_start_vaddr")) )
+		return FALSE;
+	start_vaddr = sp->value;
+
+	if (! (sp = symbol_search("node_remap_end_vaddr")) )
+		return FALSE;
+	end_vaddr = sp->value;
+
+	if (! (sp = symbol_search("node_remap_start_pfn")) )
+		return FALSE;
+	start_pfn = sp->value;
+
+	max_numnodes = get_array_length("node_remap_start_pfn", NULL,
+					sizeof(ulong));
+	if (max_numnodes < 1)
+		max_numnodes = 1;
+
+	ms = machdep->machspec;
+	ms->remap_start_vaddr = calloc(3 * max_numnodes, sizeof(ulong));
+	if (!ms->remap_start_vaddr)
+		error(FATAL, "cannot malloc remap array");
+	ms->remap_end_vaddr = ms->remap_start_vaddr + max_numnodes;
+	ms->remap_start_pfn = ms->remap_end_vaddr + max_numnodes;
+
+	readmem(start_vaddr, KVADDR, ms->remap_start_vaddr,
+		max_numnodes * sizeof(ulong), "node_remap_start_vaddr",
+		FAULT_ON_ERROR);
+	readmem(end_vaddr, KVADDR, ms->remap_end_vaddr,
+		max_numnodes * sizeof(ulong), "node_remap_end_vaddr",
+		FAULT_ON_ERROR);
+	readmem(start_pfn, KVADDR, ms->remap_start_pfn,
+		max_numnodes * sizeof(ulong), "node_remap_end_vaddr",
+		FAULT_ON_ERROR);
+	ms->max_numnodes = max_numnodes;
+
+	return TRUE;
+}
+
+static int
+x86_kvtop_remap(ulong kvaddr, physaddr_t *paddr)
+{
+	struct machine_specific *ms;
+	int i;
+
+	ms = machdep->machspec;
+
+	/* ms->max_numnodes is -1 when unused. */
+	
+	for (i = 0; i < ms->max_numnodes; ++i) {
+		if (kvaddr >= ms->remap_start_vaddr[i] &&
+		    kvaddr < ms->remap_end_vaddr[i]) {
+			*paddr = PTOB(ms->remap_start_pfn[i]) +
+				kvaddr - ms->remap_start_vaddr[i];
+			return TRUE;
+		}
+	}
+	return FALSE;
 }
 
 /*
@@ -2770,12 +2847,13 @@ x86_kvtop(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verbose)
 		}
 		pgd = (ulong *)symbol_value("idle_pg_table_l2");
 	} else {
-		if (!vt->vmalloc_start) {
+		if (x86_kvtop_remap(kvaddr, paddr)) {
+			if (!verbose)
+				return TRUE;
+		} else if (!vt->vmalloc_start) {
 			*paddr = VTOP(kvaddr);
 			return TRUE;
-		}
-
-		if (!IS_VMALLOC_ADDR(kvaddr)) { 
+		} else if (!IS_VMALLOC_ADDR(kvaddr)) { 
 			*paddr = VTOP(kvaddr);
 			if (!verbose)
 				return TRUE;
@@ -3025,12 +3103,13 @@ x86_kvtop_PAE(struct task_context *tc, ulong kvaddr, physaddr_t *paddr, int verb
 		else
 			pgd = (ulonglong *)symbol_value("idle_pg_table");
 	} else {
-		if (!vt->vmalloc_start) {
+		if (x86_kvtop_remap(kvaddr, paddr)) {
+			if (!verbose)
+				return TRUE;
+		} else if (!vt->vmalloc_start) {
 			*paddr = VTOP(kvaddr);
 			return TRUE;
-		}
-
-		if (!IS_VMALLOC_ADDR(kvaddr)) { 
+		} else if (!IS_VMALLOC_ADDR(kvaddr)) { 
 			*paddr = VTOP(kvaddr);
 			if (!verbose)
 				return TRUE;
@@ -3356,6 +3435,8 @@ x86_dump_machdep_table(ulong arg)
         int others;
 	ulong xen_wpt;
 	char buf[BUFSIZE];
+	struct machine_specific *ms;
+	int i, max_numnodes;
 
 	switch (arg) {
 	default:
@@ -3403,6 +3484,8 @@ x86_dump_machdep_table(ulong arg)
 	}
         fprintf(fp, "       get_task_pgd: x86_get_task_pgd()\n");
 	fprintf(fp, "           dump_irq: generic_dump_irq()\n");
+	fprintf(fp, "   get_irq_affinity: generic_get_irq_affinity()\n");
+	fprintf(fp, "    show_interrupts: generic_show_interrupts()\n");
 	fprintf(fp, "    get_stack_frame: x86_get_stack_frame()\n");
 	fprintf(fp, "      get_stackbase: generic_get_stackbase()\n");
 	fprintf(fp, "       get_stacktop: generic_get_stacktop()\n");
@@ -3491,6 +3574,39 @@ x86_dump_machdep_table(ulong arg)
 		machdep->machspec->last_ptbl_read_PAE);
 	fprintf(fp, "                 page_protnone: %lx\n",
 		machdep->machspec->page_protnone);
+
+	ms = machdep->machspec;
+	max_numnodes = ms->max_numnodes;
+	fprintf(fp, "                  MAX_NUMNODES: ");
+	if (max_numnodes < 0) {
+		fprintf(fp, "(unused)\n");
+	} else {
+		fprintf(fp, "%d\n", max_numnodes);
+
+		fprintf(fp, "             remap_start_vaddr:");
+		for (i = 0; i < max_numnodes; ++i) {
+			if ((i % 8) == 0)
+				fprintf(fp, "\n        ");
+			fprintf(fp, "%08lx ", ms->remap_start_vaddr[i]);
+		}
+		fprintf(fp, "\n");
+
+		fprintf(fp, "               remap_end_vaddr:");
+		for (i = 0; i < max_numnodes; ++i) {
+			if ((i % 8) == 0)
+				fprintf(fp, "\n        ");
+			fprintf(fp, "%08lx ", ms->remap_end_vaddr[i]);
+		}
+		fprintf(fp, "\n");
+
+		fprintf(fp, "               remap_start_pfn:");
+		for (i = 0; i < max_numnodes; ++i) {
+			if ((i % 8) == 0)
+				fprintf(fp, "\n        ");
+			fprintf(fp, "%08lx ", ms->remap_start_pfn[i]);
+		}
+		fprintf(fp, "\n");
+	}
 }
 
 /*
@@ -4391,6 +4507,8 @@ x86_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	 *  going directly to read_netdump() instead of via read_kdump().
 	 */ 
 	pc->readmem = read_netdump;
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "readmem (temporary): read_netdump()\n");
 
 	if (xkd->flags & KDUMP_CR3)
 		goto use_cr3;
@@ -4468,6 +4586,9 @@ x86_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
         }
 
 	pc->readmem = read_kdump;
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "readmem (restore): read_kdump()\n");
+
 	return TRUE;
 
 use_cr3:
@@ -4554,6 +4675,8 @@ use_cr3:
         machdep->last_ptbl_read = 0;
         machdep->last_pmd_read = 0;
 	pc->readmem = read_kdump;
+	if (CRASHDEBUG(1)) 
+		fprintf(fp, "readmem (restore): read_kdump()\n");
 
 	return TRUE;
 }
