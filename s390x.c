@@ -1027,8 +1027,6 @@ static unsigned long get_int_stack_pcpu(char *stack_name, int cpu)
 {
 	unsigned long addr;
 
-	if (!MEMBER_EXISTS("pcpu", stack_name))
-		return 0;
 	addr = symbol_value("pcpu_devices") +
 		cpu * STRUCT_SIZE("pcpu") + MEMBER_OFFSET("pcpu", stack_name);
 	return readmem_ul(addr) + INT_STACK_SIZE;
@@ -1041,7 +1039,8 @@ static unsigned long get_int_stack_lc(char *stack_name, char *lc)
 {
 	if (!MEMBER_EXISTS(lc_struct, stack_name))
 		return 0;
-	return ULONG(lc + MEMBER_OFFSET(lc_struct, stack_name));
+	return roundup(ULONG(lc + MEMBER_OFFSET(lc_struct, stack_name)),
+			     PAGESIZE());
 }
 
 /*
@@ -1057,7 +1056,7 @@ static void get_int_stack(char *stack_name, int cpu, char *lc,
 		stack_addr = symbol_value("restart_stack");
 		stack_addr = readmem_ul(stack_addr);
 	} else {
-		if (symbol_exists("pcpu_devices"))
+		if (symbol_exists("pcpu_devices") && MEMBER_EXISTS("pcpu", stack_name))
 			stack_addr = get_int_stack_pcpu(stack_name, cpu);
 		else
 			stack_addr = get_int_stack_lc(stack_name, lc);
@@ -1556,10 +1555,11 @@ s390x_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 	if ((FIRSTCHAR(argv[argc-1]) == '<') && 
 	    (LASTCHAR(argv[argc-1]) == '>')) {
 		p1 = rindex(inbuf, '<');
-		while ((p1 > inbuf) && !STRNEQ(p1, " 0x")) 
+		while ((p1 > inbuf) && 
+		    !(STRNEQ(p1, " 0x") || STRNEQ(p1, "\t0x") || STRNEQ(p1, ",0x"))) 
 			p1--;
 
-		if (!STRNEQ(p1, " 0x"))
+		if (!(STRNEQ(p1, " 0x") || STRNEQ(p1, "\t0x") || STRNEQ(p1, ",0x"))) 
 			return FALSE;
 		p1++;
 

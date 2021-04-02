@@ -163,7 +163,7 @@ static void kmem_search(struct meminfo *);
 static void kmem_cache_init(void);
 static void kmem_cache_init_slub(void);
 static ulong max_cpudata_limit(ulong, ulong *);
-static void kmem_cache_downsize(void);
+static int kmem_cache_downsize(void);
 static int ignore_cache(struct meminfo *, char *);
 static char *is_kmem_cache_addr(ulong, char *);
 static char *is_kmem_cache_addr_common(ulong, char *);
@@ -452,6 +452,9 @@ vm_init(void)
 	if (INVALID_MEMBER(page_lru))
 		ANON_MEMBER_OFFSET_INIT(page_lru, "page", "lru");
 	MEMBER_OFFSET_INIT(page_pte, "page", "pte");
+        MEMBER_OFFSET_INIT(page_compound_head, "page", "compound_head");
+	if (INVALID_MEMBER(page_compound_head))
+		ANON_MEMBER_OFFSET_INIT(page_compound_head, "page", "compound_head");
 
 	MEMBER_OFFSET_INIT(mm_struct_pgd, "mm_struct", "pgd");
 
@@ -476,6 +479,7 @@ vm_init(void)
 	MEMBER_OFFSET_INIT(block_device_bd_list, "block_device", "bd_list");
 	MEMBER_OFFSET_INIT(block_device_bd_disk, "block_device", "bd_disk");
 	MEMBER_OFFSET_INIT(inode_i_mapping, "inode", "i_mapping");
+	MEMBER_OFFSET_INIT(address_space_page_tree, "address_space", "page_tree");
 	MEMBER_OFFSET_INIT(address_space_nrpages, "address_space", "nrpages");
 	if (INVALID_MEMBER(address_space_nrpages))
 		MEMBER_OFFSET_INIT(address_space_nrpages, "address_space", "__nrpages");
@@ -2203,14 +2207,14 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
                         goto readmem_error;
 
 		case READ_ERROR:
-                        if (PRINT_ERROR_MESSAGE) {
-				if ((pc->flags & DEVMEM) && (kt->flags & PRE_KERNEL_INIT) &&
-				    devmem_is_restricted() && switch_to_proc_kcore())
-					return(readmem(addr, memtype, bufptr, size,
-						type, error_handle));
+			if (PRINT_ERROR_MESSAGE)
 				error(INFO, READ_ERRMSG, memtype_string(memtype, 0), addr, type);
-			}
-                        goto readmem_error;
+			if ((pc->flags & DEVMEM) && (kt->flags & PRE_KERNEL_INIT) &&
+			    !(error_handle & NO_DEVMEM_SWITCH) && devmem_is_restricted() && 
+			    switch_to_proc_kcore())
+				return(readmem(addr, memtype, bufptr, size,
+					type, error_handle));
+			goto readmem_error;
 
 		case PAGE_EXCLUDED:
 			RETURN_ON_PARTIAL_READ();
@@ -2409,16 +2413,16 @@ devmem_is_restricted(void)
 	    	if (machine_type("X86") || machine_type("X86_64")) {
 			if (readmem(255*PAGESIZE(), PHYSADDR, &tmp,
 			    sizeof(long), "devmem_is_allowed - pfn 255",
-			    QUIET|RETURN_ON_ERROR) &&
+			    QUIET|RETURN_ON_ERROR|NO_DEVMEM_SWITCH) &&
 			    !(readmem(257*PAGESIZE(), PHYSADDR, &tmp,
 			    sizeof(long), "devmem_is_allowed - pfn 257",
-			    QUIET|RETURN_ON_ERROR)))
+			    QUIET|RETURN_ON_ERROR|NO_DEVMEM_SWITCH)))
 				restricted = TRUE;
 		} 
 		if (kernel_symbol_exists("jiffies") &&
 		    !readmem(symbol_value("jiffies"), KVADDR, &tmp,
 		    sizeof(ulong), "devmem_is_allowed - jiffies", 
-		    QUIET|RETURN_ON_ERROR))
+		    QUIET|RETURN_ON_ERROR|NO_DEVMEM_SWITCH))
 			restricted = TRUE;
 
 		if (restricted)
@@ -2652,6 +2656,8 @@ char *error_handle_string(ulong error_handle)
 		sprintf(&ebuf[strlen(ebuf)], "%sHB", others++ ? "|" : "");
 	if (error_handle & RETURN_PARTIAL)
 		sprintf(&ebuf[strlen(ebuf)], "%sRP", others++ ? "|" : "");
+	if (error_handle & NO_DEVMEM_SWITCH)
+		sprintf(&ebuf[strlen(ebuf)], "%sNDS", others++ ? "|" : "");
 
 	strcat(ebuf, ")");
 
@@ -5144,7 +5150,11 @@ PG_slab_flag_init(void)
 		}
 	}
 
-	if (vt->flags & KMALLOC_SLUB) {
+	if (VALID_MEMBER(page_compound_head)) {
+		if (CRASHDEBUG(2))
+			fprintf(fp, 
+			    "PG_head_tail_mask: (UNUSED): page.compound_head exists!\n");
+	} else if (vt->flags & KMALLOC_SLUB) {
 		/* 
 		 *  PG_slab and the following are hardwired for 
 		 *  kernels prior to the pageflags enumerator.
@@ -5161,6 +5171,10 @@ PG_slab_flag_init(void)
 	       		if (CRASHDEBUG(2))
 				fprintf(fp, "PG_head_tail_mask: %lx\n", 
 					vt->PG_head_tail_mask);
+		} else if (vt->flags & PAGEFLAGS) {
+			vt->PG_head_tail_mask = 0;
+			error(WARNING, 
+				"SLUB: cannot determine how compound pages are linked\n\n");
 		}
 	} else {
 		if (enumerator_value("PG_tail", (long *)&flags))
@@ -5171,7 +5185,9 @@ PG_slab_flag_init(void)
 	       		if (CRASHDEBUG(2))
 				fprintf(fp, "PG_head_tail_mask: %lx (PG_compound|PG_reclaim)\n", 
 					vt->PG_head_tail_mask);
-		}
+		} else if (vt->flags & PAGEFLAGS) 
+			error(WARNING, 
+				"SLAB: cannot determine how compound pages are linked\n\n");
 	}
 
 	if (!vt->PG_slab)
@@ -5734,10 +5750,6 @@ dump_mem_map(struct meminfo *mi)
 	long buffersize;
 	char *outputbuffer;
 	int bufferindex;
-
-	buffersize = 1024 * 1024;
-	outputbuffer = GETBUF(buffersize + 512);
-
 	char style1[100];
 	char style2[100];
 	char style3[100];
@@ -5747,6 +5759,9 @@ dump_mem_map(struct meminfo *mi)
 		dump_mem_map_SPARSEMEM(mi);
 		return;
 	}
+
+	buffersize = 1024 * 1024;
+	outputbuffer = GETBUF(buffersize + 512);
 
 	sprintf((char *)&style1, "%%lx%s%%%dllx%s%%%dlx%s%%8lx %%2d%s",
 			space(MINSPACE),
@@ -6463,6 +6478,23 @@ translate_page_flags(char *buffer, ulong flags)
 	strcpy(buffer, buf);
 
 	return(strlen(buf));
+}
+
+/*
+ *  Display the mem_map data for a single page.
+ */
+int
+dump_inode_page(ulong page)
+{
+	struct meminfo meminfo;
+
+	BZERO(&meminfo, sizeof(struct meminfo));
+	meminfo.spec_addr = page;
+	meminfo.memtype = KVADDR;
+	meminfo.flags = ADDRESS_SPECIFIED;
+	dump_mem_map(&meminfo);
+
+	return meminfo.retval;
 }
 
 /*
@@ -9086,13 +9118,23 @@ vaddr_to_kmem_cache(ulong vaddr, char *buf, int verbose)
 		readmem(page+OFFSET(page_flags), KVADDR,
 			&page_flags, sizeof(ulong), "page.flags",
 			FAULT_ON_ERROR);
-		if (!(page_flags & (1 << vt->PG_slab)))
-			return NULL;
+		if (!(page_flags & (1 << vt->PG_slab))) {
+			if (((vt->flags & KMALLOC_SLUB) || VALID_MEMBER(page_compound_head)) ||
+			    ((vt->flags & KMALLOC_COMMON) &&
+			    VALID_MEMBER(page_slab) && VALID_MEMBER(page_first_page))) {
+				readmem(compound_head(page)+OFFSET(page_flags), KVADDR,
+					&page_flags, sizeof(ulong), "page.flags",
+					FAULT_ON_ERROR);
+				if (!(page_flags & (1 << vt->PG_slab)))
+					return NULL;
+			} else
+				return NULL;
+		}
 	}
 
 	if ((vt->flags & KMALLOC_SLUB) ||
-	    ((vt->flags & KMALLOC_COMMON) && 
-	     VALID_MEMBER(page_slab) && VALID_MEMBER(page_first_page))) {
+	    ((vt->flags & KMALLOC_COMMON) && VALID_MEMBER(page_slab) && 
+	    (VALID_MEMBER(page_compound_head) || VALID_MEMBER(page_first_page)))) {
                 readmem(compound_head(page)+OFFSET(page_slab),
                         KVADDR, &cache, sizeof(void *),
                         "page.slab", FAULT_ON_ERROR);
@@ -9122,8 +9164,8 @@ is_slab_overload_page(ulong vaddr, ulong *page_head, char *buf)
 	char *p;
 
         if ((vt->flags & SLAB_OVERLOAD_PAGE) &&
-	    is_page_ptr(vaddr, NULL) &&
-             VALID_MEMBER(page_slab) && VALID_MEMBER(page_first_page)) {
+	    is_page_ptr(vaddr, NULL) && VALID_MEMBER(page_slab) && 
+	    (VALID_MEMBER(page_compound_head) || VALID_MEMBER(page_first_page))) {
                 readmem(compound_head(vaddr)+OFFSET(page_slab),
                         KVADDR, &cache, sizeof(void *),
                         "page.slab", FAULT_ON_ERROR);
@@ -9163,10 +9205,10 @@ vaddr_to_slab(ulong vaddr)
 
 	slab = 0;
 
-        if (vt->flags & KMALLOC_SLUB)
+        if ((vt->flags & KMALLOC_SLUB) || VALID_MEMBER(page_compound_head))
 		slab = compound_head(page);
 	else if (vt->flags & SLAB_OVERLOAD_PAGE)
-		slab = page;
+		slab = compound_head(page);
         else if ((vt->flags & KMALLOC_COMMON) && VALID_MEMBER(page_slab_page))
                 readmem(page+OFFSET(page_slab_page),
                         KVADDR, &slab, sizeof(void *),
@@ -9271,8 +9313,10 @@ kmem_cache_init(void)
         } else
                 cache = cache_end = symbol_value("cache_cache");
 
-	if (!(pc->flags & RUNTIME))
-		kmem_cache_downsize();
+	if (!(pc->flags & RUNTIME)) {
+		if (kmem_cache_downsize())
+			add_to_downsized("kmem_cache");
+	}
 
 	cache_buf = GETBUF(SIZE(kmem_cache_s));
 	hq_open();
@@ -9386,7 +9430,7 @@ kmem_cache_nodelists(ulong cache)
 		return cache+OFFSET(kmem_cache_s_lists);
 }
 
-static void
+static int
 kmem_cache_downsize(void)
 {
 	char *cache_buf;
@@ -9409,7 +9453,10 @@ kmem_cache_downsize(void)
 					STRUCT_SIZE("kmem_cache"), 
 					SIZE(kmem_cache));
 		}
-		return;
+		if (STRUCT_SIZE("kmem_cache") != SIZE(kmem_cache))
+			return TRUE;
+		else
+			return FALSE;
 	}
 
 	if ((THIS_KERNEL_VERSION < LINUX(2,6,22)) ||
@@ -9418,7 +9465,7 @@ kmem_cache_downsize(void)
 	     !kernel_symbol_exists("kmem_cache_boot")) ||
 	    (!MEMBER_EXISTS("kmem_cache", "buffer_size") &&
 	     !MEMBER_EXISTS("kmem_cache", "size"))) {
-		return;
+		return FALSE;
 	}
 
 	if (vt->flags & NODELISTS_IS_PTR) {
@@ -9462,7 +9509,11 @@ kmem_cache_downsize(void)
 		if (CRASHDEBUG(1))
 			fprintf(fp, "\nkmem_cache_downsize: %ld to %ld\n",
 				STRUCT_SIZE("kmem_cache"), SIZE(kmem_cache_s));
-		return;
+
+		if (STRUCT_SIZE("kmem_cache") != SIZE(kmem_cache_s))
+			return TRUE;
+		else
+			return FALSE;
 	} else if (vt->flags & SLAB_CPU_CACHE) {
                 if (kernel_symbol_exists("kmem_cache_boot") &&
                     MEMBER_EXISTS("kmem_cache", "object_size") &&
@@ -9479,7 +9530,11 @@ kmem_cache_downsize(void)
 		if (CRASHDEBUG(1))
 			fprintf(fp, "\nkmem_cache_downsize: %ld to %ld\n",
 				STRUCT_SIZE("kmem_cache"), SIZE(kmem_cache_s));
-		return;
+
+		if (STRUCT_SIZE("kmem_cache") != SIZE(kmem_cache_s))
+			return TRUE;
+		else
+			return FALSE;
 	}
 
 	cache_buf = GETBUF(SIZE(kmem_cache_s));
@@ -9487,7 +9542,7 @@ kmem_cache_downsize(void)
 	if (!readmem(symbol_value("cache_cache"), KVADDR, cache_buf, 
 	    SIZE(kmem_cache_s), "kmem_cache buffer", RETURN_ON_ERROR)) {
 		FREEBUF(cache_buf);
-		return;
+		return FALSE;
 	}
 
 	buffer_size = UINT(cache_buf + 
@@ -9519,9 +9574,16 @@ kmem_cache_downsize(void)
 			    "kmem_cache_downsize: nr_node_ids: %ld\n",
 				vt->kmem_cache_len_nodes);
 		}
+
+		FREEBUF(cache_buf);
+		if (STRUCT_SIZE("kmem_cache") != SIZE(kmem_cache_s))
+			return TRUE;
+		else
+			return FALSE;
 	}
 
 	FREEBUF(cache_buf);
+	return FALSE;
 }
 
 /*
@@ -15176,7 +15238,7 @@ next_physpage(ulonglong paddr, ulonglong *nextpaddr)
 static int
 get_hugetlb_total_pages(ulong *nr_total_pages)
 {
-	ulong hstate_p;
+	ulong hstate_p, vaddr;
 	int i, len;
 	ulong nr_huge_pages;
 	uint horder;
@@ -15193,13 +15255,16 @@ get_hugetlb_total_pages(ulong *nr_total_pages)
 		hstate_p = symbol_value("hstates");
 
 		for (i = 0; i < len; i++) {
-			hstate_p = hstate_p + (SIZE(hstate) * i);
+			vaddr = hstate_p + (SIZE(hstate) * i);
 
-			readmem(hstate_p + OFFSET(hstate_order),
+			readmem(vaddr + OFFSET(hstate_order),
 				KVADDR, &horder, sizeof(uint),
 				"hstate_order", FAULT_ON_ERROR);
 
-			readmem(hstate_p + OFFSET(hstate_nr_huge_pages),
+			if (!horder)
+				continue;
+
+			readmem(vaddr + OFFSET(hstate_nr_huge_pages),
 				KVADDR, &nr_huge_pages, sizeof(ulong),
 				"hstate_nr_huge_pages", FAULT_ON_ERROR);
 
@@ -17648,13 +17713,17 @@ dump_page_flags(ulonglong flags)
 static void
 kmem_cache_init_slub(void)
 {
+	if (vt->flags & KMEM_CACHE_INIT)
+		return;
+
 	if (CRASHDEBUG(1) &&
 	    !(vt->flags & CONFIG_NUMA) && (vt->numnodes > 1))
 		error(WARNING, 
 		    "kmem_cache_init_slub: numnodes: %d without CONFIG_NUMA\n",
 			vt->numnodes);
 
-	kmem_cache_downsize();
+	if (kmem_cache_downsize())
+		add_to_downsized("kmem_cache");
 
 	vt->cpu_slab_type = MEMBER_TYPE("kmem_cache", "cpu_slab");
 
@@ -18496,17 +18565,22 @@ get_kmem_cache_list(ulong **cache_buf)
 static ulong
 compound_head(ulong page)
 {
-	ulong flags, first_page;;
+	ulong flags, first_page, compound_head;
 
 	first_page = page;
 
-	if (!readmem(page+OFFSET(page_flags), KVADDR, &flags, sizeof(ulong),
-	    "page.flags", RETURN_ON_ERROR))
-		return first_page;
-
-	if ((flags & vt->PG_head_tail_mask) == vt->PG_head_tail_mask)
-		readmem(page+OFFSET(page_first_page), KVADDR, &first_page, 
-			sizeof(ulong), "page.first_page", RETURN_ON_ERROR);
+	if (VALID_MEMBER(page_compound_head)) {
+		if (readmem(page+OFFSET(page_compound_head), KVADDR, &compound_head, 
+		    sizeof(ulong), "page.compound_head", RETURN_ON_ERROR)) {
+			if (compound_head & 1)
+				first_page = compound_head - 1;
+		}
+	} else if (readmem(page+OFFSET(page_flags), KVADDR, &flags, sizeof(ulong),
+		"page.flags", RETURN_ON_ERROR)) {
+		if ((flags & vt->PG_head_tail_mask) == vt->PG_head_tail_mask)
+			readmem(page+OFFSET(page_first_page), KVADDR, &first_page, 
+				sizeof(ulong), "page.first_page", RETURN_ON_ERROR);
+	}
 		
 	return first_page;
 }

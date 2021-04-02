@@ -328,6 +328,7 @@ struct number_option {
 #define HEX_BIAS         (0x8)
 #define LONG_LONG       (0x10)
 #define RETURN_PARTIAL  (0x20)
+#define NO_DEVMEM_SWITCH (0x40)
 
 #define SEEK_ERROR       (-1)
 #define READ_ERROR       (-2)
@@ -472,6 +473,7 @@ struct program_context {
 #define MOD_READNOW      (0x8000)
 #define MM_STRUCT_FORCE (0x10000)
 #define CPUMASK         (0x20000)
+#define PARTIAL_READ_OK (0x40000)
 	ulonglong curcmd_private;	/* general purpose per-command info */
 	int cur_gdb_cmd;                /* current gdb command */
 	int last_gdb_cmd;               /* previously-executed gdb command */
@@ -518,6 +520,9 @@ struct program_context {
 #define INCOMPLETE_DUMP  (0x8000ULL)
 #define is_incomplete_dump() (pc->flags2 & INCOMPLETE_DUMP)
 #define QEMU_MEM_DUMP_COMPRESSED (0x10000ULL)
+#define SNAP        (0x20000ULL)
+#define EXCLUDED_VMEMMAP (0x40000ULL)
+#define is_excluded_vmemmap() (pc->flags2 & EXCLUDED_VMEMMAP)
 	char *cleanup;
 	char *namelist_orig;
 	char *namelist_debug_orig;
@@ -622,6 +627,7 @@ struct new_utsname {
 #define KASLR                       (0x2ULL)
 #define KASLR_CHECK                 (0x4ULL)
 #define GET_TIMESTAMP               (0x8ULL)
+#define TVEC_BASES_V3              (0x10ULL)
 
 #define XEN()       (kt->flags & ARCH_XEN)
 #define OPENVZ()    (kt->flags & ARCH_OPENVZ)
@@ -730,6 +736,7 @@ struct kernel_table {                   /* kernel data */
 		ulong _stext_SYMBOL;
 	} vmcoreinfo;
 	ulonglong flags2;
+	char *source_tree;
 };
 
 /*
@@ -1940,6 +1947,8 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long task_struct_thread_reg31;
 	long pt_regs_regs;
 	long pt_regs_cp0_badvaddr;
+	long address_space_page_tree;
+	long page_compound_head;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2324,6 +2333,7 @@ struct list_data {             /* generic structure used by do_list() to walk */
 	ulong *list_ptr;
 	int (*callback_func)(void *, void *); 
 	void *callback_data;
+	long struct_list_offset;
 };
 #define LIST_OFFSET_ENTERED  (VERBOSE << 1)
 #define LIST_START_ENTERED   (VERBOSE << 2)
@@ -2428,6 +2438,11 @@ struct symbol_namespace {
 	long cnt;
 };
 
+struct downsized {
+	char *name;
+	struct downsized *next;
+};
+
 #define SYMVAL_HASH (512)
 #define SYMVAL_HASH_INDEX(vaddr) \
         (((vaddr) >> machdep->pageshift) % SYMVAL_HASH)
@@ -2478,6 +2493,7 @@ struct symbol_table_data {
 	ulong first_section_start;
 	ulong last_section_end;
 	ulong _stext_vmlinux;
+	struct downsized downsized;
 };
 
 /* flags for st */
@@ -2598,6 +2614,7 @@ struct load_module {
 #define PRINT_SINGLE_VMA  (0x80)
 #define PRINT_RADIX_10   (0x100)
 #define PRINT_RADIX_16   (0x200)
+#define PRINT_NRPAGES    (0x400)
 
 #define MIN_PAGE_SIZE  (4096)
 
@@ -2849,6 +2866,7 @@ typedef signed int s32;
 #define PHYS_OFFSET   (0x2)
 #define VM_L2_64K     (0x4)
 #define VM_L3_4K      (0x8)
+#define KDUMP_ENABLED (0x10)
 
 /* 
  * sources: Documentation/arm64/memory.txt 
@@ -2931,6 +2949,11 @@ struct machine_specific {
 	ulong __SWP_OFFSET_BITS;
 	ulong __SWP_OFFSET_SHIFT;
 	ulong __SWP_OFFSET_MASK;
+	ulong crash_kexec_start;
+	ulong crash_kexec_end;
+	ulong crash_save_cpu_start;
+	ulong crash_save_cpu_end;
+	ulong kernel_flags;
 };
 
 struct arm64_stackframe {
@@ -4110,6 +4133,7 @@ struct gnu_request {
 #define GNU_GET_SYMBOL_TYPE      (15)
 #define GNU_USER_PRINT_OPTION 	 (16)
 #define GNU_SET_CRASH_BLOCK      (17)
+#define GNU_GET_FUNCTION_RANGE   (18)
 #define GNU_DEBUG_COMMAND       (100)
 /*
  *  GNU flags
@@ -4417,6 +4441,7 @@ int console_verbatim(char *);
 int whitespace(int);
 int ascii(int);
 int ascii_string(char *);
+int printable_string(char *);
 char *clean_line(char *);
 char *strip_line_end(char *);
 char *strip_linefeeds(char *);
@@ -4539,7 +4564,9 @@ int is_kernel_text(ulong);
 int is_kernel_data(ulong);
 int is_init_data(ulong value); 
 int is_kernel_text_offset(ulong);
+int is_symbol_text(struct syment *);
 int is_rodata(ulong, struct syment **);
+int get_text_function_range(ulong, ulong *, ulong *);
 void datatype_init(void);
 struct syment *symbol_search(char *);
 struct syment *value_search(ulong, ulong *);
@@ -4562,6 +4589,7 @@ void show_symbol(struct syment *, ulong, ulong);
 #define SHOW_DEC_OFFS (0x8)
 #define SHOW_RADIX() (*gdb_output_radix == 16 ? SHOW_HEX_OFFS : SHOW_DEC_OFFS)
 #define SHOW_MODULE  (0x10)
+int symbol_name_count(char *);
 int symbol_query(char *, char *, struct syment **);
 struct syment *next_symbol(char *, struct syment *);
 struct syment *prev_symbol(char *, struct syment *);
@@ -4643,6 +4671,8 @@ struct struct_member_data {
 };
 int fill_struct_member_data(struct struct_member_data *);
 void parse_for_member_extended(struct datatype_member *, ulong);
+void add_to_downsized(char *);
+int is_downsized(char *);
 
 /*  
  *  memory.c 
@@ -4702,6 +4732,8 @@ void alter_stackbuf(struct bt_info *);
 int vaddr_type(ulong, struct task_context *);
 char *format_stack_entry(struct bt_info *bt, char *, ulong, ulong);
 int in_user_stack(ulong, ulong);
+int dump_inode_page(ulong);
+
 
 /*
  *  filesys.c 
@@ -4738,16 +4770,18 @@ int is_readable(char *);
 #define RADIX_TREE_SEARCH  (2)
 #define RADIX_TREE_DUMP    (3)
 #define RADIX_TREE_GATHER  (4)
+#define RADIX_TREE_DUMP_CB (5)
 struct radix_tree_pair {
 	ulong index;
 	void *value;
 };
 ulong do_radix_tree(ulong, int, struct radix_tree_pair *);
 int file_dump(ulong, ulong, ulong, int, int);
-#define DUMP_FULL_NAME   1
-#define DUMP_INODE_ONLY  2
-#define DUMP_DENTRY_ONLY 4
-#define DUMP_EMPTY_FILE  8
+#define DUMP_FULL_NAME      0x1
+#define DUMP_INODE_ONLY     0x2
+#define DUMP_DENTRY_ONLY    0x4
+#define DUMP_EMPTY_FILE     0x8
+#define DUMP_FILE_NRPAGES  0x10
 #endif  /* !GDB_COMMON */
 int same_file(char *, char *);
 #ifndef GDB_COMMON
@@ -4991,6 +5025,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_SCHEDULE      (BT_RESCHEDULE)
 #define BT_RET_FROM_SMP_FORK   (0x10000ULL)
 #define BT_STRACE              (0x20000ULL)
+#define BT_KDUMP_ADJUST         (BT_STRACE)
 #define BT_KSTACKP             (0x40000ULL)
 #define BT_LOOP_TRAP           (0x80000ULL)
 #define BT_BUMP_FRAME_LEVEL   (0x100000ULL)
@@ -5024,6 +5059,7 @@ ulong cpu_map_addr(const char *type);
 #define BT_EFRAME_TARGET   (0x800000000000ULL)
 #define BT_CPUMASK        (0x1000000000000ULL)
 #define BT_SHOW_ALL_REGS  (0x2000000000000ULL)
+#define BT_REGS_NOT_FOUND (0x4000000000000ULL)
 #define BT_SYMBOL_OFFSET   (BT_SYMBOLIC_ARGS)
 
 #define BT_REF_HEXVAL         (0x1)
@@ -5697,6 +5733,7 @@ void dump_registers_for_qemu_mem_dump(void);
 void kdump_backup_region_init(void);
 void display_regs_from_elf_notes(int, FILE *);
 void display_ELF_note(int, int, void *, FILE *);
+void *netdump_get_prstatus_percpu(int);
 #define PRSTATUS_NOTE (1)
 #define QEMU_NOTE     (2)
 

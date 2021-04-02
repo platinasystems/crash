@@ -37,7 +37,6 @@ static asection *get_kernel_section(char *);
 static char * get_section(ulong vaddr, char *buf);
 static void symbol_dump(ulong, char *);
 static void check_for_dups(struct load_module *);
-static int symbol_name_count(char *);
 static struct syment *kallsyms_module_symbol(struct load_module *, symbol_info *);
 static void store_load_module_symbols \
 	(bfd *, int, void *, long, uint, ulong, char *);
@@ -2691,12 +2690,11 @@ is_kernel_text(ulong value)
 	start = 0;
 
 	if (pc->flags & SYSMAP) {
-		if ((sp = value_search(value, NULL)) &&
-		    ((sp->type == 'T') || (sp->type == 't'))) 
+		if ((sp = value_search(value, NULL)) && is_symbol_text(sp))
 			return TRUE;
 
 		for (sp = st->symtable; sp < st->symend; sp++) {
-			if (!((sp->type == 'T') || (sp->type == 't')))
+			if (!is_symbol_text(sp))
 				continue;
 			if ((value >= sp->value) && (value < kt->etext))
 				return TRUE;
@@ -2718,8 +2716,7 @@ is_kernel_text(ulong value)
 		}
 	}
 
-        if ((sp = value_search(value, NULL)) &&
-	    ((sp->type == 'T') || (sp->type == 't'))) 
+        if ((sp = value_search(value, NULL)) && is_symbol_text(sp))
 		return TRUE;
 
         if (NO_MODULES())
@@ -2787,6 +2784,11 @@ is_kernel_text_offset(ulong value)
 	return(offset ? TRUE : FALSE);
 }
 
+int
+is_symbol_text(struct syment *sp)
+{
+	return ((sp->type == 'T') || (sp->type == 't'));
+}
 
 /*
  *  Check whether an address is most likely kernel data.
@@ -2821,6 +2823,37 @@ is_rodata(ulong value, struct syment **spp)
 }
 
 /*
+ *  For a given kernel virtual address, request that gdb return 
+ *  the address range of the containing function.  For module 
+ *  text addresses, its debuginfo data must be loaded.
+ */
+int
+get_text_function_range(ulong vaddr, ulong *low, ulong *high)
+{
+	struct syment *sp;
+	struct gnu_request gnu_request, *req = &gnu_request;
+
+	if (!(sp = value_search(vaddr, NULL)))
+		return FALSE;
+
+	BZERO(req, sizeof(struct gnu_request));
+	req->command = GNU_GET_FUNCTION_RANGE;
+	req->pc = sp->value;
+	req->name = sp->name;
+	gdb_interface(req);
+	if (req->flags & GNU_COMMAND_FAILED)
+		return FALSE;
+
+	if ((vaddr < req->addr) || (vaddr >= req->addr2))
+		return FALSE;
+
+	*low = req->addr;
+	*high = req->addr2;
+
+	return TRUE;
+}
+
+/*
  *  "help -s" output
  */
 void
@@ -2829,6 +2862,7 @@ dump_symbol_table(void)
 	int i, s, cnt, tot;
         struct load_module *lm;
 	struct syment *sp;
+	struct downsized *ds;
 	int others;
 	asection **sec;
 
@@ -3141,6 +3175,13 @@ dump_symbol_table(void)
 			(ulong)bfd_get_section_vma(st->bfd, section),
 			(ulong)bfd_section_size(st->bfd, section));
 	}
+	fprintf(fp, "\n           downsized: ");
+	if (st->downsized.name) {
+		for (ds = &st->downsized, cnt = 0; ds->name; ds = ds->next)
+			fprintf(fp, "%s%s", cnt++ ? ", " : "", ds->name);
+		fprintf(fp, "\n");
+	} else
+		fprintf(fp, "(none)\n");
 }
 
 
@@ -4161,7 +4202,7 @@ symbol_search(char *s)
 /*
  *  Count the number of instances of a symbol name.
  */
-static int
+int
 symbol_name_count(char *s)
 {
         int i;
@@ -7093,6 +7134,9 @@ print_struct(char *s, ulong addr)
 {
 	char buf[BUFSIZE];
 
+	if (is_downsized(s))
+		pc->curcmd_flags |= PARTIAL_READ_OK;
+
 	if (is_typedef(s))
         	sprintf(buf, "output *(%s *)0x%lx", s, addr);
 	else
@@ -7100,6 +7144,8 @@ print_struct(char *s, ulong addr)
 	fprintf(fp, "struct %s ", s);
 	gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
 	fprintf(fp, "\n");
+
+	pc->curcmd_flags &= ~PARTIAL_READ_OK;
 }
 
 
@@ -7111,12 +7157,17 @@ print_union(char *s, ulong addr)
 {
 	char buf[BUFSIZE];
 
+	if (is_downsized(s))
+		pc->curcmd_flags |= PARTIAL_READ_OK;
+
         if (is_typedef(s))
                 sprintf(buf, "output *(%s *)0x%lx", s, addr);
         else 
         	sprintf(buf, "output *(union %s *)0x%lx", s, addr);
         fprintf(fp, "union %s ", s);
         gdb_pass_through(buf, NULL, GNU_RETURN_ON_ERROR);
+
+	pc->curcmd_flags &= ~PARTIAL_READ_OK;
 }
 
 /*
@@ -7680,7 +7731,7 @@ parse_for_member_extended(struct datatype_member *dm,
 	free_structure(root);
 
 	if (!found)
-		error(FATAL, "invalid data structure member reference: %s\n",
+		error(INFO, "invalid data structure member reference: %s\n",
 			dm->member);
 }
 
@@ -8600,6 +8651,8 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(page_s_mem));
         fprintf(fp, "                   page_active: %ld\n",
                 OFFSET(page_active));
+        fprintf(fp, "            page_compound_head: %ld\n",
+                OFFSET(page_compound_head));
 
 	fprintf(fp, "        trace_print_flags_mask: %ld\n",
 		OFFSET(trace_print_flags_mask));
@@ -8634,6 +8687,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(block_device_bd_disk));
 	fprintf(fp, "         address_space_nrpages: %ld\n",
 		OFFSET(address_space_nrpages));
+	fprintf(fp, "       address_space_page_tree: %ld\n",
+		OFFSET(address_space_page_tree));
 	fprintf(fp, "                 gendisk_major: %ld\n",
 		OFFSET(gendisk_major));
 	fprintf(fp, "                  gendisk_fops: %ld\n",
@@ -12467,4 +12522,39 @@ fill_struct_member_data(struct struct_member_data *smd)
 	smd->bitsize = dtol(printm_list[5], RETURN_ON_ERROR, NULL);
 
 	return TRUE;
+}
+
+void
+add_to_downsized(char *name)
+{
+	struct downsized *ds;
+
+	ds = &st->downsized; 
+
+	while (ds->name)
+		ds = ds->next;
+
+	if (!(ds->name = (char *)malloc(strlen(name)+1)) ||
+	    !(ds->next = (struct downsized *)calloc(1, sizeof(struct downsized))))
+		error(FATAL, 
+		    "cannot calloc/malloc downsized struct or \"%s\" name string\n", name);
+
+	strcpy(ds->name, name);
+
+	if (CRASHDEBUG(1))
+		fprintf(fp, "%sadd_to_downsized: \"%s\"\n", 
+			(pc->flags & PLEASE_WAIT) ? "\n" : "", name);
+}
+
+int
+is_downsized(char *name)
+{
+	struct downsized *ds;
+
+	for (ds = &st->downsized; ds->name; ds = ds->next) {
+		if (STREQ(name, ds->name))
+			return TRUE;
+	}
+
+	return FALSE;
 }

@@ -1,7 +1,7 @@
 /* x86_64.c -- core analysis suite
  *
- * Copyright (C) 2004-2014 David Anderson
- * Copyright (C) 2004-2014 Red Hat, Inc. All rights reserved.
+ * Copyright (C) 2004-2015 David Anderson
+ * Copyright (C) 2004-2015 Red Hat, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -5537,12 +5537,13 @@ x86_64_framepointer_init(void)
 	unsigned int push_rbp_mov_rsp_rbp;
 	int i, check;
 	char *checkfuncs[] = {"sys_open", "sys_fork", "sys_read",
-		"do_futex", "do_fork", "vfs_read"};
+		"do_futex", "do_fork", "_do_fork", "sys_write", 
+		"vfs_read", "__schedule"};
 
 	if (pc->flags & KERNEL_DEBUG_QUERY)
 		return;
 
-	for (i = check = 0; i < 6; i++) {
+	for (i = check = 0; i < 9; i++) {
 		if (!kernel_symbol_exists(checkfuncs[i]))
 			continue;
 
@@ -5559,12 +5560,13 @@ x86_64_framepointer_init(void)
 				return;
 		}
 
-		if (push_rbp_mov_rsp_rbp == PUSH_RBP_MOV_RSP_RBP)
-			check++;
+		if (push_rbp_mov_rsp_rbp == PUSH_RBP_MOV_RSP_RBP) {
+			if (++check > 2) {
+				machdep->flags |= FRAMEPOINTER;
+				break;
+			}
+		}
         }
-
-	if (check >= 3)
-		machdep->flags |= FRAMEPOINTER;
 }
 
 static ulong
@@ -5724,6 +5726,7 @@ x86_64_irq_eframe_link(ulong stkref, struct bt_info *bt, FILE *ofp)
 }
 
 #include "netdump.h"
+#include "xen_dom0.h"
 
 /*
  *  From the xen vmcore, create an index of mfns for each page that makes
@@ -5745,12 +5748,11 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 	struct syment *sp;
 
         /*
-         *  Temporarily read physical (machine) addresses from vmcore by
-         *  going directly to read_netdump() instead of via read_kdump().
+         *  Temporarily read physical (machine) addresses from vmcore.
          */
-        pc->readmem = read_netdump;
+	pc->curcmd_flags |= XEN_MACHINE_ADDR;
 	if (CRASHDEBUG(1))
-		fprintf(fp, "readmem (temporary): read_netdump()\n");
+		fprintf(fp, "readmem (temporary): force XEN_MACHINE_ADDR\n");
 
         if (xkd->flags & KDUMP_CR3)
                 goto use_cr3;
@@ -5810,9 +5812,9 @@ x86_64_xen_kdump_p2m_create(struct xen_kdump_data *xkd)
 		fprintf(fp, "\n");
 	}
 
-        pc->readmem = read_kdump;
+	pc->curcmd_flags &= ~XEN_MACHINE_ADDR;
 	if (CRASHDEBUG(1))
-		fprintf(fp, "readmem (restore): read_kdump()\n");
+		fprintf(fp, "readmem (restore): p2m translation\n");
 
 	return TRUE;
 
@@ -5879,9 +5881,9 @@ use_cr3:
 	machdep->last_pgd_read = 0;
         machdep->last_ptbl_read = 0;
         machdep->last_pmd_read = 0;
-        pc->readmem = read_kdump;
+	pc->curcmd_flags &= ~XEN_MACHINE_ADDR;
 	if (CRASHDEBUG(1))
-		fprintf(fp, "readmem (restore): read_kdump()\n");
+		fprintf(fp, "readmem (restore): p2m translation\n");
 
         return TRUE;
 }

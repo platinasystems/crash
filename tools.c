@@ -1103,7 +1103,7 @@ extract_hex(char *s, ulong *result, char stripchar, ulong first_instance)
 
 
 /*
- *  Determine whether a string contains only printable ASCII characters.
+ *  Determine whether a string contains only ASCII characters.
  */
 int
 ascii_string(char *s)
@@ -1112,6 +1112,22 @@ ascii_string(char *s)
 
         for (p = &s[0]; *p; p++) {
 		if (!ascii(*p)) 
+			return FALSE;
+        }
+
+        return TRUE;
+}
+
+/*
+ *  Check whether a string contains only printable ASCII characters.
+ */
+int
+printable_string(char *s)
+{
+        char *p;
+
+        for (p = &s[0]; *p; p++) {
+		if (!isprint(*p)) 
 			return FALSE;
         }
 
@@ -2299,6 +2315,30 @@ cmd_set(void)
 					*gdb_stop_print_at_null ? "on" : "off");
 			return;
 
+                } else if (STREQ(args[optind], "print_array")) {
+			optind++;
+			if (args[optind]) {
+				if (!runtime)
+					defer();
+				else if (STREQ(args[optind], "on"))
+					*gdb_prettyprint_arrays = 1;
+				else if (STREQ(args[optind], "off"))
+					*gdb_prettyprint_arrays = 0;
+				else if (IS_A_NUMBER(args[optind])) {
+					value = stol(args[optind],
+						FAULT_ON_ERROR, NULL);
+					if (value)
+						*gdb_prettyprint_arrays = 1;
+					else
+						*gdb_prettyprint_arrays = 0;
+					} else
+						goto invalid_set_command;
+			}
+			if (runtime)
+				fprintf(fp, "print_array: %s\n", 
+					*gdb_prettyprint_arrays ? "on" : "off");
+			return;
+
                 } else if (STREQ(args[optind], "namelist")) {
 			optind++;
                         if (!runtime && args[optind]) {
@@ -2469,6 +2509,7 @@ show_options(void)
                 pc->output_radix == 16 ? "hexadecimal" : "unknown");
 	fprintf(fp, "       refresh: %s\n", tt->flags & TASK_REFRESH ? "on" : "off");
 	fprintf(fp, "     print_max: %d\n", *gdb_print_max);
+	fprintf(fp, "   print_array: %s\n", *gdb_prettyprint_arrays ? "on" : "off");
 	fprintf(fp, "       console: %s\n", pc->console ? 
 		pc->console : "(not assigned)");
 	fprintf(fp, "         debug: %ld\n", pc->debug);
@@ -3179,13 +3220,14 @@ cmd_list(void)
 	struct list_data list_data, *ld;
 	struct datatype_member struct_member, *sm;
 	struct syment *sp;
-	ulong value; 
+	ulong value, struct_list_offset; 
 
 	sm = &struct_member;
 	ld = &list_data;
 	BZERO(ld, sizeof(struct list_data));
+	struct_list_offset = 0;
 
-        while ((c = getopt(argcnt, args, "Hhrs:e:o:xd")) != EOF) {
+        while ((c = getopt(argcnt, args, "Hhrs:e:o:xdl:")) != EOF) {
                 switch(c)
 		{
 		case 'H':
@@ -3205,6 +3247,18 @@ cmd_list(void)
 			if (ld->structname_args++ == 0) 
 				hq_open();
 			hq_enter((ulong)optarg);
+			break;
+
+		case 'l':
+                        if (IS_A_NUMBER(optarg))
+                                struct_list_offset = stol(optarg,
+                                        FAULT_ON_ERROR, NULL);
+                        else if (arg_to_datatype(optarg,
+                                sm, RETURN_ON_ERROR) > 1)
+                                struct_list_offset = sm->member_offset;
+			else
+				error(FATAL, "invalid -l option: %s\n", 
+					optarg);
 			break;
 
 		case 'o':
@@ -3260,7 +3314,11 @@ cmd_list(void)
 	if (ld->structname_args) {
 		ld->structname = (char **)GETBUF(sizeof(char *) * ld->structname_args);
 		retrieve_list((ulong *)ld->structname, ld->structname_args); 
-		hq_close();
+		hq_close(); 
+		ld->struct_list_offset = struct_list_offset;
+	} else if (struct_list_offset) {
+		error(INFO, "-l option can only be used with -s option\n");
+		cmd_usage(pc->curcmd, SYNOPSIS);
 	}
 
 	while (args[optind]) {
@@ -3388,6 +3446,11 @@ next_arg:
 		cmd_usage(pc->curcmd, SYNOPSIS);
 	}
 
+	if ((ld->flags & LIST_OFFSET_ENTERED) && ld->struct_list_offset) {
+		error(INFO, "-l and -o are mutually exclusive\n");
+                cmd_usage(pc->curcmd, SYNOPSIS);
+	}
+
 	if (ld->flags & LIST_HEAD_FORMAT) {
 		ld->list_head_offset = ld->member_offset;
 		if (ld->flags & LIST_HEAD_REVERSE)
@@ -3433,7 +3496,7 @@ do_list(struct list_data *ld)
 
 	if (CRASHDEBUG(1)) {
 		others = 0;
-		console("           flags: %lx (", ld->flags);
+		console("             flags: %lx (", ld->flags);
 		if (ld->flags & VERBOSE)
 			console("%sVERBOSE", others++ ? "|" : "");
 		if (ld->flags & LIST_OFFSET_ENTERED)
@@ -3461,20 +3524,21 @@ do_list(struct list_data *ld)
 		if (ld->flags & CALLBACK_RETURN)
 			console("%sCALLBACK_RETURN", others++ ? "|" : "");
 		console(")\n");
-		console("           start: %lx\n", ld->start);
-		console("   member_offset: %ld\n", ld->member_offset);
-		console("list_head_offset: %ld\n", ld->list_head_offset);
-		console("             end: %lx\n", ld->end);
-		console("       searchfor: %lx\n", ld->searchfor);
-		console(" structname_args: %lx\n", ld->structname_args);
+		console("             start: %lx\n", ld->start);
+		console("     member_offset: %ld\n", ld->member_offset);
+		console("  list_head_offset: %ld\n", ld->list_head_offset);
+		console("               end: %lx\n", ld->end);
+		console("         searchfor: %lx\n", ld->searchfor);
+		console("   structname_args: %lx\n", ld->structname_args);
 		if (!ld->structname_args)
-			console("      structname: (unused)\n");
+			console("        structname: (unused)\n");
 		for (i = 0; i < ld->structname_args; i++)	
-			console("   structname[%d]: %s\n", i, ld->structname[i]);
-		console("          header: %s\n", ld->header);
-		console("        list_ptr: %lx\n", (ulong)ld->list_ptr);
-		console("   callback_func: %lx\n", (ulong)ld->callback_func);
-		console("   callback_data: %lx\n", (ulong)ld->callback_data);
+			console("     structname[%d]: %s\n", i, ld->structname[i]);
+		console("            header: %s\n", ld->header);
+		console("          list_ptr: %lx\n", (ulong)ld->list_ptr);
+		console("     callback_func: %lx\n", (ulong)ld->callback_func);
+		console("     callback_data: %lx\n", (ulong)ld->callback_data);
+		console("struct_list_offset: %lx\n", ld->struct_list_offset);
 	}
 
 	count = 0;
@@ -3524,7 +3588,8 @@ do_list(struct list_data *ld)
 					{
 					case 0:
 						dump_struct(ld->structname[i], 
-							next - ld->list_head_offset, radix);
+							next - ld->list_head_offset - ld->struct_list_offset,
+							radix);
 						break;
 					default:
 						dump_struct_members(ld, i, next);
@@ -3651,7 +3716,8 @@ dump_struct_members(struct list_data *ld, int idx, ulong next)
 	for (i = 0; i < argc; i++) {
 		*p1 = NULLCHAR;
 		strcat(structname, arglist[i]);
- 		dump_struct_member(structname, next - ld->list_head_offset, radix);
+ 		dump_struct_member(structname, 
+			next - ld->list_head_offset - ld->struct_list_offset, radix);
 	}
 
 	FREEBUF(structname);
@@ -4750,11 +4816,9 @@ void free_all_bufs(void)
 		}
 	}
 
-	if (bp->mallocs != bp->frees) {
-		dump_shared_bufs();
-		error(FATAL, "malloc-free mismatch (%ld-%ld)\n",
+	if (bp->mallocs != bp->frees)
+		error(WARNING, "malloc/free mismatch (%ld/%ld)\n",
 			bp->mallocs, bp->frees);
-	}
 }
 
 /*
@@ -4901,8 +4965,8 @@ dump_shared_bufs(void)
 	fprintf(fp, "  max_embedded: %ld\n", bp->max_embedded);
 	fprintf(fp, "       mallocs: %ld\n", bp->mallocs);
 	fprintf(fp, "         frees: %ld\n", bp->frees);
-	fprintf(fp, "    reqs/total: %ld/%.1f\n", bp->reqs, bp->total);
-	fprintf(fp, "  average size: %.1f\n", bp->total/bp->reqs);
+	fprintf(fp, "    reqs/total: %ld/%.0f\n", bp->reqs, bp->total);
+	fprintf(fp, "  average size: %.0f\n", bp->total/bp->reqs);
 }
 
 /*
@@ -5039,8 +5103,7 @@ getbuf(long reqsize)
 		if (bp->malloc_bp[i])
 			continue;
 
-		if ((bp->malloc_bp[i] = (char *)malloc(reqsize))) {
-			BZERO(bp->malloc_bp[i], reqsize);
+		if ((bp->malloc_bp[i] = (char *)calloc(reqsize, 1))) {
 			bp->mallocs++;
 			return(bp->malloc_bp[i]);
 		}

@@ -1830,8 +1830,9 @@ ppc64_print_stack_entry(int frame,
 				return;
 			}
 			if (req->pc != lr) {
-				fprintf(fp, "\n [Link Register ] ");
-				fprintf(fp, " [%lx] %s at %lx",
+				fprintf(fp, "\n%s[Link Register] ", 
+					frame < 10 ? " " : "");
+				fprintf(fp, "[%lx] %s at %lx",
 					req->sp, lrname, lr);
 			}
 			req->ra = lr;
@@ -1863,37 +1864,53 @@ ppc64_check_eframe(struct ppc64_pt_regs *regs)
 	case 0x100:
 		return("System Reset");
 	case 0x200:
-		return("machine check");
+		return("Machine Check");
 	case 0x300:
-		return("Data Access error");
+		return("Data Access");
 	case 0x380:
 		return("Data SLB Access");
 	case 0x400:
-		return("Instruction bus error");
+		return("Instruction Access");
 	case 0x480:
 		return("Instruction SLB Access");
 	case 0x500:
 		return("Hardware Interrupt");
 	case 0x600:
-		return("Alingment");
+		return("Alignment");
 	case 0x700:
-		return("Breakpoint trap");
+		return("Program Check");
 	case 0x800:
-		return("FPU unavailable");
+		return("FPU Unavailable");
 	case 0x900:
 		return("Decrementer");
+	case 0x980:
+		return("Hypervisor Decrementer");
 	case 0xa00:
-		return("reserved");
+		return("Doorbell");
 	case 0xb00:
 		return("reserved");
 	case 0xc00:
-		return("syscall");
+		return("System Call");
 	case 0xd00:
-		return("single-step/watch");
+		return("Single Step");
 	case 0xe00:
 		return("fp assist");
+	case 0xe40:
+		return("Emulation Assist");
+	case 0xe60:
+		return("HMI");
+	case 0xe80:
+		return("Hypervisor Doorbell");
 	case 0xf00:
 		return("Performance Monitor");
+	case 0xf20:
+		return("Altivec Unavailable");
+	case 0x1300:    
+		return("Instruction Breakpoint");
+	case 0x1500:
+		return("Denormalisation");
+	case 0x1700:    
+		return("Altivec Assist");
 	}
 	
 	/* No exception frame exists */
@@ -1948,7 +1965,7 @@ ppc64_print_eframe(char *efrm_str, struct ppc64_pt_regs *regs,
 	if (BT_REFERENCE_CHECK(bt))
 		return;
 
-	fprintf(fp, " %s  [%lx] exception frame:\n", efrm_str, regs->trap);
+	fprintf(fp, " %s [%lx] exception frame:\n", efrm_str, regs->trap);
 	ppc64_print_regs(regs);
 }
 
@@ -2023,6 +2040,7 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 	int check_hardirq, check_softirq;
 	int check_intrstack = TRUE;
 	struct ppc64_pt_regs *pt_regs;
+	struct syment *sp;
 
 	/* 
 	 * For the kdump vmcore, Use SP and IP values that are saved in ptregs.
@@ -2049,7 +2067,8 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 		 * We captured the GPR1 register value in the
 		 * platform_freeze_cpu() function.
 		 */
-		if (symbol_exists("dump_header")) { /* Diskdump */
+		if ((sp = symbol_search("dump_header")) && 
+		    !is_symbol_text(sp)) { /* Diskdump */
 			ulong task_addr;
 			/*
 			 * The dump_header struct is specified in the module.
@@ -2079,7 +2098,7 @@ ppc64_get_dumpfile_stack_frame(struct bt_info *bt_in, ulong *nip, ulong *ksp)
 			if (cpu_frozen) 
 				readmem(ur_ksp, KVADDR, &ur_ksp, sizeof(ulong),
 					"Stack Pointer", FAULT_ON_ERROR);
-			else
+			else if (symbol_exists("platform_freeze_cpu"))
 				fprintf(fp, 
 				"%0lx: GPR1 register value (SP) was not saved\n",
 					bt->task);
@@ -2229,6 +2248,7 @@ get_ppc64_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 	ulong sp;
 	ulong *stack;
 	ulong task;
+	char *closest;
 	struct ppc64_pt_regs regs;
 
 	ip = 0;
@@ -2242,7 +2262,8 @@ get_ppc64_frame(struct bt_info *bt, ulong *getpc, ulong *getsp)
 		sizeof(struct ppc64_pt_regs),
 		"PPC64 pt_regs", FAULT_ON_ERROR);
 	ip = regs.nip; 
-	if (STREQ(closest_symbol(ip), ".__switch_to")) {
+	closest = closest_symbol(ip);
+	if (STREQ(closest, ".__switch_to") || STREQ(closest, "__switch_to")) {
 		/* NOTE: _switch_to() calls _switch() which
 		 * is asm.  _switch leaves pc == lr.
 		 * Working through this frame is tricky,
@@ -2475,10 +2496,10 @@ ppc64_dis_filter(ulong vaddr, char *inbuf, unsigned int output_radix)
 	if ((FIRSTCHAR(argv[argc-1]) == '<') && 
 	    (LASTCHAR(argv[argc-1]) == '>')) {
 		p1 = rindex(inbuf, '<');
-		while ((p1 > inbuf) && !STRNEQ(p1, " 0x")) 
+		while ((p1 > inbuf) && !(STRNEQ(p1, " 0x") || STRNEQ(p1, ",0x"))) 
 			p1--;
 
-		if (!STRNEQ(p1, " 0x"))
+		if (!(STRNEQ(p1, " 0x") || STRNEQ(p1, ",0x")))
 			return FALSE;
 		p1++;
 

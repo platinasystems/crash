@@ -72,6 +72,7 @@ static struct option long_options[] = {
 	{"no_strip", 0, 0, 0},
 	{"hash", required_argument, 0, 0},
 	{"offline", required_argument, 0, 0},
+	{"src", required_argument, 0, 0},
         {0, 0, 0, 0}
 };
 
@@ -293,6 +294,9 @@ main(int argc, char **argv)
 				}
 			}
 
+			else if (STREQ(long_options[option_index].name, "src"))
+				kt->source_tree = optarg;
+
 			else {
 				error(INFO, "internal error: option %s unhandled\n",
 					long_options[option_index].name);
@@ -458,10 +462,14 @@ main(int argc, char **argv)
 			continue;
 		}
 
-       		if (!file_exists(argv[optind], NULL)) {
-                	error(INFO, "%s: %s\n", argv[optind], strerror(ENOENT));
-                	program_usage(SHORT_FORM);
-        	} else if (!is_readable(argv[optind])) 
+		if (!file_exists(argv[optind], NULL)) {
+			error(INFO, "%s: %s\n", argv[optind], strerror(ENOENT));
+			program_usage(SHORT_FORM);
+		} else if (is_directory(argv[optind])) {
+			error(INFO, "%s: not a supported file format\n", 
+				argv[optind]);
+			program_usage(SHORT_FORM);
+		} else if (!is_readable(argv[optind])) 
 			program_usage(SHORT_FORM);
 
 		if (is_kernel(argv[optind])) {
@@ -709,12 +717,28 @@ main_loop(void)
 		    "unpredictable\n         runtime behavior.\n",
 			pc->dumpfile);
 
-	if (pc->flags2 & INCOMPLETE_DUMP)
+	if (pc->flags2 & INCOMPLETE_DUMP) {
 		error(WARNING, "\n%s:\n         "
 		    "This dumpfile is incomplete.  This may cause the crash session"
 		    "\n         to fail entirely, may cause commands to fail, or may"
 		    " result in\n         unpredictable runtime behavior.\n",
 			pc->dumpfile);
+		if (!(*diskdump_flags & ZERO_EXCLUDED))
+			fprintf(fp,
+			    "   NOTE: This dumpfile may be analyzed with the --zero_excluded command\n"
+			    "         line option, in which case any read requests from missing pages\n"
+			    "         will return zero-filled memory.\n");
+	}
+
+	if (pc->flags2 & EXCLUDED_VMEMMAP) {
+		error(WARNING, "\n%s:\n         "
+		    "This dumpfile is incomplete because the page structures associated\n"
+                    "         with excluded pages may also be excluded.  This may cause the crash\n"
+		    "         session to fail entirely, may cause commands to fail (most notably\n"
+		    "         the \"kmem\" command), or may result in unpredictable runtime behavior.\n",
+			pc->dumpfile);
+
+	}
 
         if (!(pc->flags & GDB_INIT)) {
 		gdb_session_init();
@@ -1430,6 +1454,10 @@ dump_program_context(void)
 		fprintf(fp, "%sOFFLINE_HIDE", others++ ? "|" : "");
 	if (pc->flags2 & INCOMPLETE_DUMP)
 		fprintf(fp, "%sINCOMPLETE_DUMP", others++ ? "|" : "");
+	if (pc->flags2 & SNAP)
+		fprintf(fp, "%sSNAP", others++ ? "|" : "");
+	if (pc->flags2 & EXCLUDED_VMEMMAP)
+		fprintf(fp, "%sEXCLUDED_VMEMMAP", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "         namelist: %s\n", pc->namelist);
@@ -1623,6 +1651,8 @@ dump_program_context(void)
 		fprintf(fp, "%sMM_STRUCT_FORCE", others ? "|" : "");
         if (pc->curcmd_flags & CPUMASK)
 		fprintf(fp, "%sCPUMASK", others ? "|" : "");
+        if (pc->curcmd_flags & PARTIAL_READ_OK)
+		fprintf(fp, "%sPARTIAL_READ_OK", others ? "|" : "");
 	fprintf(fp, ")\n");
 	fprintf(fp, "   curcmd_private: %llx\n", pc->curcmd_private); 
 	fprintf(fp, "      cmd_cleanup: %lx\n", (ulong)pc->cmd_cleanup);
@@ -1857,10 +1887,10 @@ get_osrelease(char *dumpfile)
 {
 	int retval = 1;
 
-	if (is_flattened_format(dumpfile))
-		pc->flags2 |= FLAT;
-	
-	if (is_diskdump(dumpfile)) {
+	if (is_flattened_format(dumpfile)) {
+		if (pc->flags2 & GET_OSRELEASE)
+			retval = 0;
+	} else if (is_diskdump(dumpfile)) {
 		if (pc->flags2 & GET_OSRELEASE)
 			retval = 0;
 	} else if (is_kdump(dumpfile, KDUMP_LOCAL)) {

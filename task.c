@@ -119,7 +119,7 @@ void
 task_init(void)
 {
 	long len;
-	int dim;
+	int dim, task_struct_size;
         struct syment *nsp;
 	long tss_offset, thread_offset; 
 	long eip_offset, esp_offset, ksp_offset;
@@ -284,6 +284,19 @@ task_init(void)
 	MEMBER_OFFSET_INIT(pid_pid_chain, "pid", "pid_chain");
 
 	STRUCT_SIZE_INIT(task_struct, "task_struct");
+
+	if (kernel_symbol_exists("arch_task_struct_size") &&
+	    readmem(symbol_value("arch_task_struct_size"), KVADDR,
+	    &task_struct_size, sizeof(int),
+	    "arch_task_struct_size", RETURN_ON_ERROR)) {
+		ASSIGN_SIZE(task_struct) = task_struct_size;
+		if (STRUCT_SIZE("task_struct") != SIZE(task_struct))
+			add_to_downsized("task_struct");
+		if (CRASHDEBUG(1))
+			fprintf(fp, "downsize task_struct: %ld to %ld\n",
+				STRUCT_SIZE("task_struct"),
+				SIZE(task_struct));
+	}
 
 	MEMBER_OFFSET_INIT(task_struct_sig, "task_struct", "sig");
 	MEMBER_OFFSET_INIT(task_struct_signal, "task_struct", "signal");
@@ -4714,7 +4727,7 @@ show_context(struct task_context *tc)
 		else if ((tc->task == tt->panic_task) &&
 			XENDUMP_DUMPFILE() && (kt->xen_flags & XEN_SUSPEND))
 			fprintf(fp, "(SUSPEND)");
-		else if (tc->task == tt->panic_task)
+		else if ((tc->task == tt->panic_task) && !(pc->flags2 & SNAP))
 			fprintf(fp, "(PANIC)");
 		else
 			fprintf(fp, "(ACTIVE)");
@@ -4804,6 +4817,7 @@ static long _WAKEKILL_ = TASK_STATE_UNINITIALIZED;
 static long _WAKING_ = TASK_STATE_UNINITIALIZED;
 static long _NONINTERACTIVE_ = TASK_STATE_UNINITIALIZED;
 static long _PARKED_ = TASK_STATE_UNINITIALIZED;
+static long _NOLOAD_ = TASK_STATE_UNINITIALIZED;
 
 #define valid_task_state(X) ((X) != TASK_STATE_UNINITIALIZED)
 
@@ -4877,6 +4891,10 @@ dump_task_states(void)
 	if (valid_task_state(_PARKED_))
 		fprintf(fp, "            PARKED: %3ld (0x%lx)\n", 
 			_PARKED_, _PARKED_);
+
+	if (valid_task_state(_NOLOAD_))
+		fprintf(fp, "            NOLOAD: %3ld (0x%lx)\n", 
+			_NOLOAD_, _NOLOAD_);
 }
 
 
@@ -4906,6 +4924,64 @@ old_defaults:
 		_EXCLUSIVE_ = 32;
 		return;
 	}
+
+	/*
+	 *  If the later version of stat_nam[] array exists that contains 
+	 *  WAKING, WAKEKILL and PARKED, use it instead of task_state_array[].
+	 */
+	if (((len = get_array_length("stat_nam", NULL, 0)) > 0) &&
+	    read_string(symbol_value("stat_nam"), buf, BUFSIZE-1) &&
+	    ascii_string(buf) && (strlen(buf) > strlen("RSDTtZX"))) {
+		for (i = 0; i < strlen(buf); i++) {
+			switch (buf[i]) 
+			{
+			case 'R':
+				_RUNNING_ = i;
+				break;
+			case 'S':
+				_INTERRUPTIBLE_ = i;
+				break;
+			case 'D':
+				_UNINTERRUPTIBLE_ = (1 << (i-1));
+				break;
+			case 'T':
+				_STOPPED_ = (1 << (i-1));
+				break;
+			case 't':
+				_TRACING_STOPPED_ = (1 << (i-1));
+				break;
+			case 'X':
+				if (_DEAD_ == UNINITIALIZED)
+					_DEAD_ = (1 << (i-1));
+				else
+					_DEAD_ |= (1 << (i-1));
+				break;
+			case 'Z':
+				_ZOMBIE_ = (1 << (i-1));
+				break;
+			case 'x':
+				if (_DEAD_ == UNINITIALIZED)
+					_DEAD_ = (1 << (i-1));
+				else
+					_DEAD_ |= (1 << (i-1));
+				break;
+			case 'K':
+				_WAKEKILL_ = (1 << (i-1));
+				break;
+			case 'W':
+				_WAKING_ = (1 << (i-1));
+				break;
+			case 'P':
+				_PARKED_ = (1 << (i-1));
+				break;
+			case 'N':
+				_NOLOAD_ = (1 << (i-1));
+				break;
+			}
+		}
+
+		goto done_states;
+	} 
 		
 	if ((len = get_array_length("task_state_array", NULL, 0)) <= 0)
 		goto old_defaults;
@@ -4975,6 +5051,7 @@ old_defaults:
 		}
 	}
 
+done_states:
 	if (CRASHDEBUG(3))
 		dump_task_states();
 
@@ -5044,6 +5121,10 @@ task_state_string_verbose(ulong task, char *buf)
 
 	if (valid_task_state(_WAKEKILL_) && (state & _WAKEKILL_))
 		sprintf(&buf[strlen(buf)], "%sTASK_WAKEKILL",
+			count++ ? "|" : "");
+
+	if (valid_task_state(_NOLOAD_) && (state & _NOLOAD_))
+		sprintf(&buf[strlen(buf)], "%sTASK_NOLOAD",
 			count++ ? "|" : "");
 
 	if (valid_task_state(_NONINTERACTIVE_) &&
@@ -5133,6 +5214,11 @@ task_state_string(ulong task, char *buf, int verbose)
 
 	if (state == _PARKED_) {
 		sprintf(buf, "PA"); 
+		valid++;
+	}
+
+	if (state == _WAKING_) {
+		sprintf(buf, "WA"); 
 		valid++;
 	}
 
@@ -5744,6 +5830,13 @@ cmd_foreach(void)
 		 *  If it's a task pointer or pid, take it.
 		 */
                 if (IS_A_NUMBER(args[optind])) {
+			if (STREQ(args[optind], "DE") && pid_exists(0xde)) {
+				error(INFO, "ambiguous task-identifying argument: %s\n", args[optind]);
+				error(CONT, "for a \"state\" argument, use: \\DE\n");
+				error(CONT, "for a \"pid\" argument, use: 0xDE, 0xde, de or 222\n\n");
+				cmd_usage(pc->curcmd, SYNOPSIS);
+				return;
+			}
 
 			switch (str_to_context(args[optind], &value, &tc))
 			{
@@ -5786,6 +5879,10 @@ cmd_foreach(void)
 			continue;
 		}
 
+		if ((args[optind][0] == '\\') &&
+		    STREQ(&args[optind][1], "DE"))
+			shift_string_left(args[optind], 1);
+
 		if (STREQ(args[optind], "RU") ||
 		    STREQ(args[optind], "IN") ||
 		    STREQ(args[optind], "UN") ||
@@ -5794,11 +5891,13 @@ cmd_foreach(void)
 		    STREQ(args[optind], "ZO") ||
 		    STREQ(args[optind], "DE") ||
 		    STREQ(args[optind], "PA") ||
+		    STREQ(args[optind], "WA") ||
 		    STREQ(args[optind], "SW")) {
 
 			if (fd->flags & FOREACH_STATE)
-				error(INFO, "only one task state allowed\n");
-			else if (STREQ(args[optind], "RU"))
+				error(FATAL, "only one task state allowed\n");
+
+			if (STREQ(args[optind], "RU"))
 				fd->state = _RUNNING_;
 			else if (STREQ(args[optind], "IN"))
 				fd->state = _INTERRUPTIBLE_;
@@ -5816,6 +5915,14 @@ cmd_foreach(void)
 				fd->state = _SWAPPING_;
 			else if (STREQ(args[optind], "PA"))
 				fd->state = _PARKED_;
+			else if (STREQ(args[optind], "WA"))
+				fd->state = _WAKING_;
+
+			if (fd->state == TASK_STATE_UNINITIALIZED)
+				error(FATAL, 
+				    "invalid task state for this kernel: %s\n",
+					args[optind]);
+
 			fd->flags |= FOREACH_STATE;
 
 			optind++;
@@ -6140,6 +6247,12 @@ foreach(struct foreach_data *fd)
 			print_header = FALSE;
 			break;
 
+		case FOREACH_FILES:
+			if (fd->flags & FOREACH_p_FLAG)
+				error(FATAL,
+				    "files command does not support -p option\n");
+			break;
+
 		case FOREACH_TEST:
 			break;
 		}
@@ -6366,9 +6479,15 @@ foreach(struct foreach_data *fd)
 
 			case FOREACH_FILES:
 				pc->curcmd = "files";
-				open_files_dump(tc->task, 
-					fd->flags & FOREACH_i_FLAG ?
-					PRINT_INODES : 0, 
+				cmdflags = 0;
+
+				if (fd->flags & FOREACH_i_FLAG)
+					cmdflags |= PRINT_INODES;
+				if (fd->flags & FOREACH_c_FLAG)
+					cmdflags |= PRINT_NRPAGES;
+
+				open_files_dump(tc->task,
+					cmdflags,
 					fd->reference ? ref : NULL);
 				break;
 
@@ -6523,11 +6642,17 @@ panic_search(void)
 		goto found_panic_task;
 	}
 
+	if (pc->flags2 & LIVE_DUMP)
+		return NULL;
+
         BZERO(&foreach_data, sizeof(struct foreach_data));
         fd = &foreach_data;
 	fd->keys = 1;
 	fd->keyword_array[0] = FOREACH_BT; 
-	fd->flags |= (FOREACH_t_FLAG|FOREACH_o_FLAG);
+	if (machine_type("S390X"))
+		fd->flags |= FOREACH_o_FLAG;
+	else
+		fd->flags |= (FOREACH_t_FLAG|FOREACH_o_FLAG);
 
 	dietask = lasttask = NO_TASK;
 	
@@ -6643,6 +6768,9 @@ get_dumpfile_panic_task(void)
                         return task;
         } else if (LKCD_DUMPFILE())
 		return(get_lkcd_panic_task());
+
+	if (pc->flags2 & LIVE_DUMP)
+		return NO_TASK;
 
 	if (get_active_set())
 		return(get_active_set_panic_task());
@@ -7653,8 +7781,8 @@ cmd_runq(void)
 			dump_milliseconds_flag = 1;
 			break;
 		case 'g':
-			if (INVALID_MEMBER(task_group_cfs_rq) ||
-			    INVALID_MEMBER(task_group_rt_rq) ||
+			if ((INVALID_MEMBER(task_group_cfs_rq) &&
+			     INVALID_MEMBER(task_group_rt_rq)) ||
 			    INVALID_MEMBER(task_group_parent))
 				option_not_supported(c);
 			dump_task_group_flag = 1;
@@ -9040,8 +9168,8 @@ static void
 dump_tasks_by_task_group(void)
 {
 	int cpu, displayed;
-	ulong root_task_group, cfs_rq, cfs_rq_p;
-	ulong rt_rq, rt_rq_p;
+	ulong root_task_group, cfs_rq = 0, cfs_rq_p;
+	ulong rt_rq = 0, rt_rq_p;
 	char *buf;
 	struct task_context *tc;
 	char *task_group_name;
@@ -9067,8 +9195,10 @@ dump_tasks_by_task_group(void)
 	buf = GETBUF(SIZE(task_group));
 	readmem(root_task_group, KVADDR, buf, SIZE(task_group),
 		"task_group", FAULT_ON_ERROR);
-	rt_rq = ULONG(buf + OFFSET(task_group_rt_rq));
-	cfs_rq = ULONG(buf + OFFSET(task_group_cfs_rq));
+	if (VALID_MEMBER(task_group_rt_rq))
+		rt_rq = ULONG(buf + OFFSET(task_group_rt_rq));
+	if (VALID_MEMBER(task_group_cfs_rq))
+		cfs_rq = ULONG(buf + OFFSET(task_group_cfs_rq));
 
 	fill_task_group_info_array(0, root_task_group, buf, -1);
 	sort_task_group_info_array();
@@ -9084,10 +9214,14 @@ dump_tasks_by_task_group(void)
 		if (cpus && !NUM_IN_BITMAP(cpus, cpu))
 			continue;
 
-		readmem(rt_rq + cpu * sizeof(ulong), KVADDR, &rt_rq_p,
-			sizeof(ulong), "task_group rt_rq", FAULT_ON_ERROR);
-		readmem(cfs_rq + cpu * sizeof(ulong), KVADDR, &cfs_rq_p,
-			sizeof(ulong), "task_group cfs_rq", FAULT_ON_ERROR);
+		if (rt_rq)
+			readmem(rt_rq + cpu * sizeof(ulong), KVADDR,
+				&rt_rq_p, sizeof(ulong), "task_group rt_rq",
+				FAULT_ON_ERROR);
+		if (cfs_rq)
+			readmem(cfs_rq + cpu * sizeof(ulong), KVADDR,
+				&cfs_rq_p, sizeof(ulong), "task_group cfs_rq",
+				FAULT_ON_ERROR);
 		fprintf(fp, "%sCPU %d", displayed++ ? "\n" : "", cpu);
 
 		if (hide_offline_cpu(cpu)) {
@@ -9103,15 +9237,19 @@ dump_tasks_by_task_group(void)
 		else
 			fprintf(fp, "%lx\n", tt->active_set[cpu]);
 
-		fprintf(fp, "  %s_TASK_GROUP: %lx  RT_RQ: %lx\n", 
-			task_group_name, root_task_group, rt_rq_p);
-		reuse_task_group_info_array();
-		dump_tasks_in_task_group_rt_rq(0, rt_rq_p, cpu);
+		if (rt_rq) {
+			fprintf(fp, "  %s_TASK_GROUP: %lx  RT_RQ: %lx\n",
+				task_group_name, root_task_group, rt_rq_p);
+			reuse_task_group_info_array();
+			dump_tasks_in_task_group_rt_rq(0, rt_rq_p, cpu);
+		}
 
-		fprintf(fp, "  %s_TASK_GROUP: %lx  CFS_RQ: %lx\n", 
-			task_group_name, root_task_group, cfs_rq_p);
-		reuse_task_group_info_array();
-		dump_tasks_in_task_group_cfs_rq(0, cfs_rq_p, cpu, tc);
+		if (cfs_rq) {
+			fprintf(fp, "  %s_TASK_GROUP: %lx  CFS_RQ: %lx\n",
+				task_group_name, root_task_group, cfs_rq_p);
+			reuse_task_group_info_array();
+			dump_tasks_in_task_group_cfs_rq(0, cfs_rq_p, cpu, tc);
+		}
 	}
 
 	FREEBUF(buf);

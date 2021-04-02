@@ -715,7 +715,7 @@ is_set_bit(char *bitmap, uint64_t pfn)
 	ulong index, bit;
 
 	index = pfn >> 3;
-	bit = pfn & 7;
+	bit = 7 - (pfn & 7);
 
 	return !!(bitmap[index] & (1UL << bit));
 }
@@ -790,7 +790,7 @@ int read_sadump(int fd, void *bufptr, int cnt, ulong addr, physaddr_t paddr)
 	if ((pfn >= sd->max_mapnr) || !page_is_ram(pfn))
 		return SEEK_ERROR;
 	if (!page_is_dumpable(pfn)) {
-		if (sd->flags & SADUMP_ZERO_EXCLUDED)
+		if (!(sd->flags & SADUMP_ZERO_EXCLUDED))
 			return PAGE_EXCLUDED;
 		memset(bufptr, 0, cnt);
 		return cnt;
