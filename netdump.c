@@ -119,7 +119,8 @@ is_netdump(char *file, ulong source_query)
 	Elf64_Phdr *load64;
 	char *eheader, *sect0;
 	char buf[BUFSIZE];
-	size_t size, len, tot;
+	ssize_t size;
+	size_t len, tot;
         Elf32_Off offset32;
         Elf64_Off offset64;
 	ulong format;
@@ -134,7 +135,7 @@ is_netdump(char *file, ulong source_query)
 
 	size = SAFE_NETDUMP_ELF_HEADER_SIZE;
         if ((eheader = (char *)malloc(size)) == NULL) {
-                fprintf(stderr, "cannot malloc minimum ELF header buffer\n");
+                fprintf(stderr, "cannot malloc ELF header buffer\n");
                 clean_exit(1);
         }
 
@@ -142,9 +143,13 @@ is_netdump(char *file, ulong source_query)
 		if (!read_flattened_format(fd, 0, eheader, size))
 			goto bailout;
 	} else {
-		if (read(fd, eheader, size) != size) {
+		size = read(fd, eheader, size);
+		if (size < 0) {
 			sprintf(buf, "%s: ELF header read", file);
 			perror(buf);
+			goto bailout;
+		} else if (size < MIN_NETDUMP_ELF_HEADER_SIZE) {
+			fprintf(stderr, "%s: file too small!\n", file);
 			goto bailout;
 		}
 	}
@@ -290,7 +295,7 @@ is_netdump(char *file, ulong source_query)
 			break;
 
 		case EM_MIPS:
-			if (machine_type_mismatch(file, "MIPS", NULL,
+			if (machine_type_mismatch(file, "MIPS", "MIPS64",
 			    source_query))
 				goto bailout;
 			break;
@@ -549,6 +554,9 @@ resize_elf_header(int fd, char *file, char **eheader_ptr, char **sect0_ptr,
 		clean_exit(1);
 	} else
 		*eheader_ptr = eheader;
+
+	elf32 = (Elf32_Ehdr *)&eheader[0];
+	elf64 = (Elf64_Ehdr *)&eheader[0];
 
 	if (FLAT_FORMAT()) {
 		if (!read_flattened_format(fd, 0, eheader, header_size))
@@ -2915,6 +2923,8 @@ display_regs_from_elf_notes(int cpu, FILE *ofp)
 			UINT(user_regs + sizeof(ulong) * 34));
 	} else if (machine_type("MIPS")) {
 		mips_display_regs_from_elf_notes(cpu, ofp);
+	} else if (machine_type("MIPS64")) {
+		mips64_display_regs_from_elf_notes(cpu, ofp);
 	}
 }
 
@@ -2925,7 +2935,7 @@ dump_registers_for_elf_dumpfiles(void)
 
         if (!(machine_type("X86") || machine_type("X86_64") || 
 	    machine_type("ARM64") || machine_type("PPC64") ||
-	    machine_type("MIPS")))
+	    machine_type("MIPS") || machine_type("MIPS64")))
                 error(FATAL, "-r option not supported for this dumpfile\n");
 
 	if (NETDUMP_DUMPFILE()) {

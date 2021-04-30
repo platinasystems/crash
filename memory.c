@@ -403,8 +403,6 @@ vm_init(void)
 	    VALID_MEMBER(vmap_area_va_end) &&
 	    VALID_MEMBER(vmap_area_list) &&
 	    VALID_MEMBER(vmap_area_vm) &&
-	    (VALID_MEMBER(vmap_area_flags) || 
-		(OFFSET(vmap_area_vm) == MEMBER_OFFSET("vmap_area", "purge_list"))) &&
 	    kernel_symbol_exists("vmap_area_list"))
 		vt->flags |= USE_VMAP_AREA;
 
@@ -2296,7 +2294,7 @@ readmem(ulonglong addr, int memtype, void *buffer, long size,
 					if (cnt > size)
 						cnt = size;
 
-					cnt = try_zram_decompress(paddr, (unsigned char *)bufptr, cnt, addr);
+					cnt = readswap(paddr, bufptr, cnt, addr);
 					if (cnt) {
 						bufptr += cnt;
 						addr += cnt;
@@ -17822,22 +17820,32 @@ next_online_pgdat(int node)
         char buf[BUFSIZE];
 	ulong pgdat;
 
+/*
+ * "__node_data" is used in the mips64 architecture,
+ * and "node_data" is used in other architectures.
+ */
+#ifndef __mips64
+#define NODE_DATA_VAR "node_data"
+#else
+#define NODE_DATA_VAR "__node_data"
+#endif
+
 	/*
-  	 *  Default -- look for type: struct pglist_data node_data[]
+	 *  Default -- look for type:  node_data[]/__node_data[]
 	 */
 	if (LKCD_KERNTYPES()) {
-		if (!kernel_symbol_exists("node_data"))
+		if (!kernel_symbol_exists(NODE_DATA_VAR))
 			goto pgdat2;
 		/* 
-		 *  Just index into node_data[] without checking that it is
-		 *  an array; kerntypes have no such symbol information.
+		 *  Just index into node_data[]/__node_data[] without checking that
+		 *  it is an array; kerntypes have no such symbol information.
 	 	 */
 	} else {
-		if (get_symbol_type("node_data", NULL, NULL) != TYPE_CODE_ARRAY)
+		if (get_symbol_type(NODE_DATA_VAR, NULL, NULL) != TYPE_CODE_ARRAY)
 			goto pgdat2;
 
 	        open_tmpfile();
-	        sprintf(buf, "whatis node_data");
+	        sprintf(buf, "whatis " NODE_DATA_VAR);
 	        if (!gdb_pass_through(buf, fp, GNU_RETURN_ON_ERROR)) {
 	                close_tmpfile();
 			goto pgdat2;
@@ -17850,14 +17858,15 @@ next_online_pgdat(int node)
 	        close_tmpfile();
 
 		if ((!strstr(buf, "struct pglist_data *") &&
-		     !strstr(buf, "pg_data_t *")) ||
+		     !strstr(buf, "pg_data_t *") &&
+		     !strstr(buf, "struct node_data *")) ||
 		    (count_chars(buf, '[') != 1) ||
 		    (count_chars(buf, ']') != 1))
 			goto pgdat2;
 	}
 
-	if (!readmem(symbol_value("node_data") + (node * sizeof(void *)), 
-	    KVADDR, &pgdat, sizeof(void *), "node_data", RETURN_ON_ERROR) ||
+	if (!readmem(symbol_value(NODE_DATA_VAR) + (node * sizeof(void *)),
+	    KVADDR, &pgdat, sizeof(void *), NODE_DATA_VAR, RETURN_ON_ERROR) ||
 	    !IS_KVADDR(pgdat))
 		goto pgdat2;
 
@@ -17885,7 +17894,8 @@ pgdat2:
 	        close_tmpfile();
 
 		if ((!strstr(buf, "struct pglist_data *") &&
-		     !strstr(buf, "pg_data_t *")) ||
+		     !strstr(buf, "pg_data_t *") &&
+		     !strstr(buf, "struct node_data *")) ||
 		    (count_chars(buf, '[') != 1) ||
 		    (count_chars(buf, ']') != 1))
 			goto pgdat3;
