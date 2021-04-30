@@ -1,3 +1,11 @@
+crash (7.3.0-1~plat10+1) buster; urgency=medium
+
+  * debian/control: Backport to debhelper 10
+  * New upstream version 7.3.0
+  * Rediff patches
+
+ -- Kevin Paul Herbert <kph@platinasystems.com>  Fri, 30 Apr 2021 13:00:12 -0700
+
 crash (7.2.9-2) unstable; urgency=medium
 
   * Backporting future patches to support printk in kernel 5.10+ based on:

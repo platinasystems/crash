@@ -1,3 +1,2 @@
 0001-dont-git-clone-eppic-extension.patch
 0002-multiarch-libc.patch
-0003-printk-lockless-ringbuffer.patch

@@ -1,6 +1,16 @@
---- crash-7.2.3+real.orig/Makefile
-+++ crash-7.2.3+real/Makefile
-@@ -269,11 +269,9 @@
+From: Troy Heber <troyh@debian.org>
+Date: Fri, 30 Apr 2021 12:58:27 -0700
+Subject: multiarch-libc
+
+---
+ Makefile | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index ece1306..dcbd5fb 100644
+--- a/Makefile
++++ b/Makefile
+@@ -272,11 +272,9 @@ gdb_patch:
  	if [ "${ARCH}" = "x86_64" ] && [ "${TARGET}" = "PPC64" ] && [ -f ${GDB}-ppc64le-support.patch ]; then \
  		patch -d ${GDB} -p1 -F0 < ${GDB}-ppc64le-support.patch ; \
  	fi
