@@ -591,8 +591,11 @@ restart:
 	else if (STRNEQ(header->utsname.machine, "arm") &&
 	    machine_type_mismatch(file, "ARM", NULL, 0))
 		goto err;
-	else if (STRNEQ(header->utsname.machine, "mips") &&
+	else if (STREQ(header->utsname.machine, "mips") &&
 	    machine_type_mismatch(file, "MIPS", NULL, 0))
+		goto err;
+	else if (STRNEQ(header->utsname.machine, "mips64") &&
+	    machine_type_mismatch(file, "MIPS64", NULL, 0))
 		goto err;
 	else if (STRNEQ(header->utsname.machine, "s390x") &&
 	    machine_type_mismatch(file, "S390X", NULL, 0))
@@ -751,7 +754,7 @@ restart:
 
 	if (machine_type("ARM"))
 		dd->machine_type = EM_ARM;
-	else if (machine_type("MIPS"))
+	else if (machine_type("MIPS") || machine_type("MIPS64"))
 		dd->machine_type = EM_MIPS;
 	else if (machine_type("X86"))
 		dd->machine_type = EM_386;
@@ -1467,6 +1470,12 @@ get_diskdump_regs_arm64(struct bt_info *bt, ulong *eip, ulong *esp)
 }
 
 static void
+get_diskdump_regs_mips(struct bt_info *bt, ulong *eip, ulong *esp)
+{
+	machdep->get_stack_frame(bt, eip, esp);
+}
+
+static void
 get_diskdump_regs_sparc64(struct bt_info *bt, ulong *eip, ulong *esp)
 {
 	Elf64_Nhdr *note;
@@ -1505,7 +1514,7 @@ get_diskdump_regs(struct bt_info *bt, ulong *eip, ulong *esp)
 		break;
 
 	case EM_MIPS:
-		return get_diskdump_regs_32(bt, eip, esp);
+		return get_diskdump_regs_mips(bt, eip, esp);
 		break;
 
 	case EM_386:
@@ -2477,6 +2486,12 @@ diskdump_display_regs(int cpu, FILE *ofp)
 		    UINT(user_regs + OFFSET(user_regs_struct_eflags))
 		);
 	}
+
+	if (machine_type("MIPS"))
+		mips_display_regs_from_elf_notes(cpu, ofp);
+
+	if (machine_type("MIPS64"))
+		mips64_display_regs_from_elf_notes(cpu, ofp);
 }
 
 void
@@ -2485,8 +2500,9 @@ dump_registers_for_compressed_kdump(void)
 	int c;
 
 	if (!KDUMP_CMPRS_VALID() || (dd->header->header_version < 4) ||
-	    !(machine_type("X86") || machine_type("X86_64") || 
-	      machine_type("ARM64") || machine_type("PPC64")))
+	    !(machine_type("X86") || machine_type("X86_64") ||
+	      machine_type("ARM64") || machine_type("PPC64") ||
+	      machine_type("MIPS") || machine_type("MIPS64")))
 		error(FATAL, "-r option not supported for this dumpfile\n");
 
 	if (machine_type("ARM64") && (kt->cpus != dd->num_prstatus_notes))
@@ -2591,7 +2607,6 @@ diskdump_device_dump_info(FILE *ofp)
 	}
 }
 
-#ifdef LZO
 static void
 zram_init(void)
 {
@@ -2710,27 +2725,13 @@ lookup_swap_cache(ulonglong pte_val, unsigned char *zram_buf)
 	return NULL;
 }
 
-ulong (*decompressor)(unsigned char *in_addr, ulong in_size, unsigned char *out_addr, ulong *out_size, void *other/* NOT USED */);
-/*
- * If userspace address was swapped out to zram, this function is called to decompress the object.
- * try_zram_decompress returns decompressed page data and data length
- */
-ulong 
-try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong vaddr)
+static int get_disk_name_private_data(ulonglong pte_val, ulonglong vaddr,
+				       char *name, ulong *private_data)
 {
-	char name[32] = {0};
-	ulonglong swp_offset;
-	ulong swap_info, bdev, bd_disk, zram, zram_table_entry, sector, index, entry, flags, size, outsize, off;
-	unsigned char *obj_addr = NULL;
-	unsigned char *zram_buf = NULL;
-	unsigned char *outbuf = NULL;
+	ulong swap_info, bdev, bd_disk;
 
-	if (INVALID_MEMBER(zram_compressor))
-		zram_init();
-
-	off = PAGEOFFSET(vaddr);
 	if (!symbol_exists("swap_info"))
-		return 0;
+		return FALSE;
 
 	swap_info = symbol_value("swap_info");
 
@@ -2747,87 +2748,143 @@ try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong 
 			sizeof(void *), "swap_info_struct_bdev", FAULT_ON_ERROR);
 	readmem(bdev + OFFSET(block_device_bd_disk), KVADDR, &bd_disk,
 			sizeof(void *), "block_device_bd_disk", FAULT_ON_ERROR);
-	readmem(bd_disk + OFFSET(gendisk_disk_name), KVADDR, name,
+	if (name)
+		readmem(bd_disk + OFFSET(gendisk_disk_name), KVADDR, name,
 			strlen("zram"), "gendisk_disk_name", FAULT_ON_ERROR);
-	if (!strncmp(name, "zram", strlen("zram"))) {
+	if (private_data)
+		readmem(bd_disk + OFFSET(gendisk_private_data), KVADDR,
+			private_data, sizeof(void *), "gendisk_private_data",
+			FAULT_ON_ERROR);
+
+	return TRUE;
+}
+
+ulong readswap(ulonglong pte_val, char *buf, ulong len, ulonglong vaddr)
+{
+	char name[32] = {0};
+
+	if (!get_disk_name_private_data(pte_val, vaddr, name, NULL))
+		return 0;
+
+	if (!strncmp(name, "zram", 4)) {
+		return try_zram_decompress(pte_val, (unsigned char *)buf, len, vaddr);
+	} else {
 		if (CRASHDEBUG(2))
-			error(WARNING, "this page has swapped to zram\n");
+			error(WARNING, "this page has been swapped to %s\n", name);
+		return 0;
+	}
+}
 
-		readmem(bd_disk + OFFSET(gendisk_private_data), KVADDR, &zram,
-				sizeof(void *), "gendisk_private_data", FAULT_ON_ERROR);
+ulong (*decompressor)(unsigned char *in_addr, ulong in_size, unsigned char *out_addr,
+			ulong *out_size, void *other/* NOT USED */);
+/*
+ * If userspace address was swapped out to zram, this function is called to decompress the object.
+ * try_zram_decompress returns decompressed page data and data length
+ */
+ulong
+try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong vaddr)
+{
+	char name[32] = {0};
+	ulonglong swp_offset;
+	unsigned char *obj_addr = NULL;
+	unsigned char *zram_buf = NULL;
+	unsigned char *outbuf = NULL;
+	ulong zram, zram_table_entry, sector, index, entry, flags, size,
+		outsize, off;
 
-		readmem(zram + OFFSET(zram_compressor), KVADDR, name,
-			sizeof(name), "zram compressor", FAULT_ON_ERROR);
-		if (STREQ(name, "lzo")) {
-			if (!(dd->flags & LZO_SUPPORTED)) {
-				if (lzo_init() == LZO_E_OK)
-					dd->flags |= LZO_SUPPORTED;
-				else
-					return 0;
-			}
-			decompressor = (void *)lzo1x_decompress_safe;
-		} else {//todo,support more compressor
-			error(WARNING, "only the lzo compressor is supported\n");
+	if (INVALID_MEMBER(zram_compressor)) {
+		zram_init();
+		if (INVALID_MEMBER(zram_compressor)) {
+			error(WARNING,
+			      "Some pages are swapped out to zram. "
+			      "Please run mod -s zram.\n");
 			return 0;
 		}
+	}
 
-		if (THIS_KERNEL_VERSION >= LINUX(2, 6, 0)) {
-			swp_offset = (ulonglong)__swp_offset(pte_val);
-		} else {
-			swp_offset = (ulonglong)SWP_OFFSET(pte_val);
-		}
+	if (CRASHDEBUG(2))
+		error(WARNING, "this page has swapped to zram\n");
 
-		zram_buf = (unsigned char *)GETBUF(PAGESIZE());
-		/*lookup page from swap cache*/
-		obj_addr = lookup_swap_cache(pte_val, zram_buf);
-		if (obj_addr != NULL) {
-			memcpy(buf, obj_addr + off, len);
-			goto out;
-		}
-
-		sector = swp_offset << (PAGESHIFT() - 9);
-		index = sector >> SECTORS_PER_PAGE_SHIFT;
-		readmem(zram, KVADDR, &zram_table_entry,
-				sizeof(void *), "zram_table_entry", FAULT_ON_ERROR);
-		zram_table_entry += (index * SIZE(zram_table_entry));
-		readmem(zram_table_entry, KVADDR, &entry,
-				sizeof(void *), "entry of table", FAULT_ON_ERROR);
-		readmem(zram_table_entry + OFFSET(zram_table_flag), KVADDR, &flags,
-				sizeof(void *), "zram_table_flag", FAULT_ON_ERROR);
-		if (!entry || (flags & ZRAM_FLAG_SAME_BIT)) {
-			memset(buf, entry, len);
-			goto out;
-		}
-		size = flags & (ZRAM_FLAG_SHIFT -1);
-		if (size == 0) {
-			len = 0;
-			goto out;
-		}
-
-		readmem(zram + OFFSET(zram_mempoll), KVADDR, &zram,
-				sizeof(void *), "zram_mempoll", FAULT_ON_ERROR);
-
-		obj_addr = zram_object_addr(zram, entry, zram_buf);
-		if (obj_addr == NULL) {
-			len = 0;
-			goto out;
-		}
-
-		if (size == PAGESIZE()) {
-			memcpy(buf, obj_addr + off, len);
-		} else {
-			outbuf = (unsigned char *)GETBUF(PAGESIZE());
-			outsize = PAGESIZE();
-			if (!decompressor(obj_addr, size, outbuf, &outsize, NULL))
-				memcpy(buf, outbuf + off, len);
-			else {
-				error(WARNING, "zram decompress error\n");
-				len = 0;
-			}
-			FREEBUF(outbuf);
-		}
-	} else {
+	if (!get_disk_name_private_data(pte_val, vaddr, NULL, &zram))
 		return 0;
+
+	readmem(zram + OFFSET(zram_compressor), KVADDR, name,
+		sizeof(name), "zram compressor", FAULT_ON_ERROR);
+	if (STREQ(name, "lzo")) {
+#ifdef LZO
+		if (!(dd->flags & LZO_SUPPORTED)) {
+			if (lzo_init() == LZO_E_OK)
+				dd->flags |= LZO_SUPPORTED;
+			else
+				return 0;
+		}
+		decompressor = (void *)lzo1x_decompress_safe;
+#else
+		error(WARNING,
+		      "zram decompress error: this executable needs to be built"
+		      " with lzo library\n");
+		return 0;
+#endif
+	} else { /* todo: support more compressor */
+		error(WARNING, "only the lzo compressor is supported\n");
+		return 0;
+	}
+
+	if (THIS_KERNEL_VERSION >= LINUX(2, 6, 0)) {
+		swp_offset = (ulonglong)__swp_offset(pte_val);
+	} else {
+		swp_offset = (ulonglong)SWP_OFFSET(pte_val);
+	}
+
+	zram_buf = (unsigned char *)GETBUF(PAGESIZE());
+	/* lookup page from swap cache */
+	off = PAGEOFFSET(vaddr);
+	obj_addr = lookup_swap_cache(pte_val, zram_buf);
+	if (obj_addr != NULL) {
+		memcpy(buf, obj_addr + off, len);
+		goto out;
+	}
+
+	sector = swp_offset << (PAGESHIFT() - 9);
+	index = sector >> SECTORS_PER_PAGE_SHIFT;
+	readmem(zram, KVADDR, &zram_table_entry,
+		sizeof(void *), "zram_table_entry", FAULT_ON_ERROR);
+	zram_table_entry += (index * SIZE(zram_table_entry));
+	readmem(zram_table_entry, KVADDR, &entry,
+		sizeof(void *), "entry of table", FAULT_ON_ERROR);
+	readmem(zram_table_entry + OFFSET(zram_table_flag), KVADDR, &flags,
+		sizeof(void *), "zram_table_flag", FAULT_ON_ERROR);
+	if (!entry || (flags & ZRAM_FLAG_SAME_BIT)) {
+		memset(buf, entry, len);
+		goto out;
+	}
+	size = flags & (ZRAM_FLAG_SHIFT -1);
+	if (size == 0) {
+		len = 0;
+		goto out;
+	}
+
+	readmem(zram + OFFSET(zram_mempoll), KVADDR, &zram,
+		sizeof(void *), "zram_mempoll", FAULT_ON_ERROR);
+
+	obj_addr = zram_object_addr(zram, entry, zram_buf);
+	if (obj_addr == NULL) {
+		len = 0;
+		goto out;
+	}
+
+	if (size == PAGESIZE()) {
+		memcpy(buf, obj_addr + off, len);
+	} else {
+		outbuf = (unsigned char *)GETBUF(PAGESIZE());
+		outsize = PAGESIZE();
+		if (!decompressor(obj_addr, size, outbuf, &outsize, NULL))
+			memcpy(buf, outbuf + off, len);
+		else {
+			error(WARNING, "zram decompress error\n");
+			len = 0;
+		}
+		FREEBUF(outbuf);
 	}
 
 out:
@@ -2836,9 +2893,3 @@ out:
 	FREEBUF(zram_buf);
 	return len;
 }
-#else
-ulong try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong vaddr)
-{
-	return 0;
-}
-#endif

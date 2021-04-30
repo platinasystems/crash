@@ -71,7 +71,8 @@
 
 #if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
     !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
-    !defined(ARM) && !defined(ARM64) && !defined(MIPS) && !defined(SPARC64)
+    !defined(ARM) && !defined(ARM64) && !defined(MIPS) && !defined(MIPS64) && \
+    !defined(SPARC64)
 #ifdef __alpha__
 #define ALPHA
 #endif
@@ -104,7 +105,11 @@
 #define ARM64
 #endif
 #ifdef __mipsel__
+#ifndef __mips64
 #define MIPS
+#else
+#define MIPS64
+#endif
 #endif
 #ifdef __sparc_v9__
 #define SPARC64
@@ -143,6 +148,9 @@
 #endif
 #ifdef MIPS
 #define NR_CPUS  (32)
+#endif
+#ifdef MIPS64
+#define NR_CPUS  (256)
 #endif
 #ifdef SPARC64
 #define NR_CPUS  (4096)
@@ -2106,6 +2114,30 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long irq_common_data_affinity;
 	long irq_desc_irq_common_data;
 	long uts_namespace_name;
+	long printk_info_seq;
+	long printk_info_ts_nsec;
+	long printk_info_text_len;
+	long printk_info_level;
+	long printk_info_caller_id;
+	long printk_info_dev_info;
+	long dev_printk_info_subsystem;
+	long dev_printk_info_device;
+	long prb_desc_ring;
+	long prb_text_data_ring;
+	long prb_desc_ring_count_bits;
+	long prb_desc_ring_descs;
+	long prb_desc_ring_infos;
+	long prb_desc_ring_head_id;
+	long prb_desc_ring_tail_id;
+	long prb_desc_state_var;
+	long prb_desc_text_blk_lpos;
+	long prb_data_blk_lpos_begin;
+	long prb_data_blk_lpos_next;
+	long prb_data_ring_size_bits;
+	long prb_data_ring_data;
+	long atomic_long_t_counter;
+	long block_device_bd_device;
+	long block_device_bd_stats;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -2265,6 +2297,9 @@ struct size_table {         /* stash of commonly-used sizes */
 	long xa_node;
 	long zram_table_entry;
 	long irq_common_data;
+	long printk_info;
+	long printk_ringbuffer;
+	long prb_desc;
 };
 
 struct array_table {
@@ -3348,6 +3383,45 @@ struct arm64_stackframe {
 #define _MAX_PHYSMEM_BITS	32
 #endif  /* MIPS */
 
+#ifdef MIPS64
+#define _64BIT_
+#define MACHINE_TYPE		"MIPS64"
+
+#define PAGEBASE(X)		(((ulong)(X)) & (ulong)machdep->pagemask)
+#define IS_CKPHYS(X)		(((X) >= 0xffffffff80000000lu) && \
+				((X) < 0xffffffffc0000000lu))
+#define IS_XKPHYS(X)		(((X) >= 0x8000000000000000lu) && \
+				((X) < 0xc000000000000000lu))
+
+#define PTOV(X) 		((ulong)(X) + 0x9800000000000000lu)
+#define VTOP(X) 		(IS_CKPHYS(X) ? ((ulong)(X) & 0x000000001ffffffflu) \
+				: ((ulong)(X) & 0x0000fffffffffffflu))
+
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start && !IS_CKPHYS(X))
+
+#define DEFAULT_MODULES_VADDR   0xffffffffc0000000lu
+#define MODULES_VADDR           (machdep->machspec->modules_vaddr)
+#define MODULES_END             (machdep->machspec->modules_end)
+#define VMALLOC_START           (machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END             (machdep->machspec->vmalloc_end)
+
+#define __SWP_TYPE_SHIFT        16
+#define __SWP_TYPE_BITS         8
+#define __SWP_TYPE_MASK         ((1 << __SWP_TYPE_BITS) - 1)
+#define __SWP_OFFSET_SHIFT      (__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+
+#define SWP_TYPE(entry)         (((entry) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
+#define SWP_OFFSET(entry)       ((entry) >> __SWP_OFFSET_SHIFT)
+
+#define __swp_type(entry)       SWP_TYPE(entry)
+#define __swp_offset(entry)     SWP_OFFSET(entry)
+
+#define TIF_SIGPENDING          (2)
+
+#define _SECTION_SIZE_BITS      28
+#define _MAX_PHYSMEM_BITS       48
+#endif  /* MIPS64 */
+
 #ifdef X86
 #define _32BIT_
 #define MACHINE_TYPE       "X86"
@@ -3558,7 +3632,7 @@ struct arm64_stackframe {
  *  PHYSICAL_PAGE_MASK changed (enlarged) between 2.4 and 2.6, so
  *  for safety, use the 2.6 values to generate it.
  */ 
-#define __PHYSICAL_MASK_SHIFT_XEN     40
+#define __PHYSICAL_MASK_SHIFT_XEN     52
 #define __PHYSICAL_MASK_SHIFT_2_6     46
 #define __PHYSICAL_MASK_SHIFT_5LEVEL  52
 #define __PHYSICAL_MASK_SHIFT  (machdep->machspec->physical_mask_shift)
@@ -4388,6 +4462,10 @@ struct machine_specific {
 #define MAX_HEXADDR_STRLEN (8)
 #define UVADDR_PRLEN       (8)
 #endif
+#ifdef MIPS64
+#define MAX_HEXADDR_STRLEN (16)
+#define UVADDR_PRLEN       (16)
+#endif
 #ifdef SPARC64
 #define MAX_HEXADDR_STRLEN (16)
 #define UVADDR_PRLEN      (16)
@@ -4964,6 +5042,9 @@ void dump_build_data(void);
 #ifdef MIPS
 #define machdep_init(X) mips_init(X)
 #endif
+#ifdef MIPS64
+#define machdep_init(X) mips64_init(X)
+#endif
 #ifdef SPARC64
 #define machdep_init(X) sparc64_init(X)
 #endif
@@ -5444,6 +5525,9 @@ void display_help_screen(char *);
 #ifdef MIPS
 #define dump_machdep_table(X) mips_dump_machdep_table(X)
 #endif
+#ifdef MIPS64
+#define dump_machdep_table(X) mips64_dump_machdep_table(X)
+#endif
 #ifdef SPARC64
 #define dump_machdep_table(X) sparc64_dump_machdep_table(X)
 #endif
@@ -5600,6 +5684,7 @@ void clone_bt_info(struct bt_info *, struct bt_info *, struct task_context *);
 void dump_kernel_table(int);
 void dump_bt_info(struct bt_info *, char *where);
 void dump_log(int);
+#define LOG_LEVEL(v) ((v) & 0x07)
 #define SHOW_LOG_LEVEL (0x1)
 #define SHOW_LOG_DICT  (0x2)
 #define SHOW_LOG_TEXT  (0x4)
@@ -5913,6 +5998,7 @@ struct x86_64_pt_regs_offsets {
 struct x86_64_stkinfo {
 	ulong ebase[NR_CPUS][MAX_EXCEPTION_STACKS];
 	int esize[MAX_EXCEPTION_STACKS];
+	char available[NR_CPUS][MAX_EXCEPTION_STACKS];
 	ulong ibase[NR_CPUS];
 	int isize;
 	int NMI_stack_index;
@@ -5997,6 +6083,7 @@ struct machine_specific {
 	ulong cpu_entry_area_start;
 	ulong cpu_entry_area_end;
 	ulong page_offset_force;
+	char **exception_functions;
 };
 
 #define KSYMS_START    (0x1)
@@ -6390,6 +6477,86 @@ struct machine_specific {
 #endif /* MIPS */
 
 /*
+ * mips64.c
+ */
+void mips64_display_regs_from_elf_notes(int, FILE *);
+
+#ifdef MIPS64
+void mips64_init(int);
+void mips64_dump_machdep_table(ulong);
+
+#define display_idt_table() \
+	error(FATAL, "-d option is not applicable to MIPS64 architecture\n")
+
+/* from arch/mips/include/uapi/asm/ptrace.h */
+struct mips64_register {
+	ulong regs[45];
+};
+
+struct mips64_pt_regs_main {
+	ulong regs[32];
+	ulong cp0_status;
+	ulong hi;
+	ulong lo;
+};
+
+struct mips64_pt_regs_cp0 {
+	ulong cp0_badvaddr;
+	ulong cp0_cause;
+	ulong cp0_epc;
+};
+
+struct mips64_unwind_frame {
+	unsigned long sp;
+	unsigned long pc;
+	unsigned long ra;
+};
+
+#define KSYMS_START	(0x1)
+
+struct machine_specific {
+	ulong phys_base;
+	ulong vmalloc_start_addr;
+	ulong modules_vaddr;
+	ulong modules_end;
+
+	ulong _page_present;
+	ulong _page_read;
+	ulong _page_write;
+	ulong _page_accessed;
+	ulong _page_modified;
+	ulong _page_huge;
+	ulong _page_special;
+	ulong _page_protnone;
+	ulong _page_global;
+	ulong _page_valid;
+	ulong _page_no_read;
+	ulong _page_no_exec;
+	ulong _page_dirty;
+
+	ulong _pfn_shift;
+
+	struct mips64_register *crash_task_regs;
+};
+/* from arch/mips/include/asm/pgtable-bits.h */
+#define _PAGE_PRESENT	(machdep->machspec->_page_present)
+#define _PAGE_READ	(machdep->machspec->_page_read)
+#define _PAGE_WRITE	(machdep->machspec->_page_write)
+#define _PAGE_ACCESSED	(machdep->machspec->_page_accessed)
+#define _PAGE_MODIFIED	(machdep->machspec->_page_modified)
+#define _PAGE_HUGE	(machdep->machspec->_page_huge)
+#define _PAGE_SPECIAL	(machdep->machspec->_page_special)
+#define _PAGE_PROTNONE	(machdep->machspec->_page_protnone)
+#define _PAGE_GLOBAL	(machdep->machspec->_page_global)
+#define _PAGE_VALID	(machdep->machspec->_page_valid)
+#define _PAGE_NO_READ	(machdep->machspec->_page_no_read)
+#define _PAGE_NO_EXEC	(machdep->machspec->_page_no_exec)
+#define _PAGE_DIRTY	(machdep->machspec->_page_dirty)
+#define _PFN_SHIFT	(machdep->machspec->_pfn_shift)
+
+#endif /* MIPS64 */
+
+/*
  * sparc64.c
  */
 #ifdef SPARC64
@@ -6510,9 +6677,9 @@ int diskdump_get_nr_cpus(void);
 QEMUCPUState *diskdump_get_qemucpustate(int);
 void diskdump_device_dump_info(FILE *);
 void diskdump_device_dump_extract(int, char *, FILE *);
+ulong readswap(ulonglong pte_val, char *buf, ulong len, ulonglong vaddr);
 /*support for zram*/
 ulong try_zram_decompress(ulonglong pte_val, unsigned char *buf, ulong len, ulonglong vaddr);
-#ifdef LZO
 #define OBJ_TAG_BITS     1
 #ifndef MAX_POSSIBLE_PHYSMEM_BITS
 #define MAX_POSSIBLE_PHYSMEM_BITS (MAX_PHYSMEM_BITS())
@@ -6538,7 +6705,6 @@ struct zspage {
     unsigned int inuse;
     unsigned int freeobj;
 };
-#endif
 
 /*
  * makedumpfile.c
@@ -6695,6 +6861,11 @@ int vmware_guestdump_memory_dump(FILE *);
  * kaslr_helper.c
  */
 int calc_kaslr_offset(ulong *, ulong *);
+
+/*
+ * printk.c
+ */
+void dump_lockless_record_log(int);
 
 /*
  *  gnu_binutils.c

@@ -139,6 +139,9 @@ static void orc_dump(ulong);
 
 struct machine_specific x86_64_machine_specific = { 0 };
 
+static const char *exception_functions_orig[];
+static const char *exception_functions_5_8[];
+
 /*
  *  Do all necessary machine-specific setup here.  This is called several
  *  times during initialization.
@@ -735,6 +738,12 @@ x86_64_init(int when)
 		STRUCT_SIZE_INIT(percpu_data, "percpu_data");
 
 		GART_init();
+
+		if (kernel_symbol_exists("asm_exc_divide_error"))
+			machdep->machspec->exception_functions = (char **)exception_functions_5_8;
+		else
+			machdep->machspec->exception_functions = (char **)exception_functions_orig;
+
 		break;
 
 	case POST_VM:
@@ -1104,6 +1113,12 @@ x86_64_dump_machdep_table(ulong arg)
 		fprintf(fp, "%016lx\n", (ulong)ms->cpu_entry_area_end);
 	else
 		fprintf(fp, "(unused)\n");
+
+	fprintf(fp, "      excpetion_functions: ");
+	if (ms->exception_functions == (char **)exception_functions_5_8)
+		fprintf(fp, "excpetion_functions_5_8\n");
+	else
+		fprintf(fp, "excpetion_functions_orig\n");
 }
 
 /*
@@ -1326,6 +1341,8 @@ x86_64_per_cpu_init(void)
 		    	    KVADDR, &hardirq_stack_ptr, sizeof(void *),
 		    	    "hardirq_stack_ptr (per_cpu)", QUIET|RETURN_ON_ERROR))
 				continue;
+			if (hardirq_stack_ptr != PAGEBASE(hardirq_stack_ptr))
+				hardirq_stack_ptr += 8;
 			ms->stkinfo.ibase[i] = hardirq_stack_ptr - ms->stkinfo.isize;
 		} else if (irq_sp)
 			ms->stkinfo.ibase[i] = irq_sp->value + kt->__per_cpu_offset[i];
@@ -1369,6 +1386,7 @@ x86_64_ist_init(void)
 	ulong init_tss;
 	struct machine_specific *ms;
 	struct syment *boot_sp, *tss_sp, *ist_sp;
+	char *exc_stack_struct_name = NULL;
 
         ms = machdep->machspec;
 	if (!(tss_sp = per_cpu_symbol_search("per_cpu__init_tss"))) {
@@ -1444,25 +1462,40 @@ x86_64_ist_init(void)
 		return;
 	}
 
-	if (MEMBER_EXISTS("exception_stacks", "NMI_stack")) {
+	if (MEMBER_EXISTS("cea_exception_stacks", "NMI_stack")) {
+		/* The effective cpu entry area mapping with guard pages. */
+		exc_stack_struct_name = "cea_exception_stacks";
+	} else if (MEMBER_EXISTS("exception_stacks", "NMI_stack")) {
+		/* The exception stacks' physical storage. No guard pages and no VC stack. */
+		exc_stack_struct_name = "exception_stacks";
+	}
+	if (exc_stack_struct_name) {
                 for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
 			if (STREQ(ms->stkinfo.exception_stacks[i], "DEBUG"))
-				ms->stkinfo.esize[i] = MEMBER_SIZE("exception_stacks", "DB_stack");
+				ms->stkinfo.esize[i] = MEMBER_SIZE(exc_stack_struct_name, "DB_stack");
 			else if (STREQ(ms->stkinfo.exception_stacks[i], "NMI"))
-				ms->stkinfo.esize[i] = MEMBER_SIZE("exception_stacks", "NMI_stack");
+				ms->stkinfo.esize[i] = MEMBER_SIZE(exc_stack_struct_name, "NMI_stack");
 			else if (STREQ(ms->stkinfo.exception_stacks[i], "DOUBLEFAULT"))
-				ms->stkinfo.esize[i] = MEMBER_SIZE("exception_stacks", "DF_stack");
+				ms->stkinfo.esize[i] = MEMBER_SIZE(exc_stack_struct_name, "DF_stack");
 			else if (STREQ(ms->stkinfo.exception_stacks[i], "MCE"))
-				ms->stkinfo.esize[i] = MEMBER_SIZE("exception_stacks", "MCE_stack");
+				ms->stkinfo.esize[i] = MEMBER_SIZE(exc_stack_struct_name, "MCE_stack");
+			else if (STREQ(ms->stkinfo.exception_stacks[i], "VC"))
+				ms->stkinfo.esize[i] = MEMBER_SIZE(exc_stack_struct_name, "VC_stack");
 		}
 		/*
-	 	 *  Adjust the top-of-stack addresses down to the base stack address.
+		 *  Adjust the top-of-stack addresses down to the base stack address
+		 *  and set stack page availabilituy flag.
 		 */
 		for (c = 0; c < kt->cpus; c++) {
 			for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
-				if (ms->stkinfo.ebase[c][i] == 0) 
-					continue;
-				ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
+				if (ms->stkinfo.ebase[c][i])
+					ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
+
+				ms->stkinfo.available[c][i] = TRUE;
+				/* VC stack can be unmapped if SEV-ES is disabled or not supported. */
+				if (STREQ(ms->stkinfo.exception_stacks[i], "VC") &&
+				    !accessible(ms->stkinfo.ebase[c][i]))
+					ms->stkinfo.available[c][i] = FALSE;
 			}
 		}
 
@@ -1487,6 +1520,7 @@ x86_64_ist_init(void)
 			else
 				ms->stkinfo.esize[i] = esize;
 			ms->stkinfo.ebase[c][i] -= ms->stkinfo.esize[i];
+			ms->stkinfo.available[c][i] = TRUE;
 		}
 	}
 
@@ -2842,7 +2876,8 @@ x86_64_eframe_search(struct bt_info *bt)
 			    !(NUM_IN_BITMAP(bt->cpumask, c)))
 				continue;
                 	for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
-                        	if (ms->stkinfo.ebase[c][i] == 0)
+				if (ms->stkinfo.ebase[c][i] == 0 ||
+				    !ms->stkinfo.available[c][i])
                                 	break;
                                 bt->hp->esp = ms->stkinfo.ebase[c][i];
                                 fprintf(fp, "CPU %d %s EXCEPTION STACK:",
@@ -3066,7 +3101,7 @@ text_lock_function(char *name, struct bt_info *bt, ulong locktext)
  * zeroentry xen_debug do_debug
  * zeroentry xen_int3 do_int3
 */
-static const char *exception_functions[] = {
+static const char *exception_functions_orig[] = {
 	"invalid_TSS",
 	"segment_not_present",
 	"alignment_check",
@@ -3086,6 +3121,28 @@ static const char *exception_functions[] = {
 	"xen_debug",
 	"xen_int3",
 	"async_page_fault",
+	NULL,
+};
+
+static const char *exception_functions_5_8[] = {
+	"asm_exc_invalid_tss",
+	"asm_exc_segment_not_present",
+	"asm_exc_alignment_check",
+	"asm_exc_general_protection",
+	"asm_exc_page_fault",
+	"asm_exc_divide_error",
+	"asm_exc_overflow",
+	"asm_exc_bounds",
+	"asm_exc_invalid_op",
+	"asm_exc_device_not_available",
+	"asm_exc_coproc_segment_overrun",
+	"asm_exc_spurious_interrupt_bug",
+	"asm_exc_coprocessor_error",
+	"asm_exc_simd_coprocessor_error",
+	"asm_exc_debug",
+	"xen_asm_exc_stack_segment",
+	"xen_asm_exc_xen_hypervisor_callback",
+	"xen_asm_exc_int3",
 	NULL,
 };
 
@@ -3165,8 +3222,8 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 	if ((THIS_KERNEL_VERSION >= LINUX(2,6,29)) && 
 	    (eframe_check == -1) && offset && 
 	    !(bt->flags & (BT_EXCEPTION_FRAME|BT_START|BT_SCHEDULE))) { 
-		for (i = 0; exception_functions[i]; i++) {
-			if (STREQ(name, exception_functions[i])) {
+		for (i = 0; machdep->machspec->exception_functions[i]; i++) {
+			if (STREQ(name, machdep->machspec->exception_functions[i])) {
 				eframe_check = 8;
 				break;
 			}
@@ -3288,7 +3345,8 @@ x86_64_in_exception_stack(struct bt_info *bt, int *estack_index)
 
         for (c = 0; !estack && (c < kt->cpus); c++) {
 		for (i = 0; i < MAX_EXCEPTION_STACKS; i++) {
-			if (ms->stkinfo.ebase[c][i] == 0)
+			if (ms->stkinfo.ebase[c][i] == 0 ||
+			    !ms->stkinfo.available[c][i])
 				break;
 			if ((rsp >= ms->stkinfo.ebase[c][i]) &&
 			    (rsp < (ms->stkinfo.ebase[c][i] + 
@@ -5097,7 +5155,7 @@ skip_stage:
                 	ms->stkinfo.esize[estack];
 		console("x86_64_get_dumpfile_stack_frame: searching %s estack at %lx\n", 
 			ms->stkinfo.exception_stacks[estack], bt->stackbase);
-		if (!(bt->stackbase)) 
+		if (!(bt->stackbase && ms->stkinfo.available[bt->tc->processor][estack]))
 			goto skip_stage;
 		bt->stackbuf = ms->irqstack;
 		alter_stackbuf(bt);
@@ -5380,6 +5438,8 @@ x86_64_exception_stacks_init(void)
 				ms->stkinfo.exception_stacks[ist-1] = "DOUBLEFAULT";
 			if (strstr(buf, "machine"))
 				ms->stkinfo.exception_stacks[ist-1] = "MCE";
+			if (strstr(buf, "vmm"))
+				ms->stkinfo.exception_stacks[ist-1] = "VC";
 		}
 	}
 
@@ -5736,6 +5796,9 @@ x86_64_display_machine_stats(void)
 
 			fprintf(fp, "%22s: %016lx",
 				buf, machdep->machspec->stkinfo.ebase[c][i]);
+
+			if (!machdep->machspec->stkinfo.available[c][i])
+				fprintf(fp, " [unavailable]");
 
 			if (hide_offline_cpu(c))
 				fprintf(fp, " [OFFLINE]\n");
@@ -7075,7 +7138,8 @@ x86_64_xendump_p2m_create(struct xendump_data *xd)
 	/*
 	 *  Check for pvops Xen kernel before presuming it's HVM.
 	 */
-	if (symbol_exists("pv_init_ops") && symbol_exists("xen_patch") &&
+	if (symbol_exists("pv_init_ops") &&
+	    (symbol_exists("xen_patch") || symbol_exists("paravirt_patch_default")) &&
 	    (xd->xc_core.header.xch_magic == XC_CORE_MAGIC))
 		return x86_64_pvops_xendump_p2m_create(xd);
 
